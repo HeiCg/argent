@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   computeRunnerCacheKey,
+  killStaleRunnersForDevice,
   launchRunner,
   MAX_RUNNER_LOG_FILES,
   planRunnerStorageSweep,
@@ -546,5 +547,162 @@ describe("waitForPidsToExit", () => {
     });
 
     expect(holdouts).toEqual([101]); // reported as escalated, never thrown
+  });
+});
+
+const STALE_UDID = "00008120-000000000000001E";
+const STALE_XCTESTRUN =
+  "/Users/dev/.argent/ios-device-runner/derived/cache-aaaa111122223333/Build/Products/" +
+  "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun";
+
+/**
+ * One `ps -ax -o pid=,ppid=,command=` line shaped like a launched runner.
+ * The defaults satisfy all three argv filter clauses; each override drops
+ * exactly one, so a spared override pins that clause individually.
+ */
+function runnerPsLine(opts: {
+  pid: number;
+  ppid: number;
+  action?: string;
+  udid?: string;
+  xctestrun?: string;
+}): string {
+  return [
+    String(opts.pid).padStart(5),
+    String(opts.ppid).padStart(5),
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild",
+    opts.action ?? "test-without-building",
+    "-xctestrun",
+    opts.xctestrun ?? STALE_XCTESTRUN,
+    "-destination",
+    `platform=iOS,id=${opts.udid ?? STALE_UDID}`,
+  ].join(" ");
+}
+
+/** fakeProcessTable plus the ps seam: killStaleRunnersForDevice's full deps. */
+function fakeSweepDeps(dyingAfterPolls: Record<number, number>, psLines: string[]) {
+  return {
+    ...fakeProcessTable(dyingAfterPolls),
+    listProcesses: async () => psLines.join("\n"),
+    timeoutMs: 300,
+    pollIntervalMs: 100,
+  };
+}
+
+describe("killStaleRunnersForDevice", () => {
+  it("SIGTERMs an orphan re-parented to launchd (ppid 1), ignoring unrelated lines", async () => {
+    const deps = fakeSweepDeps({}, [
+      "  400     1 /usr/local/bin/node /opt/argent/dist/server.js", // not a runner
+      runnerPsLine({ pid: 101, ppid: 1 }),
+    ]);
+
+    const killed = await killStaleRunnersForDevice(STALE_UDID, deps);
+
+    expect(killed).toBe(1);
+    expect(deps.kills).toEqual([{ pid: -101, signal: "SIGTERM" }]);
+    expect(deps.sleeps).toEqual([]); // pid 101 dead on the first exit probe
+  });
+
+  it("SIGTERMs an orphan whose parent pid is no longer alive", async () => {
+    // ppid 4242 is absent from the table, so the liveness probe reports it
+    // gone — the owning tool-server died without launchd adoption completing.
+    const deps = fakeSweepDeps({}, [runnerPsLine({ pid: 101, ppid: 4242 })]);
+
+    const killed = await killStaleRunnersForDevice(STALE_UDID, deps);
+
+    expect(killed).toBe(1);
+    expect(deps.kills).toEqual([{ pid: -101, signal: "SIGTERM" }]);
+  });
+
+  it("spares a matched runner whose parent is a LIVE peer tool-server", async () => {
+    const deps = fakeSweepDeps({ 4242: Infinity }, [runnerPsLine({ pid: 101, ppid: 4242 })]);
+
+    const killed = await killStaleRunnersForDevice(STALE_UDID, deps);
+
+    expect(killed).toBe(0); // the peer's session conflict is testmanagerd's to report
+    expect(deps.kills).toEqual([]);
+    expect(deps.sleeps).toEqual([]); // nothing signaled, nothing awaited
+  });
+
+  it("never signals its own pid, even when it would count as an orphan", async () => {
+    const deps = fakeSweepDeps({}, [runnerPsLine({ pid: process.pid, ppid: 1 })]);
+
+    expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(0);
+    expect(deps.kills).toEqual([]);
+  });
+
+  // The three clause tests below each present an ORPHAN (ppid 1), so the only
+  // thing sparing it is the missing argv clause under test.
+  it("spares a line without the test-without-building clause (a build is not a runner)", async () => {
+    const deps = fakeSweepDeps({}, [
+      runnerPsLine({ pid: 101, ppid: 1, action: "build-for-testing" }),
+    ]);
+
+    expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(0);
+    expect(deps.kills).toEqual([]);
+  });
+
+  it("spares a runner driving a DIFFERENT device", async () => {
+    const deps = fakeSweepDeps({}, [
+      runnerPsLine({ pid: 101, ppid: 1, udid: "00008120-FFFFFFFFFFFFFFFF" }),
+    ]);
+
+    expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(0);
+    expect(deps.kills).toEqual([]);
+  });
+
+  it("spares an xcodebuild test run outside our cache root", async () => {
+    const deps = fakeSweepDeps({}, [
+      runnerPsLine({
+        pid: 101,
+        ppid: 1,
+        xctestrun: "/Users/dev/proj/build/MyAppUITests.xctestrun",
+      }),
+    ]);
+
+    expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(0);
+    expect(deps.kills).toEqual([]);
+  });
+
+  it("escalates a SIGTERM-ignoring orphan to SIGKILL via waitForPidsToExit", async () => {
+    const deps = fakeSweepDeps({ 101: Infinity }, [runnerPsLine({ pid: 101, ppid: 1 })]);
+
+    const killed = await killStaleRunnersForDevice(STALE_UDID, deps);
+
+    expect(killed).toBe(1);
+    expect(deps.sleeps).toEqual([100, 100, 100]); // the bounded exit wait ran
+    expect(deps.kills).toEqual([
+      { pid: -101, signal: "SIGTERM" },
+      { pid: -101, signal: "SIGKILL" },
+    ]);
+  });
+
+  it("falls back to a bare-pid SIGTERM when the process-group signal fails", async () => {
+    const kills: Array<{ pid: number; signal: string }> = [];
+    const deps = {
+      ...fakeSweepDeps({}, [runnerPsLine({ pid: 101, ppid: 1 })]),
+      kill: (pid: number, signal: string) => {
+        kills.push({ pid, signal });
+        if (pid < 0) throw new Error("EPERM: operation not permitted");
+      },
+    };
+
+    expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(1);
+    expect(kills).toEqual([
+      { pid: -101, signal: "SIGTERM" },
+      { pid: 101, signal: "SIGTERM" },
+    ]);
+  });
+
+  it("treats a failed ps snapshot as nothing to reap", async () => {
+    const deps = {
+      ...fakeSweepDeps({}, []),
+      listProcesses: async (): Promise<string> => {
+        throw new Error("ps: command failed");
+      },
+    };
+
+    expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(0);
+    expect(deps.kills).toEqual([]);
   });
 });

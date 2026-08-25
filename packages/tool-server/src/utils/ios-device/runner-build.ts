@@ -605,25 +605,50 @@ export async function launchRunner(opts: {
 }
 
 /**
- * Kill stale runner xcodebuild processes for a device — left behind when a
- * previous tool-server process exited without disposing its runner service
- * (the child is spawned detached and survives its parent). Two concurrent
- * test sessions on one device conflict in testmanagerd, so the factory sweeps
- * before every launch. Matches only OUR processes: `test-without-building`,
- * this device's destination, and our cache root in the argv.
+ * Kill ORPHANED stale runner xcodebuild processes for a device — left behind
+ * when a previous tool-server process exited without disposing its runner
+ * service (the child is spawned detached and survives its parent). Two
+ * concurrent test sessions on one device conflict in testmanagerd, so the
+ * factory sweeps before every launch. Matches only OUR processes:
+ * `test-without-building`, this device's destination, and our cache root in
+ * the argv.
+ *
+ * A match is reaped only when its owner is gone: ppid 1 (the dead
+ * tool-server's runner was re-parented to launchd) or a ppid that no longer
+ * exists (the kill(ppid, 0) liveness probe fails). A matched runner with a
+ * LIVE parent belongs to a peer tool-server and is deliberately spared —
+ * reaping on the argv alone made two servers driving one device SIGTERM each
+ * other's runners on every factory start. If the spared runner's session
+ * genuinely conflicts with ours, testmanagerd raises its own loud
+ * two-simultaneous-sessions error at launch, which is the intended outcome.
  *
  * Resolves only once every signaled pid has exited (or been SIGKILLed after
  * `STALE_EXIT_TIMEOUT_MS`) — returning on the bare SIGTERM would let a fast
  * cache-hit start race the old session's testmanagerd teardown, recreating
  * exactly the conflict this sweep exists to prevent. No stale runners means
- * no wait at all.
+ * no wait at all. The ps-snapshot/probe/kill/sleep parameters are test seams,
+ * `waitForPidsToExit`'s plus the process listing; the escalation forwards
+ * them wholesale.
  */
-export async function killStaleRunnersForDevice(udid: string): Promise<number> {
+export async function killStaleRunnersForDevice(
+  udid: string,
+  opts: {
+    /** Snapshot of `ps -ax -o pid=,ppid=,command=`; defaults to running it. */
+    listProcesses?: () => Promise<string>;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+    isAlive?: (pid: number) => boolean;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    sleep?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<number> {
+  const listProcesses = opts.listProcesses ?? listProcessTable;
+  const isAlive = opts.isAlive ?? pidIsAlive;
+  const kill = opts.kill ?? process.kill.bind(process);
+
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("ps", ["-ax", "-o", "pid=,command="], {
-      maxBuffer: 16 * 1024 * 1024,
-    }));
+    stdout = await listProcesses();
   } catch {
     return 0;
   }
@@ -636,21 +661,34 @@ export async function killStaleRunnersForDevice(udid: string): Promise<number> {
     ) {
       continue;
     }
-    const pid = Number.parseInt(line.trim().split(/\s+/)[0] ?? "", 10);
-    if (!Number.isFinite(pid) || pid === process.pid) continue;
+    const [pidField, ppidField] = line.trim().split(/\s+/);
+    const pid = Number.parseInt(pidField ?? "", 10);
+    const ppid = Number.parseInt(ppidField ?? "", 10);
+    // An unparseable line is spared like a live-parent one: when ownership
+    // cannot be determined, not killing is the recoverable mistake.
+    if (!Number.isFinite(pid) || !Number.isFinite(ppid) || pid === process.pid) continue;
+    if (ppid !== 1 && isAlive(ppid)) continue; // a live peer tool-server owns it
     try {
-      process.kill(-pid, "SIGTERM");
+      kill(-pid, "SIGTERM");
     } catch {
       try {
-        process.kill(pid, "SIGTERM");
+        kill(pid, "SIGTERM");
       } catch {
         continue;
       }
     }
     signaled.push(pid);
   }
-  if (signaled.length > 0) await waitForPidsToExit(signaled);
+  if (signaled.length > 0) await waitForPidsToExit(signaled, opts);
   return signaled.length;
+}
+
+/** Real process-table snapshot behind `killStaleRunnersForDevice`'s seam. */
+async function listProcessTable(): Promise<string> {
+  const { stdout } = await execFileAsync("ps", ["-ax", "-o", "pid=,ppid=,command="], {
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return stdout;
 }
 
 /** SIGTERM-to-SIGKILL escalation delay — mirrors killRunnerProcess's 5s. */
