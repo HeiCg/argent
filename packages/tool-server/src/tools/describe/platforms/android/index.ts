@@ -29,7 +29,7 @@ const ANDROID_TV_HINT =
 // is a tree of text, and a WebView's web DOM can now spend that whole budget
 // on one page, so the agent must be told the tree is partial. Mirrors what the
 // Chromium describe path does with its own walker budget.
-const ANDROID_TRUNCATED_HINT =
+export const ANDROID_TRUNCATED_HINT =
   "describe hit the node budget and returned a PARTIAL tree — some on-screen content is " +
   "missing, and web content inside a WebView can consume the whole budget. Scope the " +
   "inspection to a smaller region (scroll to or collapse the relevant view) and describe again.";
@@ -78,6 +78,7 @@ export async function describeAndroid(
         tree,
         source: "android-devtools",
         hint: joinHints(hint, truncated ? ANDROID_TRUNCATED_HINT : undefined),
+        ...(truncated ? { truncated: true } : {}),
       };
     } catch (serviceErr) {
       // Debug level: the legacy path below is expected to recover, so this
