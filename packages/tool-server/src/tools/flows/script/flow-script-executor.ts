@@ -284,30 +284,45 @@ class ScriptSetupError extends Error {
 export class FlowScriptExecutor {
   private running = 0;
   private readonly waiting: QueueWaiter[] = [];
-  private bounds: ResolvedBounds | undefined;
+  private concurrencyLimit: number | undefined;
 
   constructor(private readonly options: FlowScriptExecutorOptions = {}) {}
 
+  /**
+   * Read again for every step, never memoized: both bounds below are
+   * schema-driven configuration, and the reference page promises that editing
+   * either file takes effect on the next request. The executor a tool server
+   * runs steps through is shared and lives as long as the process, so holding
+   * these would make that promise "on the next restart" for these two keys
+   * alone.
+   */
   private resolveBounds(): ResolvedBounds {
-    if (!this.bounds) {
-      this.bounds = {
-        concurrency: positive(this.options.concurrency) ?? defaultConcurrency(),
-        maxTimeoutMs: Math.min(
-          MAX_TIMER_MS,
-          positive(this.options.maxTimeoutMs) ??
-            configuredNumber("scripts.maxTimeoutMs") ??
-            5 * 60_000
-        ),
-        // Floored, not just defaulted: a heap too small to start V8 fails
-        // during the child's own startup, naming neither this bound nor the
-        // value that caused it.
-        heapLimitMb: Math.max(
-          MIN_SCRIPT_HEAP_LIMIT_MB,
-          positive(this.options.heapLimitMb) ?? configuredNumber("scripts.heapLimitMb") ?? 512
-        ),
-      };
-    }
-    return this.bounds;
+    return {
+      concurrency: this.concurrency(),
+      maxTimeoutMs: Math.min(
+        MAX_TIMER_MS,
+        positive(this.options.maxTimeoutMs) ??
+          configuredNumber("scripts.maxTimeoutMs") ??
+          5 * 60_000
+      ),
+      // Floored, not just defaulted: a heap too small to start V8 fails
+      // during the child's own startup, naming neither this bound nor the
+      // value that caused it.
+      heapLimitMb: Math.max(
+        MIN_SCRIPT_HEAP_LIMIT_MB,
+        positive(this.options.heapLimitMb) ?? configuredNumber("scripts.heapLimitMb") ?? 512
+      ),
+    };
+  }
+
+  /**
+   * Settled once, unlike the two above: it is not configuration, and the queue
+   * counts against it while steps are in flight — a limit that moved under a
+   * half-drained queue would let more run at once than either value allows.
+   */
+  private concurrency(): number {
+    this.concurrencyLimit ??= positive(this.options.concurrency) ?? defaultConcurrency();
+    return this.concurrencyLimit;
   }
 
   get activeCount(): number {
@@ -358,7 +373,7 @@ export class FlowScriptExecutor {
         new ScriptCancelledError("The run was cancelled before the script started.")
       );
     }
-    if (this.running < this.resolveBounds().concurrency) {
+    if (this.running < this.concurrency()) {
       this.running += 1;
       return Promise.resolve(release);
     }
@@ -414,7 +429,7 @@ export class FlowScriptExecutor {
   }
 
   private drain(): void {
-    const limit = this.resolveBounds().concurrency;
+    const limit = this.concurrency();
     while (this.running < limit) {
       const waiter = this.waiting.shift();
       if (!waiter) return;

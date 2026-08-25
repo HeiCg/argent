@@ -295,6 +295,33 @@ describe("flow script executor — the host's configured bounds", () => {
 
     expect(result.output?.execArgv).toContain("--max-old-space-size=96");
   });
+
+  it("reads both bounds again for every step, as the reference page promises", async () => {
+    const ws = workspace();
+    configuredHome(ws, { scripts: { maxTimeoutMs: 20_000, heapLimitMb: 96 } });
+    const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
+    // One executor across both steps: the tool server shares a single instance
+    // for the life of the process, so a value held from the first step would
+    // outlive every later edit of the file.
+    const shared = new FlowScriptExecutor({ concurrency: 4 });
+    const before = await shared.execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 45_000,
+    });
+    expect(before.notes.join(" ")).toContain("this host's maximum of 20s");
+    expect(before.output?.execArgv).toContain("--max-old-space-size=96");
+
+    configuredHome(ws, { scripts: { maxTimeoutMs: 40_000, heapLimitMb: 128 } });
+    const after = await shared.execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 45_000,
+    });
+
+    expect(after.notes.join(" ")).toContain("this host's maximum of 40s");
+    expect(after.output?.execArgv).toContain("--max-old-space-size=128");
+  }, 30_000);
 });
 
 describe("flow script executor — the working directory", () => {
