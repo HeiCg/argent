@@ -121,9 +121,11 @@ describe("setConfigValue — validation", () => {
   });
 
   it("rejects a project write for a global-only value via ConfigScopeError", () => {
-    // A settable, global-only definition supplied through the registry param
-    // (no shipped key is global-only any more, so a synthetic one isolates the
-    // scope check).
+    // A settable, global-only definition supplied through the registry param,
+    // so this checks the scope rule alone: a shipped global-only key — today
+    // `scripts.maxTimeoutMs` and `scripts.heapLimitMb`, covered further down —
+    // brings its own value parsing along, and would decide the case here on
+    // whichever rule refused first.
     const registry: ConfigDefinition[] = [
       {
         key: "test.onlyGlobal",
