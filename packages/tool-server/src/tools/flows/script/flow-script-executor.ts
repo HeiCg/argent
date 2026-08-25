@@ -20,7 +20,11 @@ import {
 } from "@argent/configuration-core";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
 import { formatErrorForAgent } from "../../../utils/format-error";
-import { scrubSecretChunk, scrubSecretValues } from "../../../utils/secrets";
+import {
+  scrubSecretChunk,
+  scrubSecretValues,
+  SECRET_PLACEHOLDER_MARKER,
+} from "../../../utils/secrets";
 import { sleep } from "../../../utils/timing";
 import {
   isTerminalResponse,
@@ -1153,6 +1157,7 @@ class ScriptLogCapture {
   private readonly streams = new Map<string, StreamState>();
   private stepRemaining: number;
   private truncatedFlag = false;
+  private cut = false;
   private heapFatalFlag = false;
   private heapFatalTail = "";
 
@@ -1257,12 +1262,24 @@ class ScriptLogCapture {
       ? Math.max(0, this.runBudget.remainingBytes)
       : Number.POSITIVE_INFINITY;
     const allowed = Math.min(this.stepRemaining, runRemaining);
-    if (allowed <= 0) {
+    // Once a cut has happened the log ends there: what follows would read as
+    // the text that came next, and the bytes the cut gave back — a partial
+    // character, a partial marker — are room enough to admit some of it.
+    if (this.cut || allowed <= 0) {
       this.truncatedFlag = true;
       return;
     }
     const buffer = Buffer.from(text, "utf8");
-    const taken = buffer.length <= allowed ? buffer.length : utf8SafeCut(buffer, allowed);
+    let taken = buffer.length <= allowed ? buffer.length : utf8SafeCut(buffer, allowed);
+    if (taken < buffer.length) {
+      this.truncatedFlag = true;
+      this.cut = true;
+      // The cut lands wherever the budget runs out, which may be inside a
+      // marker the scrub wrote. No value escapes either way, but a downstream
+      // reader parsing markers would read a placeholder naming no secret, so
+      // the fragment is given back rather than committed.
+      taken = withoutPartialMarker(buffer, taken);
+    }
     if (taken > 0) {
       const kept = taken === buffer.length ? text : buffer.subarray(0, taken).toString("utf8");
       if (at === undefined) this.parts.push(kept);
@@ -1270,8 +1287,25 @@ class ScriptLogCapture {
       this.stepRemaining -= taken;
       if (this.runBudget) this.runBudget.remainingBytes -= taken;
     }
-    if (taken < buffer.length) this.truncatedFlag = true;
   }
+}
+
+/**
+ * How much of `buffer` is left once a trailing fragment of a
+ * `{{secret:NAME}}` marker is dropped: an opening the cut never closed, or the
+ * beginning of one. Marker text is ASCII, so byte offsets are character
+ * offsets here.
+ */
+function withoutPartialMarker(buffer: Buffer, taken: number): number {
+  const text = buffer.subarray(0, taken).toString("utf8");
+  const open = text.lastIndexOf(SECRET_PLACEHOLDER_MARKER);
+  if (open >= 0 && !text.includes("}}", open + SECRET_PLACEHOLDER_MARKER.length)) {
+    return Buffer.byteLength(text.slice(0, open), "utf8");
+  }
+  for (let n = Math.min(SECRET_PLACEHOLDER_MARKER.length - 1, text.length); n > 0; n--) {
+    if (text.endsWith(SECRET_PLACEHOLDER_MARKER.slice(0, n))) return taken - n;
+  }
+  return taken;
 }
 
 function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): number {

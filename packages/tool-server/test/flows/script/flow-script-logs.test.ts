@@ -121,6 +121,31 @@ describe("flow script executor — cutting the log", () => {
     expect(result.log).not.toContain("\uFFFD");
     expect(Buffer.byteLength(result.log, "utf8")).toBeLessThanOrEqual(SCRIPT_STEP_LOG_LIMIT_BYTES);
   }, 30_000);
+
+  it("never cuts a redaction marker in half", async () => {
+    const ws = workspace();
+    const secret: FlowScriptSecret = { name: "VERY_LONG_SECRET_NAME", value: "s3cr3t-value" };
+    // Padded so the budget runs out a few characters into the marker the scrub
+    // writes for the value printed right after it.
+    const script = ws.write(
+      "cut-marker.mjs",
+      `process.stdout.write("x".repeat(${SCRIPT_STEP_LOG_LIMIT_BYTES - 6}));
+       process.stdout.write(process.env.SECRET);
+       output.ok = true;`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { SECRET: secret.value },
+      secrets: [secret],
+    });
+
+    expect(result.logTruncated).toBe(true);
+    expect(result.log).not.toContain(secret.value);
+    expect(result.log.endsWith("x")).toBe(true);
+    const opened = result.log.lastIndexOf("{{secret:");
+    expect(opened === -1 || result.log.includes("}}", opened)).toBe(true);
+  }, 30_000);
 });
 
 describe("flow script executor — the heap verdict", () => {
