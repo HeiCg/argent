@@ -215,8 +215,25 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         port,
         send: sender.sendCommand,
       });
+      // The permanent "exit" listener attaches only after startRunner resolves,
+      // so a child dying now (the profile-missing install rejection lands within
+      // seconds) would otherwise leave the readiness poll grinding its full
+      // budget against a runner that will never come up. Race the wait against
+      // the exit; the rejection flows through the same catch as a poll timeout.
+      let onExit!: (code: number | null) => void;
+      const exited = new Promise<never>((_resolve, reject) => {
+        onExit = (code) =>
+          reject(new Error(`xcodebuild exited (code ${code}) before the runner became ready`));
+      });
+      // The race's loser must never surface as an unhandled rejection — a
+      // post-kill exit on the timeout path still fires onExit.
+      exited.catch(() => {});
+      launched.child.once("exit", onExit);
       try {
-        await waitForRunnerReady(client, { timeoutMs: RUNNER_READY_TIMEOUT_MS });
+        await Promise.race([
+          waitForRunnerReady(client, { timeoutMs: RUNNER_READY_TIMEOUT_MS }),
+          exited,
+        ]);
       } catch (error) {
         killRunnerProcess(launched.child);
         const logText = await fs.readFile(launched.logPath, "utf8").catch(() => "");
@@ -239,6 +256,10 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
           ),
           { runnerExited: true, runnerLogText: logText }
         );
+      } finally {
+        // Once ready, the factory's own "exit" listener becomes the sole owner
+        // of exits, so "terminated" fires exactly once on a post-ready death.
+        launched.child.removeListener("exit", onExit);
       }
       // derivedDataPath rides along for the crash post-mortem: xcodebuild
       // records a crashed session's failure text in the newest .xcresult

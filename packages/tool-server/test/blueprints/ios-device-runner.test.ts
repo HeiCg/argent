@@ -222,6 +222,61 @@ describe("ios-device-runner blueprint — mid-command runner death", () => {
   });
 });
 
+describe("ios-device-runner blueprint — launch child exits during the readiness wait", () => {
+  /** Readiness never settles on its own; the child dies as soon as it is polled. */
+  function hangReadinessThenExit(child: EventEmitter, code: number) {
+    vi.mocked(waitForRunnerReady).mockImplementationOnce(() => {
+      queueMicrotask(() => child.emit("exit", code));
+      return new Promise(() => {});
+    });
+  }
+
+  it("short-circuits the hanging wait into the NOT_READY failure, no fake-time advancement", async () => {
+    const { child } = stubLaunch();
+    hangReadinessThenExit(child, 65);
+
+    const thrown = (await rejectionOf(callFactory())) as Error & { runnerExited?: unknown };
+    expect(thrown.message).toContain("xcodebuild exited (code 65) before the runner became ready");
+    expect(getFailureSignal(thrown)?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
+    expect(thrown.runnerExited).toBe(true);
+    expect(recoverable(thrown)).toBe(true);
+    expect(killRunnerProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("proceeds straight to the profile-missing rebuild retry instead of waiting out the poll", async () => {
+    const { child } = stubLaunch();
+    hangReadinessThenExit(child, 65);
+    vi.mocked(isProfileMissingDeviceFailure).mockReturnValueOnce(true);
+
+    await callFactory();
+    expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, {});
+    expect(launchRunner).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands post-ready exits solely to the permanent listener: 'terminated' once, no unhandled rejection", async () => {
+    const { child } = stubLaunch();
+    const instance = await callFactory();
+    // The readiness-race "exit" listener must be gone once startRunner resolves.
+    expect(child.listenerCount("exit")).toBe(1);
+
+    const terminated: unknown[] = [];
+    instance.events.on("terminated", (error) => terminated.push(error));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      child.emit("exit", 7);
+      // An unhandled rejection is reported after the rejecting turn; wait one out.
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(terminated).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+  });
+});
+
 describe("ios-device-runner blueprint — recoverable classification", () => {
   it("keys the runner-exited case off the typed marker, not message text", () => {
     expect(recoverable(Object.assign(new Error("anything at all"), { runnerExited: true }))).toBe(
