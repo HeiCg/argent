@@ -548,14 +548,18 @@ function framesOverlap(a: DescribeFrame, b: DescribeFrame): boolean {
  * DOM walker reports the ARIA `role` attribute when one is set (so the
  * canonical editable roles `textbox`/`searchbox`, plus the text-entry
  * `combobox`/`spinbutton` patterns, which take DOM focus on the widget itself)
- * or the raw tag name (`input`, `textarea`) otherwise. Two editable shapes are
- * invisible to this rule today and fall in as non-editable containers: a bare
- * `contenteditable` div (the walker does not surface that flag) and a shadow
- * host whose focused input lives inside it — noted here because they are the
- * shapes this rule cannot see.
+ * or the raw tag name (`input`, `textarea`) otherwise. A bare contenteditable
+ * div carries none of those — its role is its raw tag — so the walker surfaces
+ * it as `editable: true` instead. The one shape this rule still cannot see is
+ * a closed shadow host whose focused input lives inside it, noted here
+ * because it is the editable form left unmarked.
  */
 const EDITABLE_ROLES =
   /^(textfield|axtextfield|input|textarea|textbox|searchbox|combobox|spinbutton)$/i;
+
+function isEditable(node: DescribeNode): boolean {
+  return node.editable === true || EDITABLE_ROLES.test(node.role);
+}
 
 /**
  * Is `focused` evidence that `target` has keyboard focus?
@@ -588,7 +592,7 @@ function framesNest(focused: DescribeNode, target: DescribeFrame): boolean {
   const f = focused.frame;
   if (frameWithin(f, target)) return true;
   if (!frameWithin(target, f)) return false;
-  return !EDITABLE_ROLES.test(focused.role);
+  return !isEditable(focused);
 }
 
 /**

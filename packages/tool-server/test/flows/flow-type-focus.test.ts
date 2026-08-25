@@ -649,4 +649,53 @@ describe("type directive focus wait", () => {
     expect(result.steps.at(-1)!.reason).toContain("did not take keyboard focus");
     expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
   }, 30_000);
+
+  // A bare contenteditable div reports its raw tag as the role ("div"), so no
+  // role test can recognize it — the walker surfaces it as editable: true
+  // instead. Missing that flag let the editor covering an element behind it
+  // vouch for it and swallow the keys while the step reported a pass.
+  it("treats a focused contenteditable div ancestor as the input it is (chromium)", async () => {
+    currentFetch = () => ({
+      source: "cdp-dom",
+      tree: {
+        role: "Screen",
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        children: [
+          {
+            role: "div",
+            identifier: "rich-editor",
+            editable: true,
+            focused: true,
+            frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.6 },
+            children: [],
+          },
+          {
+            role: "generic",
+            identifier: "label-behind",
+            focused: false,
+            frame: { x: 0.4, y: 0.3, width: 0.2, height: 0.05 },
+            children: [],
+          },
+        ],
+      },
+    });
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: "" }));
+
+    await writeFlow("aria-ce", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "label-behind" }, text: "WRONG", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "aria-ce", project_root: tmpDir, device: IOS_DEVICE }
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.at(-1)!.reason).toContain("did not take keyboard focus");
+    expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+  }, 30_000);
 });
