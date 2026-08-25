@@ -55,6 +55,12 @@ export interface RunnerResponseEnvelope {
    * already-foreground target's reply never carries the field.
    */
   reactivated?: boolean;
+  /**
+   * Advisory on an ok reply (PROTOCOL.md, Envelope): the mutation succeeded,
+   * but suppressed accessibility noise grew during it, so the effect deserves
+   * a re-observe. Encoded only when set; clean replies never carry the field.
+   */
+  warning?: string;
 }
 
 /**
@@ -239,7 +245,7 @@ function unwrapEnvelope(response: unknown): unknown {
       code: "INVALID_RUNNER_RESPONSE",
     });
   }
-  if (envelope.ok) return withReactivationFlag(envelope);
+  if (envelope.ok) return withEnvelopeMarkers(envelope);
   throw new RunnerCommandError(envelope.error?.message ?? "Runner command failed", {
     code: envelope.error?.code,
     hint: envelope.error?.hint,
@@ -247,18 +253,27 @@ function unwrapEnvelope(response: unknown): unknown {
 }
 
 /**
- * `reactivated: true` on a success envelope means the runner re-fronted a
- * backgrounded target before executing — the foreground screen changed as a
- * side effect of the command. Success replies have no hint channel (hints are
- * folded into error messages only), so the flag is copied onto the returned
- * data object for the tool layer to surface. An envelope without the marker
- * returns its data untouched — same reference, byte-identical behavior.
+ * A success envelope's out-of-band markers ride the returned data object:
+ * `reactivated: true` means the runner re-fronted a backgrounded target
+ * before executing (the foreground screen changed as a side effect of the
+ * command), and `warning` carries the runner's advisory on an ok mutation
+ * (suppressed accessibility noise grew during it). Success replies have no
+ * hint channel (hints are folded into error messages only), so the markers
+ * are copied onto the data object for the tool layer to surface; one reply
+ * can carry both. An envelope without markers returns its data untouched:
+ * same reference, byte-identical behavior.
  */
-function withReactivationFlag(envelope: RunnerResponseEnvelope): unknown {
-  if (envelope.reactivated !== true) return envelope.data;
+function withEnvelopeMarkers(envelope: RunnerResponseEnvelope): unknown {
+  const reactivated = envelope.reactivated === true;
+  const warning = typeof envelope.warning === "string" ? envelope.warning : undefined;
+  if (!reactivated && warning === undefined) return envelope.data;
   const data = envelope.data;
   if (typeof data !== "object" || data === null || Array.isArray(data)) return data;
-  return { ...data, reactivated: true };
+  return {
+    ...data,
+    ...(reactivated ? { reactivated: true } : {}),
+    ...(warning !== undefined ? { warning } : {}),
+  };
 }
 
 function asEnvelope(response: unknown): RunnerResponseEnvelope | null {

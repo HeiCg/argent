@@ -158,9 +158,15 @@ struct Envelope: Encodable {
   /// synthesized encoder, so replies from an already-foreground target stay
   /// byte-identical on the wire.
   let reactivated: Bool?
+  /// Advisory attached to an otherwise-ok reply: set when a mutating command
+  /// succeeded while the suppressed-issue counter grew (`performOnMain`), so
+  /// muted accessibility noise may be masking a gesture that missed. nil is
+  /// omitted by the synthesized encoder, so clean replies stay byte-identical
+  /// on the wire.
+  let warning: String?
 
   static func success<T: Encodable>(_ payload: T) -> Envelope {
-    Envelope(ok: true, data: AnyEncodable(payload), error: nil, reactivated: nil)
+    Envelope(ok: true, data: AnyEncodable(payload), error: nil, reactivated: nil, warning: nil)
   }
 
   static func failure(_ code: RunnerErrorCode, _ message: String, hint: String? = nil) -> Envelope {
@@ -168,7 +174,8 @@ struct Envelope: Encodable {
       ok: false,
       data: nil,
       error: ErrorPayload(code: code.rawValue, message: message, hint: hint),
-      reactivated: nil
+      reactivated: nil,
+      warning: nil
     )
   }
 
@@ -176,7 +183,14 @@ struct Envelope: Encodable {
   /// target app was backgrounded and had to be re-fronted, so the foreground
   /// screen changed as a side effect of the command.
   func withReactivated() -> Envelope {
-    Envelope(ok: ok, data: data, error: error, reactivated: true)
+    Envelope(ok: ok, data: data, error: error, reactivated: true, warning: warning)
+  }
+
+  /// A copy of this reply carrying an advisory `warning`. Composes with
+  /// `withReactivated()`: each helper preserves the other's field, so a
+  /// reply can carry both markers.
+  func withWarning(_ warning: String) -> Envelope {
+    Envelope(ok: ok, data: data, error: error, reactivated: reactivated, warning: warning)
   }
 }
 

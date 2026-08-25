@@ -26,6 +26,19 @@ a side effect of the command. The field is encoded only when true, so a
 command against an already-foreground target stays byte-identical on the
 wire.
 
+A success envelope for a mutating command may additionally carry a top-level
+`warning: "…"`: the command succeeded, but the suppressed-issue counter (the
+suppression-wording contract under `status`) grew while it executed, so muted
+accessibility noise may be hiding a gesture that missed; the warning tells
+the agent to re-observe the screen and confirm the effect. Suppressed noise
+never flips `ok` (those shapes accompany healthy mutations; that is why the
+suppression exists). Read-only commands never carry the field, it composes
+with `reactivated` (one reply can carry both), and it is encoded only when
+set, so clean replies stay byte-identical on the wire. The field is
+provisional: if the hardware calibration pass shows it firing on most
+healthy heavy-screen gestures, it will be dropped and the suppressed-delta
+case accepted by design.
+
 ## Request fields
 
 | Field                 | Used by             | Meaning                                                                 |
@@ -75,7 +88,10 @@ recordedFailures}`. `state` is `idle | busy | wedged`. `suppressedIssues`
 evaluating UI query`. If an Xcode release rewords those strings,
   suppression misses silently: `suppressedIssues` stops moving while
   `recordedFailures` climbs on healthy mutations. Watch the pair for that
-  drift. With `statusCommandId`: the journaled fate of that command:
+  drift. The same counter, bracketed around each command, is what stamps the
+  envelope-level `warning` (see Envelope) when it grows across an
+  otherwise-ok mutation. With `statusCommandId`: the journaled fate of that
+  command:
   `{commandId, state: notAccepted|accepted|started|completed|failed,
 command?, responseOk?, responseJson?, errorCode?, errorMessage?,
 errorHint?}`. `responseJson` is the completed command's full envelope,

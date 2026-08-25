@@ -13,12 +13,18 @@ extension ArgentRunnerSession {
   /// would otherwise kill the process), read-only commands get one retry
   /// after a beat, and a mutating command whose execution recorded a real
   /// XCTest failure is reported as failed — the tap that silently missed
-  /// must not read as success.
+  /// must not read as success. A mutating command that stays ok while the
+  /// suppressed-issue counter grew keeps its ok verdict but gains an advisory
+  /// `warning`: the suppressed shapes accompany healthy mutations too often
+  /// to promote back to failure (see the suppression comment in
+  /// ArgentRunnerSession.swift), yet the delta is exactly the symptom a
+  /// silently missed gesture would leave behind.
   func performOnMain(_ request: CommandRequest) -> Envelope {
     var attempts = 0
     while true {
       attempts += 1
       let failuresBefore = recordedFailureCount()
+      let suppressedBefore = currentSuppressedIssueCount()
       var envelope: Envelope?
       let exceptionDescription = ArgentExceptionGuard.runCatching {
         envelope = self.performCommand(request)
@@ -44,6 +50,16 @@ extension ArgentRunnerSession {
           "XCTest recorded a failure while executing \(request.command.rawValue); "
             + "the action may not have been performed.",
           hint: "Re-observe the screen to confirm the effect before retrying."
+        )
+      }
+      // Checked after the failure promotion above, so a reply that just
+      // flipped to failure never also warns; read-only commands never warn
+      // at all (re-observing is what they already do).
+      if !request.command.isReadOnly, result.ok,
+        currentSuppressedIssueCount() > suppressedBefore {
+        result = result.withWarning(
+          "accessibility noise was suppressed during this gesture; "
+            + "re-observe the screen to confirm the effect."
         )
       }
       return result

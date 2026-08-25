@@ -210,7 +210,10 @@ final class ArgentRunnerSession: XCTestCase {
     )
   }
 
-  private func currentSuppressedIssueCount() -> Int {
+  /// Read by the health payload above and by `performOnMain`, which brackets
+  /// each command with before/after reads so a suppression delta on an ok
+  /// mutation can surface as an envelope warning.
+  func currentSuppressedIssueCount() -> Int {
     suppressedIssuesLock.lock()
     defer { suppressedIssuesLock.unlock() }
     return suppressedIssueCount

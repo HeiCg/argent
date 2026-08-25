@@ -191,6 +191,60 @@ describe("createRunnerClient", () => {
     });
   });
 
+  describe("warning pass-through", () => {
+    const SUPPRESSED_NOISE_WARNING =
+      "accessibility noise was suppressed during this gesture; " +
+      "re-observe the screen to confirm the effect.";
+
+    it("copies a success envelope's warning onto the returned data object", async () => {
+      const { send } = createFakeSend([
+        {
+          ok: true,
+          data: { message: "tapped" },
+          warning: SUPPRESSED_NOISE_WARNING,
+        } satisfies RunnerResponseEnvelope,
+      ]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const result = await client.run({ command: "tap", x: 1, y: 2 });
+
+      // Success replies have no hint channel, so the runner's advisory rides
+      // the data object for the tool layer to surface.
+      expect(result).toEqual({ message: "tapped", warning: SUPPRESSED_NOISE_WARNING });
+    });
+
+    it("composes with reactivated: one reply carries both markers", async () => {
+      const { send } = createFakeSend([
+        {
+          ok: true,
+          data: { message: "tapped" },
+          reactivated: true,
+          warning: SUPPRESSED_NOISE_WARNING,
+        } satisfies RunnerResponseEnvelope,
+      ]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const result = await client.run({ command: "tap", x: 1, y: 2 });
+
+      expect(result).toEqual({
+        message: "tapped",
+        reactivated: true,
+        warning: SUPPRESSED_NOISE_WARNING,
+      });
+    });
+
+    it("returns the data untouched (same reference) when the envelope has no warning", async () => {
+      const data = { message: "tapped" };
+      const { send } = createFakeSend([{ ok: true, data } satisfies RunnerResponseEnvelope]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const result = await client.run({ command: "tap", x: 1, y: 2 });
+
+      // Same pin as the reactivated case: no marker, no copy, no added keys.
+      expect(result).toBe(data);
+    });
+  });
+
   describe("status recovery after a lost mutating-command response", () => {
     it("returns the retained response when the runner reports the command completed", async () => {
       const { send, sent } = createFakeSend([
