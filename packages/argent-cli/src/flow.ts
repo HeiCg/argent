@@ -118,9 +118,10 @@ skipped, so one command runs a mixed suite; running that same flow on its own
 is an error instead, since you asked for it by name. Skipping needs the check
 to have ANSWERED: a requirement that could not be verified (the device's
 runtime kind was unreadable) fails the flow instead, so a broken probe cannot
-pose as a filter. A directory run in which no step executed exits 2 — nothing
-ran, which is not a pass. A single flow that executes nothing still exits 0 —
-its own report lists every step it skipped and why.
+pose as a filter. A directory run in which nothing failed and no step executed
+exits 2 — nothing ran, which is not a pass; one failed flow exits 1 instead,
+since a red result is not an empty one. A single flow that executes nothing
+still exits 0 — its own report lists every step it skipped and why.
 
 Runs require the auto-started local tool server;
 ARGENT_TOOLS_URL and \`argent link\` routing are not supported.
@@ -317,11 +318,13 @@ export function renderFailedSteps(report: FlowReport): string[] {
 
 /**
  * Flow-level verdict of a directory run, mirroring renderSummary's shape. A
- * batch that found flows but ran none of them is neither PASS nor FAIL:
- * nothing proved anything, so it gets its own word rather than a "PASS" that
- * contradicts the non-zero exit. The caller decides `ranNothing` from executed
- * steps, not the flow counts here, because a flow whose steps were all
- * `when:`-skipped still classifies as a flow-level pass.
+ * batch that found flows, failed none of them, and ran none of them either is
+ * neither PASS nor FAIL: nothing proved anything, so it gets its own word
+ * rather than a "PASS" that contradicts the non-zero exit. A failure outranks
+ * that — a red result is not an empty one — which is why the FAIL arm is tested
+ * first. The caller decides `ranNothing` from executed steps, not the flow
+ * counts here, because a flow whose steps were all `when:`-skipped still
+ * classifies as a flow-level pass.
  */
 export function renderBatchSummary(
   counts: {

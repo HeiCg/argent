@@ -1831,6 +1831,29 @@ describe("argent flow run <dir>", () => {
       errorKind: "validation",
     });
 
+  it("exits 1, not 2, when a rejected file sits beside requires skips and nothing ran", async () => {
+    // The other half of what `argent flow --help` promises: the nothing-ran
+    // guard is conditioned on `counts.failed === 0`, so a red result outranks
+    // an empty one even when not one step executed. Replace this rejection with
+    // a skip and it is the exit-2 case above; keep it and the exit is the
+    // ordinary 1, with no nothing-ran diagnostic to mislead a CI triage.
+    toolsClientMock.callTool
+      .mockRejectedValueOnce(
+        new ToolInvocationError("flow file is not valid YAML", {
+          errorCode: "FLOW_FILE_INVALID",
+          errorKind: "validation",
+        })
+      )
+      .mockRejectedValueOnce(requiresUnmet());
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:1");
+
+    const out = logs.join("\n");
+    expect(out).toContain("FAIL — 2 flows: 0 passed, 1 failed, 1 skipped");
+    expect(out).not.toContain("NONE RAN");
+    expect(errs.join("\n")).not.toContain("No step executed");
+  });
+
   it("exits 2 when the only flow-level pass executed zero steps beside a requires skip", async () => {
     // A vacuous pass must not defeat the nothing-ran guard: not one step
     // executed anywhere in this suite, so it is NONE RAN, not green.
