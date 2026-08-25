@@ -440,7 +440,17 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     // text receiver. The flow type directive's focus rule refuses to let a
     // focused EDITABLE element vouch for a covered target behind it (the keys
     // would land in the editor), so this flag must reach that rule intact.
-    if (getIsContentEditable.call(el)) node.editable = true;
+    // isContentEditable lives on HTMLElement.prototype without
+    // [LegacyLenientThis], so calling it with an SVGElement/MathMLElement
+    // receiver throws "Illegal invocation" and aborts the whole walk — and
+    // inline SVG is ubiquitous. SVG elements are never contenteditable, so
+    // gating on the receiver's type is semantically exact.
+    if (
+      (typeof HTMLElement === "undefined" || el instanceof HTMLElement) &&
+      getIsContentEditable.call(el)
+    ) {
+      node.editable = true;
+    }
     // Input focus: el is its document's activeElement. Deliberately emitted to
     // EVERY describe consumer (the agent-facing tool as much as the flow type
     // directive's focus wait) — where the caret is is useful targeting info.
