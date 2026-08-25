@@ -466,4 +466,35 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
     expect(evaluateCondition("visible", undefined, below)).toBe(false);
     expect(selectorToFrame(tree, { text: "Item 8" })).toBeUndefined();
   });
+
+  // A `role` an agent reads out of `describe` has to match when a flow replays
+  // it, so the flow tree reads a web text run the same contextual way the
+  // describe trim does. Before this agreed, a step selecting
+  // `text: Username, role: StaticText` matched nothing and burned its timeout.
+  it("reads a web text run as StaticText, exactly as describe does", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" bounds="[0,200][1080,1200]">
+      <node index="0" class="android.view.View" text="Username" package="com.acme.app" bounds="[20,260][220,320]" />
+      <node index="1" class="android.view.View" content-desc="Alpha" clickable="true" package="com.acme.app" bounds="[20,340][240,400]" />
+    </node>
+    <node index="1" class="android.view.View" text="Native label" package="com.acme.app" bounds="[20,1400][400,1460]" />
+  </node>
+</hierarchy>`;
+    const flow = adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H);
+    const describeTree = parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H);
+    const roleOf = (tree: DescribeNode, label: string): string | undefined =>
+      findAll(tree, { text: label })[0]?.role;
+
+    expect(roleOf(flow, "Username")).toBe("StaticText");
+    expect(roleOf(describeTree, "Username")).toBe("StaticText");
+    // A tappable web node is a control, not a text run — both trees leave it.
+    expect(roleOf(flow, "Alpha")).toBe("View");
+    expect(roleOf(describeTree, "Alpha")).toBe("View");
+    // The same class outside the WebView is a Compose semantics node; the
+    // remap must not reach it.
+    expect(roleOf(flow, "Native label")).toBe("View");
+    expect(roleOf(describeTree, "Native label")).toBe("View");
+  });
 });

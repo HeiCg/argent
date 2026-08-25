@@ -200,6 +200,14 @@ export function isUiAutomatorScrollable(attrs: Record<string, string>): boolean 
 
 const WEBVIEW_CLASSES = new Set(["android.webkit.WebView", "android.webkit.WebViewChromium"]);
 
+/**
+ * Whether a raw class hosts web content. Shared with the flow tree adapter
+ * (`flow-android-tree`) so both trees agree on where the web DOM starts.
+ */
+export function isUiAutomatorWebView(className: string): boolean {
+  return WEBVIEW_CLASSES.has(className);
+}
+
 interface PixelRect {
   x: number;
   y: number;
@@ -256,6 +264,42 @@ function isInteractive(attrs: Record<string, string>): boolean {
   // Focusable without a label is just a focus trap on a layout wrapper.
   if (attrIsTrue(attrs, "focusable") && labelOf(attrs) !== "") return true;
   return false;
+}
+
+/**
+ * Role for a node read in the context of the tree around it, rather than from
+ * its class name alone. Chromium maps a generic web text run onto a bare
+ * `android.view.View`, which `deriveUiAutomatorRole` reports as "View": it
+ * reads wrong in the tree, and `View` is a generic role no selector can use.
+ *
+ * The remap is deliberately contextual rather than a rule inside
+ * `deriveUiAutomatorRole`: on a native screen a bare `android.view.View` is a
+ * Compose semantics node with no widget mapping, and reclassifying those would
+ * shift matching on every native screen. Gating on `inWebView` touches web
+ * content only.
+ *
+ * Both Android trees call this — the agent-facing `describe` trim and the flow
+ * selector tree (`flow-android-tree`) — so a `role` an agent reads out of
+ * `describe` still matches when a flow replays it.
+ */
+export function deriveUiAutomatorRoleInContext(
+  className: string,
+  attrs: Record<string, string>,
+  ctx: { inWebView: boolean; label: string; hasChildren: boolean }
+): string {
+  if (
+    ctx.inWebView &&
+    className === "android.view.View" &&
+    ctx.label !== "" &&
+    !ctx.hasChildren &&
+    // A tappable web node is a control (a link, a custom button), not a text
+    // run. Gesture flags are the only signal that separates the two: inside a
+    // WebView `focusable` says nothing, so `isInteractive` cannot be used here.
+    !isTapTarget(attrs)
+  ) {
+    return "StaticText";
+  }
+  return deriveUiAutomatorRole(className);
 }
 
 export function labelOf(attrs: Record<string, string>): string {
@@ -558,23 +602,11 @@ function computeNodeOutput(
     );
   }
 
-  // Chromium maps a generic web text container onto a bare `android.view.View`,
-  // which `deriveUiAutomatorRole` reports as "View" — it reads wrong in the
-  // tree and can't be matched by `await-ui-element` with `role: StaticText`.
-  // Remap contextually, HERE and not in `deriveUiAutomatorRole`: that helper is
-  // shared with the flow selector tree (`flow-android-tree`), where a global
-  // change would silently reclassify every bounds-less Compose
-  // `android.view.View` on native screens and shift flow `role:` matching.
-  let role = deriveUiAutomatorRole(cls);
-  if (
-    inWebView &&
-    cls === "android.view.View" &&
-    label &&
-    keptChildren.length === 0 &&
-    !isTapTarget(attrs)
-  ) {
-    role = "StaticText";
-  }
+  const role = deriveUiAutomatorRoleInContext(cls, attrs, {
+    inWebView,
+    label,
+    hasChildren: keptChildren.length > 0,
+  });
 
   const node = makeUiNode(attrs, role, bounds, label, keptChildren);
   if (hiddenInScroll > 0) node.scrollHidden = hiddenInScroll;
