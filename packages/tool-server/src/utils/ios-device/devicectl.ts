@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { FAILURE_CODES, subprocessFailureMetadata, withFailureSignal } from "@argent/registry";
+import { appendHintToMessage } from "./usbmux-protocol";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,17 +49,6 @@ export interface IosPhysicalDevice {
    */
   transportType: string | null;
   tunnelState: string | null;
-}
-
-/**
- * Fold the recovery hint into the message at construction time: agent-facing
- * error rendering surfaces only `.message` (walked down the .cause chain), so
- * guidance left on the `.hint` property alone would be write-only. Skips the
- * append when the message already carries the hint text.
- */
-function appendHintToMessage(message: string, hint: string | undefined): string {
-  if (!hint || message.includes(hint)) return message;
-  return `${message}${/[.!?]$/.test(message) ? "" : "."} Hint: ${hint}`;
 }
 
 class IosDeviceControlError extends Error {

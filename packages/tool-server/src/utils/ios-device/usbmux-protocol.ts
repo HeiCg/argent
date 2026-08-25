@@ -38,6 +38,19 @@ export type IosDeviceTransportErrorKind =
   | "http";
 
 /**
+ * Fold a recovery hint into an error message at construction time: agent-facing
+ * error rendering surfaces only `.message` (walked down the .cause chain), so
+ * guidance left on a `.hint` property alone would be write-only. Skips the
+ * append when the message already carries the hint text, which makes the fold
+ * idempotent for call sites that pre-folded.
+ * Needs zero imports, so hosting it here keeps this module dependency-free.
+ */
+export function appendHintToMessage(message: string, hint: string | undefined): string {
+  if (!hint || message.includes(hint)) return message;
+  return `${message}${/[.!?]$/.test(message) ? "" : "."} Hint: ${hint}`;
+}
+
+/**
  * Typed transport failure shared by the whole ios-device stack. A plain Error
  * subclass on purpose: this module is imported by dependency-free transport
  * code, so it cannot reach for the richer error types in `@argent/registry`.
@@ -49,7 +62,7 @@ export type IosDeviceTransportErrorKind =
  * diagnosis excludes "device-unattached" (the connect-the-cable story wins
  * even when the runner also died). `retryable` is the retry-policy verdict,
  * consumed by runner-route.ts's read-only retry loop. `hint` carries the
- * human recovery step.
+ * human recovery step, and the constructor folds it into the message.
  */
 export class IosDeviceTransportError extends Error {
   readonly kind: IosDeviceTransportErrorKind;
@@ -61,7 +74,10 @@ export class IosDeviceTransportError extends Error {
     message: string,
     options: { retryable: boolean; hint?: string; cause?: unknown } = { retryable: false }
   ) {
-    super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
+    super(
+      appendHintToMessage(message, options.hint),
+      options.cause !== undefined ? { cause: options.cause } : undefined
+    );
     this.name = "IosDeviceTransportError";
     this.kind = kind;
     this.retryable = options.retryable;

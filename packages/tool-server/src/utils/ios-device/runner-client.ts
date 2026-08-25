@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { FAILURE_CODES, withFailureSignal, type FailureSignal } from "@argent/registry";
 import { sleep, type SendRunnerCommand } from "./runner-route";
 import {
+  appendHintToMessage,
   IosDeviceTransportError,
   isIosDeviceTransportError,
   type IosDeviceTransportErrorKind,
@@ -65,17 +66,6 @@ export interface RunnerResponseEnvelope {
    * a re-observe. Encoded only when set; clean replies never carry the field.
    */
   warning?: string;
-}
-
-/**
- * Fold the runner's recovery hint into the message at construction time:
- * agent-facing error rendering surfaces only `.message` (walked down the
- * .cause chain), so guidance left on the `.hint` property alone would be
- * write-only. Skips the append when the message already carries the hint text.
- */
-function appendHintToMessage(message: string, hint: string | undefined): string {
-  if (!hint || message.includes(hint)) return message;
-  return `${message}${/[.!?]$/.test(message) ? "" : "."} Hint: ${hint}`;
 }
 
 /**

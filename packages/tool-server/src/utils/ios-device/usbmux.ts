@@ -39,23 +39,13 @@ const USBMUX_RESULT_OK = 0;
 const USBMUX_RESULT_BAD_DEVICE = 2;
 const USBMUX_RESULT_CONNECTION_REFUSED = 3;
 
+// The IosDeviceTransportError constructor folds these hints into `.message`.
 const DEVICE_UNATTACHED_HINT =
   "Connect the device by cable, trust this Mac, keep it unlocked, and retry.";
 const RUNNER_NOT_LISTENING_HINT =
   "The device is reachable but the runner has not bound its port yet; wait a few seconds and retry.";
 const USBMUXD_UNREACHABLE_HINT =
   "Physical iOS devices require macOS; if this is a Mac, check that no sandbox blocks /var/run.";
-
-/**
- * Fold the recovery hint into the message at construction time: agent-facing
- * error rendering surfaces only `.message` (walked down the .cause chain), so
- * guidance left on the `.hint` property alone would be write-only. Skips the
- * append when the message already carries the hint text.
- */
-function appendHintToMessage(message: string, hint: string | undefined): string {
-  if (!hint || message.includes(hint)) return message;
-  return `${message}${/[.!?]$/.test(message) ? "" : "."} Hint: ${hint}`;
-}
 
 export interface OpenUsbmuxRunnerSocketOptions {
   /** Dashed hardware UDID (e.g. 00008110-000978540290401E). */
@@ -99,29 +89,20 @@ export function buildUsbmuxConnectError(
   if (result === USBMUX_RESULT_BAD_DEVICE) {
     return new IosDeviceTransportError(
       "device-unattached",
-      appendHintToMessage(
-        `iOS device ${context.udid} is no longer available through usbmux`,
-        DEVICE_UNATTACHED_HINT
-      ),
+      `iOS device ${context.udid} is no longer available through usbmux`,
       { retryable: false, hint: DEVICE_UNATTACHED_HINT }
     );
   }
   if (result === USBMUX_RESULT_CONNECTION_REFUSED) {
     return new IosDeviceTransportError(
       "runner-not-listening",
-      appendHintToMessage(
-        `XCUITest runner is not listening on device port ${context.port}`,
-        RUNNER_NOT_LISTENING_HINT
-      ),
+      `XCUITest runner is not listening on device port ${context.port}`,
       { retryable: true, hint: RUNNER_NOT_LISTENING_HINT }
     );
   }
   return new IosDeviceTransportError(
     "protocol",
-    appendHintToMessage(
-      `Failed to connect to XCUITest runner through usbmux (result ${result ?? "missing"})`,
-      DEVICE_UNATTACHED_HINT
-    ),
+    `Failed to connect to XCUITest runner through usbmux (result ${result ?? "missing"})`,
     { retryable: false, hint: DEVICE_UNATTACHED_HINT }
   );
 }
@@ -139,10 +120,7 @@ async function resolveUsbmuxDeviceId(
     if (deviceId !== undefined) return deviceId;
     throw new IosDeviceTransportError(
       "device-unattached",
-      appendHintToMessage(
-        `iOS device ${udid} is not available through usbmux`,
-        DEVICE_UNATTACHED_HINT
-      ),
+      `iOS device ${udid} is not available through usbmux`,
       { retryable: false, hint: DEVICE_UNATTACHED_HINT }
     );
   } finally {
@@ -194,15 +172,11 @@ async function connectToUsbmuxd(socketPath: string, deadline: Deadline): Promise
     const onConnect = () => finish();
     const onError = (error: Error) =>
       finish(
-        new IosDeviceTransportError(
-          "protocol",
-          appendHintToMessage(`Cannot reach usbmuxd at ${socketPath}`, USBMUXD_UNREACHABLE_HINT),
-          {
-            retryable: false,
-            hint: USBMUXD_UNREACHABLE_HINT,
-            cause: error,
-          }
-        )
+        new IosDeviceTransportError("protocol", `Cannot reach usbmuxd at ${socketPath}`, {
+          retryable: false,
+          hint: USBMUXD_UNREACHABLE_HINT,
+          cause: error,
+        })
       );
     const finish = (error?: Error) => {
       if (settled) return;
