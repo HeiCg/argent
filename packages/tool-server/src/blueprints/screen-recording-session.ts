@@ -123,6 +123,14 @@ export interface ScreenRecordingSessionApi {
 // calls `screen-recording-stop`, which has its own (longer) finalize contract.
 const DISPOSE_FINALIZE_GRACE_MS = 1_500;
 const DISPOSE_REAP_MS = 1_000;
+/**
+ * Same policy for a server-side recording: the salvage stop dispose issues to
+ * end a recording running inside simulator-server gets this much time, not the
+ * stop tool's own (much longer) finalize contract — the video here is being
+ * abandoned, so a wedged or slow-to-mux simulator-server must not stall a
+ * teardown sweep (or process shutdown) to obtain one.
+ */
+const DISPOSE_SERVER_STOP_MS = 1_500;
 
 function clearLiveState(state: ScreenRecordingSessionApi): void {
   state.recordingActive = false;
@@ -249,11 +257,17 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
 
         // A recording running inside simulator-server outlives this process, and
         // it accumulates frames until something stops it — so end it here even
-        // though the video is being abandoned.
+        // though the video is being abandoned. The wait is bounded: this stop's
+        // result feeds nothing, so it races a short grace rather than holding
+        // the teardown to the finalize contract `screen-recording-stop` owes a
+        // caller that actually wants the file.
         if (state.serverStop) {
           const stop = state.serverStop;
           state.serverStop = null;
-          await stop().catch(() => {});
+          await Promise.race([
+            stop().catch(() => {}),
+            new Promise<void>((resolve) => setTimeout(resolve, DISPOSE_SERVER_STOP_MS)),
+          ]);
         }
 
         // A start still mid-readiness at shutdown has a live child that

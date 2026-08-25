@@ -1028,6 +1028,52 @@ describe("touch visualizer", () => {
     expect(api.pointerDisable).toBeNull();
   });
 
+  it("does not report success for a host capture dispose stopped during pointer arming", async () => {
+    // Twin of the server-path guard: the pointer-enable await is the one
+    // suspension point after the session is stamped on BOTH paths, and a
+    // dispose landing inside it has already killed the encoder this start is
+    // about to report as live.
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const api = instance.api;
+    fakeStream();
+    const child = fakeChild();
+    child.exitOnStdinEnd();
+    let reached!: () => void;
+    const atPointer = new Promise<void>((resolve) => (reached = resolve));
+    let admit!: () => void;
+    const parked = new Promise<void>((resolve) => (admit = resolve));
+    const enable = vi.fn(async () => {
+      reached();
+      await parked;
+      return true;
+    });
+    const pointer = { enable, disable: vi.fn(async () => {}) } satisfies PointerControl;
+
+    const promise = startCapture(api, {
+      streamUrl: STREAM_URL,
+      timeLimitSeconds: 180,
+      watermark: false,
+      trimStatic: false,
+      pointer,
+    });
+    promise.catch(() => {});
+    await vi.advanceTimersByTimeAsync(READY_GRACE_MS);
+    await atPointer; // suspended in enable(), session already stamped
+
+    await instance.dispose();
+    admit!();
+
+    // Reporting `recording` here would hand back a capture dispose already
+    // SIGKILLed, plus a cap timer no later stop or dispose can clear.
+    await expect(promise).rejects.toMatchObject({
+      message: expect.stringContaining("shutting down"),
+    });
+    expect(api.recordingTimeout).toBeNull();
+    expect(api.recordingActive).toBe(false);
+  });
+
   it("warns at stop when the overlay could not be enabled", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();
@@ -1885,6 +1931,82 @@ describe("server-side recording", () => {
     expect(api.stopPending).toBe(false);
     expect(api.serverStop).toBeNull();
     await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("keeps the recording recoverable when the stop request itself fails", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    await startOnServer(api, server, {});
+    // The class of failure `RECORDING_STOP_TIMEOUT_MS` exists for: the server
+    // accepts the connection and never answers, or dies mid-mux. The request
+    // rejects, but the recording inside simulator-server is untouched.
+    server.stop.mockImplementationOnce(async () => {
+      throw new Error("the operation was aborted");
+    });
+
+    await expect(stopCapture(api)).rejects.toThrow("aborted");
+
+    // The failed request must not throw away the only handle that can still
+    // end the recording: dispose decides from `serverStop`, and a retried stop
+    // is admitted off `pendingRetrieval`.
+    expect(api.serverStop).toBe(server.stop);
+    expect(api.pendingRetrieval).toBe(true);
+    expect(api.outputFile).not.toBeNull();
+    expect(api.stopPending).toBe(false);
+    // The per-call reminder keeps pointing at the retrieval instead of going
+    // silent while simulator-server may still be recording.
+    expect(getActiveScreenRecordings()).toMatchObject([
+      { deviceId: IOS_UDID, status: "finalized" },
+    ]);
+
+    // Both recovery paths work: a retried stop hands the video over…
+    const stopped = await stopCapture(api);
+    expect(server.stop).toHaveBeenCalledTimes(2);
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("still ends the recording on dispose after its stop request failed", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const server = await fakeServer();
+    await startOnServer(instance.api, server, {});
+    server.stop.mockImplementationOnce(async () => {
+      throw new Error("connection reset");
+    });
+    await stopCapture(instance.api).catch(() => {});
+
+    await instance.dispose();
+
+    // The preserved handle is what lets the teardown end a recording the
+    // failed stop left running inside simulator-server.
+    expect(server.stop).toHaveBeenCalledTimes(2);
+    expect(instance.api.serverStop).toBeNull();
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("bounds dispose's salvage stop at the short grace, not the stop tool's budget", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const server = await fakeServer();
+    await startOnServer(instance.api, server, {});
+    // A simulator-server that accepts the connection and never answers: its
+    // mux is wedged. Dispose abandons the video, so it must not wait out the
+    // stop tool's whole finalize contract to obtain one it discards.
+    server.stop.mockImplementation(() => new Promise<never>(() => {}));
+
+    let disposed = false;
+    const teardown = instance.dispose().then(() => {
+      disposed = true;
+    });
+    teardown.catch(() => {});
+    // Far past the documented dispose grace (~2.5s for the ffmpeg child), far
+    // short of the stop tool's own budget the salvage once waited out.
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(disposed).toBe(true);
   });
 });
 

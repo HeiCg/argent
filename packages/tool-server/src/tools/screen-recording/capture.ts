@@ -437,6 +437,12 @@ async function startCaptureLocked(
     // failure only costs the touch markers, surfaced as a warning at stop.
     api.pointerDisable = params.pointer.disable;
     api.pointerFailed = !(await params.pointer.enable());
+
+    // Enabling is the one suspension point left after the session is stamped,
+    // exactly as on the server path: dispose runs its teardown and is done, and
+    // a start resuming here would report as live a capture dispose has already
+    // killed, and arm a cap timer no later stop or dispose can clear.
+    if (api.disposed) assertNotDisposed(api, "screen_recording_start");
   }
 
   api.recordingTimeout = setTimeout(() => {

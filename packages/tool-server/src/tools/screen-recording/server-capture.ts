@@ -175,12 +175,23 @@ export async function stopServerCapture(
   // simulator-server whose session directory the copy below reads from.
   api.serverStop = null;
 
+  // Set when the stop REQUEST itself failed — timeout, network drop, non-JSON
+  // reply. Unlike every other failure below, that one leaves the fate of the
+  // recording inside simulator-server unresolved: it may well still be live.
+  let finalizeRequestFailed = false;
+
   try {
     if (api.recordingActive) {
       api.recordingActive = false;
       api.wallClockEndMs = Date.now();
     }
-    const result = await stop();
+    let result: ServerRecordingResult;
+    try {
+      result = await stop();
+    } catch (err) {
+      finalizeRequestFailed = true;
+      throw err;
+    }
     // Copy rather than reference: the video sits in simulator-server's temp
     // session directory, which disappears with that server — and the artifact is
     // materialized by the client afterwards, possibly downloaded over `argent
@@ -260,21 +271,43 @@ export async function stopServerCapture(
     if (empty) await fs.rm(outputFile, { force: true }).catch(() => {});
     throw err;
   } finally {
-    // Always return the session to a startable state: a failed hand-off must not
-    // wedge the next start behind "already active". simulator-server dropped its
-    // recording when `stop` returned, so there is nothing a retry could recover.
-    await disablePointer(api);
-    api.recordingActive = false;
-    api.stopPending = false;
-    api.pendingRetrieval = false;
-    api.serverStop = null;
-    api.outputFile = null;
-    api.pointerFailed = false;
-    api.wallClockStartMs = null;
-    api.wallClockEndMs = null;
-    api.timeLimitSeconds = null;
-    api.recordingTimedOut = false;
-    api.recordingExitedUnexpectedly = false;
-    clearActiveScreenRecording(api.deviceId);
+    if (finalizeRequestFailed) {
+      // The request failed, not the recording: simulator-server may still be
+      // recording (the timeout this path exists for accepts the connection and
+      // never answers). Dropping the handles here — the old behaviour — would
+      // orphan it for good: dispose skips a session without `serverStop`, a
+      // retried stop is refused with "No active screen recording", and every
+      // later start is rejected by the server's own "already running" guard.
+      // So keep exactly what recovery needs and flip the reminder to "ended,
+      // still to retrieve", pointing the caller at the retry.
+      api.stopPending = false;
+      api.pendingRetrieval = true;
+      api.serverStop = stop;
+      markScreenRecordingFinalized(
+        api.deviceId,
+        "its stop request failed before simulator-server confirmed the hand-over"
+      );
+      // The touch visualizer stays armed too: it belongs to the recording, and
+      // the recording is not known to be over. Whatever ends it next — the
+      // retried stop or dispose — restores the overlay in its place.
+    } else {
+      // Always return the session to a startable state: a failed hand-off must
+      // not wedge the next start behind "already active". simulator-server
+      // dropped its recording when `stop` returned, so there is nothing a
+      // retry could recover.
+      await disablePointer(api);
+      api.recordingActive = false;
+      api.stopPending = false;
+      api.pendingRetrieval = false;
+      api.serverStop = null;
+      api.outputFile = null;
+      api.pointerFailed = false;
+      api.wallClockStartMs = null;
+      api.wallClockEndMs = null;
+      api.timeLimitSeconds = null;
+      api.recordingTimedOut = false;
+      api.recordingExitedUnexpectedly = false;
+      clearActiveScreenRecording(api.deviceId);
+    }
   }
 }
