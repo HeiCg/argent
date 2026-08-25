@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   computeRunnerCacheKey,
+  launchRunner,
   MAX_RUNNER_LOG_FILES,
   planRunnerStorageSweep,
   prepareXctestrunWithPort,
@@ -377,6 +378,61 @@ describe("sweepRunnerStorage", () => {
         logDir: path.join(tmpRoot, "sweep-missing", "logs"),
       })
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * Run launchRunner with PATH replaced by `pathDir` (so "xcodebuild" resolves
+ * to a stub, or to nothing) and HOME moved under tmpRoot (so the launch log
+ * lands in the fixture tree, not the real ~/.argent).
+ */
+async function launchWithPath(pathDir: string): Promise<Awaited<ReturnType<typeof launchRunner>>> {
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
+  process.env.PATH = pathDir;
+  process.env.HOME = tmpRoot;
+  try {
+    return await launchRunner({
+      udid: "00008120-000000000000001E",
+      xctestrunPath: path.join(tmpRoot, "fake.xctestrun"),
+      derivedDataPath: path.join(tmpRoot, "derived"),
+    });
+  } finally {
+    process.env.PATH = saved.PATH;
+    process.env.HOME = saved.HOME;
+  }
+}
+
+describe("launchRunner", () => {
+  it("rejects with the wrapped spawn failure instead of crashing the process", async () => {
+    const emptyBin = path.join(tmpRoot, "empty-bin");
+    await fsp.mkdir(emptyBin, { recursive: true });
+
+    // Before the spawn/error race, the ENOENT arrived as an unhandled async
+    // "error" event — this test completing green is the no-crash proof.
+    const error = await launchWithPath(emptyBin).catch((caught: unknown) => caught);
+
+    expect((error as Error).name).toBe("FailureError");
+    expect((error as Error).message).toBe(
+      "xcodebuild could not be started. Check that Xcode is installed and on PATH."
+    );
+    expect(((error as Error).cause as NodeJS.ErrnoException).code).toBe("ENOENT");
+  });
+
+  it("resolves with the launched child and log path when the spawn succeeds", async () => {
+    const stubBin = path.join(tmpRoot, "stub-bin");
+    await fsp.mkdir(stubBin, { recursive: true });
+    await fsp.writeFile(path.join(stubBin, "xcodebuild"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const launched = await launchWithPath(stubBin);
+
+    expect(launched.child.pid).toBeGreaterThan(0);
+    expect(path.dirname(launched.logPath)).toBe(
+      path.join(tmpRoot, ".argent", "ios-device-runner", "logs")
+    );
+    expect(path.basename(launched.logPath)).toMatch(/^runner-00008120-\d+\.log$/);
+    await fsp.access(launched.logPath); // the log file was created for postmortems
+    // The swallow listener that keeps a late "error" from becoming uncaught.
+    expect(launched.child.listenerCount("error")).toBe(1);
   });
 });
 

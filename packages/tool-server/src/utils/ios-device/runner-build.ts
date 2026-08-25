@@ -1,10 +1,12 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { FAILURE_CODES, FailureError } from "@argent/registry";
 
 const execFileAsync = promisify(execFile);
 
@@ -535,6 +537,11 @@ export interface LaunchedRunner {
  * detached — testmanagerd installs the `<testBundleId>.xctrunner` app and
  * starts the never-ending test. The child outlives individual commands; the
  * blueprint owns its lifecycle. Log output goes to a file for postmortems.
+ *
+ * Resolves only once xcodebuild has actually spawned. A spawn failure (Xcode
+ * moved or removed after an artifact cache hit) arrives as an async "error"
+ * event that nothing else listens for, so it rejects here instead of killing
+ * the whole tool-server as an uncaught exception.
  */
 export async function launchRunner(opts: {
   udid: string;
@@ -576,6 +583,24 @@ export async function launchRunner(opts: {
   );
   child.unref();
   fs.closeSync(logFd);
+  try {
+    // events.once resolves on "spawn", rejects on "error", and removes both
+    // listeners either way.
+    await once(child, "spawn");
+  } catch (error) {
+    throw new FailureError(
+      "xcodebuild could not be started. Check that Xcode is installed and on PATH.",
+      {
+        error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
+        failure_stage: "ios_device_runner_spawn",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      },
+      { cause: error as Error }
+    );
+  }
+  // A late "error" event must never become an uncaught exception.
+  child.on("error", () => {});
   return { child, logPath };
 }
 
