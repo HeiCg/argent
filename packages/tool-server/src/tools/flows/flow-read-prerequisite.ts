@@ -34,8 +34,14 @@ const zodSchema = z
     if ((params.name === undefined) === (params.flow_path === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Pass exactly one flow source: name or flow_path.",
-        path: ["flow_path"],
+        message:
+          params.name !== undefined
+            ? "Pass exactly one flow source: name or flow_path."
+            : "Pass exactly one flow source: name or flow_path. flow-read-prerequisite needs " +
+              "the flow's name in `name` — it resolves <project_root>/.argent/flows/<name>.yaml.",
+        // The ROOT, matching flow-execute: the rule spans both source fields,
+        // so it must not be anchored on one of them.
+        path: [],
       });
     }
   });
@@ -77,7 +83,7 @@ Use when you need to check what app/simulator state is required before executing
 source (name or flow_path) you will pass to flow-execute, so the prerequisite you read is the contract of
 the flow that will actually run.
 Fails if the flow file does not exist.
-Address the flow exactly as you will address it in flow-execute: name or flow_path, one and only one; supplying both or neither is rejected.`,
+Address the flow exactly as you will address it in flow-execute: name or flow_path, one and only one; supplying both or neither is rejected. The name goes in \`name\`, which resolves <project_root>/.argent/flows/<name>.yaml.`,
   zodSchema,
   fileInputs,
   services: () => ({}),
