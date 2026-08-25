@@ -1,6 +1,10 @@
 import { resolve as resolvePath } from "node:path";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
-import { clearCurrentIosDeviceApp } from "../../../utils/ios-device/app-session";
+import { InvalidToolInputError } from "../../../utils/capability";
+import {
+  clearCurrentIosDeviceApp,
+  isSessionOnlySystemUi,
+} from "../../../utils/ios-device/app-session";
 import { ensureDeviceReady, installApp, uninstallApp } from "../../../utils/ios-device/devicectl";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
@@ -16,6 +20,14 @@ export const iosDeviceImpl: PlatformImpl<
 > = {
   requires: ["xcrun"],
   handler: async (_services, params) => {
+    // Pre-flight before any device contact: system UI is not an installed
+    // bundle, so an uninstall attempt could only fail (or worse).
+    if (isSessionOnlySystemUi(params.bundleId)) {
+      throw new InvalidToolInputError(
+        `${params.bundleId} is system UI: it is always running and cannot be reinstalled. ` +
+          "Use launch-app to put it under automation."
+      );
+    }
     await ensureDeviceReady(params.udid);
     await uninstallApp(params.udid, params.bundleId);
     // Uninstall killed the process; the session is stale from here even if

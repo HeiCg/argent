@@ -16,6 +16,26 @@
  */
 const currentAppByUdid = new Map<string, string>();
 
+/**
+ * System-UI processes that are not devicectl-launchable (and never need
+ * launching — they are always running). launch-app accepts them as launch
+ * targets and just registers the automation session, which lets
+ * describe/gestures drive their UI through the runner's XCUIApplication
+ * attach: SpringBoard owns the home screen, App Library, and many system
+ * alerts; Spotlight owns the pull-down search overlay (a separate process,
+ * invisible to a SpringBoard-scoped snapshot). The runner's foreground gate
+ * even gives `activate()` a useful meaning here: activating SpringBoard
+ * dismisses the foreground app to the home screen. restart-app and
+ * reinstall-app reject these ids up front — there is no process to restart
+ * and no bundle to reinstall.
+ */
+const SESSION_ONLY_SYSTEM_UI_BUNDLE_IDS = new Set(["com.apple.springboard", "com.apple.Spotlight"]);
+
+/** Exact, case-sensitive bundle-id match (the ids above are the canonical spellings). */
+export function isSessionOnlySystemUi(bundleId: string): boolean {
+  return SESSION_ONLY_SYSTEM_UI_BUNDLE_IDS.has(bundleId);
+}
+
 export function setCurrentIosDeviceApp(udid: string, bundleId: string): void {
   currentAppByUdid.set(udid, bundleId);
 }
