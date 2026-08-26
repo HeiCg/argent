@@ -1722,8 +1722,8 @@ function summarize(
   let errored = 0;
   for (const s of steps) {
     // Neither narration nor block scaffolding is a test step, and counting
-    // either would let the summary disagree with the renderers' step
-    // numbering, which skips both.
+    // either would let the summary disagree with the CLI's step numbering,
+    // which skips both.
     if (s.kind === "echo" || s.structural) continue;
     if (s.status === "pass") passed++;
     else if (s.status === "fail") failed++;
