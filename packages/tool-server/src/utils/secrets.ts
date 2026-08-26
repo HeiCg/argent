@@ -98,9 +98,12 @@ export function resolveSecretPlaceholders(
  * Zero-length values are skipped: replacing an empty string would corrupt the
  * text rather than redact anything.
  *
- * Whole texts only. Every caller here holds one — a failure message, a stack, a
- * document a child already finished writing — so there is no half of a value
- * still to arrive, and the walk settles every position it passes.
+ * Whole texts only: what a caller passes is already finished, so there is no
+ * half of a value still to arrive and the walk settles every position it
+ * passes. A text that was CUT is the other case, and this function cannot cover
+ * it — a value split by the cut leaves a prefix that a whole-value match never
+ * finds. A failure message is cut, by the child that has no secret list, so
+ * `redactTruncated` in `flow-script-executor.ts` drops that prefix afterwards.
  */
 export function scrubSecretValues(
   text: string,

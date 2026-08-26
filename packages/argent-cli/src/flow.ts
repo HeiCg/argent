@@ -107,8 +107,8 @@ chromium (a lone \`{ chromium: ... }\` target, or --platform chromium); a
 multi-platform launch auto-detects a device instead. Pass --device to attach to
 a running instance.
 
-A directory run prints only the steps that need attention (each failure, each
-warning, and each script step's output) plus a final flow summary;
+A directory run prints only the steps that need attention (each failure and each
+warning) plus a final flow summary;
 --recursive walks subdirectories too (dot-directories and node_modules are
 skipped). An invalid flow file fails alone and the batch continues; an infra
 error stops the batch and counts the remaining flows skipped.

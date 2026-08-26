@@ -573,7 +573,8 @@ export class FlowScriptExecutor {
     // Drained, never kept: what a script prints is nobody's to read here, but a
     // pipe left paused fills its buffer and blocks the child from ever reaching
     // its own time limit. `resume()` discards stdout as it arrives; stderr goes
-    // through the one reader that survives, which keeps no text either.
+    // through the one reader that survives, which holds nothing beyond the
+    // window it matches against and reports none of it.
     child.stdout?.resume();
     child.stderr?.on("data", (chunk: Buffer) => heapWatch.push(chunk));
 
@@ -622,10 +623,12 @@ export class FlowScriptExecutor {
     clearTimeout(timer);
     request.signal?.removeEventListener("abort", onAbort);
 
-    // The protocol runs on IPC and the logs on the standard streams, with no
-    // shared order between them: a terminal message routinely arrives *before*
-    // the log text of the same script. The bound covers a descendant that
-    // inherited the streams and is holding them open.
+    // The protocol runs on IPC and stderr on its own pipe, with no shared order
+    // between them: a terminal message routinely arrives *before* the last text
+    // the same script wrote. V8's heap banner is in that text, and the watch
+    // can only match what reached it, so waiting for the close is what puts
+    // those chunks in before the destroys below. The bound covers a descendant
+    // that inherited the streams and is holding them open.
     await Promise.race([closed, sleep(SETTLE_TIMEOUT_MS)]);
     await stop();
     child.stdout?.destroy();
@@ -1253,14 +1256,16 @@ function hasExited(child: ChildProcess): boolean {
 }
 
 /**
- * The only thing this process reads off a script's streams.
+ * The only thing this process reads a script's streams *for*: stdout is drained
+ * and dropped where it arrives, and stderr passes through here on its way to
+ * the same place.
  *
  * Nothing a script prints is kept: not returned, not accumulated, not written
  * anywhere — only the window below is held, and only to match against. What the
- * parent still has to notice is V8's
- * heap-exhaustion banner, which the child writes to stderr on its way out and
- * which is the only account of why an abort was an out-of-memory rather than a
- * plain signal — the child is dead by then, so there is no other channel to ask.
+ * parent still has to notice is V8's heap-exhaustion banner, which the child
+ * writes to stderr on its way out and which is the only account of why an abort
+ * was an out-of-memory rather than a plain signal — the child is dead by then,
+ * so there is no other channel to ask.
  *
  * The window makes the scan indifferent to where the pipe split the text: a
  * banner arriving in two chunks matches on the second, and only the last

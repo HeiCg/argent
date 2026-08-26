@@ -25,7 +25,7 @@ A recorded `flow-execute` has two names. The top-level `name` identifies the rec
 
 **Argent does not undo what a failed script did.** Read `message`: it says whether anything ran, or that the runner cannot tell. A transport error returns no `message`, and the call can have run the script more than one time. Check the state that the script touches before you retry.
 
-The call returns nothing the script printed, on any verdict, and replaying the finished flow returns nothing either: `reason` is what a script says for itself. Tell the author to `throw` the detail they need, or to put it in the returned `output` document, rather than `console.log` it.
+The call returns nothing the script printed, on any verdict, and replaying the finished flow returns nothing either. `reason` is all the step says for itself: the script's own message when it threw, or how the process stopped when it did not. On a pass `reason` carries the run's notes — read it, because a clamped time limit is still recorded as the limit you asked for. Tell the author to `throw` the detail they need, or to put it in the returned `output` document, rather than `console.log` it.
 
 Obey these lifecycle rules:
 

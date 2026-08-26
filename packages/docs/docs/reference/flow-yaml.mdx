@@ -311,7 +311,7 @@ argent flow run ~/shared-flows/checkout.yaml --device <UDID> --update-baselines
 argent flow run .argent/flows --recursive
 ```
 
-The file name without `.yaml` names the report and the artifacts. It contains only letters, numbers, `_` and `-`. A directory run prints only the failing steps and a summary. An invalid file fails alone and the batch continues. An infrastructure error stops the batch and counts the remaining flows as skipped.
+The file name without `.yaml` names the report and the artifacts. It contains only letters, numbers, `_` and `-`. A directory run prints only the steps that need attention: each failure and each warning. It also prints a summary. An invalid file fails alone and the batch continues. An infrastructure error stops the batch and counts the remaining flows as skipped.
 
 Pin `--platform` and `--device` on iOS, Android and Vega. On Chromium, pass `--platform chromium` and omit `--device`. Then the runner boots the declared app path with a reproducible window size.
 
