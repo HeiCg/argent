@@ -219,8 +219,11 @@ async function probeRuntimeKind(device: DeviceInfo): Promise<FlowRuntimeKind | u
       return await getRemoteSimulatorRuntimeKind(device.id);
     case "android":
       return await getAndroidRuntimeKind(device.id);
-    default:
+    default: {
+      const unclassified: never = device.platform;
+      void unclassified;
       return undefined;
+    }
   }
 }
 
@@ -313,9 +316,21 @@ export async function assertDeviceMeetsRequires(
  * the device from a runtimeKind-constrained run.
  */
 function listedRuntimeKind(d: RawDevice): FlowRuntimeKind | undefined {
-  if (d.platform === "vega") return "tv";
-  if (d.platform === "chromium") return "mobile";
-  return d.runtimeKind;
+  switch (d.platform) {
+    case "vega":
+      return "tv";
+    case "chromium":
+      return "mobile";
+    case "ios":
+    case "ios-remote":
+    case "android":
+      return d.runtimeKind;
+    default: {
+      const unclassified: never = d.platform;
+      void unclassified;
+      return d.runtimeKind;
+    }
+  }
 }
 
 function meetsRequires(d: RawDevice, requires: FlowRequires | undefined): boolean {
