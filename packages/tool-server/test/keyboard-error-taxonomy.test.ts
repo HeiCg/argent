@@ -3,6 +3,7 @@ import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@arg
 import { InvalidToolInputError } from "../src/utils/capability";
 import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import { makeIosDeviceImpl } from "../src/tools/keyboard/platforms/ios-device";
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
 import { injectAndroidNamedKey, injectAndroidText } from "../src/utils/android-input";
 
@@ -46,6 +47,11 @@ const chromiumDevice = {
   id: "chromium-cdp-9222",
   platform: "chromium",
   kind: "app",
+} as unknown as DeviceInfo;
+const iosPhysicalDevice = {
+  id: "00008030-000A1B2C3D4E5F60",
+  platform: "ios",
+  kind: "device",
 } as unknown as DeviceInfo;
 
 describe("keyboard backends — input rejection is a 400 with a uniform telemetry taxonomy", () => {
@@ -146,5 +152,31 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       injectAndroidNamedKey("emulator-5554", "constructor"),
       FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED
     );
+  });
+
+  // The physical-iOS backend normalizes `key` through a trim(), so a
+  // whitespace-only name collapsed to "" and slipped past its named-key guard
+  // into the empty-request no-op below it: a 200 { typed: "", keys: 0 } with no
+  // device contact, which the caller cannot tell apart from a real press (the
+  // very outcome ../src/tools/keyboard/index.ts's empty-key guard exists to
+  // prevent). It rejects like every sibling instead.
+  it.each(["   ", "\t", "\n"])(
+    "iOS device: whitespace-only key %j -> 400 + KEYBOARD_KEY_UNSUPPORTED",
+    async (key) => {
+      const impl = makeIosDeviceImpl(new Registry());
+      await expectInvalidInput(
+        impl.handler({}, { udid: iosPhysicalDevice.id, key }, iosPhysicalDevice),
+        FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED
+      );
+    }
+  );
+
+  it("iOS device: the genuinely empty request stays a device-free no-op", async () => {
+    // The counterpart to the pins above: no `key` at all is still the tool's
+    // documented no-op, answered without a tracked app or a runner.
+    const impl = makeIosDeviceImpl(new Registry());
+    await expect(
+      impl.handler({}, { udid: iosPhysicalDevice.id }, iosPhysicalDevice)
+    ).resolves.toEqual({ typed: "", keys: 0 });
   });
 });

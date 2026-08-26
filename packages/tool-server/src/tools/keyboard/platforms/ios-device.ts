@@ -21,7 +21,11 @@ export function makeIosDeviceImpl(
     requires: ["xcrun"],
     handler: async (_services, params, device) => {
       const key = params.key?.trim().toLowerCase();
-      if (key && key !== "enter") {
+      // Gate on the raw `key` like the sibling backends do: a whitespace-only
+      // name trims away to "" and would otherwise fall through to the no-op
+      // below, returning a success the caller cannot tell apart from a real
+      // press (the reason for the empty-key guard in ../index.ts).
+      if (params.key && key !== "enter") {
         throw new InvalidToolInputError(
           `Named key '${params.key}' is not supported on physical iOS devices: only 'enter'. ` +
             "Type text into the focused field, or use gesture-tap to press on-screen keys.",
