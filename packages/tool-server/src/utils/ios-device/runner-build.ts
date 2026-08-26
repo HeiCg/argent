@@ -78,36 +78,36 @@ export function resolveRunnerSigningConfig(): RunnerSigningConfig {
 }
 
 /**
- * Locate the runner's Xcode project. In a CHECKOUT the fixed walk-up finds it:
- * src (ts-node) and dist layouts sit at the same depth below
- * packages/tool-server, so both land on packages/ios-device-runner.
- *
- * A published install has neither shape. The tool-server ships as one esbuild
- * bundle at <packageDir>/dist/tool-server.cjs, so __dirname is
- * <packageDir>/dist and the walk-up leaves the package entirely; the runner
- * sources are not published either (@swmansion/argent's `files` ships dist and
- * assets, not packages/ios-device-runner). The not-found arm below is
- * therefore the normal path on an npm install, and ARGENT_IOS_RUNNER_PROJECT,
- * pointed at a checkout, is the only way through. `exists` is a test seam over
- * the filesystem probe.
+ * Locate the runner's Xcode project. Two layouts exist and each has one
+ * candidate. In a CHECKOUT the fixed walk-up finds it: src (ts-node) and dist
+ * layouts sit at the same depth below packages/tool-server, so both land on
+ * packages/ios-device-runner. In a PUBLISHED install the tool-server is one
+ * esbuild bundle at <packageDir>/dist/tool-server.cjs and the pack step
+ * (bundle-tools.cjs) copies the runner project next to it, so the second
+ * candidate resolves relative to the bundle itself. ARGENT_IOS_RUNNER_PROJECT
+ * overrides both for unusual layouts. `exists` is a test seam over the
+ * filesystem probe.
  */
 export function resolveRunnerProjectPath(
   exists: (candidatePath: string) => boolean = fs.existsSync
 ): string {
   const override = process.env.ARGENT_IOS_RUNNER_PROJECT;
   if (override) return override;
-  const candidate = path.resolve(
-    __dirname,
-    "../../../..",
-    "ios-device-runner/ArgentRunner/ArgentRunner.xcodeproj"
-  );
-  if (exists(candidate)) return candidate;
+  const projectSuffix = "ios-device-runner/ArgentRunner/ArgentRunner.xcodeproj";
+  const candidates = [
+    path.resolve(__dirname, "../../../..", projectSuffix),
+    path.resolve(__dirname, projectSuffix),
+  ];
+  for (const candidate of candidates) {
+    if (exists(candidate)) return candidate;
+  }
   // Same code family as this file's spawn failure: the runner can never come
   // up from here, and the stage names which precondition broke.
   throw withFailureSignal(
     new Error(
-      `Could not locate the ios-device-runner Xcode project (looked at ${candidate}). ` +
-        `Set ARGENT_IOS_RUNNER_PROJECT to the ArgentRunner.xcodeproj path.`
+      `Could not locate the ios-device-runner Xcode project (looked at ` +
+        `${candidates.join(" and ")}). Set ARGENT_IOS_RUNNER_PROJECT to the ` +
+        `ArgentRunner.xcodeproj path.`
     ),
     {
       error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,

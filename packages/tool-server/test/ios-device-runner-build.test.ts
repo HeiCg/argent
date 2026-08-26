@@ -452,14 +452,38 @@ describe("ensureRunnerArtifact", () => {
 });
 
 describe("resolveRunnerProjectPath", () => {
+  it("probes the checkout walk-up first, then the packaged sibling of the bundle", () => {
+    const saved = process.env.ARGENT_IOS_RUNNER_PROJECT;
+    delete process.env.ARGENT_IOS_RUNNER_PROJECT;
+    try {
+      const probed: string[] = [];
+      const resolved = resolveRunnerProjectPath((candidate) => {
+        probed.push(candidate);
+        // The checkout shape is absent (an npm install); the packaged copy hits.
+        return probed.length === 2;
+      });
+
+      expect(probed).toHaveLength(2);
+      // Both candidates end at the same project; only the base differs.
+      for (const candidate of probed) {
+        expect(candidate).toMatch(/ios-device-runner\/ArgentRunner\/ArgentRunner\.xcodeproj$/);
+      }
+      expect(probed[1]).not.toBe(probed[0]);
+      expect(resolved).toBe(probed[1]);
+    } finally {
+      if (saved === undefined) delete process.env.ARGENT_IOS_RUNNER_PROJECT;
+      else process.env.ARGENT_IOS_RUNNER_PROJECT = saved;
+    }
+  });
+
   it("stamps the project-not-found error with a failure signal", () => {
     const saved = process.env.ARGENT_IOS_RUNNER_PROJECT;
     delete process.env.ARGENT_IOS_RUNNER_PROJECT;
     try {
       let caught: unknown;
       try {
-        // The walk-up candidate exists in every real checkout, so the
-        // not-found arm is reached through the exists seam.
+        // Both candidates exist in real layouts, so the not-found arm is
+        // reached through the exists seam.
         resolveRunnerProjectPath(() => false);
       } catch (error) {
         caught = error;
