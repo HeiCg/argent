@@ -996,7 +996,8 @@ const BLOCK_DIRECTIVE_SIBLING_REJECTIONS: Record<
     yaml:
       ["steps:", "  - repeat: 2", "    steps:", "      - echo: hi", "    bogus: 1"].join("\n") +
       "\n",
-    message: "a repeat step takes exactly { repeat: <count | { until, max? }>, steps: [...] }",
+    message:
+      "a repeat step takes exactly { repeat: <count | { times } | { until, max? }>, steps: [...] }",
   },
 };
 

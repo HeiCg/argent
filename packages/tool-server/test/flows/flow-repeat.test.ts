@@ -475,7 +475,9 @@ describe("repeat: parse/serialize", () => {
     ).toThrow(/unknown key/i);
     expect(() =>
       parseFlow("steps:\n  - repeat: 2\n    steps: [{ tap: A }]\n    else: []\n")
-    ).toThrow(/takes exactly \{ repeat: <count \| \{ until, max\? \}>, steps: \[\.\.\.\] \}/i);
+    ).toThrow(
+      /takes exactly \{ repeat: <count \| \{ times \} \| \{ until, max\? \}>, steps: \[\.\.\.\] \}/i
+    );
   });
 
   it("needs a non-empty steps list", () => {

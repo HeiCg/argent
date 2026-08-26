@@ -955,7 +955,7 @@ type YamlWhenBody = YamlWaitCondition | { platform: WhenPlatform };
  * unambiguous by construction — an integer can never be a condition map — so it
  * is the canonical spelling the serializer emits.
  */
-type YamlRepeatBody = number | { until: YamlWaitCondition; max?: number };
+type YamlRepeatBody = number | { times: number } | { until: YamlWaitCondition; max?: number };
 
 type YamlStep =
   | { echo: string }
@@ -2765,7 +2765,7 @@ function parseRepeatStep(raw: Record<string, unknown>, depth: number): FlowStep 
   if (!Object.keys(raw).every((k) => k === "repeat" || k === "steps")) {
     badEntry(
       raw,
-      "a repeat step takes exactly { repeat: <count | { until, max? }>, steps: [...] }"
+      "a repeat step takes exactly { repeat: <count | { times } | { until, max? }>, steps: [...] }"
     );
   }
   // The bound errors and the snapshot refusal echo `{ repeat: … }` rather than
