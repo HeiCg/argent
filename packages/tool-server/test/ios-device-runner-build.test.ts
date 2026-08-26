@@ -37,7 +37,8 @@ afterAll(async () => {
 
 /**
  * Write a plist-XML .xctestrun from a JSON object via the same plutil the
- * production code shells out to (available on macOS dev machines and CI).
+ * production code shells out to. plutil ships only with macOS, so every case
+ * built on this helper is gated on darwin.
  */
 async function writeXctestrun(name: string, contents: unknown): Promise<string> {
   const jsonPath = path.join(tmpRoot, `${name}.json`);
@@ -67,7 +68,11 @@ const expectPortInAllEnvMaps = (target: Target, port: number): void => {
   }
 };
 
-describe("prepareXctestrunWithPort", () => {
+// The function under test reads and rewrites the plist with plutil, so both it
+// and its fixtures are macOS-only. The unit-test job runs on Linux, where a
+// missing plutil would fail the injection cases and pass the drift cases for
+// the wrong reason.
+describe.skipIf(process.platform !== "darwin")("prepareXctestrunWithPort", () => {
   it("injects the port into every env map of a v1 (top-level targets) xctestrun", async () => {
     const src = await writeXctestrun("v1", {
       __xctestrun_metadata__: { FormatVersion: 1 },
