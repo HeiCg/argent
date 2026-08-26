@@ -447,6 +447,27 @@ describe("argent flow run", () => {
     expect(logs.join("\n")).toContain("[1/1] saved.yaml");
   });
 
+  it("exits 2 without running anything on a bare --update-baselines run", async () => {
+    // `argent flow run $FLOW --update-baselines` with the variable unset: the
+    // unquoted expansion leaves a bare run, which would rewrite the baselines
+    // of every flow saved under .argent/flows.
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(tempRoot);
+      await expect(flow(["run", "--update-baselines"], opts)).rejects.toThrow("process.exit:2");
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(errs.join("\n")).toContain(
+      "flow run --update-baselines requires a flow name, a YAML file path, or a directory path"
+    );
+    expect(errs.join("\n")).toContain(
+      `Run \`argent flow run ${path.join(".argent", "flows")} -r --update-baselines\``
+    );
+    expect(toolsClientMock.callTool).not.toHaveBeenCalled();
+  });
+
   it("exits 2 with a directory message when a bare run finds no .argent/flows", async () => {
     // The single-file complaints below this dispatch ("must end in .yaml")
     // would quote `.argent/flows`, a string this run never typed.

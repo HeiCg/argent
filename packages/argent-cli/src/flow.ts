@@ -131,7 +131,9 @@ Subcommands:
 Options (run):
   --device <id>          Device id to run against (auto-detected when omitted)
   --platform <p>         ios | android | chromium | vega — narrow auto-detection
-  --update-baselines     Write/refresh screenshot baselines instead of diffing
+  --update-baselines     Write/refresh screenshot baselines instead of diffing.
+                         Refused on a bare run: pass .argent/flows -r to update
+                         every saved flow
   --output <dir>         Also write failed snapshot images (baseline/current/diff)
                          under <dir>/<flow>/ — a stable path for CI artifact
                          upload; a directory run keys nested flows as
@@ -1144,6 +1146,17 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
   const flowRef = args.flowRef ?? FLOWS_DIR;
   const defaulted = args.flowRef === undefined;
   const recursive = args.recursive || defaulted;
+
+  // parseRunArgs refuses the quoted spelling; unquoted, `run $FLOW
+  // --update-baselines` with the variable unset arrives here as a bare run.
+  if (defaulted && args.updateBaselines) {
+    return fail(
+      `flow run --update-baselines requires a flow name, a YAML file path, or a directory path; ` +
+        `it overwrites the baselines of every flow it runs, so the target must be one you named.\n` +
+        `Run \`argent flow run ${FLOWS_DIR} -r --update-baselines\` to update every flow saved there.`,
+      2
+    );
+  }
 
   const projectRoot = process.cwd();
   // From here a name is indistinguishable from a path the user typed: one set
