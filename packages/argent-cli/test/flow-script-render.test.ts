@@ -22,13 +22,6 @@ const PASSING: StepReport = {
   target: "scripts/seed.mjs",
 };
 
-/**
- * A `script` step is a status line and nothing else. The console output it
- * produced is discarded by the tool server and never reaches this renderer —
- * but the wire shape is not a contract this CLI controls, so the guard is
- * written against a report that carries the output anyway: a tool server from
- * another build, or one a user points `ARGENT_TOOLS_URL` at.
- */
 const WITH_LOG_ON_THE_WIRE = {
   ...PASSING,
   scriptLog: "creating order\nDATABASE_URL=postgres://user:hunter2@db/prod\n",

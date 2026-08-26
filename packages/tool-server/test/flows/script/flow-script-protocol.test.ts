@@ -262,8 +262,6 @@ describe("flow script executor — the protocol channel is the runner's alone", 
     );
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
-    // The document is the proof the script ran on past its own ping: the
-    // executor keeps nothing it printed, so `output` is the only witness.
     expect(result.failure).toBeUndefined();
     expect(result.output).toEqual({ ok: true });
   });

@@ -200,9 +200,6 @@ describe("flow script executor — time limits and cancellation", () => {
     });
 
     expect(result.failure?.kind).toBe("timeout");
-    // A hang is the shape where the last line printed is the best clue, and it
-    // is still not the executor's to hand back: `reason` says how the script
-    // stopped, and a script with more to say has to `throw` it.
     expect(JSON.stringify(result)).not.toContain("started the seed");
   });
 
@@ -294,12 +291,6 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.kind).toBe("cancelled");
   }, 30_000);
 
-  /**
-   * The graceful shutdown leaves its mark on disk rather than on the console:
-   * the executor keeps nothing a script prints, and `output` is dropped with
-   * the failed verdict, so a file is the only witness left that the handler
-   * really ran before the step was judged.
-   */
   const gracefulSigterm = (mark: string) => `import fs from "node:fs";
      import { setTimeout as delay } from "node:timers/promises";
      output.phase = "seeding";
@@ -563,9 +554,6 @@ describe("flow script executor — exit classification", () => {
 
     expect(result.failure?.kind).toBe("exit");
     expect(result.failure?.message).toContain("exit code 3");
-    // Which of the two things it left behind is missing, and what to do
-    // instead: nothing the script printed is kept, so an author who exits on an
-    // error has no other way to say what the error was.
     expect(result.failure?.message).toContain("left no output document behind");
     expect(result.failure?.message).toContain("throw the reason instead of exiting on it");
   });
@@ -585,9 +573,6 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.message).toBe(
       "The script set process.exitCode to 1, which means it failed."
     );
-    // The script's own account of the failure went to its console, so it is
-    // gone: the sentence above is the whole verdict. A script with something to
-    // say has to `throw` it or return it in `output`.
     expect(JSON.stringify(result)).not.toContain("validation failed");
   });
 
@@ -605,9 +590,6 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.message).toContain("did not stop itself");
   });
 
-  // V8's banner is the one thing still read off a script's stderr, and it is
-  // read to classify, never to report: the verdict names the heap limit and
-  // carries neither the banner, the frame dump, nor the line the script wrote.
   it("reports heap exhaustion as a heap limit and nothing V8 printed getting there", async () => {
     const ws = workspace();
     const script = ws.write(
@@ -630,8 +612,6 @@ describe("flow script executor — exit classification", () => {
     expect(whole).not.toMatch(/\d+: 0x[0-9a-f]{6}/);
   }, 60_000);
 
-  // The banner arrives after a flood, so the scan cannot be a one-shot look at
-  // the first chunks: it runs over a sliding window for the whole run.
   it("still reports a heap limit when the script printed a flood first", async () => {
     const ws = workspace();
     const script = ws.write(

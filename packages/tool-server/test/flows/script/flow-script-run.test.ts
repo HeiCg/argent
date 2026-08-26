@@ -38,17 +38,10 @@ describe("flow script executor — a passing run", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toEqual({ order: { id: "ord_1", total: 42 } });
     expect(result.durationMs).toBeGreaterThan(0);
-    // The whole result, not just a named field: what a script writes to its
-    // console is discarded here, so there is no key for it to come back on.
     expect(JSON.stringify(result)).not.toContain("seeding order");
     expect(JSON.stringify(result)).not.toContain("a warning");
   });
 
-  // Nothing reads what a script prints, but nothing may leave it unread either:
-  // a paused pipe fills at 64 KiB and the child cannot exit until it drains, so
-  // a passing script comes back as a step that timed out. The flood is past any
-  // host's pipe buffer, so the guard does not rest on the size of this one's,
-  // and it is the step's own limit that fails it rather than the suite's.
   it("drains stdout, so a flood cannot hold the child at its own exit", async () => {
     const ws = workspace();
     const script = ws.write(
@@ -154,7 +147,6 @@ describe("flow script executor — work the module evaluation outlives", () => {
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
     expect(result.failure).toBeUndefined();
-    // Every round, in order — three of them, not one.
     expect(result.output).toEqual({ attempts: [1, 2, 3], uploaded: true });
   });
 
@@ -535,10 +527,6 @@ describe("flow script executor — module loading", () => {
     );
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
-    // The stream the parent is draining reaches EOF while the script is still
-    // running. That close is the child's own business and must not end the
-    // step: the document is written a turn later, so it arrives only if the run
-    // really did carry on past it.
     expect(result.failure).toBeUndefined();
     expect(result.ok).toBe(true);
     expect(result.output).toEqual({ ok: true });

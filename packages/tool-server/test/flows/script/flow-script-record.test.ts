@@ -428,12 +428,6 @@ describe("recording a script step", () => {
     }
   });
 
-  // Recording is where a script's output is most exposed: this result lands in
-  // the context of the agent authoring the flow, and a setup script is a
-  // plausible place for a connection string or a token to be printed. Nothing
-  // it wrote comes back, on either stream, however much of it there is — and
-  // the volume is past any host's pipe buffer, so a stream left unread here
-  // would hold the child at its own exit rather than pass quietly.
   it("returns nothing a chatty script printed, and still records the step", async () => {
     await write(
       "scripts/chatty.mjs",
@@ -471,8 +465,6 @@ describe("a script that did not pass records nothing", () => {
 
     expect(result.status).toBe("fail");
     expect(result.reason).toContain("the backend refused the third");
-    // A failed script is no more entitled to a console channel than a passing
-    // one: `reason` is what it says for itself, and it said this by throwing.
     expect(JSON.stringify(result)).not.toContain("created 2 of 3 records");
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(result.stepCount).toBe(1);

@@ -327,11 +327,6 @@ describe("flowRunToMcpContent", () => {
     });
   });
 
-  // What a script prints is discarded by the tool server, so this content
-  // builder is never handed it. The wire shape is not this package's to
-  // guarantee, though — a differently-built tool server can put anything on a
-  // step — and a script is a plausible place for a token or customer data to be
-  // printed, so nothing off the report may reach an agent's context unread.
   it("puts nothing a script wrote into the content, even when the report carries it", async () => {
     const blocks = await flowRunToMcpContent({
       flow: "f",

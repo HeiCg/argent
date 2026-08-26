@@ -7,12 +7,6 @@ import {
 import { SCRIPT_MAX_FAILURE_MESSAGE_CHARS } from "../../../src/tools/flows/script/flow-script-protocol";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
-/**
- * What a script writes to its console is discarded, so the two texts a script
- * can still put in front of a caller are the ones redaction has to cover: the
- * failure it reports, and the document it returns.
- */
-
 const workspaces: ScriptWorkspace[] = [];
 
 function workspace(): ScriptWorkspace {
@@ -156,9 +150,6 @@ describe("flow script executor — redaction", () => {
 
   it("replaces a value that starts inside marker-shaped text the script wrote", async () => {
     const ws = workspace();
-    // The shape a script echoing an unresolved placeholder writes: it looks
-    // like a marker, so skipping it whole would carry the value out in plain
-    // text — no pass ever visits a position inside a span that was jumped.
     const script = ws.write("echoed.mjs", `output.line = "head {{secret:TOK}}TAIL tail";`);
     const result = await executor().execute({
       scriptPath: script,
@@ -192,8 +183,6 @@ describe("flow script executor — redaction", () => {
       secrets: [host, url],
     });
 
-    // The URL is taken whole where it starts — the host inside it is not a
-    // second match — and the same host standing on its own is still its own.
     expect(result.output).toEqual({ line: "calling {{secret:URL}} on {{secret:HOST}}" });
   });
 
@@ -221,8 +210,6 @@ describe("flow script executor — redaction", () => {
       secrets: [{ name: "P", value }],
     });
 
-    // The value is all digits and its marker has none, so a surviving digit is
-    // a surviving fragment of the value.
     const blob = (result.output as { blob: string }).blob;
     expect(blob).not.toMatch(/[0-9]/);
     expect(blob).toContain("{{secret:P}}");

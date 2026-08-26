@@ -1255,22 +1255,6 @@ function hasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
-/**
- * The only thing this process reads a script's streams *for*: stdout is drained
- * and dropped where it arrives, and stderr passes through here on its way to
- * the same place.
- *
- * Nothing a script prints is kept: not returned, not accumulated, not written
- * anywhere — only the window below is held, and only to match against. What the
- * parent still has to notice is V8's heap-exhaustion banner, which the child
- * writes to stderr on its way out and which is the only account of why an abort
- * was an out-of-memory rather than a plain signal — the child is dead by then,
- * so there is no other channel to ask.
- *
- * The window makes the scan indifferent to where the pipe split the text: a
- * banner arriving in two chunks matches on the second, and only the last
- * {@link HEAP_FATAL_WINDOW_CHARS} characters are held between chunks.
- */
 class HeapFatalWatch {
   private readonly decoder = new StringDecoder("utf8");
   private found = false;

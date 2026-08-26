@@ -41,11 +41,6 @@ afterEach(() => {
   while (workspaces.length) workspaces.pop()!.cleanup();
 });
 
-/**
- * The mark is a file rather than a console line: the executor keeps nothing a
- * script prints, so a fixture proving it reached its first statement has to
- * leave the proof somewhere the test can read back.
- */
 async function run(): Promise<{ result: FlowScriptResult; ranMark: string }> {
   const ws = createScriptWorkspace("chan");
   workspaces.push(ws);

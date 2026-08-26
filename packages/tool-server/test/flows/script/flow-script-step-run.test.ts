@@ -54,13 +54,6 @@ function markPath(mark: string): string {
   return path.join(root, `${mark}.mark`);
 }
 
-/**
- * A script whose job is to leave proof it ran, at `<root>/<mark>.mark`.
- *
- * A `console.log` used to be that proof — which file ran, from which anchor,
- * in which directory — and the runner keeps nothing a script prints, so the
- * script writes the answer somewhere the test can read it back instead.
- */
 function markingScript(relative: string, mark: string, expression?: string): Promise<string> {
   return write(
     relative,
@@ -153,8 +146,6 @@ describe("a script step in a run", () => {
       status: "pass",
       target: "../../scripts/seed.mjs",
     });
-    // The report of a replay is what an agent reads, so the whole of it is
-    // checked, not one named field.
     const whole = JSON.stringify(result);
     expect(whole).not.toContain("seeded order 4711");
     expect(whole).not.toContain("and a warning");
@@ -163,10 +154,6 @@ describe("a script step in a run", () => {
     expect(listedDevices(invokeTool)).toBe(false);
   });
 
-  // Nothing reads the streams any more, so nothing may leave them unread
-  // either: a pipe left paused fills its buffer at 64 KiB and blocks the child
-  // there — the script never finishes and the step dies at its time limit
-  // instead of passing. Both streams, across several steps of one run.
   it("drains a script that floods stdout and stderr, on every step of the run", async () => {
     await write(
       "scripts/chatty.mjs",
@@ -224,9 +211,6 @@ describe("a script step that fails", () => {
 
     expect(result.steps[0]).toMatchObject({ status: "fail" });
     expect(result.steps[0]!.reason).toContain("exit code 3");
-    // The line the script printed on its way out is the natural place for the
-    // real cause, and it is still not reported: `reason` names how the process
-    // stopped, and that is the whole of what a red script step says.
     expect(JSON.stringify(result)).not.toContain("about to bail");
   });
 
@@ -401,7 +385,6 @@ describe("where a script path resolves", () => {
       const script = result.steps.find((s) => s.kind === "script");
       expect(script, JSON.stringify(result.steps)).toMatchObject({ status: "pass" });
     }
-    // Each root reached the same file through its own fragment.
     expect(aMark).toBe("shared");
     expect(readMark("shared")).toBe("shared");
   });

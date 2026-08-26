@@ -47,11 +47,6 @@ interface StepFixture {
   message?: string;
   snapshotKey?: string;
   target?: string;
-  /**
-   * Off the wire only — the tool server discards what a script prints, and the
-   * CLI's own StepReport has no such field. Kept here to drive a report that
-   * carries the output anyway, from a tool server of another build.
-   */
   scriptLog?: string;
   scriptLogTruncated?: boolean;
   artifacts?: Record<string, unknown>;
