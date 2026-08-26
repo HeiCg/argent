@@ -186,7 +186,7 @@ If polish reveals a missing action or structural check, restore its preceding st
 
 ### Ask about `requires`
 
-When the finished flow declares no [`requires:`](flow-yaml.md#target-requirements) block, `flow-finish-recording` also returns a **`requiresPrompt`**. Put that question to the **user**: should this flow be restricted to certain platforms, or to a TV? Ask it here and nowhere else. This is the first moment the whole flow exists, and a flow with no block runs against every target, so an unasked question silently answers itself "anywhere". If they say yes, write the block into the YAML yourself — there is no tool for it. Take the prompt's own suggestion as a starting point, not a verdict: it is read off the launch step's app ids, which say where the flow _can start_, not where the scenario is _meant_ to run.
+When the run composes no [`requires:`](flow-yaml.md#target-requirements) block - none in the flow file and none folded in from a leading `run:` fragment - `flow-finish-recording` also returns a **`requiresPrompt`**. Put that question to the **user**: should this flow be restricted to certain platforms, or to a TV? Ask it here and nowhere else. This is the first moment the whole flow exists, and a flow with no block runs against every target, so an unasked question silently answers itself "anywhere". If they say yes, write the block into the YAML yourself — there is no tool for it. Take the prompt's own suggestion as a starting point, not a verdict: it is read off the launch step's app ids, which say where the flow _can start_, not where the scenario is _meant_ to run.
 
 ## Worked example
 

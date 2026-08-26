@@ -1591,19 +1591,32 @@ async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<Lea
 }
 
 /**
- * The block a RUN of this flow is judged against, for readers that hold the
- * parsed file but not the runner: {@link leadingRun}'s fold, anchored the way
- * the run anchors its `run:` targets. A pre-flight that reported the file's own
- * block instead would answer "runs anywhere" for a root whose leading fragment
- * the runner then refuses on.
+ * What a RUN of this flow is judged against, for readers that hold the parsed
+ * file but not the runner: {@link leadingRun}'s fold and its composed steps,
+ * anchored the way the run anchors its `run:` targets. A pre-flight that
+ * reported the file's own block instead would answer "runs anywhere" for a root
+ * whose leading fragment the runner then refuses on, and one that judged the
+ * file's own steps would miss the launches the same fragment contributes.
+ * `steps` is null when the chain could not be read end to end — exactly when
+ * the run leaves the composed picture unjudged too.
  */
+export async function effectiveComposition(
+  flow: FlowFile,
+  filePath: string,
+  flowName: string
+): Promise<{ requires: FlowRequires | undefined; steps: FlowStep[] | null }> {
+  const canonical = await canonicalFlowPath(filePath);
+  const leading = await leadingRun(flow, { canonical, display: flowName });
+  return { requires: leading.requires, steps: leading.composedSteps };
+}
+
+/** {@link effectiveComposition}'s folded block alone. */
 export async function effectiveRequires(
   flow: FlowFile,
   filePath: string,
   flowName: string
 ): Promise<FlowRequires | undefined> {
-  const canonical = await canonicalFlowPath(filePath);
-  return (await leadingRun(flow, { canonical, display: flowName })).requires;
+  return (await effectiveComposition(flow, filePath, flowName)).requires;
 }
 
 /**

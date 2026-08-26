@@ -2954,7 +2954,8 @@ function* scopedLaunches(
  * and "unknown" when the launches settle neither: nothing launches at all, or
  * only a conditionally reached launch is missing its id. Shared by
  * {@link validateRequires} and flow-finish-recording's requires hint, so the
- * hint can never suggest a block the validator refuses.
+ * hint can never suggest a block the validator refuses over the steps it was
+ * given — the run's composed picture where the hint could read one.
  */
 export function launchCoverage(
   steps: FlowStep[],

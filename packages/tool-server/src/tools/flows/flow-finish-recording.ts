@@ -13,6 +13,7 @@ import {
   selectorToYaml,
   LAUNCH_PLATFORMS,
   type FlowFile,
+  type FlowRequires,
   type FlowStep,
   type FlowSavedTo,
   type FlowSelector,
@@ -20,15 +21,18 @@ import {
   type RecordingSession,
   type WhenPlatform,
 } from "./flow-utils";
+import { effectiveComposition } from "./flow-run";
 import type { TextMatchMode } from "../../utils/ui-tree-match";
 
 /**
- * The platforms the flow's launch steps already limit it to, or null when they
- * limit nothing. A platform is a candidate iff at least one launch is in its scope
- * and every launch there declares an id for it — stricter than the validator, which
- * ignores conditionally reached launches, so the hint can never suggest a block
- * that fails validation. Only a launch MAP ever narrows anything: the recorder
- * writes a bare app id, which serves all four platforms.
+ * The platforms these steps' launches already limit the flow to, or null when
+ * they limit nothing. A platform is a candidate iff at least one launch is in
+ * its scope and every launch there declares an id for it — stricter than the
+ * validator, which ignores conditionally reached launches, so the hint can
+ * never suggest a block the validator refuses over THESE steps: the run's
+ * composed picture where {@link composedFlow} could read one, the root file
+ * alone where it could not. Only a launch MAP ever narrows anything: the
+ * recorder writes a bare app id, which serves all four platforms.
  *
  * The offer is coverage-literal, so it can name a platform the recording never
  * touched — a `native:` id serves vega, so a phone recording still offers vega —
@@ -40,15 +44,51 @@ import type { TextMatchMode } from "../../utils/ui-tree-match";
  * fails nothing on the runs that guard stays shut — and the block would silently
  * retire it.
  */
-function launchPlatforms(flow: FlowFile): WhenPlatform[] | null {
-  const named = LAUNCH_PLATFORMS.filter((p) => launchCoverage(flow.steps, p) === "served");
+function launchPlatforms(steps: FlowStep[]): WhenPlatform[] | null {
+  const named = LAUNCH_PLATFORMS.filter((p) => launchCoverage(steps, p) === "served");
   if (named.length === 0 || named.length === LAUNCH_PLATFORMS.length) return null;
   // "unknown" is exactly the excluded-but-not-doomed set: the "served" platforms
   // are the offered ones, and an "unserved" one already fails at its launch.
   const retires = LAUNCH_PLATFORMS.some(
-    (p) => launchCoverage(flow.steps, p) === "unknown" && runsSteps(flow.steps, p)
+    (p) => launchCoverage(steps, p) === "unknown" && runsSteps(steps, p)
   );
   return retires ? null : named;
+}
+
+/** The root file's own picture, or the one its leading `run:` chain composes. */
+interface ComposedFlow {
+  requires: FlowRequires | undefined;
+  steps: FlowStep[];
+}
+
+/**
+ * The picture a RUN of the finished flow is judged against: the block its
+ * leading `run:` chain folds, and the steps that chain really executes — the
+ * root's plus every fragment it enters. Judging the root file alone answers a
+ * question the runner already answers differently, in both directions: a
+ * fragment's block restricts a root that declares none, and a fragment's launch
+ * narrows the platforms a root's own launch map does not.
+ *
+ * Falls back to the root file alone whenever this host cannot read that chain,
+ * because a finish that throws loses the whole recording. In CLIENT mode
+ * nothing may be read at all: `filePath` names a file on the CALLER's machine,
+ * so a same-named path here would be a different file. The walk itself gives up
+ * on a cycle, a depth limit or an unreadable hop, and it refuses a composition
+ * no target could satisfy — which is the run's verdict to deliver, not this
+ * tool's.
+ */
+async function composedFlow(
+  flow: FlowFile,
+  session: RecordingSession,
+  flowName: string
+): Promise<ComposedFlow> {
+  if (session.persist !== "host") return { requires: flow.requires, steps: flow.steps };
+  try {
+    const composed = await effectiveComposition(flow, session.filePath, flowName);
+    return { requires: composed.requires, steps: composed.steps ?? flow.steps };
+  } catch {
+    return { requires: flow.requires, steps: flow.steps };
+  }
 }
 
 /**
@@ -57,11 +97,12 @@ function launchPlatforms(flow: FlowFile): WhenPlatform[] | null {
  * moment the whole flow first exists — every earlier tool sees one step. A flow
  * with no block runs everywhere, which is right for most of them and wrong
  * silently for the rest, so the default is offered rather than assumed. Absent
- * once the flow declares a block: the question has been answered.
+ * once the RUN composes a block ({@link composedFlow}), declared here or folded
+ * in from a leading `run:` fragment: the question has been answered.
  */
-function requiresPrompt(flow: FlowFile): string | undefined {
-  if (flow.requires) return undefined;
-  const platforms = launchPlatforms(flow);
+function requiresPrompt(composed: ComposedFlow): string | undefined {
+  if (composed.requires) return undefined;
+  const platforms = launchPlatforms(composed.steps);
   const hint = platforms
     ? ` Its launch step declares an app id only for ${platforms.join(", ")}, so ` +
       `\`requires: { platform: [${platforms.join(", ")}] }\` is the likely answer. Use it in ` +
@@ -248,7 +289,7 @@ export const flowFinishRecordingTool: ToolDefinition<
     summary: string[];
     flowFile: string;
     savedTo: FlowSavedTo;
-    /** Present only while the flow declares no `requires:` block — see {@link requiresPrompt}. */
+    /** Present only while the run composes no `requires:` block — see {@link requiresPrompt}. */
     requiresPrompt?: string;
   }
 > = {
@@ -267,7 +308,7 @@ export const flowFinishRecordingTool: ToolDefinition<
   description: `Finish recording the flow named by \`name\` + \`project_root\`, leaving recordings under any other key untouched. Returns { message, path, executionPrerequisite, steps, summary, flowFile, savedTo, requiresPrompt? } - a summary of all recorded steps plus the final YAML. Use when you have added all desired steps and want to finalize the flow file. Fails if that flow has no recording in progress.
 A warning flow-add-step raised on a recorded \`await-ui-element\` is repeated in \`summary\` as a \`warning:\` line of its own, right below the step it judges, and \`message\` counts them by kind. A warning is repeated only while the step it judges is still identifiable by its number: hand-editing the .yaml during the recording moves the steps, so those warnings are DROPPED rather than pinned on whichever step inherited the number, and \`message\` says how many were dropped. A step that carries a cross-tree warning was re-probed against the runner's tree: read it before converting that wait to \`await:\`/\`assert:\`, which is what the verdict is about and what this moment is for. A step that recorded a wait which did not pass was never probed at all, and its own warning names the CAUSE, because only one of them judges the condition: an unmet wait was read and found false, and it stops the run at replay; a wait whose tree source could not be read, or one that was cancelled, observed nothing and leaves the condition UNKNOWN rather than known-bad. Read those before replaying.
 You can still edit the .yaml file directly afterwards to remove or reorder steps.
-When the finished flow declares no \`requires:\` block, the result carries a \`requiresPrompt\` — put that question to the user (should this flow be restricted to some platforms / to a TV?) and write the block into the YAML yourself if they say yes. This is the moment to ask: it is the first time the whole flow exists, and a flow with no block runs against every target.`,
+When the run composes no \`requires:\` block, the result carries a \`requiresPrompt\` — put that question to the user (should this flow be restricted to some platforms / to a TV?) and write the block into the YAML yourself if they say yes. This is the moment to ask: it is the first time the whole flow exists, and a flow with no block runs against every target.`,
   zodSchema,
   services: () => ({}),
   async execute(_services, params) {
@@ -316,7 +357,7 @@ When the finished flow declares no \`requires:\` block, the result carries a \`r
         const headline = warningHeadline(anchored, discarded);
         // Ahead of the clear for the same reason as the summary: it walks step
         // bodies, and nothing that can throw may run once the session is gone.
-        const prompt = requiresPrompt(flow);
+        const prompt = requiresPrompt(await composedFlow(flow, session, params.name));
         clearRecordingSession(session);
         return { filePath, flowFile, savedTo, flow, summary, headline, prompt };
       }

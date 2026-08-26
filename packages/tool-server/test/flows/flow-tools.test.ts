@@ -2392,6 +2392,174 @@ describe("flow-finish-recording", () => {
     expect(result.requiresPrompt).toBeUndefined();
   });
 
+  it("does not ask once a leading run: fragment's block folds into the run's", async () => {
+    // The root declares nothing yet runs nowhere but ios, so the question is
+    // already answered — and answering it again with [android] would make the
+    // fold unsatisfiable.
+    await flowStartRecordingTool.execute({}, { name: "wraps-ios-frag", project_root: tmpDir });
+    await overwriteFlowFile("ios-fragment", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios"] },
+      steps: [{ kind: "launch", app: { ios: "com.example.app" } }],
+    });
+    await overwriteFlowFile("wraps-ios-frag", {
+      executionPrerequisite: "",
+      steps: [{ kind: "run", flow: "ios-fragment.yaml" }],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "wraps-ios-frag", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toBeUndefined();
+  });
+
+  it("suggests only what a leading run: fragment's launch also serves", async () => {
+    // The root's own map names both platforms, but the fragment that certainly
+    // runs first launches ios only, so [ios, android] is a block the composed
+    // validator refuses.
+    await flowStartRecordingTool.execute({}, { name: "wrapper", project_root: tmpDir });
+    await overwriteFlowFile("reset-data", {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: { ios: "com.example.app" } }],
+    });
+    await overwriteFlowFile("wrapper", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "run", flow: "reset-data.yaml" },
+        { kind: "launch", app: { ios: "com.example.app", android: "com.example.app" } },
+        { kind: "echo", message: "body" },
+      ],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "wrapper", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toContain("`requires: { platform: [ios] }` is the likely answer");
+
+    // The offer, taken literally, has to survive the composed judgement the run
+    // makes — the same one flow-read-prerequisite reports through.
+    await overwriteFlowFile("wrapper", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios"] },
+      steps: [
+        { kind: "run", flow: "reset-data.yaml" },
+        { kind: "launch", app: { ios: "com.example.app", android: "com.example.app" } },
+        { kind: "echo", message: "body" },
+      ],
+    });
+    await expect(
+      flowReadPrerequisiteTool.execute({}, { name: "wrapper", project_root: tmpDir })
+    ).resolves.toMatchObject({ requires: "platform: [ios]" });
+  });
+
+  it("suggests the platforms only a leading run: fragment launches", async () => {
+    // The root launches nothing of its own, so a single-file read has nothing to
+    // offer — while the run really does start at the fragment's ios-only launch.
+    await flowStartRecordingTool.execute({}, { name: "no-launch-root", project_root: tmpDir });
+    await overwriteFlowFile("ios-launcher", {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: { ios: "com.example.app" } }],
+    });
+    await overwriteFlowFile("no-launch-root", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "run", flow: "ios-launcher.yaml" },
+        { kind: "echo", message: "body" },
+      ],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "no-launch-root", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toContain("`requires: { platform: [ios] }` is the likely answer");
+  });
+
+  it("finishes on the flow's own steps when the leading fragment cannot be read", async () => {
+    // A chain this host cannot walk is the run's problem to report; losing the
+    // whole recording over it would be a far worse one.
+    await flowStartRecordingTool.execute({}, { name: "broken-chain", project_root: tmpDir });
+    await overwriteFlowFile("broken-chain", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "run", flow: "not-here.yaml" },
+        { kind: "launch", app: { ios: "com.example.app" } },
+      ],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "broken-chain", project_root: tmpDir }
+    );
+
+    expect(result.steps).toBe(2);
+    expect(result.requiresPrompt).toContain("`requires: { platform: [ios] }` is the likely answer");
+  });
+
+  it("finishes on the flow's own steps when the leading blocks cannot be folded", async () => {
+    // A fold no target satisfies is the run's verdict to deliver — failing the
+    // finish over it would lose the recording, on this attempt and every retry.
+    await flowStartRecordingTool.execute({}, { name: "collides", project_root: tmpDir });
+    await overwriteFlowFile("needs-ios", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios"] },
+      steps: [{ kind: "echo", message: "reset" }],
+    });
+    await overwriteFlowFile("needs-android", {
+      executionPrerequisite: "",
+      requires: { platform: ["android"] },
+      steps: [{ kind: "echo", message: "seed" }],
+    });
+    await overwriteFlowFile("collides", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "run", flow: "needs-ios.yaml" },
+        { kind: "run", flow: "needs-android.yaml" },
+        { kind: "launch", app: { ios: "com.example.app" } },
+      ],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "collides", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toContain("`requires: { platform: [ios] }` is the likely answer");
+    expect(await getRecordingSession(tmpDir, "collides")).toBeUndefined();
+  });
+
+  it("finishes on the flow's own steps when the composed block covers no launch", async () => {
+    // The fragment's android block folds over a root that launches ios only, so
+    // the composed judgement refuses — again the run's to report, not the
+    // finish's to die on.
+    await flowStartRecordingTool.execute({}, { name: "uncovered", project_root: tmpDir });
+    await overwriteFlowFile("android-frag", {
+      executionPrerequisite: "",
+      requires: { platform: ["android"] },
+      steps: [{ kind: "echo", message: "reset" }],
+    });
+    await overwriteFlowFile("uncovered", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "run", flow: "android-frag.yaml" },
+        { kind: "launch", app: { ios: "com.example.app" } },
+      ],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "uncovered", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toContain("`requires: { platform: [ios] }` is the likely answer");
+    expect(await getRecordingSession(tmpDir, "uncovered")).toBeUndefined();
+  });
+
   it("handles empty flow", async () => {
     await flowStartRecordingTool.execute(
       {},
