@@ -28,6 +28,10 @@ const LIVE_AUTHORING = path.resolve(
   __dirname,
   "../../../skills/skills/argent-create-flow/references/live-authoring.md"
 );
+const RELIABILITY_AND_RECOVERY = path.resolve(
+  __dirname,
+  "../../../skills/skills/argent-create-flow/references/reliability-and-recovery.md"
+);
 /**
  * The three surfaces that quote the number of `idle` warnings instead of
  * listing them. They cite the reference rather than restating it, so a warning
@@ -36,12 +40,14 @@ const LIVE_AUTHORING = path.resolve(
  */
 const WARNING_COUNT_CITATIONS = [
   LIVE_AUTHORING,
-  path.resolve(
-    __dirname,
-    "../../../skills/skills/argent-create-flow/references/reliability-and-recovery.md"
-  ),
+  RELIABILITY_AND_RECOVERY,
   path.resolve(__dirname, "../../../skills/skills/argent-qa-flows/SKILL.md"),
 ];
+/**
+ * The references that open with a contents list. SKILL.md sends a reader to the
+ * top of these files, so a section the list skips is reachable only by chance.
+ */
+const CONTENTS_LISTED = [FLOW_YAML, LIVE_AUTHORING, RELIABILITY_AND_RECOVERY];
 
 /**
  * The text between two markers. BOTH are asserted: `split` on an absent
@@ -68,6 +74,29 @@ function repeatDocs(): string {
 // `…` marks an illustrative fragment (`within: <sel>`, and a deliberately
 // REJECTED spelling a doc contrasts against) — not runnable YAML.
 const runnable = (snippet: string): boolean => !snippet.includes("…") && !snippet.includes("<sel>");
+
+describe("create-flow reference contents lists", () => {
+  // GitHub's heading anchor: lowercased, punctuation dropped, spaces hyphenated.
+  const slug = (heading: string): string =>
+    heading
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s/g, "-");
+
+  it("link every `##` section of their file, in file order", () => {
+    for (const file of CONTENTS_LISTED) {
+      const text = readFileSync(file, "utf8");
+      const sections = [...text.matchAll(/^## (.+)$/gm)].map((m) => slug(m[1]!));
+      const linked = [...text.split("\n## ")[0]!.matchAll(/^- \[.+?\]\(#(.+?)\)$/gm)].map(
+        (m) => m[1]!
+      );
+      // Guard the readers themselves: a list or a heading style that stopped
+      // matching would compare two empty arrays and agree.
+      expect(sections.length, file).toBeGreaterThan(1);
+      expect(linked, file).toEqual(sections);
+    }
+  });
+});
 
 describe("create-flow selector-scope docs", () => {
   it("keeps the core skill concise and routes every relation", () => {

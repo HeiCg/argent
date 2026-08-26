@@ -8,6 +8,7 @@ Read this reference when polishing, composing, or manually reviewing a flow.
 - [Verification conditions](#verification-conditions)
 - [Prove a navigation](#prove-a-navigation-identity-then-readiness)
 - [Optional divergences](#optional-divergences)
+- [Bounded repetition](#bounded-repetition)
 - [Composition and platform limits](#composition-and-platform-limits)
 - [Snapshots and standalone runs](#snapshots-and-standalone-runs)
 - [YAML safety](#yaml-safety)
