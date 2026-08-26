@@ -2,24 +2,13 @@
 
 Read this file before creating or changing a flow. Exercise the saved path through the recorder. Perform syntax cleanup only after finishing.
 
-- [Live authoring](#live-authoring)
-  - [Recorder contract](#recorder-contract)
-  - [Start in the correct order](#start-in-the-correct-order)
-    - [iOS, Android, and Vega e2e flows](#ios-android-and-vega-e2e-flows)
-    - [Chromium e2e flows](#chromium-e2e-flows)
-    - [Fragments](#fragments)
-  - [Record the first walkthrough](#record-the-first-walkthrough)
-    - [Record identity, then readiness, after every navigation](#record-identity-then-readiness-after-every-navigation)
-    - [Record absence in three steps](#record-absence-in-three-steps)
-    - [Taps](#taps)
-    - [Typing](#typing)
-    - [Scrolling and swiping](#scrolling-and-swiping)
-    - [Live waits and checks](#live-waits-and-checks)
-    - [Wrong turns](#wrong-turns)
-  - [Finish and polish](#finish-and-polish)
-  - [Worked example](#worked-example)
-  - [Blocking audit](#blocking-audit)
-  - [Replay](#replay)
+- [Recorder contract](#recorder-contract)
+- [Start in the correct order](#start-in-the-correct-order)
+- [Record the first walkthrough](#record-the-first-walkthrough)
+- [Finish and polish](#finish-and-polish)
+- [Worked example](#worked-example)
+- [Blocking audit](#blocking-audit)
+- [Replay](#replay)
 
 ## Recorder contract
 
@@ -32,9 +21,9 @@ args: "{\"udid\":\"DEVICE\",\"x\":0.5,\"y\":0.35}"
 
 A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name` identifies the sibling flow captured as `run:`.
 
-`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. `path` resolves against the flow file being recorded, not against `project_root`; `timeout` is milliseconds. Both are recorded verbatim, and the file runs the way replay will run it. It takes no device. Read [Flow YAML](flow-yaml.md#local-scripts) for the `path` rules and the on-disk casing it refuses.
+`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. **Call it only when the user asks for a script in the prompt.** Its `path` resolves against the flow file being recorded, not against `project_root`. Read [Flow YAML: Local scripts](flow-yaml.md#local-scripts) for the rest of the syntax. The file runs the way replay runs it.
 
-**A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would otherwise be recorded against state the failed script did not establish. Its side effects are real all the same: `message` says whether anything ran, or that the runner failed around the script and cannot tell. Retry only when the re-run is safe to repeat. A transport error returns no `message` at all, and a long call that ends in one can have run the script more than once, so look at the state the script touches before you call again.
+**Argent does not undo what a failed script did.** Read `message`: it says whether anything ran, or that the runner cannot tell. A transport error returns no `message`, and the call can have run the script more than one time. Check the state that the script touches before you retry.
 
 Obey these lifecycle rules:
 
@@ -51,11 +40,10 @@ Obey these lifecycle rules:
 ### iOS, Android, and Vega e2e flows
 
 1. Call `flow-start-recording` before launching or touching the app.
-2. Record any setup `script:` with `flow-add-script`, before the restart it prepares state for. That is where it runs at replay.
-3. Record a plain `restart-app` as the first action that is neither an echo nor a script. Pass only the device id and app id. The recorder converts it to `launch:`.
-4. Record `await-ui-element` for the real first screen immediately after restart.
+2. Record a plain `restart-app` as the first action that is neither an echo nor a script. Pass only the device id and app id. The recorder converts it to `launch:`.
+3. Record `await-ui-element` for the real first screen immediately after restart.
 
-A leading script does not make the flow a fragment: the launch behind it still leads the run, so the flow is e2e and must not declare `executionPrerequisite`.
+When the user asks for a setup script, record it before the restart that it prepares state for. That is where it runs at replay.
 
 Extra restart arguments prevent `launch:` conversion. An Android `activity`, for example, leaves a raw tool step and therefore a fragment.
 
@@ -78,8 +66,6 @@ steps:
 ```
 
 The path is relative to `.argent/flows/`. Copy the live boot arguments verbatim, and omit `args` when the boot passed none. This packaging exception represents the boot already exercised live. It does not permit a rehearsed UI path.
-
-A Chromium flow's leading `launch:` boots before step 1, so a `script:` above it still runs with the app up. Record it where the walkthrough needs it; do not rely on it running first.
 
 ### Fragments
 
@@ -209,9 +195,7 @@ If polish reveals a missing action or structural check, restore its preceding st
 
 ```text
 flow-start-recording { FLOW }
-flow-add-echo { FLOW, message: "Seed a note, restart Acme Notes; expect Home" }
-flow-add-script { FLOW, path: "../../scripts/seed-note.mjs", timeout: 30000 }
-# ran here; recorded verbatim
+flow-add-echo { FLOW, message: "Restart Acme Notes; expect Home" }
 flow-add-step { FLOW, command: "restart-app", args: "{\"udid\":\"ABC\",\"bundleId\":\"com.acme.notes\"}" }
 # captured as: - launch: com.acme.notes
 flow-add-step { FLOW, command: "await-ui-element", args: "{\"udid\":\"ABC\",\"condition\":\"visible\",\"selector\":{\"identifier\":\"home-screen\"}}" }
@@ -226,10 +210,7 @@ After meaning-preserving conversion:
 
 ```yaml
 steps:
-  - echo: Seed a note, restart Acme Notes. Expect Home
-  - script:
-      path: ../../scripts/seed-note.mjs
-      timeout: 30000
+  - echo: Restart Acme Notes. Expect Home
   - launch: com.acme.notes
   - await: { visible: { id: home-screen } }
   - await: { idle: true }

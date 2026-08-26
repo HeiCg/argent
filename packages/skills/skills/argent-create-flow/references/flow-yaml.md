@@ -26,7 +26,7 @@ steps:
   - await: { idle: true }
 ```
 
-An e2e flow has a literal `launch:` as its first step that is not `echo:` or `script:`. A flow that runs a setup script before its launch is therefore e2e too. It cannot declare `executionPrerequisite`. Put the named start state in a leading echo.
+An e2e flow has a literal `launch:` as its first step that is not `echo:` or `script:`. It cannot declare `executionPrerequisite`. Put the named start state in a leading echo.
 
 A leading `run:` does not classify the outer flow as e2e, but the runner still follows the chain to the launch it reaches, and on Chromium that launch boots the app before step 1. A flow whose `run:` chain reaches a launch is refused an `executionPrerequisite` too: parse accepts the file, then the run rejects it. The one exception is a run pinned to a Chromium instance you brought to the required state yourself (`--device chromium-cdp-<port>`), where that leading launch only attaches.
 
@@ -203,28 +203,27 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 
 ## Local scripts
 
-A `script:` step runs a local `.mjs` file in a new Node process. It drives no device. Use it for work no device step can do: call an API, seed a database, clean up after a run.
+A `script:` step runs a local `.mjs` file and uses no device. **Add one only when the user asks for a script in the prompt.**
 
 ```yaml
 - script: { path: ../../scripts/seed-order.mjs }
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-Record one live with `flow-add-script` rather than typing it in afterward. See [Live authoring](live-authoring.md#recorder-contract).
+Record the step live with `flow-add-script`. Do not write it by hand. See [Live authoring](live-authoring.md#recorder-contract).
 
-- **`path`** resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension, and match the letter case on disk: a mis-cased name is refused rather than run, because macOS and Windows open it and Linux CI does not.
-- **`timeout`** is milliseconds, default 30000, and at least 100: the step starts a Node process before the script runs, and that start alone costs tens of milliseconds, so parse refuses a smaller limit outright. The host's `scripts.maxTimeoutMs` (default five minutes) caps it at the other end, and a value over that cap is clamped and reported in the step's reason, not refused.
-- **The working directory is `project_root`**, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
-- **The environment is an allowlist**, not a copy of your shell: `PATH`, `HOME`, the identity, shell, locale, terminal, temp-directory, cache and Windows platform names, the proxy and TLS names, the Node, npm, Android, Java and Apple toolchain names, `CI`, `SSH_AUTH_SOCK`, and every `npm_config_` name. Every other name is absent, `NODE_ENV` and `DATABASE_URL` included, as is each value in a project `.env` and the tool-server's own token and port. Two names that do pass carry a credential: `SSH_AUTH_SOCK` reaches the SSH agent, and an `npm_config_` name can hold a registry token. Let the script read what it needs from a file.
+The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
-The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run, and the report marks a cut on its own line. **The log has no redaction**, and it reaches the terminal and every CI log. Do not print a credential from a script.
+- **`path`** resolves against the directory of the flow file that **contains the step**. Thus a fragment finds the same script in each flow that composes it. Always write the extension, and match the letter case on disk. Argent refuses a mis-cased name on every platform. A case-sensitive checkout, for example Linux CI, cannot open the file.
+- **`timeout`** is a time in milliseconds. The default is 30000 and the minimum is 100. The host caps the value at five minutes by default. Argent clamps a larger value and names the clamp in the step's reason.
 
-Both verdicts stop the flow. The verdict names the side at fault, so CI can separate a regression from the machine that ran it.
+Argent runs the script from the project root, not from the directory of the script file. Thus `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`.
 
-| Verdict     | Cause      | Examples                                                                                                                   |
-| ----------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
-| **failed**  | the script | a missing file, a load error, a thrown error, or a non-zero exit                                                           |
-| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
+Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file.
+
+The failure verdict names the side at fault: **failed** names the script, and **errored** names the host that ran it.
+
+On Chromium the leading `launch:` boots before step 1, so a `script:` above it runs while the app is already running.
 
 ## Snapshots and standalone runs
 

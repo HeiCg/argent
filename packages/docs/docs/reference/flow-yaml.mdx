@@ -246,7 +246,7 @@ Use a snapshot for layout, color, spacing, typography, clipping and icons. Do no
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-A `script` step runs a local `.mjs` file in a new Node process.
+A `script` step runs a local `.mjs` file in a new Node process. Use a script for work that no device step can do, for example to seed a database or to clean up after a run.
 
 The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
@@ -258,17 +258,15 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 Argent runs the script with the project root as the working directory. Argent gives the script an allowlist of environment names, not your full environment. The allowlist holds these groups:
 
 - `PATH`, `HOME` and the equivalent Windows names
-- The identity, shell, locale, terminal, temporary-directory and cache names of the host
+- The identity, shell, locale, terminal, temporary-directory, cache and configuration names of the host
 - The Windows platform names
 - The proxy names and the TLS certificate names
 - The Node, npm, Android, Java and Apple toolchain names
 - `CI`, `SSH_AUTH_SOCK`, and each name that starts with `npm_config_`
 
-Argent removes each other name. Argent removes its own token, its own port and each `ARGENT_SECRET_` value. Argent does not read a project `.env` file, so a name such as `NODE_ENV` or `DATABASE_URL` is absent. There is no `env` key. Let the script read a secret or a URL from a file.
+Argent removes every other name. Argent removes its own token, its own port and each `ARGENT_SECRET_` value. A name such as `NODE_ENV` or `DATABASE_URL` is absent, even when your shell sets it. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file.
 
-Two groups in the list carry access to a credential. `SSH_AUTH_SOCK` reaches your SSH agent. An `npm_config_` name can hold a registry token. Run a script only when you trust it.
-
-Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. The report marks a cut on its own line. **Argent does not redact this log.** Do not print a credential from a script.
+Two groups in the list give the script access to a credential. `SSH_AUTH_SOCK` gives access to your SSH agent. An `npm_config_` name can contain a registry token. Run a script only when you trust it.
 
 A failed step stops the flow. The verdict names the side that caused the failure.
 
@@ -281,7 +279,7 @@ Parsing rejects a `timeout` below 100 milliseconds. The step starts a Node proce
 
 `scripts.maxTimeoutMs` caps the `timeout` of each step. `scripts.heapLimitMb` sets the heap of the process. See [Available keys](/docs/reference/configuration#available-keys).
 
-On Chromium, Argent boots the app before step 1. A script above the `launch` step therefore runs while the app is up.
+On Chromium, Argent boots the app before step 1. A script above the `launch` step therefore runs while the app is already running.
 
 ## The `argent flow` command
 
@@ -317,7 +315,7 @@ Pin `--platform` and `--device` on iOS, Android and Vega. On Chromium, pass `--p
 
 ## Remote runs
 
-The `flow-execute` tool takes one flow source: `name` for a saved flow, or `flow_path` for any file. `run:` targets and baselines resolve on the file system of the tool-server. When the tool-server runs on a different machine, a `name` run sends only that one file. Argent checks the whole flow before it runs any step, and rejects a `run:`, `script:` or `snapshot` step at any depth with an error about the missing co-location, not about a missing fragment, script or baseline. `flow_path` is refused when the agent and the tool-server do not share a file system.
+The `flow-execute` tool takes one flow source: `name` for a saved flow, or `flow_path` for any file. `run:` targets and baselines resolve on the file system of the tool-server. When the tool-server runs on a different machine, a `name` run sends only that one file. Argent checks the whole flow before it runs any step. Argent then rejects a `run:`, `script:` or `snapshot` step at any depth. The error names the missing co-location, not a missing fragment, script or baseline. `flow_path` is refused when the agent and the tool-server do not share a file system.
 
 ## YAML safety
 
