@@ -3688,37 +3688,43 @@ export async function countStepsOnDisk(filePath: string): Promise<number | undef
 /**
  * What the flow file on disk declares in `requires:` — `{ requires }` when the
  * file was read and parsed (the block, or undefined for a file that declares
- * none), or undefined when it could not be read or parsed at all. For
+ * none), or `unwitnessed` naming why the file says nothing about it. For
  * flow-start-recording's reset: `requires` is the one FlowFile field no tool
  * can write back, so the truncate carries it forward instead of silently
  * unfencing the flow. skipRequires so even a coverage-violating block survives
  * the reset rather than vanishing.
  *
- * Undefined rather than "declares none" on a failure, for the same reason
+ * `unwitnessed` rather than "declares none" on a failure, for the same reason
  * {@link countStepsOnDisk} does not report 0: a typo inside the block, an
  * unknown top-level key or an unparseable step all land here, and those are
  * exactly the files a re-record is meant to repair — so reporting the unknown
  * as "no block" would discard a fence in silence. A missing file is an answer
  * rather than a gap, so a first-time start stays silent.
  *
- * `absent` tells that missing file apart from one that parsed and declared
- * nothing, which the block alone cannot — only the first leaves the flow's
- * fence unwitnessed here, and so only the first may be answered from elsewhere.
+ * It names the REASON, because the reasons do not license the same answer:
+ * "absent" and "empty" leave the flow's fence unwitnessed here, and so only
+ * those may be answered from elsewhere, while "unreadable" and "unparsed" can
+ * only be reported — and a file that could not be READ must not be reported as
+ * one that did not parse.
  */
-export async function requiresOnDisk(
-  filePath: string
-): Promise<{ requires: DeclaredRequires | undefined; absent?: true } | undefined> {
+export async function requiresOnDisk(filePath: string): Promise<{
+  requires: DeclaredRequires | undefined;
+  unwitnessed?: "absent" | "empty" | "unreadable" | "unparsed";
+}> {
   let content: string;
   try {
     content = await fs.readFile(filePath, "utf8");
   } catch (err) {
     const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
-    return code === "ENOENT" ? { requires: undefined, absent: true } : undefined;
+    return { requires: undefined, unwitnessed: code === "ENOENT" ? "absent" : "unreadable" };
   }
+  // An empty file parses clean as a flow that declares nothing, but zero bytes
+  // are what a truncated write leaves, not what an unfencing hand-edit does.
+  if (content.trim() === "") return { requires: undefined, unwitnessed: "empty" };
   try {
     return { requires: parseFlow(content, { skipRequires: true }).requires };
   } catch {
-    return undefined;
+    return { requires: undefined, unwitnessed: "unparsed" };
   }
 }
 

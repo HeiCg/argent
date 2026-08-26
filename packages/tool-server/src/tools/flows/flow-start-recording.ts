@@ -124,7 +124,7 @@ costs the finish the cross-tree verdicts anchored to them.`,
     // step from the take being discarded can neither slip in between the reset
     // and the swap nor land after both - it finds its session superseded and
     // fails.
-    const { savedTo, replaced, discardedSteps, flowFile, carried, fileGone, requiresUnknown } =
+    const { savedTo, replaced, discardedSteps, flowFile, carried, unwitnessed } =
       await withFlowFileLock(params.project_root, params.name, async () => {
         // Read the take being discarded ONCE and drive both `restarted` and its
         // step count off that read. Count BEFORE the truncate destroys it, and
@@ -157,18 +157,21 @@ costs the finish the cross-tree verdicts anchored to them.`,
         const onDisk = persist === "host" ? await requiresOnDisk(filePath) : undefined;
         // A READABLE file is the authority, hand-edits included: one that parses
         // and declares none means the flow was unfenced on purpose, so the block
-        // dies with it. A DELETED one answers nothing, and there the take being
-        // restarted is the last witness - host mode re-reads the file into
-        // `session.flow` at every append, so the block it holds came from this
-        // same file.
-        const fileGone = onDisk?.absent === true;
-        const carried = fileGone ? replaced?.flow.requires : onDisk?.requires;
-        // A file that would not parse carries nothing AND is about to be
-        // truncated, so whether it was fenced is now unknowable - reported
+        // dies with it. A DELETED or EMPTIED one answers nothing, and there the
+        // take being restarted is the last witness - host mode re-reads the file
+        // into `session.flow` at every append, so the block it holds came from
+        // this same file.
+        //
+        // A file that could not be read or parsed carries nothing AND is about
+        // to be truncated, so whether it was fenced is now unknowable - reported
         // rather than passed off as an unfenced flow, and not answered from the
         // session either: such a file may have been mid-edit on its `requires`
         // line, which is the one thing the in-memory copy cannot know.
-        const requiresUnknown = persist === "host" && onDisk === undefined;
+        const unwitnessed = onDisk?.unwitnessed;
+        const carried =
+          unwitnessed === "absent" || unwitnessed === "empty"
+            ? replaced?.flow.requires
+            : onDisk?.requires;
 
         // The type emerges from the steps: a first `restart-app` becomes a
         // leading `launch` (flow-add-step) and makes it e2e; an
@@ -197,20 +200,22 @@ costs the finish the cross-tree verdicts anchored to them.`,
           filePath,
           flow,
         });
-        return { savedTo, replaced, discardedSteps, flowFile, carried, fileGone, requiresUnknown };
+        return { savedTo, replaced, discardedSteps, flowFile, carried, unwitnessed };
       });
 
     // The reset result otherwise reads as a fully empty flow, so say what became
     // of the block - and that hand-editing the YAML is the only way to set one.
     const requiresNote = carried
-      ? fileGone
-        ? ` The previous file was gone, so the requires block (${describeRequires(carried)}) was carried over from the take being restarted - edit the YAML to change it.`
+      ? unwitnessed
+        ? ` The previous file was ${unwitnessed === "empty" ? "empty" : "gone"}, so the requires block (${describeRequires(carried)}) was carried over from the take being restarted - edit the YAML to change it.`
         : ` Kept the existing requires block (${describeRequires(carried)}) - edit the YAML to change it.`
-      : requiresUnknown
+      : unwitnessed === "unparsed"
         ? " The previous file did not parse, so any requires block it held was dropped - re-add it by hand if the flow was fenced."
-        : persist === "client"
-          ? " This host cannot read the client-side flow file, so any requires block it may have held was not carried over - re-add it by hand if the flow was fenced."
-          : "";
+        : unwitnessed === "unreadable"
+          ? " The previous file could not be read, so any requires block it held was dropped - re-add it by hand if the flow was fenced."
+          : persist === "client"
+            ? " This host cannot read the client-side flow file, so any requires block it may have held was not carried over - re-add it by hand if the flow was fenced."
+            : "";
 
     // Recordings are keyed per flow file, so only a same-key restart replaces
     // anything; starting a *different* flow abandons nothing to report.

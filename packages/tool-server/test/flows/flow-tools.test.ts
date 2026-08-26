@@ -35,6 +35,13 @@ import {
   type FlowStep,
 } from "../../src/tools/flows/flow-utils";
 
+// Re-export `node:fs/promises` untouched, so `vi.spyOn` can swap one call out:
+// an ESM namespace object is not configurable, and the unreadable-file case
+// below needs `readFile` to fail the way EACCES does.
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
+
 /**
  * The flow as PERSISTED. The recorder deliberately no longer returns the whole
  * growing YAML per step (it was the single largest consumer of a session's
@@ -458,6 +465,106 @@ describe("flow-start-recording edge cases", () => {
     expect(result.message).not.toContain("was carried over");
     expect(parseFlow(result.flowFile).requires).toBeUndefined();
     expect(parseFlow(await readFlowFile("broken-fenced")).requires).toBeUndefined();
+  });
+
+  it("reports a file it cannot read as unreadable rather than as one that did not parse", async () => {
+    // EACCES, EISDIR and friends never reach `parseFlow`, so naming a parse
+    // outcome here would send the agent hunting a syntax error that is not
+    // there. The block is still not answered from the session: an unreadable
+    // file may hold an edit the in-memory copy never saw.
+    await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+    await overwriteFlowFile("unreadable", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios" as const] },
+      steps: [],
+    });
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "unreadable", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    expect((await getRecordingSession(tmpDir, "unreadable"))?.flow.requires).toEqual({
+      platform: ["ios"],
+    });
+    const target = path.join(flowsDirFor(tmpDir), "unreadable.yaml");
+    const realReadFile = fs.readFile;
+    const spy = vi.spyOn(fs, "readFile").mockImplementation((async (
+      p: unknown,
+      ...rest: unknown[]
+    ) => {
+      if (String(p) === target) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), {
+          code: "EACCES",
+        });
+      }
+      return (realReadFile as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+    }) as unknown as typeof fs.readFile);
+
+    const result = await flowStartRecordingTool
+      .execute({}, { name: "unreadable", project_root: tmpDir, executionPrerequisite: PREREQ })
+      .finally(() => spy.mockRestore());
+
+    expect(result.message).toContain(
+      "The previous file could not be read, so any requires block it held was dropped"
+    );
+    expect(result.message).not.toContain("did not parse");
+    expect(result.message).not.toContain("was carried over");
+    expect(parseFlow(result.flowFile).requires).toBeUndefined();
+    expect(parseFlow(await readFlowFile("unreadable")).requires).toBeUndefined();
+  });
+
+  it.each([
+    ["zero bytes", ""],
+    ["whitespace only", "\n  \n"],
+  ])(
+    "carries the take's requires block when the flow file was truncated to %s",
+    async (_label, content) => {
+      // A crashed editor or a disk-full write leaves a file that parses clean as
+      // a flow declaring nothing - the same read as a deliberate unfence, but
+      // not the same act. It witnesses nothing, so like a deleted file it is
+      // answered from the take, which read its block off this same file.
+      const requires = { platform: ["ios" as const] };
+      await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+      await overwriteFlowFile("truncated", {
+        executionPrerequisite: "",
+        requires,
+        steps: [{ kind: "echo", message: "old take" }],
+      });
+      const first = await flowStartRecordingTool.execute(
+        {},
+        { name: "truncated", project_root: tmpDir, executionPrerequisite: PREREQ }
+      );
+      expect(first.message).toContain("Kept the existing requires block (platform: [ios])");
+      await fs.writeFile(path.join(flowsDirFor(tmpDir), "truncated.yaml"), content, "utf8");
+
+      const result = await flowStartRecordingTool.execute(
+        {},
+        { name: "truncated", project_root: tmpDir, executionPrerequisite: PREREQ }
+      );
+
+      expect(result.restarted).toBe(true);
+      expect(parseFlow(result.flowFile).requires).toEqual(requires);
+      expect(parseFlow(await readFlowFile("truncated")).requires).toEqual(requires);
+      expect(result.message).toContain(
+        "The previous file was empty, so the requires block (platform: [ios]) was carried over " +
+          "from the take being restarted - edit the YAML to change it."
+      );
+      expect(result.message).not.toContain("did not parse");
+    }
+  );
+
+  it("says nothing about requires when an empty file has no take to answer for it", async () => {
+    // Same silence as a missing file: nothing on disk, nothing in memory, so
+    // there is no block to carry and none known to have been dropped.
+    await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+    await fs.writeFile(path.join(flowsDirFor(tmpDir), "touched.yaml"), "", "utf8");
+
+    const result = await flowStartRecordingTool.execute(
+      {},
+      { name: "touched", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    expect(result.message).not.toContain("requires");
+    expect(parseFlow(result.flowFile).requires).toBeUndefined();
   });
 
   it("mentions no requires block when the replaced file had none", async () => {
