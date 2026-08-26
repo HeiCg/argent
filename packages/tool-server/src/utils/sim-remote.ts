@@ -87,6 +87,18 @@ export function listedRuntimeEntries(
   );
 }
 
+/**
+ * A runtime entry's usable simulators. A row that is not an object carrying a
+ * string `udid` is dropped, so one malformed row costs its own simulator rather
+ * than every row behind it.
+ */
+export function listedRuntimeDevices(devices: SimRemoteDevice[]): SimRemoteDevice[] {
+  return (devices as unknown[]).filter(
+    (d): d is SimRemoteDevice =>
+      typeof d === "object" && d !== null && typeof (d as { udid?: unknown }).udid === "string"
+  );
+}
+
 // A simulator's runtime kind is fixed at creation, so memoize it per bare udid
 // and keep the `sim-remote simctl list` round-trip off repeated calls — the
 // same deal (and the same shape) as the local `getSimulatorRuntimeKind`, down
@@ -124,7 +136,8 @@ export async function getRemoteSimulatorRuntimeKind(
     if (!isIosOrTvOsRuntimeId(runtimeId)) continue;
     // Mirror `listRemoteIosSimulators`' availability filter, so a simulator
     // `list-devices` hides can't be the one that answers here.
-    if (!devices.some((d: SimRemoteDevice) => d.udid === bare && d.isAvailable !== false)) continue;
+    if (!listedRuntimeDevices(devices).some((d) => d.udid === bare && d.isAvailable !== false))
+      continue;
     const kind = runtimeKindFromRuntimeId(runtimeId);
     remoteRuntimeKindCache.set(bare, kind);
     return kind;

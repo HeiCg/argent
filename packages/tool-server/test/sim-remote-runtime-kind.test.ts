@@ -135,6 +135,16 @@ describe("getRemoteSimulatorRuntimeKind", () => {
     expect(await getRemoteSimulatorRuntimeKind(UDID)).toBe("tv");
   });
 
+  it("skips a malformed device row rather than throwing, so a healthy row still answers", async () => {
+    listing = {
+      devices: {
+        [IOS_RUNTIME]: [null, { name: "No udid", state: "Shutdown" }],
+        [TVOS_RUNTIME]: [sim(UDID)],
+      },
+    };
+    expect(await getRemoteSimulatorRuntimeKind(UDID)).toBe("tv");
+  });
+
   it("wraps a JSON payload that is not a listing in a descriptive error", async () => {
     // An orchestrator that answers `{"error":...}` at exit 0 parses fine, and
     // must not reach the caller as a raw TypeError.
