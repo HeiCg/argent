@@ -670,6 +670,31 @@ describe("an explicitly targeted run", () => {
     expect(invokeTool).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["vega", "mobile", "tv"],
+    ["chromium", "tv", "mobile"],
+  ] as const)(
+    "fails a %s platform param on the kind it never presents, before listing any device",
+    async (platform, required, constant) => {
+      // One per CONSTANT_RUNTIME_KIND entry: the kind is decided from the
+      // platform alone, so the refusal is the skip code a directory run turns
+      // into a per-flow skip. Without the entry the run falls through to device
+      // resolution, which reds the batch and spends a `list-devices` round trip
+      // to do it.
+      await writeFlow("kind-gate", { requires: { runtimeKind: required } });
+      const { registry, invokeTool } = mockRegistry();
+
+      const err = await run(registry, "kind-gate", { platform }).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain(
+        `excludes the ${platform} target this run was pointed at — ${platform} is always ` +
+          `${constant}. Run it against a matching target, or relax the requirement.`
+      );
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
+      expect(invokeTool).not.toHaveBeenCalled();
+    }
+  );
+
   it("runs when the device satisfies the requirement", async () => {
     await writeFlow("ios-only", { requires: { platform: ["ios"] } });
     const { registry } = mockRegistry();
