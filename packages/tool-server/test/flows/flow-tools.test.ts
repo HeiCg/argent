@@ -368,6 +368,35 @@ describe("flow-start-recording edge cases", () => {
     expect(parseFlow(await readFlowFile("fenced-live")).requires).toEqual(requires);
   });
 
+  it("carries a block no target can satisfy, so the re-record that repairs it can start", async () => {
+    // The block parses, so it comes back from the disk read intact and lands on
+    // the reset flow. Judging it here would throw at the START of the recording,
+    // leaving a hand-edit as the only repair for the file the author came here
+    // to replace.
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "unsatisfiable", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    const impossible = "requires: { platform: [chromium], runtimeKind: tv }\nsteps: []\n";
+    expect(() => parseFlow(impossible)).toThrow(/can never be satisfied/);
+    await fs.writeFile(path.join(flowsDirFor(tmpDir), "unsatisfiable.yaml"), impossible, "utf8");
+
+    const result = await flowStartRecordingTool.execute(
+      {},
+      { name: "unsatisfiable", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const requires = { platform: ["chromium" as const], runtimeKind: "tv" as const };
+    expect(result.restarted).toBe(true);
+    expect(result.message).toContain(
+      "Kept the existing requires block (platform: [chromium], runtimeKind: tv)"
+    );
+    expect(parseFlow(result.flowFile, { skipRequires: true }).requires).toEqual(requires);
+    expect(parseFlow(await readFlowFile("unsatisfiable"), { skipRequires: true }).requires).toEqual(
+      requires
+    );
+  });
+
   it("carries the take's requires block when the flow file was deleted between two starts", async () => {
     // The one loss path with nothing left to read: the file the fence lived in
     // is gone, so the take being restarted is its last witness - it read that
