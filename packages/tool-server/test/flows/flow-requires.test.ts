@@ -432,6 +432,87 @@ describe("requirements no target could satisfy are rejected at parse", () => {
       )
     ).not.toThrow();
   });
+
+  it("refuses a block whose only platform runs nothing but the guards", () => {
+    // Every step is android-guarded, so the one platform the block admits runs
+    // an empty flow - green on ios forever, skipped everywhere else.
+    let err: unknown;
+    try {
+      parseFlow(
+        [
+          "requires: { platform: [ios] }",
+          "steps:",
+          "  - when: { platform: android }",
+          "    steps:",
+          "      - tool: tap",
+          "        args: {}",
+        ].join("\n")
+      );
+    } catch (e) {
+      err = e;
+    }
+    expect((err as Error).message).toMatch(
+      /can never be satisfied: no platform it admits \(ios\) runs any step/
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
+  });
+
+  it("refuses a runtime-kind-only block every guard shuts out", () => {
+    // chromium is never a tv, so the platforms a tv requirement admits all run
+    // nothing here - the runtimeKind half of the case above.
+    expect(() =>
+      parseFlow(
+        [
+          "requires: { runtimeKind: tv }",
+          "steps:",
+          "  - when: { platform: chromium }",
+          "    steps: [{ tool: tap, args: {} }]",
+        ].join("\n")
+      )
+    ).toThrow(
+      /no platform it admits \(ios, android, vega\) runs any step — the steps sit behind guards for chromium, which requires\.runtimeKind: tv excludes, so move the steps out of those guards, or drop requires\.runtimeKind/
+    );
+  });
+
+  it("blames runtimeKind, not the platform list, when the list already names the runner", () => {
+    // chromium is declared and runs every step - only the tv requirement shuts
+    // it out, so widening the list is no remedy.
+    expect(() =>
+      parseFlow(
+        [
+          "requires: { platform: [ios, chromium], runtimeKind: tv }",
+          "steps:",
+          "  - when: { platform: chromium }",
+          "    steps: [{ tool: tap, args: {} }]",
+        ].join("\n")
+      )
+    ).toThrow(
+      /no platform it admits \(ios\) runs any step — the steps sit behind guards for chromium, which requires\.runtimeKind: tv excludes, so move the steps out of those guards, or drop requires\.runtimeKind/
+    );
+  });
+
+  it("accepts a guard admitting a platform the block admits too", () => {
+    expect(() =>
+      parseFlow(
+        [
+          "requires: { platform: [ios, android] }",
+          "steps:",
+          "  - when: { platform: android }",
+          "    steps: [{ tool: tap, args: {} }]",
+        ].join("\n")
+      )
+    ).not.toThrow();
+  });
+
+  it("accepts an unguarded flow, which every platform runs", () => {
+    expect(() =>
+      parseFlow("requires: { platform: [ios] }\nsteps: [{ tool: tap, args: {} }]")
+    ).not.toThrow();
+  });
+
+  it("accepts an empty step list, which flow-start-recording's reset writes", () => {
+    expect(() => parseFlow("requires: { platform: [ios] }\nsteps: []")).not.toThrow();
+  });
 });
 
 describe("an explicitly targeted run", () => {

@@ -3083,6 +3083,34 @@ function validateRequires(flow: FlowFile): void {
     );
   }
 
+  // A `when: { platform: X }` guard takes its body out of scope on every other
+  // platform, so a block admitting only platforms with an empty scope certifies a
+  // file that runs nothing on every target it allows. A file that runs nothing
+  // anywhere — flow-start-recording's `steps: []` reset — is not that mistake.
+  const declared: readonly WhenPlatform[] = platform ?? LAUNCH_PLATFORMS;
+  const admitted = runtimeKind
+    ? declared.filter((p) => platformCanPresent(p, runtimeKind))
+    : declared;
+  if (
+    !admitted.some((p) => runsSteps(flow.steps, p)) &&
+    LAUNCH_PLATFORMS.some((p) => runsSteps(flow.steps, p))
+  ) {
+    // Which key shut the runners out picks the remedy: widening the platform
+    // list is no fix for a platform it already names and runtimeKind rejects.
+    const shutOutByKind = runtimeKind
+      ? declared.filter((p) => runsSteps(flow.steps, p) && !platformCanPresent(p, runtimeKind))
+      : [];
+    throw unsatisfiable(
+      `no platform it admits (${admitted.join(", ")}) runs any step — ` +
+        (shutOutByKind.length > 0
+          ? `the steps sit behind guards for ${shutOutByKind.join(", ")}, which ` +
+            `requires.runtimeKind: ${runtimeKind} excludes, so move the steps out of those ` +
+            `guards, or drop requires.runtimeKind`
+          : `every step sits behind a when: platform guard for another platform, so move the ` +
+            `steps out of those guards, or widen requires.platform`)
+    );
+  }
+
   const detail = launchCoverageFailure([{ steps: flow.steps }], requires);
   if (detail) throw unsatisfiable(detail);
 }
