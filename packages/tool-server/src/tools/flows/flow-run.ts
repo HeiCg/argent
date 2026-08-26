@@ -2375,14 +2375,12 @@ async function execLeafStep(
         // read judged the condition. Asking the signal instead would score a
         // GENUINE miss that resolved in the same tick as an unrelated cancel a
         // cancellation.
+        // Unmarked, like `case "wait"` and the `await:` directive: a wait polls
+        // the tree and calls no device tool, so `reached` - which says a skip is
+        // no proof of an untouched device - would be a claim about a step that
+        // dispatched nothing.
         if (isUnmetUiWaitResult(step.name, result) && unmetUiWaitCause(result) === "cancelled") {
-          return {
-            ...base,
-            status: "skip",
-            tool: step.name,
-            reason: "run aborted during wait",
-            reached: true,
-          };
+          return { ...base, status: "skip", tool: step.name, reason: "run aborted during wait" };
         }
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;

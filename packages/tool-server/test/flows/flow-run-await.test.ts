@@ -216,7 +216,9 @@ steps:
       reason: "run aborted during wait",
     });
     expect(result.steps[0]!.reason).not.toContain("condition not met");
-    expect(result.steps[0]!.reached).toBe(true);
+    // Unmarked: the wait read the tree and dispatched nothing, so the skip IS
+    // proof of an untouched device - the same answer `wait` and `await:` give.
+    expect(result.steps[0]!.reached).toBeUndefined();
   });
 
   it("scores the same cancelled wait the same way through run-sequence", async () => {

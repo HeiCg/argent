@@ -1887,6 +1887,69 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("compose-cancelled")).steps).toEqual([]);
   });
 
+  it("stays silent when the cancelled composed flow had only WAITED", async () => {
+    const controller = new AbortController();
+    const invoked: string[] = [];
+    const runnerRegistry = {
+      invokeTool: vi.fn(async (id: string) => {
+        invoked.push(id);
+        controller.abort();
+        return {
+          success: false,
+          elapsed: 12,
+          note: "wait was cancelled before the condition was met",
+          cause: "cancelled",
+        };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    const runFlow = createRunFlowTool(runnerRegistry);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown, opts?: unknown) =>
+        id === "flow-execute"
+          ? runFlow.execute({}, args as never, opts as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute({}, { name: "compose-wait-only", project_root: tmpDir });
+    await writeSiblingFlow(
+      "frag-wait",
+      [
+        'executionPrerequisite: ""',
+        "steps:",
+        "  - tool: await-ui-element",
+        "    args: { condition: visible, selector: { text: Continue } }",
+        "",
+      ].join("\n")
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-wait-only",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify({
+          name: "frag-wait",
+          project_root: tmpDir,
+          device: "00000000-0000-0000-0000-0000000000ab",
+        }),
+      },
+      { signal: controller.signal } as never
+    );
+
+    // The composed run polled the tree and called no device tool, so there is
+    // no prefix to check the device against - unlike the dispatching twin above.
+    expect(invoked).toEqual(["await-ui-element"]);
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).not.toContain("may already have");
+    expect(result.recorded).toBeUndefined();
+    expect(parseFlow(await onDisk("compose-wait-only")).steps).toEqual([]);
+  });
+
   it("does not record run: when flow-execute returned a prerequisite notice", async () => {
     const registry = createMockRegistry({
       "flow-execute": {
