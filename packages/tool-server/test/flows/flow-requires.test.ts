@@ -753,6 +753,22 @@ describe("requirements narrow device auto-detection", () => {
     expect((err as Error).message).toMatch(/pass --device to disambiguate\./);
   });
 
+  it("says the lone match has no id rather than asking to disambiguate one device", async () => {
+    // The row passed every filter but carries no udid, so there is nothing to
+    // run against — and nothing for a `--device` choice to be made between.
+    await writeFlow("ios-only", { requires: { platform: ["ios"] } });
+    const { registry } = mockRegistry([{ platform: "ios", state: "Booted" }]);
+
+    const err = await run(registry, "ios-only").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_DEVICE_RESOLUTION);
+    expect((err as Error).message).toContain(
+      `1 booted device matched, but the listing reported no id for it, so it cannot be run ` +
+        `against — pass a device id explicitly. Available devices: ? (ios, Booted).`
+    );
+    expect((err as Error).message).not.toMatch(/to disambiguate/);
+  });
+
   it("admits a listed vega device by its constant kind, with no listing field", async () => {
     // Kills a listedRuntimeKind mutation whose vega arm reads the (absent)
     // listing field instead of answering "tv" - the device would be excluded

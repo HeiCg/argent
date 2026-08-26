@@ -432,6 +432,11 @@ export async function resolveFlowDevice(
     }
     const id = deviceEntryId(eligible[0]);
     if (id) return resolveDevice(id);
+    throw deviceResolutionError(
+      `1 booted device matched, but the listing reported no id for it, so it cannot be run ` +
+        `against — pass a device id explicitly.`,
+      devices
+    );
   }
   if (eligible.length === 0) {
     // Requirements are only to blame when something was booted for them to
