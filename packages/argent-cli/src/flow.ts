@@ -997,7 +997,7 @@ interface BatchFlowResult {
  * target. A directory run turns exactly this into a per-flow skip: a mixed
  * suite is meant to hold flows for platforms this run is not on, so filtering
  * them out is the feature, not a fault. Every other validation rejection stays
- * a failure — those are broken files.
+ * a failure — a broken file, or a probe that could not answer.
  */
 const REQUIREMENTS_UNMET_CODE: string = FAILURE_CODES.FLOW_REQUIREMENTS_UNMET;
 
