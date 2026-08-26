@@ -202,8 +202,10 @@ function platformMeets(platform: Platform, required: readonly WhenPlatform[]): b
  * or an Android target that dropped off adb. Callers refuse rather than waving
  * it through: a TV requirement nobody verified is exactly the silent pass this
  * block exists to prevent. A probe whose transport itself fails (sim-remote
- * auth, a broken simctl/adb) REJECTS with that failure's own message instead of
- * folding into undefined, so the caller can name the real fault.
+ * auth, a broken adb) REJECTS with that failure's own message instead of
+ * folding into undefined, so the caller can name the real fault — except the
+ * local simulator arm, whose listing degrades a broken xcrun to an empty list
+ * and so answers undefined.
  */
 async function probeRuntimeKind(device: DeviceInfo): Promise<FlowRuntimeKind | undefined> {
   switch (device.platform) {
@@ -292,8 +294,8 @@ export async function assertDeviceMeetsRequires(
   if (kind === undefined) {
     throw requirementsUnverifiableError(
       `${declared} The runtime kind of device ${device.id} could not be determined ` +
-        `(${device.platform}), so the requirement cannot be verified. Pass a device whose ` +
-        `kind is readable, or drop runtimeKind.`
+        `(${device.platform}), so the requirement cannot be verified. Check that the device is ` +
+        `listed and its toolchain (xcrun, adb) is working, or drop runtimeKind.`
     );
   }
   if (kind !== requires.runtimeKind) {
