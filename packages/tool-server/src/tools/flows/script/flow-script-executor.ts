@@ -628,7 +628,6 @@ export class FlowScriptExecutor {
     // inherited the streams and is holding them open.
     await Promise.race([closed, sleep(SETTLE_TIMEOUT_MS)]);
     await stop();
-    heapWatch.end();
     child.stdout?.destroy();
     child.stderr?.destroy();
     lifeline?.destroy?.();
@@ -1274,10 +1273,6 @@ class HeapFatalWatch {
 
   push(chunk: Buffer): void {
     this.scan(this.decoder.write(chunk));
-  }
-
-  end(): void {
-    this.scan(this.decoder.end());
   }
 
   get seen(): boolean {
