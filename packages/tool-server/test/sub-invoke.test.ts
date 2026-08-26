@@ -95,6 +95,39 @@ describe("invokeSubTool", () => {
     );
   });
 
+  it("forwards inRepeatFlowScope on the unattributed path when set via overrides", async () => {
+    const registry = mockRegistry();
+    const ctx = { artifacts: {} } as unknown as ToolContext;
+
+    await invokeSubTool(
+      registry,
+      ctx,
+      "flow-execute",
+      { name: "frag" },
+      { inRepeatFlowScope: true }
+    );
+
+    // Exact third arg: with no recorder and no signal the scope is the only option.
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "flow-execute",
+      { name: "frag" },
+      { inRepeatFlowScope: true }
+    );
+  });
+
+  it("inherits inRepeatFlowScope from ctx on the unattributed path", async () => {
+    const registry = mockRegistry();
+    const ctx = { artifacts: {}, inRepeatFlowScope: true } as unknown as ToolContext;
+
+    await invokeSubTool(registry, ctx, "flow-execute", { name: "frag" });
+
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "flow-execute",
+      { name: "frag" },
+      { inRepeatFlowScope: true }
+    );
+  });
+
   it("mints a distinct id per call", async () => {
     const registry = mockRegistry();
     const recordChildInvocation = vi.fn((_id: string) => vi.fn());
