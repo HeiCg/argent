@@ -19,10 +19,12 @@ const IOS_UDID_SHAPE =
  * Physical iOS device UDID format (A12/2018 hardware and newer): 8 hex digits,
  * a dash, then 16 hex digits (e.g. `00008110-000978540290401E`). Distinct from
  * both the simulator UUID shape and every known Android serial form, so it is
- * safe to classify by shape on the hot path. Legacy 40-hex UDIDs (pre-A12
- * hardware) are ambiguous with Android serials and deliberately unsupported:
- * those devices cannot run iOS 17, the floor for the CoreDevice (`devicectl`)
- * tooling this backend is built on.
+ * safe to classify by shape on the hot path. Legacy 40-hex UDIDs (A11 hardware
+ * and older) are deliberately unsupported: 40 bare hex characters are
+ * ambiguous with Android serials, so classifying them by shape here would
+ * misroute a device. Age alone would not settle it - the A10 iPad 6th and 7th
+ * generations carry a 40-hex UDID and do run iPadOS 17, the floor for the
+ * CoreDevice (`devicectl`) tooling this backend is built on.
  */
 const IOS_PHYSICAL_UDID_SHAPE = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/;
 

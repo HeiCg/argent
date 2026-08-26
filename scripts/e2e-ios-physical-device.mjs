@@ -18,9 +18,12 @@
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
-const TS = new URL("../packages/tool-server/", import.meta.url).pathname;
-const { createRegistry } = require(`${TS}dist/utils/setup-registry.js`);
-const { listIosPhysicalDevices } = require(`${TS}dist/utils/ios-device/devicectl.js`);
+// Relative specifiers, resolved by `require` against this file: a URL
+// `pathname` is percent-encoded, so a checkout under a path with spaces would
+// hand `require` a `%20` that no file matches.
+const TS = "../packages/tool-server/dist";
+const { createRegistry } = require(`${TS}/utils/setup-registry.js`);
+const { listIosPhysicalDevices } = require(`${TS}/utils/ios-device/devicectl.js`);
 
 const BUNDLE_ID = process.env.E2E_BUNDLE_ID || "host.exp.Exponent";
 
