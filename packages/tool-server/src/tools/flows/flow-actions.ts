@@ -783,9 +783,12 @@ function containerContainsTarget(
   frame: DescribeFrame,
   direction: ScrollDirection
 ): boolean {
+  const vertical = direction === "down" || direction === "up";
+  // Capped at the target's own extent along the axis: more overhang than the
+  // target has to give would admit a container disjoint from it.
+  const entrySlack = Math.min(EDGE_AVOID_SCREEN_EPS, vertical ? frame.height : frame.width);
   // Sides named by the direction that reveals from them (see targetScrollerFrame).
-  const slack = (side: ScrollDirection): number =>
-    side === direction ? EDGE_AVOID_SCREEN_EPS : EDGE_EPS;
+  const slack = (side: ScrollDirection): number => (side === direction ? entrySlack : EDGE_EPS);
   return (
     container.x <= frame.x + slack("left") &&
     container.y <= frame.y + slack("up") &&
@@ -822,11 +825,11 @@ function containerContainsTarget(
  * never nudges.) The entry
  * edge for `direction` - the candidate's bottom for `down`, right for
  * `right`, top for `up`, left for `left`, mirroring entryEdgeDeficit -
- * therefore allows EDGE_AVOID_SCREEN_EPS of target overhang. That is a bound,
- * not a guess: a nudge needs the clip's entry edge within
- * EDGE_AVOID_SCREEN_EPS of the screen edge, and an accepted shape-1 target's
- * entry edge sits at most 1 - EDGE_EPS, so no nudgeable case can overhang
- * further. The other three sides keep the EDGE_EPS float-rounding hair.
+ * therefore allows EDGE_AVOID_SCREEN_EPS of target overhang, capped at the
+ * target's own extent along the axis so the two axis checks still mean "the
+ * target's start edge is at or inside the candidate" - uncapped, a candidate
+ * disjoint from the target passes and wins the arg-min over its real owner.
+ * The other three sides keep the EDGE_EPS float-rounding hair.
  *
  * Two accepted limitations. An overlay pinned OVER a scroller (a FAB, a
  * floating bar drawn inside the scroller's rect) geometrically passes this

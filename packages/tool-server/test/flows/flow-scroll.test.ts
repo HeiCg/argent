@@ -2173,6 +2173,41 @@ ${paragraphs()}
     expect(swipes[0].fromY - swipes[0].toY).toBeCloseTo(0.105, 5);
   });
 
+  it("refuses a scroller the entry slack admits but the target does not reach", async () => {
+    // The other end of that magnitude, where the slack's CAP is what decides:
+    // a pane at y 0.5..0.955 and the row flush at 0.96..0.99, disjoint by
+    // 0.005. An uncapped 0.05 slack admits the pane and its 0.455 area wins
+    // the arg-min over the full-screen list that really owns the row - a
+    // 0.2025 swipe anchored at the pane's own centre (y 0.7275). Capped at
+    // the row's 0.03 extent the pane holds no part of it, so the list becomes
+    // the clip and the reach gate vetoes the nudge: the pane covers the
+    // list's centre and owns no row.
+    currentTree = () =>
+      screen([
+        fullScreenScroller(),
+        n({ role: "AXScrollArea", frame: { x: 0, y: 0.5, width: 1, height: 0.455 } }),
+        n({ label: "Order #1234", frame: { x: 0.1, y: 0.96, width: 0.8, height: 0.03 } }),
+      ]);
+
+    const swipes: SwipeCall[] = [];
+    const registry = mockRegistry(swipes);
+
+    await writeFlow("disjoint-pane", {
+      executionPrerequisite: "",
+      steps: [{ kind: "scroll-to", target: { text: "Order #1234" }, direction: "down" }],
+    });
+
+    const tool = createRunFlowTool(registry);
+    const result = asRun(
+      await tool.execute({}, { name: "disjoint-pane", project_root: tmpDir, device: DEVICE })
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.steps[0].status).toBe("pass");
+    expect(result.steps[0].warning).toBeUndefined();
+    expect(swipes).toHaveLength(0);
+  });
+
   it("anchors the nudge at the target's scroller centre, not the screen centre", async () => {
     // A full-bleed-ish scroller offset under a header: y 0.04..1.0, so its
     // centre is 0.52 — not the screen's 0.5. The row (its flat sibling)
