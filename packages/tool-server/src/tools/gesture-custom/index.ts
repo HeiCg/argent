@@ -68,36 +68,58 @@ const capability: ToolCapability = {
 // coordinates without swallowing genuine short drags.
 const SAME_POINT_EPSILON = 0.005;
 
+type GestureEvent = Params["events"][number];
+
+type IosDeviceGesturePlan =
+  | { kind: "gesture"; down: GestureEvent; up: GestureEvent }
+  | { kind: "unsupported"; reason: string };
+
 /**
- * Physical-iOS backend: XCTest has no raw HID stream, so instead of replaying
- * the event train it maps the two shapes the runner can execute faithfully:
- * a press-hold (`Down` then `Up` at the same point → runner `longPress`) and a
- * straight single-finger drag (`Down` then `Up` elsewhere → runner `drag`).
- * Everything else (second finger, waypoint `Move`s) is rejected up front with
- * authoring guidance rather than approximated into a different gesture. The
- * raw `events` are inspected, not the interpolated train: interpolation only
- * smooths the HID stream, and the runner plans its own gesture.
+ * The runner's plan for one event train, or the reason it has none. XCTest has
+ * no raw HID stream, so the physical-iOS backend maps only the two shapes it
+ * can execute faithfully: a press-hold (`Down` then `Up` at the same point →
+ * runner `longPress`) and a straight single-finger drag (`Down` then `Up`
+ * elsewhere → runner `drag`). Everything else (second finger, waypoint
+ * `Move`s) is rejected with authoring guidance rather than approximated into a
+ * different gesture.
+ *
+ * A pure read of the request, so `services()` can consult it too and skip
+ * declaring the runner for a train `execute` will reject: a rejected gesture
+ * must not pay a runner cold start (an xcodebuild build of up to 15 minutes,
+ * then a 120s ready-wait). The raw `events` are inspected, not the interpolated
+ * train: interpolation only smooths the HID stream, and the runner plans its
+ * own gesture.
  */
+function planIosDeviceGesture(events: Params["events"]): IosDeviceGesturePlan {
+  if (events.some((e) => e.x2 !== undefined || e.y2 !== undefined)) {
+    return {
+      kind: "unsupported",
+      reason:
+        "gesture-custom on a physical iOS device supports single-finger gestures only; " +
+        "two-finger event trains (pinch/rotate) have no XCTest coordinate API.",
+    };
+  }
+  const [down, up] = events;
+  if (events.length !== 2 || down?.type !== "Down" || up?.type !== "Up") {
+    return {
+      kind: "unsupported",
+      reason:
+        "gesture-custom on a physical iOS device supports exactly a Down followed by an Up: " +
+        "same point = press-hold, different points = straight drag. For scrolls use " +
+        "gesture-swipe; waypoint Move events cannot be replayed through XCTest.",
+    };
+  }
+  return { kind: "gesture", down, up };
+}
+
 async function runOnIosDevice(
   runner: IosDeviceRunnerApi,
   udid: string,
   events: Params["events"]
 ): Promise<Result> {
-  const twoFinger = events.some((e) => e.x2 !== undefined || e.y2 !== undefined);
-  if (twoFinger) {
-    throw new InvalidToolInputError(
-      "gesture-custom on a physical iOS device supports single-finger gestures only; " +
-        "two-finger event trains (pinch/rotate) have no XCTest coordinate API."
-    );
-  }
-  const [down, up] = events;
-  if (events.length !== 2 || down?.type !== "Down" || up?.type !== "Up") {
-    throw new InvalidToolInputError(
-      "gesture-custom on a physical iOS device supports exactly a Down followed by an Up: " +
-        "same point = press-hold, different points = straight drag. For scrolls use " +
-        "gesture-swipe; waypoint Move events cannot be replayed through XCTest."
-    );
-  }
+  const plan = planIosDeviceGesture(events);
+  if (plan.kind === "unsupported") throw new InvalidToolInputError(plan.reason);
+  const { down, up } = plan;
   const bundleId = requireCurrentIosDeviceApp(udid);
   const viewport = await getViewport(runner, bundleId);
   const durationMs = up.delayMs ?? 16;
@@ -148,10 +170,16 @@ Example pinch-to-zoom (with interpolate:10 for smoothness):
   interpolate: 10`,
   zodSchema,
   capability,
+  // The physical-iOS runner is declared only for an event train the runner can
+  // actually replay: `execute` rejects the rest with authoring guidance, and
+  // that rejection must not first pay a runner cold start (see
+  // planIosDeviceGesture).
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
     if (isIosPhysicalDevice(device)) {
-      return { iosDeviceRunner: iosDeviceRunnerRef(device) };
+      return planIosDeviceGesture(params.events).kind === "gesture"
+        ? { iosDeviceRunner: iosDeviceRunnerRef(device) }
+        : {};
     }
     return { simulatorServer: simulatorServerRef(device) };
   },
