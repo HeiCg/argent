@@ -3157,23 +3157,25 @@ export function foldLeadingRequires(
     : fragments;
 
   let platform: WhenPlatform[] | undefined;
-  const platformOwners: string[] = [];
+  // A set: the leading scan enters a fragment once per `run:` step that reaches it.
+  const platformOwners = new Set<string>();
   let runtimeKind: FlowRuntimeKind | undefined;
   let kindOwner = "";
-  const names = (owners: string[]): string => owners.map((o) => `"${o}"`).join(" and ");
+  const names = (owners: ReadonlySet<string>): string =>
+    [...owners].map((o) => `"${o}"`).join(" and ");
   for (const { flow, requires } of contributions) {
     if (requires.platform) {
       const prior = platform;
       const next = prior ? requires.platform.filter((p) => prior.includes(p)) : requires.platform;
       if (prior && next.length === 0) {
         throw unsatisfiableTogether(
-          `${names(platformOwners)} require${platformOwners.length > 1 ? "" : "s"} platform: ` +
+          `${names(platformOwners)} leave${platformOwners.size > 1 ? "" : "s"} platform: ` +
             `[${prior.join(", ")}] and "${flow}" requires platform: ` +
             `[${requires.platform.join(", ")}] — no platform satisfies both`
         );
       }
       platform = next;
-      platformOwners.push(flow);
+      platformOwners.add(flow);
     }
     if (requires.runtimeKind) {
       if (runtimeKind && runtimeKind !== requires.runtimeKind) {
@@ -3191,7 +3193,7 @@ export function foldLeadingRequires(
   const kind = runtimeKind;
   if (platform && kind && !platform.some((p) => platformCanPresent(p, kind))) {
     throw unsatisfiableTogether(
-      `${names(platformOwners)} leave${platformOwners.length > 1 ? "" : "s"} platform: ` +
+      `${names(platformOwners)} leave${platformOwners.size > 1 ? "" : "s"} platform: ` +
         `[${platform.join(", ")}] and "${kindOwner}" requires runtimeKind: ${kind}, ` +
         `which no platform in that list ever presents`
     );

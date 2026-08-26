@@ -1264,8 +1264,61 @@ describe("requires folded along the leading run: chain", () => {
     // The platform arm, named: the kind arms below must not be able to answer
     // for it, and this one must not answer for them.
     expect((err as Error).message).toMatch(
-      /"composed" requires platform: \[ios\] and "android-frag" requires platform: \[android\] — no platform satisfies both/
+      /"composed" leaves platform: \[ios\] and "android-frag" requires platform: \[android\] — no platform satisfies both/
     );
+  });
+
+  it("names the surviving list as one the files leave, not one any file declares", async () => {
+    // [ios, android] ∩ [android, chromium] leaves [android], which no file
+    // wrote — saying they require it sends the author looking for a
+    // declaration nobody made.
+    await writeFlow("ac-frag", {
+      requires: { platform: ["android", "chromium"] },
+      steps: [{ kind: "echo", message: "no executable step" }],
+    });
+    await writeFlow("ios-frag", { requires: { platform: ["ios"] } });
+    await writeFlow("chain-root", {
+      requires: { platform: ["ios", "android"] },
+      steps: [
+        { kind: "run", flow: "ac-frag.yaml" },
+        { kind: "run", flow: "ios-frag.yaml" },
+      ],
+    });
+    const { registry } = mockRegistry([iosEntry(IOS), androidEntry(ANDROID)]);
+
+    const err = await run(registry, "chain-root").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
+    expect((err as Error).message).toMatch(
+      /"chain-root" and "ac-frag" leave platform: \[android\] and "ios-frag" requires platform: \[ios\] — no platform satisfies both/
+    );
+    expect((err as Error).message).not.toMatch(/require\w* platform: \[android\]/);
+  });
+
+  it("names a fragment the chain enters twice only once", async () => {
+    // Two sibling leading `run:` steps reach the same fragment — the cycle
+    // guard is per path, so the fold sees its block twice.
+    await writeFlow("twice-frag", {
+      requires: { platform: ["ios", "android"] },
+      steps: [{ kind: "echo", message: "no executable step" }],
+    });
+    await writeFlow("chromium-frag", { requires: { platform: ["chromium"] } });
+    await writeFlow("diamond-root", {
+      steps: [
+        { kind: "run", flow: "twice-frag.yaml" },
+        { kind: "run", flow: "twice-frag.yaml" },
+        { kind: "run", flow: "chromium-frag.yaml" },
+      ],
+    });
+    const { registry } = mockRegistry([iosEntry(IOS), chromiumEntry(CHROMIUM)]);
+
+    const err = await run(registry, "diamond-root").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
+    expect((err as Error).message).toMatch(
+      /"twice-frag" leaves platform: \[ios, android\] and "chromium-frag" requires platform: \[chromium\]/
+    );
+    expect((err as Error).message.match(/"twice-frag"/g)).toHaveLength(1);
   });
 
   it("rejects a runtimeKind the chain contradicts, under that arm's own message", async () => {
