@@ -1393,9 +1393,10 @@ async function resolveRunDevice(
       // adb/simctl failure, a dead sub-tool, an abort — and the teardown step
       // would then run unscoped and report pass, the machine-wide sweep this
       // path exists to avoid. A requirement the resolved device does not meet
-      // rethrows for the same reason: the scope path resolves a device anyway,
-      // so judging it costs nothing, and an ios-only teardown must not narrow
-      // itself to the android emulator that happens to be the only one up.
+      // rethrows for the same reason: this branch is reached only where the
+      // resolved device would actually bind — a step that recorded no scope of
+      // its own — so an ios-only teardown must not narrow itself to the android
+      // emulator that happens to be the only one up.
       try {
         return {
           device: await resolveFlowDevice(registry, ctx, resolveOpts(params, leading.requires)),

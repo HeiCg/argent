@@ -1934,6 +1934,60 @@ describe("a cleanup flow that only scopes a device", () => {
     expect((await run(registry, "ios-teardown")).ok).toBe(true);
     expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {});
   });
+
+  /** The same teardown as recorded WITH a scope — the shape `stripDeviceKeys` preserves. */
+  const SCOPED_TEARDOWN: FlowStep = {
+    kind: "tool",
+    name: "stop-all-simulator-servers",
+    args: { devices: [IOS] },
+  };
+
+  it("runs a teardown that recorded its own scope, whatever its requirements exclude", async () => {
+    // The recorded ids are the whole of what the step acts on — `bindDeviceArgs`
+    // keeps them unless the caller named a device — so there is nothing for a
+    // resolved device to narrow and nothing to judge `requires` against.
+    // Refusing here turned a flow that touches only its own ids into a per-flow
+    // skip on a directory run.
+    await writeFlow("scoped-ios-teardown", {
+      requires: { platform: ["ios"] },
+      steps: [SCOPED_TEARDOWN],
+    });
+    const { registry, invokeTool } = scopeRegistry([androidEntry(ANDROID)]);
+
+    const result = await run(registry, "scoped-ios-teardown");
+
+    expect(result.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [IOS] });
+  });
+
+  it("attributes such a run to no device, having acted on none", async () => {
+    // The android fence used to be checked against the android emulator and the
+    // report attributed to it, while the only work done tore down the iOS
+    // simulator that same fence excludes.
+    await writeFlow("scoped-android-teardown", {
+      requires: { platform: ["android"] },
+      steps: [SCOPED_TEARDOWN],
+    });
+    const { registry, invokeTool } = scopeRegistry([iosEntry(IOS), androidEntry(ANDROID)]);
+
+    const result = await run(registry, "scoped-android-teardown");
+
+    expect(result.ok).toBe(true);
+    expect(result.device).toBe("");
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [IOS] });
+  });
+
+  it("still lets an explicitly named device override the recorded scope", async () => {
+    // The caller naming the run target is the one thing that overrides it, and
+    // it never reaches the opportunistic branch at all.
+    await writeFlow("scoped-teardown", { steps: [SCOPED_TEARDOWN] });
+    const { registry, invokeTool } = scopeRegistry([iosEntry(IOS), androidEntry(ANDROID)]);
+
+    const result = await run(registry, "scoped-teardown", { device: ANDROID });
+
+    expect(result.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [ANDROID] });
+  });
 });
 
 describe("the chromium hoist", () => {

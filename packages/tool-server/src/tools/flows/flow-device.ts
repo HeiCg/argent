@@ -580,6 +580,11 @@ export function flowRequiresDevice(registry: Registry, steps: FlowStep[]): boole
  * where no single device is resolvable, run the step's unscoped meaning rather
  * than failing a flow whose whole purpose is to clear the machine.
  *
+ * A step whose recorded args already carry every scope key its tool declares
+ * narrows nothing: {@link bindDeviceArgs} keeps what the recording scoped unless
+ * the caller named the device, so a resolved one would be discarded — and the
+ * run must not judge `requires` against a device the step ignores.
+ *
  * The walk into a block's body is dead today for the same reason as
  * {@link flowRequiresDevice}'s, and guards the same future block kind: a
  * `devices` scope inside one would be invisible here, so the run would resolve
@@ -588,7 +593,10 @@ export function flowRequiresDevice(registry: Registry, steps: FlowStep[]): boole
 export function flowScopesDevice(registry: Registry, steps: FlowStep[]): boolean {
   return steps.some(
     (step) =>
-      (step.kind === "tool" && declaresAny(registry, step.name, DEVICE_BIND_LIST_KEYS)) ||
+      (step.kind === "tool" &&
+        declaredKeys(registry, step.name, DEVICE_BIND_LIST_KEYS).some(
+          (k) => step.args[k] === undefined
+        )) ||
       flowScopesDevice(registry, blockSteps(step) ?? [])
   );
 }
@@ -636,11 +644,19 @@ function opaqueStepTargetsDevice(registry: Registry, args: Record<string, unknow
 }
 
 function declaresAny(registry: Registry, toolName: string, keys: readonly string[]): boolean {
+  return declaredKeys(registry, toolName, keys).length > 0;
+}
+
+function declaredKeys(
+  registry: Registry,
+  toolName: string,
+  keys: readonly string[]
+): readonly string[] {
   const toolDef = registry.getTool(toolName);
   const props = (toolDef?.inputSchema as { properties?: Record<string, unknown> } | undefined)
     ?.properties;
-  if (!props) return false;
-  return keys.some((k) => k in props);
+  if (!props) return [];
+  return keys.filter((k) => k in props);
 }
 
 /**
