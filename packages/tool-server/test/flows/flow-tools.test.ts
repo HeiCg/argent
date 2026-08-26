@@ -2359,6 +2359,28 @@ describe("flow-finish-recording", () => {
     expect(result.requiresPrompt).toContain("Use it in place of the template's `platform:` line");
   });
 
+  it("names the launch-coverage refusals, so a widened platform list is not written blind", async () => {
+    // The hint fires for a hand-narrowed launch map, and a `platform:` list
+    // broader than that map serves is refused when the file is read.
+    await flowStartRecordingTool.execute({}, { name: "prompt-coverage", project_root: tmpDir });
+    await overwriteFlowFile("prompt-coverage", {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: { ios: "com.example.app" } }],
+    });
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "prompt-coverage", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toContain("`requires: { platform: [ios] }` is the likely answer");
+    expect(result.requiresPrompt).toContain(
+      "a `platform:` list some unconditional launch declares no app id for"
+    );
+    expect(result.requiresPrompt).toContain("a lone `runtimeKind:` no platform's launches serve");
+    expect(result.requiresPrompt).toContain("a block admitting no platform that runs a step");
+  });
+
   it("suggests nothing when the launch names every platform", async () => {
     // A bare app id runs anywhere, so it narrows nothing and must not be
     // dressed up as a recommendation.

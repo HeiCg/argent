@@ -118,8 +118,10 @@ function requiresPrompt(composed: ComposedFlow): string | undefined {
     `    runtimeKind: tv            # tv (Apple TV / Android TV / Fire TV), or mobile for everything else\n` +
     `Write only the lines that apply: each key is optional on its own, the block must declare at ` +
     `least one of them, and declaring both ANDs them. Rejected when the file is read: a repeated ` +
-    `platform, an unknown key inside the block, and a pair no target can present (chromium with ` +
-    `tv, vega with mobile). Leaving the block out is the right answer for a genuinely portable ` +
+    `platform, an unknown key inside the block, a pair no target can present (chromium with tv, ` +
+    `vega with mobile), a block admitting no platform that runs a step, a \`platform:\` list some ` +
+    `unconditional launch declares no app id for, and a lone \`runtimeKind:\` no platform's ` +
+    `launches serve. Leaving the block out is the right answer for a genuinely portable ` +
     `flow; restrict it when the scenario is platform-specific (a platform-only screen, an OS ` +
     `settings flow) or form-factor-specific (focus/remote navigation rather than touch).${hint}`
   );
