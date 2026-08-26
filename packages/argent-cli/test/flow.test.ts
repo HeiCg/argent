@@ -262,17 +262,18 @@ describe("parseRunArgs", () => {
 
   it("rejects an empty positional instead of skipping past it to the next token", () => {
     // A truthiness test here would take "extra.yaml" as the flow and run a file
-    // the operator never named at that position.
+    // the operator never named at that position. Either spelling did name a
+    // flow, so both are one argument too many, and "omit the argument" would
+    // answer a question the operator never asked.
     expect(() => parseRunArgs(["", "extra.yaml"])).toThrow(
-      "flow run requires a flow name, a YAML file path, or a directory path"
+      'unexpected argument "extra.yaml"; flow run accepts one flow name, YAML file path, or directory path'
     );
-    // Nor does it mean "no argument": that reading resolves to the current
-    // directory and batches every flow under it.
+    expect(() => parseRunArgs(["", "extra.yaml"])).not.toThrow(/omit the argument/);
+    expect(() => parseRunArgs(["checkout", ""])).toThrow('unexpected argument ""');
+    // Alone, the empty token must not be stored as the flow ref: that resolves
+    // to the current directory and batches every flow under it.
     expect(() => parseRunArgs([""])).toThrow(/omit the argument/);
     expect(() => parseRunArgs(["--", ""])).toThrow(/omit the argument/);
-    // Once a flow is named, the empty token is one argument too many, and
-    // "omit the argument" would answer a question the operator never asked.
-    expect(() => parseRunArgs(["checkout", ""])).toThrow('unexpected argument ""');
   });
 });
 
@@ -508,9 +509,9 @@ describe("argent flow run", () => {
   });
 
   it("exits 2 without running anything on an empty flow argument", async () => {
-    // `argent flow run "$FLOW"` with the variable unset. Read as "no argument",
-    // the empty string resolves to the current directory and batches every
-    // flow under it.
+    // `argent flow run "$FLOW"` with the variable unset. Stored as the flow
+    // ref, the empty string resolves to the current directory and batches
+    // every flow under it.
     const previousCwd = process.cwd();
     try {
       process.chdir(tempRoot);

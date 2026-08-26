@@ -191,18 +191,6 @@ export function parseRunArgs(argv: string[]): {
     throw err;
   }
   const { positionals, options } = parsed;
-  // An empty first token names nothing, and it must not be read as "no
-  // argument": that reading resolves to the current directory and batches
-  // every flow found there. Reachable as `argent flow run "$FLOW"` with the
-  // variable unset. Only the first position is judged, so `run checkout ""`
-  // still falls to the count check below: a flow was named, and "omit the
-  // argument" would be the wrong correction.
-  if (positionals[0] === "") {
-    throw new FlagParseException(
-      `flow run requires a flow name, a YAML file path, or a directory path; ` +
-        `omit the argument to run every flow in ${FLOWS_DIR}`
-    );
-  }
   // The parser honors `--` as end of options: the flow-name charset admits a
   // leading "-", so `-dash` is a legal saved-flow name that every argv parser
   // reads as a flag; without the marker such a flow would be addressable by
@@ -210,6 +198,17 @@ export function parseRunArgs(argv: string[]): {
   if (positionals.length > 1) {
     throw new FlagParseException(
       `unexpected argument ${JSON.stringify(positionals[1])}; flow run accepts one flow name, YAML file path, or directory path`
+    );
+  }
+  // An empty token names nothing, and it must not be stored as the flow ref:
+  // path.resolve collapses "" to the current directory, and the run batches
+  // every flow found there. Reachable as `argent flow run "$FLOW"` with the
+  // variable unset. Checked after the count so `run "" checkout`, which did
+  // name a flow, is reported as one argument too many instead.
+  if (positionals[0] === "") {
+    throw new FlagParseException(
+      `flow run requires a flow name, a YAML file path, or a directory path; ` +
+        `omit the argument to run every flow in ${FLOWS_DIR}`
     );
   }
   const out: ReturnType<typeof parseRunArgs> = {
