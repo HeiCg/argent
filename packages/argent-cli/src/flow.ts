@@ -1228,7 +1228,8 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     }
     return fail(
       `No ${FLOWS_DIR} directory in the current working directory.\n` +
-        `Pass a flow name, a YAML file path, or a directory path to run a flow kept elsewhere.`,
+        `Pass a YAML file path or a directory path to run a flow kept elsewhere, ` +
+        `such as the project root's ${FLOWS_DIR}, or cd to that root first.`,
       2
     );
   }

@@ -484,6 +484,10 @@ describe("argent flow run", () => {
     expect(errs.join("\n")).toContain(
       `No ${path.join(".argent", "flows")} directory in the current working directory.`
     );
+    expect(errs.join("\n")).toContain(
+      `Pass a YAML file path or a directory path to run a flow kept elsewhere, ` +
+        `such as the project root's ${path.join(".argent", "flows")}, or cd to that root first.`
+    );
     expect(errs.join("\n")).not.toContain("must end in .yaml");
     expect(toolsClientMock.callTool).not.toHaveBeenCalled();
   });
