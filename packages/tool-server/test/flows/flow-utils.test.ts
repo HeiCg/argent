@@ -633,6 +633,10 @@ describe("parseFlow", () => {
         "await.timeout needs a positive number of milliseconds"
       );
     }
+    // The echo keeps the value the author wrote, not JSON.stringify's `null`.
+    expect(() => parseFlow("steps:\n  - await: { visible: Account, timeout: .inf }\n")).toThrow(
+      /: \{"await":\{"visible":"Account","timeout":"Infinity"\}\}$/s
+    );
   });
 
   it("rejects a timeout on an assert step (an assert is an immediate check)", async () => {

@@ -1426,7 +1426,11 @@ function badEntry(raw: unknown, detail: string): never {
   // throw and mask the validation message.
   let rendered: string;
   try {
-    rendered = JSON.stringify(raw);
+    // A non-finite number serializes to `null`, dropping the value the echo
+    // exists to show.
+    rendered = JSON.stringify(raw, (_key, value) =>
+      typeof value === "number" && !Number.isFinite(value) ? String(value) : value
+    );
   } catch {
     rendered = "[cyclic entry]";
   }

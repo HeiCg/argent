@@ -415,6 +415,27 @@ describe("repeat: parse/serialize", () => {
     );
   });
 
+  it("echoes a non-finite bound as the number the author wrote, not null", () => {
+    for (const [bound, echoed] of [
+      [".inf", "Infinity"],
+      ["-.inf", "-Infinity"],
+      [".nan", "NaN"],
+      // Anything past Number.MAX_VALUE parses to Infinity, digits included.
+      ["1e400", "Infinity"],
+      [`1${"0".repeat(400)}`, "Infinity"],
+    ]) {
+      expect(
+        () => parseFlow(`steps:\n  - repeat: ${bound}\n    steps: [{ tap: A }]\n`),
+        bound
+      ).toThrow(
+        new RegExp(
+          `repeat\\.times must be a literal integer between 1 and 100.*: \\{"repeat":"${echoed}"\\}$`,
+          "s"
+        )
+      );
+    }
+  });
+
   it("names repeat.until at every until-reachable error site in the guard parser", () => {
     // Every parseWaitFields error site spells its label through directiveLabel,
     // so one exact-message sample per reachable site catches a single site
