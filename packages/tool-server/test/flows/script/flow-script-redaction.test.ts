@@ -174,7 +174,7 @@ describe("flow script executor — redaction", () => {
     expect(line).toContain("{{secret:V}}");
   });
 
-  it("replaces the longer of two nested secrets, not the one inside it", async () => {
+  it("replaces a nested secret as part of the value around it, and alone elsewhere", async () => {
     const ws = workspace();
     const host: FlowScriptSecret = { name: "HOST", value: "api.internal.example.com" };
     const url: FlowScriptSecret = {
@@ -183,7 +183,8 @@ describe("flow script executor — redaction", () => {
     };
     const script = ws.write(
       "nested.mjs",
-      `output.line = "calling " + ${JSON.stringify(url.value)};`
+      `output.line =
+         "calling " + ${JSON.stringify(url.value)} + " on " + ${JSON.stringify(host.value)};`
     );
     const result = await executor().execute({
       scriptPath: script,
@@ -191,7 +192,9 @@ describe("flow script executor — redaction", () => {
       secrets: [host, url],
     });
 
-    expect(result.output).toEqual({ line: "calling {{secret:URL}}" });
+    // The URL is taken whole where it starts — the host inside it is not a
+    // second match — and the same host standing on its own is still its own.
+    expect(result.output).toEqual({ line: "calling {{secret:URL}} on {{secret:HOST}}" });
   });
 
   it("replaces the longer of two secrets when the shorter one is its prefix", async () => {
@@ -227,10 +230,14 @@ describe("flow script executor — redaction", () => {
 
   it("keeps a secret that straddles the failure-message ceiling out of the report", async () => {
     const ws = workspace();
+    // The clamp is the child's, and the child has no secret list to clamp
+    // around. The trailing run is what forces a clamp at all; the padding puts
+    // the cut about nine characters into the value, leaving a prefix no
+    // whole-value replacement can match.
     const script = ws.write(
       "long-throw.mjs",
       `throw new Error(
-         "p".repeat(${SCRIPT_MAX_FAILURE_MESSAGE_CHARS} - 16) + process.env.API_KEY + " trailing"
+         "p".repeat(${SCRIPT_MAX_FAILURE_MESSAGE_CHARS} - 41) + process.env.API_KEY + "t".repeat(1000)
        );`
     );
     const result = await executor().execute({

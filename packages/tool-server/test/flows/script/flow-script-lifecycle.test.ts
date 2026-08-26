@@ -563,6 +563,11 @@ describe("flow script executor — exit classification", () => {
 
     expect(result.failure?.kind).toBe("exit");
     expect(result.failure?.message).toContain("exit code 3");
+    // Which of the two things it left behind is missing, and what to do
+    // instead: nothing the script printed is kept, so an author who exits on an
+    // error has no other way to say what the error was.
+    expect(result.failure?.message).toContain("left no output document behind");
+    expect(result.failure?.message).toContain("throw the reason instead of exiting on it");
   });
 
   it("fails a step whose script set a non-zero process.exitCode", async () => {
