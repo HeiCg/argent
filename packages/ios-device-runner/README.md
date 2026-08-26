@@ -54,6 +54,16 @@ the tool-server injects real values on the `xcodebuild` command line:
 - `DEVELOPMENT_TEAM`: from `ARGENT_IOS_TEAM_ID`.
 - `CODE_SIGN_IDENTITY` / `PROVISIONING_PROFILE_SPECIFIER`: from
   `ARGENT_IOS_SIGNING_IDENTITY` / `ARGENT_IOS_PROVISIONING_PROFILE`, when set.
+  Either of them also switches `CODE_SIGN_STYLE` to `Manual`: xcodebuild
+  refuses a manually specified profile on an automatically signed target.
+
+`ARGENT_IOS_RUNNER_PROJECT` tells the tool-server where this project is (the
+absolute path to `ArgentRunner.xcodeproj`). In a checkout it is found by
+walking up from the tool-server sources, so the variable is only for unusual
+layouts. An npm install of `@swmansion/argent` is one of them: the package
+ships the bundled tool-server and not these Xcode sources, so physical-device
+runs from an installed Argent require `ARGENT_IOS_RUNNER_PROJECT` pointing at a
+checkout of this repository.
 
 ## Reliability model
 

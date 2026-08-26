@@ -31,9 +31,9 @@ const execFileAsync = promisify(execFile);
  * signing settings). The cache key doubles as
  * protocol versioning: an Argent update that changes runner sources lands in
  * a new cache directory and rebuilds, so the wire protocol needs no version
- * handshake. Superseded cache directories (and per-session xctestrun clones
- * and launch logs) are swept best-effort after each successful artifact
- * resolution; see `sweepRunnerStorage`.
+ * handshake. Superseded cache directories (and per-session xctestrun clones,
+ * launch logs and .xcresult bundles) are swept best-effort after each
+ * successful artifact resolution; see `sweepRunnerStorage`.
  */
 
 /** Env-configurable signing. Automatic signing + team id covers most setups. */
@@ -59,12 +59,18 @@ export function resolveRunnerSigningConfig(): RunnerSigningConfig {
 }
 
 /**
- * Locate the runner's Xcode project. Both src (ts-node) and dist layouts sit
- * at the same depth below packages/tool-server, so a fixed walk-up works for
- * dev and built runs alike; ARGENT_IOS_RUNNER_PROJECT overrides for exotic
- * installs. `exists` is a test seam over the filesystem probe: the walk-up
- * candidate exists in every real checkout, so the not-found arm is only
- * reachable through it.
+ * Locate the runner's Xcode project. In a CHECKOUT the fixed walk-up finds it:
+ * src (ts-node) and dist layouts sit at the same depth below
+ * packages/tool-server, so both land on packages/ios-device-runner.
+ *
+ * A published install has neither shape. The tool-server ships as one esbuild
+ * bundle at <packageDir>/dist/tool-server.cjs, so __dirname is
+ * <packageDir>/dist and the walk-up leaves the package entirely; the runner
+ * sources are not published either (@swmansion/argent's `files` ships dist and
+ * assets, not packages/ios-device-runner). The not-found arm below is
+ * therefore the normal path on an npm install, and ARGENT_IOS_RUNNER_PROJECT,
+ * pointed at a checkout, is the only way through. `exists` is a test seam over
+ * the filesystem probe.
  */
 export function resolveRunnerProjectPath(
   exists: (candidatePath: string) => boolean = fs.existsSync
@@ -220,6 +226,12 @@ const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
  * of silently reusing a stale cached artifact.
  */
 export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigningConfig): string[] {
+  // Pinning an identity or a profile switches the WHOLE build to manual
+  // signing. xcodebuild rejects an automatically signed target that also
+  // carries a manually specified profile ("ArgentRunner has conflicting
+  // provisioning settings", exit 70, no .xctestrun written), so hardcoding
+  // Automatic made both env vars below unbuildable rather than optional.
+  const manualSigning = Boolean(config.signingIdentity || config.provisioningProfile);
   const args = [
     "build-for-testing",
     "-project",
@@ -243,7 +255,7 @@ export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigning
     // the per-user rebrand happens here without touching the project file.
     `ARGENT_RUNNER_APP_BUNDLE_ID=${config.appBundleId}`,
     `ARGENT_RUNNER_TEST_BUNDLE_ID=${config.testBundleId}`,
-    "CODE_SIGN_STYLE=Automatic",
+    `CODE_SIGN_STYLE=${manualSigning ? "Manual" : "Automatic"}`,
   ];
   if (config.teamId) args.push(`DEVELOPMENT_TEAM=${config.teamId}`);
   if (config.signingIdentity) args.push(`CODE_SIGN_IDENTITY=${config.signingIdentity}`);
@@ -362,6 +374,13 @@ export async function ensureRunnerArtifact(
   return artifact;
 }
 
+/**
+ * Marker naming the process whose build owns a derived dir, written for the
+ * duration of the xcodebuild call. It is what lets the storage sweep tell an
+ * in-flight build tree from a superseded one; see `buildIsInFlight`.
+ */
+const BUILD_OWNER_FILE = ".argent-build-owner";
+
 /** The build arm of `ensureRunnerArtifact`: cache miss (or forced rebuild). */
 async function buildRunnerArtifact(
   derivedDataPath: string,
@@ -378,6 +397,8 @@ async function buildRunnerArtifact(
     derivedDataPath,
   ];
 
+  const ownerPath = path.join(derivedDataPath, BUILD_OWNER_FILE);
+  await fsp.writeFile(ownerPath, String(process.pid));
   try {
     await execFileAsync("xcodebuild", args, {
       timeout: BUILD_TIMEOUT_MS,
@@ -393,6 +414,10 @@ async function buildRunnerArtifact(
       `Building the iOS device runner failed.${hint ? ` ${hint}` : ""}\n\nxcodebuild output tail:\n${tail}`,
       { cause: error }
     );
+  } finally {
+    // A marker outliving its build (SIGKILLed tool-server) is harmless: the
+    // sweep only spares a dir whose recorded pid is still alive.
+    await fsp.rm(ownerPath, { force: true }).catch(() => {});
   }
 
   const built = findBaseXctestrun(derivedDataPath);
@@ -407,60 +432,104 @@ async function buildRunnerArtifact(
 /** How many runner-*.log launch logs a sweep keeps (newest first). */
 export const MAX_RUNNER_LOG_FILES = 20;
 
+/**
+ * How many Test-*.xcresult bundles a sweep keeps (newest first). runner-crash
+ * reads only the newest; the spares cover the session before it. A bundle
+ * being written RIGHT NOW is by construction the newest of the family, so a
+ * concurrent sweep can never take it.
+ */
+export const MAX_RUNNER_RESULT_BUNDLES = 3;
+
 /** A cache-<key> entry under cacheRoot(), hex-keyed, ours to manage. */
 const CACHE_DIR_NAME_RE = /^cache-[0-9a-f]+$/;
 /** A per-session port-injected clone minted by `prepareXctestrunWithPort`. */
 const ENV_CLONE_NAME_RE = /\.env\.port-\d+\.xctestrun$/;
 /** A launch log minted by `launchRunner`; the trailing number is Date.now(). */
 const RUNNER_LOG_NAME_RE = /^runner-.+-(\d+)\.log$/;
+/** An xcodebuild result bundle: Test-<scheme>-<date>-<utc offset>.xcresult. */
+const XCRESULT_NAME_RE = /^Test-.+-(\d{4}\.\d{2}\.\d{2}_\d{2}-\d{2}-\d{2}).*\.xcresult$/;
 
 /** What `planRunnerStorageSweep` decided to delete, as per-directory names. */
 export interface RunnerStorageSweepPlan {
   cacheDirNames: string[];
   cloneNames: string[];
   logNames: string[];
+  resultBundleNames: string[];
 }
 
 /**
  * Decision core of the storage sweep: pure over injected directory listings
- * (the test seam, like `waitForPidsToExit`'s process-table seams). Three
+ * (the test seam, like `waitForPidsToExit`'s process-table seams). Four
  * artifact families accumulate forever under ~/.argent/ios-device-runner
  * without this: cache-<key> derived-data dirs (hundreds of MB, a new key per
- * source/Xcode/signing change), per-session .env.port-N.xctestrun clones, and
- * per-launch runner-*.log files. The plan deletes cache dirs other than the
- * current key's, env clones other than `keepCloneName`, and all but the
- * newest `maxLogFiles` logs (by the Date.now() embedded in their names).
- * Names that match none of the families are never touched.
+ * source/Xcode/signing change), per-session .env.port-N.xctestrun clones,
+ * per-launch runner-*.log files, and the Test-*.xcresult bundle every session
+ * writes under the current derived dir's Logs/Test (`launchRunner` passes no
+ * -resultBundlePath, and the current cache dir is deliberately kept, so
+ * nothing else ever prunes those).
+ *
+ * The plan deletes cache dirs other than the current key's and those named in
+ * `busyCacheDirNames`, env clones other than `keepCloneName`, and all but the
+ * newest `maxLogFiles` logs / `maxResultBundles` result bundles (by the
+ * timestamp embedded in their names). Names that match none of the families
+ * are never touched.
  */
 export function planRunnerStorageSweep(listing: {
   /** Basename of the current derived-data dir (`cache-<key>`); kept. */
   currentCacheDirName: string;
   /** Entries under cacheRoot(). */
   cacheDirNames: readonly string[];
+  /** Cache dirs a live build owns; kept. See `buildIsInFlight`. */
+  busyCacheDirNames?: readonly string[];
   /** Entries under the current derived dir's Build/Products. */
   productNames: readonly string[];
   /** Basename of an env clone to keep (none at ensure-time). */
   keepCloneName?: string | null;
   /** Entries under the launch-log dir. */
   logNames: readonly string[];
+  /** Entries under the current derived dir's Logs/Test. */
+  testLogNames: readonly string[];
   maxLogFiles?: number;
+  maxResultBundles?: number;
 }): RunnerStorageSweepPlan {
-  const maxLogFiles = listing.maxLogFiles ?? MAX_RUNNER_LOG_FILES;
   const cacheDirNames = listing.cacheDirNames.filter(
-    (name) => CACHE_DIR_NAME_RE.test(name) && name !== listing.currentCacheDirName
+    (name) =>
+      CACHE_DIR_NAME_RE.test(name) &&
+      name !== listing.currentCacheDirName &&
+      !listing.busyCacheDirNames?.includes(name)
   );
   const cloneNames = listing.productNames.filter(
     (name) => ENV_CLONE_NAME_RE.test(name) && name !== listing.keepCloneName
   );
-  const logNames = listing.logNames
-    .filter((name) => RUNNER_LOG_NAME_RE.test(name))
-    .sort((a, b) => logTimestamp(b) - logTimestamp(a) || a.localeCompare(b))
-    .slice(maxLogFiles);
-  return { cacheDirNames, cloneNames, logNames };
+  return {
+    cacheDirNames,
+    cloneNames,
+    logNames: beyondNewest(
+      listing.logNames,
+      RUNNER_LOG_NAME_RE,
+      listing.maxLogFiles ?? MAX_RUNNER_LOG_FILES
+    ),
+    resultBundleNames: beyondNewest(
+      listing.testLogNames,
+      XCRESULT_NAME_RE,
+      listing.maxResultBundles ?? MAX_RUNNER_RESULT_BUNDLES
+    ),
+  };
 }
 
-function logTimestamp(name: string): number {
-  return Number(RUNNER_LOG_NAME_RE.exec(name)?.[1] ?? 0);
+/**
+ * The names beyond the newest `max` of one capped family: those matching
+ * `pattern`, whose first capture group is a timestamp that sorts
+ * chronologically once stripped to digits. Non-matching names are foreign and
+ * never returned.
+ */
+function beyondNewest(names: readonly string[], pattern: RegExp, max: number): string[] {
+  const stamp = (name: string): number =>
+    Number((pattern.exec(name)?.[1] ?? "").replace(/\D/g, ""));
+  return names
+    .filter((name) => pattern.test(name))
+    .sort((a, b) => stamp(b) - stamp(a) || a.localeCompare(b))
+    .slice(max);
 }
 
 /**
@@ -479,17 +548,25 @@ export function sweepRunnerStorage(opts: {
   /** Test seam; defaults to the real launch-log dir. */
   logDir?: string;
   maxLogFiles?: number;
+  maxResultBundles?: number;
 }): Promise<void> {
   const cacheRootDir = path.dirname(opts.derivedDataPath);
   const productsDir = path.join(opts.derivedDataPath, "Build", "Products");
+  const testLogsDir = path.join(opts.derivedDataPath, "Logs", "Test");
   const logDir = opts.logDir ?? logsRoot();
+  const cacheDirNames = listNamesSync(cacheRootDir);
   const plan = planRunnerStorageSweep({
     currentCacheDirName: path.basename(opts.derivedDataPath),
-    cacheDirNames: listNamesSync(cacheRootDir),
+    cacheDirNames,
+    busyCacheDirNames: cacheDirNames.filter((name) =>
+      buildIsInFlight(path.join(cacheRootDir, name))
+    ),
     productNames: listNamesSync(productsDir),
     keepCloneName: opts.keepClonePath ? path.basename(opts.keepClonePath) : null,
     logNames: listNamesSync(logDir),
+    testLogNames: listNamesSync(testLogsDir),
     maxLogFiles: opts.maxLogFiles,
+    maxResultBundles: opts.maxResultBundles,
   });
   const rmQuiet = async (target: string): Promise<void> => {
     try {
@@ -502,6 +579,7 @@ export function sweepRunnerStorage(opts: {
     ...plan.cacheDirNames.map((name) => rmQuiet(path.join(cacheRootDir, name))),
     ...plan.cloneNames.map((name) => rmQuiet(path.join(productsDir, name))),
     ...plan.logNames.map((name) => rmQuiet(path.join(logDir, name))),
+    ...plan.resultBundleNames.map((name) => rmQuiet(path.join(testLogsDir, name))),
   ]).then(() => undefined);
 }
 
@@ -511,6 +589,26 @@ function listNamesSync(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * True when a derived dir carries a build-owner marker naming a LIVE process.
+ * Two checkouts on one Mac fingerprint to two cache keys, so each one's dir is
+ * a plain "superseded sibling" to the other; without this probe a fast cache
+ * hit here would rm -rf a peer that is minutes into a 15-minute
+ * `build-for-testing`. Same ownership rule as `killStaleRunnersForDevice`: an
+ * absent marker, or one whose owner is gone, protects nothing. Read
+ * synchronously to keep the sweep's snapshot-before-the-caller-resumes
+ * ordering.
+ */
+function buildIsInFlight(cacheDirPath: string): boolean {
+  let pid: number;
+  try {
+    pid = Number.parseInt(fs.readFileSync(path.join(cacheDirPath, BUILD_OWNER_FILE), "utf8"), 10);
+  } catch {
+    return false;
+  }
+  return Number.isFinite(pid) && pidIsAlive(pid);
 }
 
 /**
