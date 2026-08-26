@@ -3370,9 +3370,10 @@ export function dropMovedWarnings(
  * mode this process never sees the client's disk, so the in-memory copy is
  * authoritative and the updated YAML travels back in the directive.
  *
- * That re-read is also the only chance anyone gets to NOTICE a hand edit, so
- * it is checked against the view it replaces — see {@link dropMovedWarnings}.
- * Client mode needs no such check: this host never sees the client's file.
+ * That re-read is one of the two moments a hand edit can be NOTICED — the other
+ * is a recorder return that appends nothing — so it is checked against the view
+ * it replaces; see {@link dropMovedWarnings}. Client mode needs no such check:
+ * this host never sees the client's file.
  */
 export async function appendStepToFlow(
   session: RecordingSession,
