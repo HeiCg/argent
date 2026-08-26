@@ -1435,10 +1435,13 @@ function assertParamsMeetRequires(params: Params, requires: FlowRequires | undef
     // Only an unconfirmed shape earns the hint — the android fallback, or a
     // `remote:` tail that is not a UDID. On a confirmed id it would tell the
     // caller a falsehood about the string they typed.
+    const unconfirmed =
+      shape === "ios-remote"
+        ? "the remote: prefix alone classifies it"
+        : "a device name classifies the same way";
     const hint = recognised
       ? ""
-      : " (no device listing is consulted, and no id shape confirms this one - " +
-        "a device name classifies the same way)";
+      : ` (no device listing is consulted, and no id shape confirms this one - ${unconfirmed})`;
     assertPlatformMeetsRequires(
       shape,
       requires,

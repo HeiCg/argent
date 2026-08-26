@@ -435,6 +435,10 @@ describe("requirements no target could satisfy are rejected at parse", () => {
 });
 
 describe("an explicitly targeted run", () => {
+  // The tail of the typo hint, one per unconfirmed arm of the shape call.
+  const NAME_CLAUSE = "a device name classifies the same way";
+  const REMOTE_CLAUSE = "the remote: prefix alone classifies it";
+
   it("fails when the device's platform is excluded", async () => {
     await writeFlow("ios-only", { requires: { platform: ["ios"] } });
     const { registry } = mockRegistry();
@@ -496,28 +500,49 @@ describe("an explicitly targeted run", () => {
   );
 
   it.each([
-    ["an emulator serial", ANDROID, "android"],
-    ["a physical android serial", "HT82A0203045", "android"],
-    ["a whitespace-free device name", "iPhone16Pro", "android"],
+    ["an emulator serial", ANDROID, "android", NAME_CLAUSE],
+    ["a physical android serial", "HT82A0203045", "android", NAME_CLAUSE],
+    ["a whitespace-free device name", "iPhone16Pro", "android", NAME_CLAUSE],
     [
       "an AVD name, which `emulator -list-avds` writes with underscores",
       "Pixel_8_Pro_API_34",
       "android",
+      NAME_CLAUSE,
     ],
-    ["a remote prefix over a non-udid tail", "remote:iPhone 17 Pro", "ios-remote"],
-  ] as const)("keeps the typo hint on a refusal aimed at %s", async (_label, device, shape) => {
-    // No shape confirms any of these, so a real serial earns the hint on the
-    // same terms as an outright name - and the wording claims only that much.
-    await writeFlow("vega-only", { requires: { platform: ["vega"] } });
+    ["a remote prefix over a non-udid tail", "remote:iPhone 17 Pro", "ios-remote", REMOTE_CLAUSE],
+  ] as const)(
+    "keeps the typo hint on a refusal aimed at %s",
+    async (_label, device, shape, clause) => {
+      // No shape confirms any of these, so each earns the hint - worded for
+      // the arm that classified it, since a bare device name only lands in the
+      // android fallback.
+      await writeFlow("vega-only", { requires: { platform: ["vega"] } });
+      const { registry } = mockRegistry();
+
+      const err = await run(registry, "vega-only", { device }).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain(
+        `device "${device}", whose id shape classifies it as ${shape} ` +
+          `(no device listing is consulted, and no id shape confirms this one - ${clause})`
+      );
+    }
+  );
+
+  it("does not tell a refused `remote:` id that a device name lands there too", async () => {
+    // The two unconfirmed arms disagree: this guard refuses the prefixed id and
+    // admits the bare name, so the hint may not equate them.
+    await writeFlow("android-only", { requires: { platform: ["android"] } });
     const { registry } = mockRegistry();
 
-    const err = await run(registry, "vega-only", { device }).catch((e: unknown) => e);
+    const err = await run(registry, "android-only", { device: "remote:not-a-udid" }).catch(
+      (e: unknown) => e
+    );
 
     expect((err as Error).message).toContain(
-      `device "${device}", whose id shape classifies it as ${shape} ` +
-        `(no device listing is consulted, and no id shape confirms this one - ` +
-        `a device name classifies the same way)`
+      `device "remote:not-a-udid", whose id shape classifies it as ios-remote ` +
+        `(no device listing is consulted, and no id shape confirms this one - ${REMOTE_CLAUSE})`
     );
+    expect((await run(registry, "android-only", { device: "iPhone 17 Pro" })).ok).toBe(true);
   });
 
   it("fails when the platform param is excluded, before listing any device", async () => {
