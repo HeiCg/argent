@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
+import { createRunSequenceTool } from "../../src/tools/run-sequence";
 
 const PROJECT_ROOT = path.join(os.tmpdir(), `flow-await-tests-${process.pid}`);
 
@@ -216,6 +217,57 @@ steps:
     });
     expect(result.steps[0]!.reason).not.toContain("condition not met");
     expect(result.steps[0]!.reached).toBe(true);
+  });
+
+  it("scores the same cancelled wait the same way through run-sequence", async () => {
+    const flowFile = await writeFlow(`executionPrerequisite: ""
+steps:
+  - tool: run-sequence
+    args:
+      udid: X
+      steps:
+        - tool: await-ui-element
+          args:
+            condition: visible
+            selector:
+              text: Continue
+`);
+    const controller = new AbortController();
+    // The real batch tool, so the entry the runner reads is the one it builds.
+    const inner = makeRegistry(async () => {
+      controller.abort();
+      return {
+        success: false,
+        elapsed: 12,
+        note: "wait was cancelled before the condition was met",
+        cause: "cancelled",
+      };
+    });
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      // Declared so the runner binds the run device onto the batch, as it does
+      // for a real registration.
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "gated", project_root: PROJECT_ROOT, flow_file: flowFile, device: "X" },
+        { signal: controller.signal } as never
+      )
+    );
+
+    // The spelling must not decide the verdict: the direct case above is a
+    // skip, so this one is too, and neither reason may call the condition unmet.
+    expect(result.steps[0]).toMatchObject({ tool: "run-sequence", status: "skip" });
+    expect(result.steps[0]!.reason).not.toContain("condition not met");
+    expect(result.steps[0]!.reached).toBeUndefined();
   });
 
   it("keeps a GENUINE miss a failure when an unrelated cancel lands in the same tick", async () => {

@@ -5,7 +5,11 @@ import { resolveDevice } from "../../utils/device-info";
 import { assertSupported, UnsupportedOperationError } from "../../utils/capability";
 import { sleepOrAbort, DEFAULT_INTER_STEP_DELAY_MS } from "../../utils/timing";
 import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
-import { AWAIT_UI_ELEMENT_TOOL_ID, isUnmetUiWaitResult } from "../await-ui-element";
+import {
+  AWAIT_UI_ELEMENT_TOOL_ID,
+  isUnmetUiWaitResult,
+  unmetUiWaitCause,
+} from "../await-ui-element";
 
 const ALLOWED_TOOLS = new Set([
   "gesture-tap",
@@ -206,6 +210,12 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
         try {
           const result = await invokeSubTool(registry, ctx, step.tool, toolArgs);
           if (isUnmetUiWaitResult(step.tool, result)) {
+            // A cancelled wait judged nothing, so it is not this batch's
+            // failure. Break without an entry, as every other cancel exit here
+            // does: the short `steps` list is what reports the cancel, and an
+            // error entry would score the batch a failure whose reason calls a
+            // condition unmet that was never read.
+            if (unmetUiWaitCause(result) === "cancelled") break;
             const note = (result as { note?: string }).note;
             results.push({
               tool: step.tool,

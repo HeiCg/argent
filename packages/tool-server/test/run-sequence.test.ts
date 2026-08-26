@@ -246,6 +246,43 @@ describe("run-sequence", () => {
     expect(registry.invokeTool).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves a CANCELLED await-ui-element out of `steps` instead of failing the batch", async () => {
+    const registry = mockRegistry((id: string) =>
+      id === "await-ui-element"
+        ? {
+            success: false,
+            elapsed: 12,
+            note: "wait was cancelled before the condition was met",
+            cause: "cancelled",
+          }
+        : { tapped: true }
+    );
+    const tool = createRunSequenceTool(registry);
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS,
+        steps: [
+          { tool: "gesture-tap", args: { x: 0.5, y: 0.9 } },
+          {
+            tool: "await-ui-element",
+            args: { condition: "visible", selector: { text: "Continue" } },
+          },
+          { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+        ],
+      }
+    );
+
+    // The short list is how every other cancel exit here reports itself, and it
+    // is what tells the batch's readers a cancel from a failure.
+    expect(result.steps).toHaveLength(1);
+    expect(result.steps.every((s) => !("error" in s))).toBe(true);
+    expect(result.completed).toBe(1);
+    expect(result.total).toBe(3);
+    expect(registry.invokeTool).toHaveBeenCalledTimes(2);
+  });
+
   it("continues past an await-ui-element step whose condition is met", async () => {
     const registry = mockRegistry((id: string) => {
       if (id === "await-ui-element") return { success: true, elapsed: 120 };
