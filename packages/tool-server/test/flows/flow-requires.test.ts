@@ -6,10 +6,12 @@ import {
   FAILURE_CODES,
   getFailureSignal,
   zodObjectToJsonSchema,
+  type Platform,
   type Registry,
 } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
+import { classifyDevice } from "../../src/utils/device-info";
 import {
   foldLeadingRequires,
   parseFlow,
@@ -31,17 +33,23 @@ const probe = async (id: string) => {
   if (failure) throw new Error(failure);
   return runtimeKinds.get(id);
 };
+// Each fake answers only for the ids its real implementation can read — a
+// `simctl` listing holds bare udids, `sim-remote` `remote:`-prefixed ones, `adb
+// devices` android serials — so an id handed to the wrong probe reads as
+// undetermined here exactly as it does in production.
+const probeAs = async (platform: Platform, id: string) =>
+  classifyDevice(id) === platform ? probe(id) : undefined;
 vi.mock("../../src/utils/ios-devices", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  getSimulatorRuntimeKind: vi.fn(async (udid: string) => probe(udid)),
+  getSimulatorRuntimeKind: vi.fn(async (udid: string) => probeAs("ios", udid)),
 }));
 vi.mock("../../src/utils/adb", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  getAndroidRuntimeKind: vi.fn(async (serial: string) => probe(serial)),
+  getAndroidRuntimeKind: vi.fn(async (serial: string) => probeAs("android", serial)),
 }));
 vi.mock("../../src/utils/sim-remote", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  getRemoteSimulatorRuntimeKind: vi.fn(async (udid: string) => probe(udid)),
+  getRemoteSimulatorRuntimeKind: vi.fn(async (udid: string) => probeAs("ios-remote", udid)),
 }));
 
 const IOS = "00000000-0000-0000-0000-0000000000ab";
@@ -661,6 +669,19 @@ describe("an explicitly targeted run", () => {
     const { registry } = mockRegistry();
 
     expect((await run(registry, "tv-only", { device: IOS_TV })).ok).toBe(true);
+  });
+
+  it("reads an explicit android serial's kind through the adb probe", async () => {
+    // Only that probe can read a serial — sent to a simulator listing it
+    // answers nothing, and a plain kind mismatch would then refuse as
+    // unverifiable instead of as the exclusion it is.
+    await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
+    const { registry } = mockRegistry();
+
+    const err = await run(registry, "tv-only", { device: ANDROID }).catch((e: unknown) => e);
+
+    expect((err as Error).message).toMatch(/is mobile, not tv/);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
   });
 
   it("passes an explicit vega device on a tv requirement with nothing probed", async () => {
