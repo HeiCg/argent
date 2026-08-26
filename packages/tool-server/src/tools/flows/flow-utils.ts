@@ -3237,10 +3237,10 @@ export function foldLeadingRequires(
 
 /**
  * Validate cross-field invariants that are checkable without other files.
- * `skipRequires` exists for the recording append path alone: a `requires` block
- * hand-written mid-take legitimately precedes the launch steps that will
- * satisfy it, so appends must stay possible — flow-finish-recording and the
- * run path are the gates that judge the whole flow.
+ * `skipRequires` is for callers that must carry or count a `requires` block
+ * verbatim rather than judge it: a block hand-written mid-take legitimately
+ * precedes the launch steps that will satisfy it — flow-finish-recording and
+ * the run path are the gates that judge the whole flow.
  */
 export function validateFlow(flow: FlowFile, opts?: { skipRequires?: boolean }): void {
   if (!opts?.skipRequires) validateRequires(flow);
