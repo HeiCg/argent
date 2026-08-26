@@ -1136,10 +1136,11 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
   }
   // A bare `run` means the default flows directory, so "run everything I have
   // saved" costs no argument. It resolves and dispatches exactly as a typed
-  // path does, so the two spellings cannot drift; what it adds is recursion,
-  // because a bare run is the run half of `flow list` and must cover the very
-  // set that command prints. Only this form implies it: a typed directory
-  // still runs what the operator spelled and nothing below it without -r.
+  // path does; what it adds is recursion, because a bare run is the run half
+  // of `flow list` and must cover the very set that command prints. Only this
+  // form implies it: a typed directory still runs what the operator spelled
+  // and nothing below it without -r. `defaulted` also aims the failure
+  // messages below: a run that named no path cannot be told one was not found.
   const flowRef = args.flowRef ?? FLOWS_DIR;
   const defaulted = args.flowRef === undefined;
   const recursive = args.recursive || defaulted;
