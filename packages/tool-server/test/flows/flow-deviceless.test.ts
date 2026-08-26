@@ -181,11 +181,7 @@ describe("a flow that touches no device", () => {
 
     expect(result.ok).toBe(true);
     expect(result.device).toBe("");
-    expect(invokeTool).not.toHaveBeenCalledWith(
-      "list-devices",
-      expect.anything(),
-      expect.anything()
-    );
+    expect(invokeTool).not.toHaveBeenCalledWith("list-devices", expect.anything());
   });
 
   it("when the narration is factored into a fragment it composes", async () => {
@@ -203,11 +199,7 @@ describe("a flow that touches no device", () => {
 
     expect(result.ok).toBe(true);
     expect(result.device).toBe("");
-    expect(invokeTool).not.toHaveBeenCalledWith(
-      "list-devices",
-      expect.anything(),
-      expect.anything()
-    );
+    expect(invokeTool).not.toHaveBeenCalledWith("list-devices", expect.anything());
   });
 
   it("runs an empty flow", async () => {
