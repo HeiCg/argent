@@ -353,6 +353,16 @@ describe("repeat: parse/serialize", () => {
     ).toThrow(/repeat\.until takes no timeout.*end the block's steps with an `await:`/is);
   });
 
+  it("rejects an idle guard in until, pointing at the body's own await", () => {
+    // A settle in front of the block settles only the first probe's screen.
+    const drain = () =>
+      parseFlow("steps:\n  - repeat: { until: { idle: true } }\n    steps: [{ tap: A }]\n");
+    expect(drain).toThrow(
+      /repeat\.until has no idle form.*End the block's steps with an `await: \{ idle: true \}`/is
+    );
+    expect(drain).not.toThrow(/before the block/i);
+  });
+
   it("rejects a {{secret:…}} placeholder in the until guard", () => {
     expect(() =>
       parseFlow(

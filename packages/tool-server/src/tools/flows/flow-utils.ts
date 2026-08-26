@@ -2411,8 +2411,11 @@ function parseWhenCondition(
   if (IDLE_CONDITION in b) {
     badEntry(
       entry,
-      `${label} has no idle form — stillness is a wait, and a guard asks what is on the screen now. ` +
-        "Put `await: { idle: true }` before the block instead"
+      allowPlatform
+        ? `${label} has no idle form — stillness is a wait, and a guard asks what is on the screen now. ` +
+            "Put `await: { idle: true }` before the block instead"
+        : `${label} has no idle form — stillness is a wait, and a guard asks what is on the screen now. ` +
+            "End the block's steps with an `await: { idle: true }` for the settled screen the next probe should read instead"
     );
   }
   if (!allowPlatform && "platform" in b) {
