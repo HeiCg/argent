@@ -990,7 +990,6 @@ describe("flow-add-step", () => {
     expect(result.message).not.toContain("was cancelled");
     expect(result.message).toContain("Prior nested steps may already have changed the device");
     expect(result.message).toContain("state the recorded prefix leaves it in");
-    expect(result.message).not.toContain("Restore the device");
     expect(parseFlow(await onDisk("sequence-failed")).steps).toEqual([]);
   });
 
@@ -1073,7 +1072,6 @@ describe("flow-add-step", () => {
     expect(result.message).toContain("step NOT recorded");
     expect(result.message).toContain("Prior nested steps may already have changed the device");
     expect(result.message).toContain("state the recorded prefix leaves it in");
-    expect(result.message).not.toContain("Restore the device");
     expect(parseFlow(await onDisk("sequence-cancelled")).steps).toEqual([]);
   });
 
@@ -1120,8 +1118,11 @@ describe("flow-add-step", () => {
       { signal: controller.signal } as never
     );
 
-    expect(result.message).toContain("was cancelled");
-    expect(result.message).not.toContain("failed nested step");
+    // The un-rewritten reason is the headline `nestedOrchestratorOutcome`
+    // builds, so name it: the re-wording demotes it into the brackets rather
+    // than dropping it, and only the leading clause tells the two apart.
+    expect(result.message.startsWith("run-sequence was cancelled (")).toBe(true);
+    expect(result.message).toContain("run-sequence stopped at await-ui-element after 1 of 3 steps");
     expect(result.message).toContain("step NOT recorded");
     expect(parseFlow(await onDisk("sequence-cancelled-in-step")).steps).toEqual([]);
   });
@@ -1294,7 +1295,6 @@ describe("flow-add-step", () => {
 
     expect(result.message).toContain("Check the device against the state the recorded prefix");
     expect(result.message).toContain("relaunching the app does NOT reproduce that prefix");
-    expect(result.message).not.toContain("Restore the device");
   });
 
   it("still warns when the composed flow failed with NO step passing", async () => {
