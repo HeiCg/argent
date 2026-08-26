@@ -2400,6 +2400,43 @@ ${paragraphs()}
     expect(swipes[0].fromY - swipes[0].toY).toBeCloseTo(0.105, 5);
   });
 
+  it("elects the outer scroller as the clip when the target is itself a scroller", async () => {
+    // A scroll-to whose TARGET is an addressable scroller: its own frame
+    // contains itself, so without the self-exclusion it would win the
+    // smallest-area arg-min and become its own clip - zero headroom, no
+    // nudge at all. The clip must be the OUTER scroller that owns it, whose
+    // end is the screen edge, so the flush 0.87..0.97 landing nudges
+    // 0.07 x 1.5 = 0.105 anchored at that scroller's centre.
+    const reviews = (y: number) =>
+      n({ role: "AXScrollArea", label: "Reviews", frame: { x: 0.1, y, width: 0.8, height: 0.1 } });
+    const flush = screen([fullScreenScroller(), reviews(0.87)]);
+    const padded = screen([fullScreenScroller(), reviews(0.75)]);
+    let nudged = false;
+    currentTree = () => (nudged ? padded : flush);
+
+    const swipes: SwipeCall[] = [];
+    const registry = mockRegistry(swipes, () => {
+      nudged = true;
+    });
+
+    await writeFlow("scroller-target", {
+      executionPrerequisite: "",
+      steps: [{ kind: "scroll-to", target: { text: "Reviews" }, direction: "down" }],
+    });
+
+    const tool = createRunFlowTool(registry);
+    const result = asRun(
+      await tool.execute({}, { name: "scroller-target", project_root: tmpDir, device: DEVICE })
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.steps[0].status).toBe("pass");
+    expect(swipes).toHaveLength(1);
+    expect(swipes[0].settle).toBe(true);
+    expect(swipes[0].fromY).toBeCloseTo(0.5, 5);
+    expect(swipes[0].fromY - swipes[0].toY).toBeCloseTo(0.105, 5);
+  });
+
   it("skips the nudge when a nested scroller covers the anchor without owning the target", async () => {
     // Reviewer repro: a page scroller owns the row, but an embedded pane (an
     // inner list, a web view, a map) covers the page's centre - where the
