@@ -25,7 +25,7 @@ const DEVICECTL_TIMEOUT_MS = 20_000;
 const DEVICECTL_INSTALL_TIMEOUT_MS = 120_000;
 const DEVICECTL_LIST_TIMEOUT_MS = 8_000;
 
-export interface IosPhysicalDevice {
+interface IosPhysicalDevice {
   /** Dashed hardware UDID (e.g. `00008110-000978540290401E`). */
   udid: string;
   name: string;

@@ -223,7 +223,7 @@ export interface RunnerSnapshotNode {
   parentIndex: number | null;
 }
 
-export interface RunnerSnapshotQuality {
+interface RunnerSnapshotQuality {
   state?: string;
   backend?: string;
   reason?: string;

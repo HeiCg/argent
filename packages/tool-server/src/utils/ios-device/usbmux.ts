@@ -47,7 +47,7 @@ const RUNNER_NOT_LISTENING_HINT =
 const USBMUXD_UNREACHABLE_HINT =
   "Physical iOS devices require macOS; if this is a Mac, check that no sandbox blocks /var/run.";
 
-export interface OpenUsbmuxRunnerSocketOptions {
+interface OpenUsbmuxRunnerSocketOptions {
   /** Dashed hardware UDID (e.g. 00008110-000978540290401E). */
   udid: string;
   /** TCP port the XCUITest runner listens on ON the device. */
@@ -200,7 +200,7 @@ async function connectToUsbmuxd(socketPath: string, deadline: Deadline): Promise
  * The slice of net.Socket the packet writer touches: a structural seam so the
  * backpressure wait can be unit-tested with a stub whose write() never drains.
  */
-export interface UsbmuxWritableSocket {
+interface UsbmuxWritableSocket {
   write(data: Buffer): boolean;
   once(event: "drain" | "error" | "close", listener: (error: Error) => void): unknown;
   off(event: "drain" | "error" | "close", listener: (error: Error) => void): unknown;

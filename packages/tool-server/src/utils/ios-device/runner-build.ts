@@ -450,7 +450,7 @@ const RUNNER_LOG_NAME_RE = /^runner-.+-(\d+)\.log$/;
 const XCRESULT_NAME_RE = /^Test-.+-(\d{4}\.\d{2}\.\d{2}_\d{2}-\d{2}-\d{2}).*\.xcresult$/;
 
 /** What `planRunnerStorageSweep` decided to delete, as per-directory names. */
-export interface RunnerStorageSweepPlan {
+interface RunnerStorageSweepPlan {
   cacheDirNames: string[];
   cloneNames: string[];
   logNames: string[];
