@@ -13,12 +13,15 @@
  *   - flag OFF → resolveDevice throws a validation FailureError carrying the
  *     enable hint, AND a stub tool wired like gesture-tap's physical arm never
  *     reaches the runner blueprint factory;
- *   - flag ON  → classification is unchanged and the same invoke goes through.
+ *   - flag ON  → classification is unchanged and the same invoke goes through;
+ *   - over HTTP, flag OFF → 400 carrying the rejection's own error_code and
+ *     error_kind, so a batch runner can skip the one flow instead of aborting.
  *
  * Unit tests see the flag as ON by default (the seam in device-info.ts); each
  * case here flips it explicitly.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import request from "supertest";
 import { z } from "zod";
 import {
   FailureError,
@@ -38,6 +41,7 @@ import {
   IOS_DEVICE_RUNNER_NAMESPACE,
   iosDeviceRunnerRef,
 } from "../src/blueprints/ios-device-runner";
+import { createHttpApp } from "../src/http";
 
 const PHYSICAL_UDID = "00008110-000978540290401E";
 const SIM_UDID = "2E35A650-9618-41E1-9E8D-5E4E7CC20929";
@@ -143,5 +147,49 @@ describe("resolveDevice gates physical iOS UDIDs on the ios-physical-devices fla
 
     expect(result).toEqual({ id: PHYSICAL_UDID, platform: "ios", kind: "device" });
     expect(factory.ran).toBe(true);
+  });
+});
+
+describe("the HTTP capability gate keeps the flag rejection classified", () => {
+  it("flag OFF: 400 carrying the gate's own error_code and error_kind", async () => {
+    // The gate fires in the pre-invoke capability step, whose catch arm used to
+    // treat everything but UnsupportedOperationError as an internal fault: a 500
+    // with no error_code at all. The CLI reads `errorKind === "validation"` to
+    // skip one flow instead of aborting the batch, so the classification has to
+    // survive - the same 400/TOOL_INPUT_INVALID/validation the handler maps this
+    // signal to when it is raised inside execute().
+    __setIosPhysicalDevicesFlagForTests(false);
+    const recordFailure = vi.fn();
+    const registry = new Registry();
+    registry.registerTool({
+      id: "gated-device-tool",
+      capability: { apple: { simulator: true, device: true } },
+      zodSchema: z.object({ udid: z.string() }),
+      services: () => ({}),
+      async execute() {
+        throw new Error("execute should have been skipped");
+      },
+    });
+    const { app } = createHttpApp(registry, { recordFailure });
+
+    const res = await request(app).post("/tools/gated-device-tool").send({ udid: PHYSICAL_UDID });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(ENABLE_HINT);
+    expect(res.body.error_code).toBe("TOOL_INPUT_INVALID");
+    expect(res.body.error_kind).toBe("validation");
+    // Telemetry keeps the gate's own stage too, not the generic
+    // HTTP_DEVICE_RESOLUTION_FAILED of the internal-fault arm.
+    expect(recordFailure).toHaveBeenCalledWith(
+      "gated-device-tool",
+      expect.anything(),
+      {
+        error_code: "TOOL_INPUT_INVALID",
+        failure_stage: "device_resolution_flag_gate",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      },
+      expect.any(Number)
+    );
   });
 });
