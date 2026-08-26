@@ -256,7 +256,18 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
     };
 
     let started: Awaited<ReturnType<typeof startRunner>>;
-    const artifact = await ensureRunnerArtifact(signing);
+    let artifact: RunnerArtifact;
+    try {
+      artifact = await ensureRunnerArtifact(signing);
+    } catch (error) {
+      // A team that has never registered a device cannot mint a profile from
+      // the generic-destination build, so a brand-new account fails on its
+      // very first build. Building against this concrete device registers it,
+      // the same recovery the launch-time arm below applies.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isProfileMissingDeviceFailure(message)) throw error;
+      artifact = await rebuildRunnerArtifactForDevice(udid, signing);
+    }
     try {
       started = await startRunner(artifact);
     } catch (error) {

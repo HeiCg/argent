@@ -45,17 +45,20 @@ build-for-testing` (signed with the user's team; see the environment
 
 ## Build-time configuration
 
-The project intentionally hardcodes no team and only placeholder bundle ids;
-the tool-server injects real values on the `xcodebuild` command line:
+One environment variable configures signing, and it is required:
 
-- `ARGENT_RUNNER_APP_BUNDLE_ID` / `ARGENT_RUNNER_TEST_BUNDLE_ID`: bundle ids
-  (from the `ARGENT_IOS_RUNNER_BUNDLE_ID` env var, default
-  `com.swmansion.argent.runner`).
-- `DEVELOPMENT_TEAM`: from `ARGENT_IOS_TEAM_ID`.
-- `CODE_SIGN_IDENTITY` / `PROVISIONING_PROFILE_SPECIFIER`: from
-  `ARGENT_IOS_SIGNING_IDENTITY` / `ARGENT_IOS_PROVISIONING_PROFILE`, when set.
-  Either of them also switches `CODE_SIGN_STYLE` to `Manual`: xcodebuild
-  refuses a manually specified profile on an automatically signed target.
+- `ARGENT_IOS_TEAM_ID`: your Apple Developer Team ID, a 10-character code.
+  Find it in Xcode > Settings > Accounts (select your Apple ID and team) or
+  at developer.apple.com/account under Membership.
+
+Everything else is derived or fixed. The build always uses automatic signing
+(an Apple ID signed into Xcode is needed so it can mint the provisioning
+profile), and the bundle ids are derived from the team
+(`com.argent.runner.t<teamid>` plus its `.uitests` sibling), which makes them
+unique per team by construction. The project intentionally hardcodes no team
+and only placeholder bundle ids; the tool-server injects the real values on
+the `xcodebuild` command line. On first install, iOS asks to trust the
+developer on the phone: Settings > General > VPN & Device Management.
 
 `ARGENT_IOS_RUNNER_PROJECT` tells the tool-server where this project is (the
 absolute path to `ArgentRunner.xcodeproj`). In a checkout it is found by

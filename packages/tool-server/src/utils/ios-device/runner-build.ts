@@ -36,26 +36,45 @@ const execFileAsync = promisify(execFile);
  * successful artifact resolution; see `sweepRunnerStorage`.
  */
 
-/** Env-configurable signing. Automatic signing + team id covers most setups. */
+/**
+ * The one signing mode: automatic, under a single team. The bundle ids are
+ * derived from the team, so they are unique per team by construction and
+ * nothing about them is configurable.
+ */
 export interface RunnerSigningConfig {
-  teamId: string | null;
-  signingIdentity: string | null;
-  provisioningProfile: string | null;
+  teamId: string;
   appBundleId: string;
   testBundleId: string;
 }
 
-const DEFAULT_APP_BUNDLE_ID = "com.swmansion.argent.runner";
+function signingTeamError(message: string): Error {
+  return withFailureSignal(new Error(message), {
+    error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
+    failure_stage: "ios_device_signing_team",
+    failure_area: "tool_server",
+    error_kind: "validation",
+  });
+}
 
+/**
+ * Resolve the signing configuration from ARGENT_IOS_TEAM_ID, the one required
+ * setting. Deliberately no keychain detection or other inference: an explicit
+ * value is predictable on every Mac, and the error tells the user exactly
+ * where the id lives. The bundle ids are derived from the team, so they are
+ * unique per team by construction and need no configuration.
+ */
 export function resolveRunnerSigningConfig(): RunnerSigningConfig {
-  const appBundleId = process.env.ARGENT_IOS_RUNNER_BUNDLE_ID || DEFAULT_APP_BUNDLE_ID;
-  return {
-    teamId: process.env.ARGENT_IOS_TEAM_ID || null,
-    signingIdentity: process.env.ARGENT_IOS_SIGNING_IDENTITY || null,
-    provisioningProfile: process.env.ARGENT_IOS_PROVISIONING_PROFILE || null,
-    appBundleId,
-    testBundleId: `${appBundleId}.uitests`,
-  };
+  const teamId = process.env.ARGENT_IOS_TEAM_ID?.trim();
+  if (!teamId) {
+    throw signingTeamError(
+      "ARGENT_IOS_TEAM_ID is not set. Set it to your Apple Developer Team ID " +
+        "(a 10-character code): Xcode > Settings > Accounts > select your Apple ID " +
+        "and team, or developer.apple.com/account under Membership."
+    );
+  }
+  // The leading "t" keeps the derived segment from starting with a digit.
+  const appBundleId = `com.argent.runner.t${teamId.toLowerCase()}`;
+  return { teamId, appBundleId, testBundleId: `${appBundleId}.uitests` };
 }
 
 /**
@@ -188,28 +207,56 @@ function findBaseXctestrun(derivedDataPath: string): string | null {
 }
 
 /** Map an xcodebuild signing failure to the config key that fixes it. */
+/**
+ * The xcodebuild lines worth reading out of a failed build. Every failure
+ * ends with the same boilerplate (asterisk banner, "The following build
+ * commands failed"), so a blind tail shows ceremony and cuts the `error:`
+ * lines that name the cause. Deduped because xcodebuild repeats each error
+ * per target; falls back to the tail when no error line exists.
+ */
+export function xcodebuildFailureSummary(output: string): string {
+  const lines = output.split("\n");
+  const errors = [...new Set(lines.filter((line) => /(^|\s)error: /.test(line)))];
+  if (errors.length > 0)
+    return errors
+      .slice(0, 8)
+      .map((line) => line.trim())
+      .join("\n");
+  return lines.slice(-15).join("\n").trim();
+}
+
 export function resolveSigningHint(output: string): string | null {
   const lower = output.toLowerCase();
-  if (lower.includes("requires a development team")) {
-    return "Set ARGENT_IOS_TEAM_ID to your Apple Developer Team ID (Xcode > Settings > Accounts).";
+  // Checked before the provisioning arm: this message also contains the words
+  // "provisioning profile", and the sign-into-Xcode advice would be wrong.
+  // Normally auto-healed by the concrete-destination rebuild (see
+  // isProfileMissingDeviceFailure); surfaced only when that retry failed too.
+  if (lower.includes("team has no devices")) {
+    return (
+      "This team has no registered devices yet. Keep the phone connected and retry: " +
+      "building against the connected device registers it with the team."
+    );
   }
   if (
     lower.includes("failed registering bundle identifier") ||
     // Bare "is not available" also appears in unrelated failures (destination,
-    // device, OS availability), so it only counts as a bundle-id collision
+    // device, OS availability), so it only counts as a registration failure
     // alongside its real registration context.
     (lower.includes("is not available") &&
       (lower.includes("identifier") || lower.includes("registered")))
   ) {
+    // The derived bundle id is unique per team, so this is not a cross-team
+    // collision; free Personal Team accounts cap how many new app ids they
+    // may register in a rolling window.
     return (
-      "The runner bundle id collided (common on free Personal Team accounts). " +
-      "Set ARGENT_IOS_RUNNER_BUNDLE_ID to a unique reverse-DNS value, e.g. com.yourname.argent.runner."
+      "Registering the runner bundle id failed. On a free Personal Team, Apple limits " +
+      "new app ids; wait a few days and retry, or sign under a paid team."
     );
   }
   if (lower.includes("no profiles for") || lower.includes("provisioning profile")) {
     return (
-      "Provisioning failed. With automatic signing, set ARGENT_IOS_TEAM_ID; " +
-      "or set ARGENT_IOS_PROVISIONING_PROFILE to a profile that covers the runner bundle ids."
+      "Provisioning failed. Check that this team's Apple ID is signed into Xcode " +
+      "(Xcode > Settings > Accounts), then retry."
     );
   }
   return null;
@@ -226,13 +273,7 @@ const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
  * of silently reusing a stale cached artifact.
  */
 export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigningConfig): string[] {
-  // Pinning an identity or a profile switches the WHOLE build to manual
-  // signing. xcodebuild rejects an automatically signed target that also
-  // carries a manually specified profile ("ArgentRunner has conflicting
-  // provisioning settings", exit 70, no .xctestrun written), so hardcoding
-  // Automatic made both env vars below unbuildable rather than optional.
-  const manualSigning = Boolean(config.signingIdentity || config.provisioningProfile);
-  const args = [
+  return [
     "build-for-testing",
     "-project",
     projectPath,
@@ -255,14 +296,9 @@ export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigning
     // the per-user rebrand happens here without touching the project file.
     `ARGENT_RUNNER_APP_BUNDLE_ID=${config.appBundleId}`,
     `ARGENT_RUNNER_TEST_BUNDLE_ID=${config.testBundleId}`,
-    `CODE_SIGN_STYLE=${manualSigning ? "Manual" : "Automatic"}`,
+    "CODE_SIGN_STYLE=Automatic",
+    `DEVELOPMENT_TEAM=${config.teamId}`,
   ];
-  if (config.teamId) args.push(`DEVELOPMENT_TEAM=${config.teamId}`);
-  if (config.signingIdentity) args.push(`CODE_SIGN_IDENTITY=${config.signingIdentity}`);
-  if (config.provisioningProfile) {
-    args.push(`PROVISIONING_PROFILE_SPECIFIER=${config.provisioningProfile}`);
-  }
-  return args;
 }
 
 /**
@@ -291,7 +327,12 @@ export function isProfileMissingDeviceFailure(logText: string): boolean {
   return (
     logText.includes("0xe8008012") ||
     /doesn't include the currently selected device/i.test(logText) ||
-    /provisioning profile cannot be installed on this device/i.test(logText)
+    /provisioning profile cannot be installed on this device/i.test(logText) ||
+    // A team that has never registered a device cannot mint a development
+    // profile from the generic-destination build at all, so a brand-new
+    // account fails here on its very first run. Same recovery as the other
+    // shapes: a concrete-destination build registers the device.
+    /team has no devices/i.test(logText)
   );
 }
 
@@ -303,7 +344,7 @@ export function isProfileMissingDeviceFailure(logText: string): boolean {
  */
 export async function rebuildRunnerArtifactForDevice(
   udid: string,
-  config: RunnerSigningConfig = resolveRunnerSigningConfig()
+  config: RunnerSigningConfig
 ): Promise<RunnerArtifact> {
   return ensureRunnerArtifact(config, { destinationUdid: udid, force: true });
 }
@@ -333,7 +374,7 @@ async function withRunnerBuildLock<T>(key: string, fn: () => Promise<T>): Promis
  * poisoned-cache self-heal both use it.
  */
 export async function ensureRunnerArtifact(
-  config: RunnerSigningConfig = resolveRunnerSigningConfig(),
+  config: RunnerSigningConfig,
   opts: {
     destinationUdid?: string;
     force?: boolean;
@@ -409,9 +450,9 @@ async function buildRunnerArtifact(
     const e = error as { stdout?: string; stderr?: string; message?: string };
     const output = [e.stdout ?? "", e.stderr ?? "", e.message ?? ""].join("\n");
     const hint = resolveSigningHint(output);
-    const tail = output.trim().split("\n").slice(-15).join("\n");
     throw new Error(
-      `Building the iOS device runner failed.${hint ? ` ${hint}` : ""}\n\nxcodebuild output tail:\n${tail}`,
+      `Building the iOS device runner failed.${hint ? ` ${hint}` : ""}\n\n` +
+        `xcodebuild reported:\n${xcodebuildFailureSummary(output)}`,
       { cause: error }
     );
   } finally {

@@ -8,7 +8,8 @@
  * Prerequisites (see packages/ios-device-runner/README.md):
  *   - `argent enable ios-physical-devices`
  *   - device paired + trusted, Developer Mode on, UNLOCKED, ideally on USB
- *   - ARGENT_IOS_TEAM_ID set (and ARGENT_IOS_RUNNER_BUNDLE_ID for free accounts)
+ *   - an Apple Development identity in the keychain (ARGENT_IOS_TEAM_ID only
+ *     when the Mac has certificates for more than one team)
  *   - workspace built (`npm run build`)
  *
  * Usage:

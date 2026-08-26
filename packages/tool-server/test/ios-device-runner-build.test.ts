@@ -3,11 +3,12 @@ import { promisify } from "node:util";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   computeRunnerCacheKey,
   ensureRunnerArtifact,
+  isProfileMissingDeviceFailure,
   killStaleRunnersForDevice,
   launchRunner,
   MAX_RUNNER_LOG_FILES,
@@ -16,10 +17,12 @@ import {
   prepareXctestrunWithPort,
   PROCESS_TABLE_ARGV,
   resolveRunnerProjectPath,
+  resolveRunnerSigningConfig,
   resolveSigningHint,
   runnerBuildStaticArgs,
   sweepRunnerStorage,
   waitForPidsToExit,
+  xcodebuildFailureSummary,
   XctestrunFormatError,
   type RunnerArtifact,
   type RunnerSigningConfig,
@@ -171,43 +174,53 @@ describe.skipIf(process.platform !== "darwin")("prepareXctestrunWithPort", () =>
 const PROJECT = "/opt/argent/ios-device-runner/ArgentRunner/ArgentRunner.xcodeproj";
 const CONFIG: RunnerSigningConfig = {
   teamId: "ABCDE12345",
-  signingIdentity: null,
-  provisioningProfile: null,
-  appBundleId: "com.swmansion.argent.runner",
-  testBundleId: "com.swmansion.argent.runner.uitests",
+  appBundleId: "com.argent.runner.tabcde12345",
+  testBundleId: "com.argent.runner.tabcde12345.uitests",
 };
 
 describe("runnerBuildStaticArgs", () => {
-  const signingStyles = (config: RunnerSigningConfig): string[] =>
-    runnerBuildStaticArgs(PROJECT, config).filter((arg) => arg.startsWith("CODE_SIGN_STYLE="));
+  it("always signs automatically under the configured team", () => {
+    const args = runnerBuildStaticArgs(PROJECT, CONFIG);
 
-  it("signs automatically when nothing but the team id is configured", () => {
-    expect(signingStyles(CONFIG)).toEqual(["CODE_SIGN_STYLE=Automatic"]);
-  });
-
-  it("switches to manual signing as soon as an identity or a profile is pinned", () => {
-    // Automatic signing plus a manually specified profile is the "conflicting
-    // provisioning settings" failure (exit 70, no .xctestrun written), which
-    // made both env vars impossible to build with.
-    for (const config of [
-      { ...CONFIG, signingIdentity: "Apple Development: Someone (ABCDE12345)" },
-      { ...CONFIG, provisioningProfile: "argent-runner-profile" },
-    ]) {
-      expect(signingStyles(config)).toEqual(["CODE_SIGN_STYLE=Manual"]);
-    }
-  });
-
-  it("passes the pinned signing settings through alongside the manual style", () => {
-    const args = runnerBuildStaticArgs(PROJECT, {
-      ...CONFIG,
-      signingIdentity: "Apple Development: Someone (ABCDE12345)",
-      provisioningProfile: "argent-runner-profile",
-    });
-
-    expect(args).toContain("CODE_SIGN_STYLE=Manual");
-    expect(args).toContain("CODE_SIGN_IDENTITY=Apple Development: Someone (ABCDE12345)");
-    expect(args).toContain("PROVISIONING_PROFILE_SPECIFIER=argent-runner-profile");
+    expect(args).toContain("CODE_SIGN_STYLE=Automatic");
     expect(args).toContain("DEVELOPMENT_TEAM=ABCDE12345");
+    // The manual-signing surface is gone: no argv may carry an identity or a
+    // profile, the pair xcodebuild refuses next to automatic signing.
+    expect(
+      args.filter((a) => /^(CODE_SIGN_IDENTITY|PROVISIONING_PROFILE_SPECIFIER)=/.test(a))
+    ).toEqual([]);
+  });
+});
+
+describe("resolveRunnerSigningConfig", () => {
+  afterEach(() => {
+    delete process.env.ARGENT_IOS_TEAM_ID;
+  });
+
+  it("derives the whole config from ARGENT_IOS_TEAM_ID", () => {
+    process.env.ARGENT_IOS_TEAM_ID = " FGHIJ67890 ";
+
+    expect(resolveRunnerSigningConfig()).toEqual({
+      teamId: "FGHIJ67890",
+      appBundleId: "com.argent.runner.tfghij67890",
+      testBundleId: "com.argent.runner.tfghij67890.uitests",
+    });
+  });
+
+  it("refuses a missing team id with the where-to-find-it guide", () => {
+    delete process.env.ARGENT_IOS_TEAM_ID;
+    let caught: unknown;
+    try {
+      resolveRunnerSigningConfig();
+    } catch (error) {
+      caught = error;
+    }
+
+    const message = (caught as Error).message;
+    expect(message).toContain("ARGENT_IOS_TEAM_ID is not set");
+    expect(message).toContain("Xcode > Settings > Accounts");
+    expect(message).toContain("developer.apple.com/account");
+    expect(getFailureSignal(caught)?.error_kind).toBe("validation");
   });
 });
 
@@ -232,9 +245,7 @@ describe("computeRunnerCacheKey", () => {
     const base = computeRunnerCacheKey("srcs", "x", runnerBuildStaticArgs(PROJECT, CONFIG));
     for (const config of [
       { ...CONFIG, appBundleId: "com.other.argent.runner" },
-      { ...CONFIG, teamId: null },
-      { ...CONFIG, signingIdentity: "Apple Development: Someone" },
-      { ...CONFIG, provisioningProfile: "argent-runner-profile" },
+      { ...CONFIG, teamId: "FGHIJ67890" },
     ]) {
       expect(computeRunnerCacheKey("srcs", "x", runnerBuildStaticArgs(PROJECT, config))).not.toBe(
         base
@@ -469,36 +480,94 @@ describe("resolveRunnerProjectPath", () => {
   });
 });
 
-describe("resolveSigningHint", () => {
-  it("maps a missing team to the ARGENT_IOS_TEAM_ID hint", () => {
-    expect(resolveSigningHint('Signing for "ArgentRunner" requires a development team.')).toContain(
-      "ARGENT_IOS_TEAM_ID"
+describe("isProfileMissingDeviceFailure", () => {
+  it("recognizes the fresh-team shape alongside the new-device shapes", () => {
+    const cases = [
+      "Error 0xe8008012 while installing",
+      "profile doesn't include the currently selected device",
+      "this provisioning profile cannot be installed on this device",
+      "error: Your team has no devices from which to generate a provisioning profile.",
+    ];
+    for (const text of cases) {
+      expect(isProfileMissingDeviceFailure(text), text).toBe(true);
+    }
+    expect(isProfileMissingDeviceFailure("ld: symbol(s) not found")).toBe(false);
+  });
+});
+
+describe("xcodebuildFailureSummary", () => {
+  it("extracts the error lines, deduped, instead of the boilerplate tail", () => {
+    const output = [
+      "Build description signature: abc",
+      "/proj.xcodeproj: error: No Accounts: Add a new account in Accounts settings.",
+      "/proj.xcodeproj: error: No profiles for 'com.x' were found: Xcode couldn't find any.",
+      "/proj.xcodeproj: error: No Accounts: Add a new account in Accounts settings.",
+      "** TEST BUILD FAILED **",
+      "The following build commands failed:",
+      "\tBuilding project ArgentRunner for testing with scheme ArgentRunner",
+      "(1 failure)",
+    ].join("\n");
+
+    const summary = xcodebuildFailureSummary(output);
+
+    expect(summary).toBe(
+      "/proj.xcodeproj: error: No Accounts: Add a new account in Accounts settings.\n" +
+        "/proj.xcodeproj: error: No profiles for 'com.x' were found: Xcode couldn't find any."
     );
+    expect(summary).not.toContain("TEST BUILD FAILED");
   });
 
-  it("keeps the bundle-id hint for the explicit registration failure", () => {
+  it("falls back to the tail when no error line exists", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`);
+    expect(xcodebuildFailureSummary(lines.join("\n"))).toBe(lines.slice(-15).join("\n"));
+  });
+});
+
+describe("resolveSigningHint", () => {
+  it("answers the fresh-team failure with the registration hint, not the sign-in one", () => {
+    const hint = resolveSigningHint(
+      "error: Your team has no devices from which to generate a provisioning profile."
+    );
+    expect(hint).toContain("no registered devices");
+    expect(hint).not.toContain("Xcode > Settings > Accounts");
+  });
+
+  it("maps the explicit registration failure to the personal-team cap", () => {
     expect(
       resolveSigningHint("error: Failed Registering Bundle Identifier (in target 'ArgentRunner')")
-    ).toContain("ARGENT_IOS_RUNNER_BUNDLE_ID");
+    ).toContain("Personal Team");
   });
 
-  it("gives the bundle-id hint when 'is not available' carries registration context", () => {
+  it("gives the registration hint when 'is not available' carries registration context", () => {
     const output =
-      'The app identifier "com.swmansion.argent.runner" cannot be registered to your ' +
+      'The app identifier "com.argent.runner.tabcde12345" cannot be registered to your ' +
       "development team because it is not available.";
-    expect(resolveSigningHint(output)).toContain("ARGENT_IOS_RUNNER_BUNDLE_ID");
+    expect(resolveSigningHint(output)).toContain("Personal Team");
   });
 
-  it("does not blame the bundle id for unrelated 'is not available' failures", () => {
+  it("does not blame registration for unrelated 'is not available' failures", () => {
     const output =
       "xcodebuild: error: iPhone 15 with iOS 18.0 is not available for this run destination.";
     expect(resolveSigningHint(output)).toBeNull();
   });
 
-  it("maps provisioning failures to the profile hint", () => {
+  it("maps provisioning failures to the Xcode sign-in hint", () => {
     expect(
-      resolveSigningHint('No profiles for "com.swmansion.argent.runner" were found')
-    ).toContain("ARGENT_IOS_PROVISIONING_PROFILE");
+      resolveSigningHint('No profiles for "com.argent.runner.tabcde12345" were found')
+    ).toContain("Xcode > Settings > Accounts");
+  });
+
+  it("never advises the removed manual-signing variables", () => {
+    for (const output of [
+      "error: Failed Registering Bundle Identifier (in target 'ArgentRunner')",
+      'No profiles for "com.argent.runner.tabcde12345" were found',
+      "provisioning profile could not be installed",
+    ]) {
+      const hint = resolveSigningHint(output) ?? "";
+      expect(hint).not.toContain("ARGENT_IOS_RUNNER_BUNDLE_ID");
+      expect(hint).not.toContain("ARGENT_IOS_PROVISIONING_PROFILE");
+      expect(hint).not.toContain("ARGENT_IOS_SIGNING_IDENTITY");
+    }
   });
 
   it("returns null for output with no signing signature", () => {

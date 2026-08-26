@@ -53,9 +53,16 @@ vi.mock("../../src/utils/ios-device/runner-build", async (importOriginal) => {
       derivedDataPath: "/tmp/argent-test/rebuilt-derived",
       fromCache: false,
     })),
-    resolveRunnerSigningConfig: vi.fn(() => ({})),
+    resolveRunnerSigningConfig: vi.fn(() => SIGNING_CONFIG),
   };
 });
+
+/** What the mocked resolveRunnerSigningConfig hands the factory. */
+const SIGNING_CONFIG = {
+  teamId: "ABCDE12345",
+  appBundleId: "com.argent.runner.tabcde12345",
+  testBundleId: "com.argent.runner.tabcde12345.uitests",
+};
 vi.mock("../../src/utils/ios-device/runner-crash", () => ({
   readRunnerCrashSummary: vi.fn(async () => null),
 }));
@@ -231,7 +238,7 @@ describe("ios-device-runner blueprint: mid-command runner death", () => {
 
     await rejectionOf(api.run({ command: "snapshot", appBundleId: "com.example.rebuilt" }));
     expect(launchRunner).toHaveBeenCalledTimes(2);
-    expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, {});
+    expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, SIGNING_CONFIG);
     expect(readRunnerCrashSummary).toHaveBeenCalledWith("/tmp/argent-test/rebuilt-derived");
   });
 });
@@ -257,13 +264,39 @@ describe("ios-device-runner blueprint: launch child exits during the readiness w
     expect(killRunnerProcess).toHaveBeenCalledTimes(1);
   });
 
+  it("rebuilds against the concrete device when the generic build fails for lack of registered devices", async () => {
+    stubLaunch();
+    const buildError = new Error(
+      "Building the iOS device runner failed.\n\nxcodebuild reported:\n" +
+        "error: Your team has no devices from which to generate a provisioning profile."
+    );
+    vi.mocked(ensureRunnerArtifact).mockRejectedValueOnce(buildError);
+    vi.mocked(isProfileMissingDeviceFailure).mockReturnValueOnce(true);
+
+    await callFactory();
+
+    // The predicate reads the build error's MESSAGE (there is no launch log
+    // yet), and the concrete-destination rebuild registers the phone.
+    expect(isProfileMissingDeviceFailure).toHaveBeenCalledWith(buildError.message);
+    expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, SIGNING_CONFIG);
+    expect(launchRunner).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a build failure the predicate does not recognize", async () => {
+    stubLaunch();
+    vi.mocked(ensureRunnerArtifact).mockRejectedValueOnce(new Error("No Accounts"));
+
+    await expect(callFactory()).rejects.toThrow("No Accounts");
+    expect(rebuildRunnerArtifactForDevice).not.toHaveBeenCalled();
+  });
+
   it("proceeds straight to the profile-missing rebuild retry instead of waiting out the poll", async () => {
     const { child } = stubLaunch();
     hangReadinessThenExit(child, 65);
     vi.mocked(isProfileMissingDeviceFailure).mockReturnValueOnce(true);
 
     await callFactory();
-    expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, {});
+    expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, SIGNING_CONFIG);
     expect(launchRunner).toHaveBeenCalledTimes(2);
   });
 
@@ -329,7 +362,7 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
     // The poisoned cache dir is gone from disk, not merely marked.
     await expect(fsp.access(derived)).rejects.toMatchObject({ code: "ENOENT" });
     expect(ensureRunnerArtifact).toHaveBeenCalledTimes(2);
-    expect(ensureRunnerArtifact).toHaveBeenNthCalledWith(2, {}, { force: true });
+    expect(ensureRunnerArtifact).toHaveBeenNthCalledWith(2, SIGNING_CONFIG, { force: true });
     // The poisoned attempt died at prepare time; only the healed one launched.
     expect(launchRunner).toHaveBeenCalledTimes(1);
     expect(rebuildRunnerArtifactForDevice).not.toHaveBeenCalled();
