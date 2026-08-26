@@ -24,6 +24,8 @@ let tmpDir: string;
 const TOOLS: Record<string, { inputSchema?: unknown; opaqueDeviceTarget?: boolean } | undefined> = {
   "tap": { inputSchema: { properties: { udid: {}, x: {}, y: {} } } },
   "stop-metro": { inputSchema: { properties: { port: {} } } },
+  "screenshot": { inputSchema: { properties: { udid: {}, scale: {} } } },
+  "list-devices": { inputSchema: { properties: {} } },
   // Drives a device its schema never names: the recorded command's own udid
   // rides inside the `args` JSON string, so only the marker says so.
   "flow-add-step": {
@@ -161,6 +163,29 @@ describe("a flow that touches no device", () => {
     const { registry } = mockRegistry({ booted: [] });
 
     expect(asRun(await runAuto(registry, "no-schema")).ok).toBe(true);
+  });
+
+  it("runs a recorder step whose recorded command takes no device", async () => {
+    // The opaque marker says the target CAN ride in `args`, not that it does:
+    // recording a device-free command needs no device to record it.
+    await writeFlow("recording-deviceless", [
+      {
+        kind: "tool",
+        name: "flow-add-step",
+        args: { name: "rec", project_root: ".", command: "list-devices", args: "{}" },
+      },
+    ]);
+    const { registry, invokeTool } = mockRegistry({ booted: [] });
+
+    const result = asRun(await runAuto(registry, "recording-deviceless"));
+
+    expect(result.ok).toBe(true);
+    expect(result.device).toBe("");
+    expect(invokeTool).not.toHaveBeenCalledWith(
+      "list-devices",
+      expect.anything(),
+      expect.anything()
+    );
   });
 
   it("when the narration is factored into a fragment it composes", async () => {
@@ -380,6 +405,32 @@ describe("stepRequiresDevice", () => {
     expect(stepRequiresDevice(registry, { kind: "tool", name: "flow-add-step", args: {} })).toBe(
       true
     );
+  });
+
+  it("reads an opaque step's target off the command it records", () => {
+    const { registry } = mockRegistry();
+    const recorder = (recorded: Record<string, unknown>): FlowStep => ({
+      kind: "tool",
+      name: "flow-add-step",
+      args: { name: "rec", project_root: ".", ...recorded },
+    });
+
+    expect(
+      stepRequiresDevice(registry, recorder({ command: "screenshot", args: '{"udid":"x"}' }))
+    ).toBe(true);
+    expect(stepRequiresDevice(registry, recorder({ command: "list-devices", args: "{}" }))).toBe(
+      false
+    );
+    expect(stepRequiresDevice(registry, recorder({ command: "list-devices" }))).toBe(false);
+    // Unreadable args fail closed: the step fails either way, and fails more
+    // usefully with a device resolved.
+    expect(stepRequiresDevice(registry, recorder({ command: "not-a-tool", args: "{}" }))).toBe(
+      true
+    );
+    expect(stepRequiresDevice(registry, recorder({ command: "list-devices", args: "{" }))).toBe(
+      true
+    );
+    expect(stepRequiresDevice(registry, recorder({ args: "{}" }))).toBe(true);
   });
 
   it("does NOT count the REAL stop-all-simulator-servers schema as needing a device", () => {

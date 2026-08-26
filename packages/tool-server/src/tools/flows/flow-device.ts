@@ -531,7 +531,7 @@ export function stepRequiresDevice(registry: Registry, step: FlowStep): boolean 
     case "wait":
       return false;
     case "tool":
-      return toolRequiresDevice(registry, step.name);
+      return toolRequiresDevice(registry, step);
     case "when":
     case "run":
     case "launch":
@@ -593,16 +593,46 @@ export function flowScopesDevice(registry: Registry, steps: FlowStep[]): boolean
   );
 }
 
-function toolRequiresDevice(registry: Registry, toolName: string): boolean {
-  const toolDef = registry.getTool(toolName);
+function toolRequiresDevice(
+  registry: Registry,
+  step: Extract<FlowStep, { kind: "tool" }>
+): boolean {
+  const toolDef = registry.getTool(step.name);
   // An unknown tool is assumed to need a device: the step fails either way, and
   // it fails more usefully with one resolved.
   if (!toolDef) return true;
   // `opaqueDeviceTarget` covers the target a schema cannot show: `flow-add-step`
   // carries the recorded command's device id inside its `args` JSON, so reading
   // declared keys alone left such a flow device-free with its `requires`
-  // unjudged.
-  return toolDef.opaqueDeviceTarget === true || declaresAny(registry, toolName, DEVICE_ARG_KEYS);
+  // unjudged. The marker is the TOOL's, so whether THIS step has such a target
+  // is read off the call it records.
+  if (toolDef.opaqueDeviceTarget === true && opaqueStepTargetsDevice(registry, step.args)) {
+    return true;
+  }
+  return declaresAny(registry, step.name, DEVICE_ARG_KEYS);
+}
+
+/**
+ * Whether the call an `opaqueDeviceTarget` step records targets a device —
+ * `flow-add-step`'s `command` plus the `args` JSON it forwards, the only shape
+ * the marker exists for, judged by the same declared keys as a plain `tool:`
+ * step. Args that cannot be read (no `command`, an unknown command, `args` that
+ * is not JSON) count as needing one: such a step fails either way, and fails
+ * more usefully with a device resolved.
+ */
+function opaqueStepTargetsDevice(registry: Registry, args: Record<string, unknown>): boolean {
+  const command = args.command;
+  if (typeof command !== "string" || !registry.getTool(command)) return true;
+  const recorded = args.args;
+  if (recorded !== undefined) {
+    if (typeof recorded !== "string") return true;
+    try {
+      JSON.parse(recorded);
+    } catch {
+      return true;
+    }
+  }
+  return declaresAny(registry, command, DEVICE_ARG_KEYS);
 }
 
 function declaresAny(registry: Registry, toolName: string, keys: readonly string[]): boolean {

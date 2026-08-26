@@ -1772,7 +1772,7 @@ describe("a flow whose only device step hides its target in an opaque arg", () =
       getTool: vi.fn((name: string) =>
         name === "flow-add-step"
           ? { ...addStep, inputSchema: zodObjectToJsonSchema(addStep.zodSchema!) }
-          : { inputSchema: { properties: { udid: {} } } }
+          : { inputSchema: { properties: name === "list-devices" ? {} : { udid: {} } } }
       ),
     } as unknown as Registry;
     return { registry, invokeTool };
@@ -1805,6 +1805,34 @@ describe("a flow whose only device step hides its target in an opaque arg", () =
 
     expect(result.ok).toBe(true);
     expect(result.device).toBe(IOS_TV);
+  });
+
+  it("leaves a recording of a device-free command device-free", async () => {
+    // The marker says the target CAN ride in `args`, not that it does: nothing
+    // in this step points at a device, so there is none to judge the block
+    // against and none to demand.
+    await writeFlow("deviceless-recorder", {
+      requires: { platform: ["ios"], runtimeKind: "tv" },
+      steps: [
+        {
+          kind: "tool",
+          name: "flow-add-step",
+          args: {
+            name: "rec-target",
+            project_root: "/proj",
+            command: "list-devices",
+            args: "{}",
+          },
+        },
+      ],
+    });
+    const { registry, invokeTool } = recorderRegistry([androidEntry(ANDROID)]);
+
+    const result = await run(registry, "deviceless-recorder");
+
+    expect(result.ok).toBe(true);
+    expect(result.device).toBe("");
+    expect(invokeTool.mock.calls.map((c) => c[0])).toEqual(["flow-add-step"]);
   });
 
   it("leaves a genuinely device-free flow device-free", async () => {
