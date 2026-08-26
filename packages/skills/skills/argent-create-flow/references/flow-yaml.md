@@ -192,7 +192,7 @@ Use `when:` only for optional setup or an interstitial that reconverges:
     - tap: { text: Got it }
 ```
 
-The guard accepts one `exists`, `visible`, `hidden`, or `text` condition, or `{ platform: ios|android|chromium|vega }`. UI guards use the short assert grace and reject `timeout`. There is no `else` or per-step `optional`. Put separate behavioral paths in separate flows. Never place a required acceptance check inside `when:`.
+The guard accepts one `exists`, `visible`, `hidden`, or `text` condition, or `{ platform: ios|android|chromium|vega }`. UI guards use the short assert grace and reject `timeout`. There is no `else` or per-step `optional`. Put separate behavioral paths in separate flows. Never place a required acceptance check inside `when:` or inside an [`until` drain body](#draining-to-a-condition).
 
 ## Bounded repetition
 
@@ -216,7 +216,7 @@ Four deliberate edges stop short of the paste:
 
 ### Draining to a condition
 
-`until` takes the same one condition key as a `when:` guard **minus `platform`** (fixed for a run, so the loop would be infinite or empty - parse-rejected), and is checked **before each iteration including the first**. An already-drained list therefore runs zero iterations and passes; each authored step still reports one `skip` line (`until guard already met`), so no step drops out of the report. **Reaching `max` with the condition still unmet fails the step** - a drain that never converged asserts nothing if it passes.
+`until` takes the same one condition key as a `when:` guard **minus `platform`** (fixed for a run, so the loop would be infinite or empty - parse-rejected), and is checked **before each iteration including the first**. An already-drained list therefore runs zero iterations and passes; each authored step still reports one `skip` line (`until guard already met`), so no step drops out of the report. Put a required acceptance check after the block, never in the body. **Reaching `max` with the condition still unmet fails the step** - a drain that never converged asserts nothing if it passes.
 
 A drain's closing line is an evaluated outcome, not structure, so unlike the markers it IS counted: one pass when it converged, one fail at the cap, one `error` when the guard cannot be evaluated, or one `skip` when the run is cancelled mid-block (the one closing line a count-bounded block can also emit).
 
