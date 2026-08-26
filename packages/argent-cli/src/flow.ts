@@ -1203,9 +1203,11 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
   // is not exempt: resolveFlowRef has already made it a path, and one dispatch
   // for both spellings is what keeps them one run under one identity.
   let isDirectory = false;
+  let statError: NodeJS.ErrnoException | undefined;
   try {
     isDirectory = (await fsp.stat(resolvedPath)).isDirectory();
-  } catch {
+  } catch (err) {
+    statError = err as NodeJS.ErrnoException;
     // Only a spelled-out path can be missing a directory the user meant; a
     // name resolves to a .yaml file it never named, and a defaulted ref names
     // nothing at all, so "directory not found" would quote a path they never
@@ -1219,6 +1221,11 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
   // directory would surface as "Flow path must end in .yaml: .argent/flows",
   // complaining about a string this run never wrote. Say what happened instead.
   if (defaulted && !isDirectory) {
+    // A non-ENOENT stat read nothing: the flows may be saved right there, and
+    // the recovery below would send the operator hunting somewhere else.
+    if (statError !== undefined && statError.code !== "ENOENT") {
+      return fail(`Could not read flow directory: ${resolvedPath}`, 2);
+    }
     return fail(
       `No ${FLOWS_DIR} directory in the current working directory.\n` +
         `Pass a flow name, a YAML file path, or a directory path to run a flow kept elsewhere.`,

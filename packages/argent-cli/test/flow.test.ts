@@ -488,6 +488,60 @@ describe("argent flow run", () => {
     expect(toolsClientMock.callTool).not.toHaveBeenCalled();
   });
 
+  // Skipped as root / on Windows, where a mode-000 directory is still readable
+  // (see canDenyRead).
+  it.skipIf(!canDenyRead)(
+    "exits 2 on an unreadable .argent/flows rather than claiming there is none",
+    async () => {
+      // The flows are saved exactly where the bare run looks; only the stat
+      // failed. "No .argent/flows directory" plus its recovery would send the
+      // operator hunting for them somewhere else.
+      const lockedRoot = await fsp.mkdtemp(path.join(tmpdir(), "argent-cli-flow-bare-noperm-"));
+      const runRoot = await fsp.realpath(lockedRoot);
+      const argentDir = path.join(lockedRoot, ".argent");
+      await fsp.mkdir(path.join(argentDir, "flows"), { recursive: true });
+      await fsp.writeFile(path.join(argentDir, "flows", "smoke.yaml"), "steps: []\n");
+      await fsp.chmod(argentDir, 0o000);
+      const previousCwd = process.cwd();
+      try {
+        process.chdir(lockedRoot);
+        await expect(flow(["run"], opts)).rejects.toThrow("process.exit:2");
+      } finally {
+        process.chdir(previousCwd);
+        await fsp.chmod(argentDir, 0o700);
+        await fsp.rm(lockedRoot, { recursive: true, force: true });
+      }
+
+      expect(errs.join("\n")).toContain(
+        `Could not read flow directory: ${path.join(runRoot, ".argent", "flows")}`
+      );
+      expect(errs.join("\n")).not.toContain("directory in the current working directory");
+      expect(toolsClientMock.callTool).not.toHaveBeenCalled();
+    }
+  );
+
+  it("keeps the missing-directory message when .argent/flows is a file", async () => {
+    // The stat succeeded and reported no directory, so the flows really are
+    // elsewhere: this case keeps the absence message, not the read failure.
+    const fileRoot = await fsp.mkdtemp(path.join(tmpdir(), "argent-cli-flow-bare-file-"));
+    await fsp.mkdir(path.join(fileRoot, ".argent"), { recursive: true });
+    await fsp.writeFile(path.join(fileRoot, ".argent", "flows"), "steps: []\n");
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(fileRoot);
+      await expect(flow(["run"], opts)).rejects.toThrow("process.exit:2");
+    } finally {
+      process.chdir(previousCwd);
+      await fsp.rm(fileRoot, { recursive: true, force: true });
+    }
+
+    expect(errs.join("\n")).toContain(
+      `No ${path.join(".argent", "flows")} directory in the current working directory.`
+    );
+    expect(errs.join("\n")).not.toContain("Could not read flow directory");
+    expect(toolsClientMock.callTool).not.toHaveBeenCalled();
+  });
+
   it("keeps the missing-directory message on a bare --recursive run", async () => {
     // --recursive has its own "Flow directory not found" arm for a typed path;
     // a defaulted ref must not fall into it and quote a path never supplied.
