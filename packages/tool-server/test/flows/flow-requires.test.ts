@@ -2016,11 +2016,12 @@ describe("a cleanup flow that only scopes a device", () => {
 });
 
 describe("the chromium hoist", () => {
-  it("refuses before booting when the requirements rule chromium out", async () => {
+  it("is preceded by the composed coverage check, which refuses before booting", async () => {
     // Parse-time validation is per-file, so a chromium launch reached through a
-    // `run:` chain escapes it — and the check has to precede the boot: the
-    // instance is registered for teardown only once resolveRunDevice returns, so
-    // a refusal after booting would strand a live Electron process.
+    // `run:` chain escapes it — the composed coverage check catches it, and has
+    // to precede the boot: the instance is registered for teardown only once
+    // resolveRunDevice returns, so a refusal after booting would strand a live
+    // Electron process.
     await writeFlow("boot-chromium", {
       steps: [{ kind: "launch", app: { chromium: "/nonexistent/app" } }],
     });

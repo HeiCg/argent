@@ -1350,9 +1350,11 @@ async function resolveRunDevice(
       // so a block on any file the chain crosses refuses too — and must be
       // decided BEFORE the boot: the instance is only registered for teardown
       // once this function returns, so a refusal after booting would strand a
-      // live Electron process. Parse-time validation does not cover this (it
-      // is per-file, and a chromium launch reached through a `run:` chain
-      // escapes it), which is why the check belongs on this path.
+      // live Electron process. The two gates ahead of it —
+      // {@link assertParamsMeetRequires} on a caller-named `--platform chromium`
+      // and {@link assertComposedLaunchCoverage} on the launch map — already
+      // refuse every shape that could reach here, so this call is the last
+      // barrier before an irreversible boot rather than the gate that answers.
       assertPlatformMeetsRequires(
         "chromium",
         leading.requires,
