@@ -3066,10 +3066,12 @@ function unsatisfiable(detail: string): FailureError {
 }
 
 /**
- * Cross-field checks on a `requires` block. These are validity checks, not
- * policy: each one names a file that no target anywhere could run, which is
- * always an authoring mistake and always cheaper to learn at parse than as a
- * whole suite quietly skipping itself.
+ * Cross-field checks on a `requires` block: the first names a block no target
+ * anywhere could satisfy, the other two hold it to the promise it makes about
+ * this file — that a platform it admits runs steps, and that the launches
+ * cover the platforms it declares. Failing any of the three is always an
+ * authoring mistake and always cheaper to learn at parse than as a whole suite
+ * quietly skipping itself.
  */
 function validateRequires(flow: FlowFile): void {
   const requires = flow.requires;
