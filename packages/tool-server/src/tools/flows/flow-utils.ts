@@ -3137,7 +3137,7 @@ export function assertComposedLaunchCoverage(
       `satisfied: ${detail}`,
     {
       error_code: FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE,
-      failure_stage: "flow_file_validate",
+      failure_stage: "flow_run_validate",
       failure_area: "tool_server",
       error_kind: "validation",
     }
@@ -3156,7 +3156,7 @@ function unsatisfiableTogether(detail: string): FailureError {
       `Relax one of the blocks, or drop the run: composition.`,
     {
       error_code: FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE,
-      failure_stage: "flow_file_validate",
+      failure_stage: "flow_run_validate",
       failure_area: "tool_server",
       error_kind: "validation",
     }

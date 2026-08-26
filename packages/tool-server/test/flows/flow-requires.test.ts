@@ -274,6 +274,9 @@ describe("requirements no target could satisfy are rejected at parse", () => {
     // Pins the code the platform+kind contradiction throws under - rethrowing
     // this branch as a plain parse error would keep the prose green.
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
+    // A file on disk is invalid, so every consumer refuses it — the run-setup
+    // refusals sharing this code carry flow_run_validate, a different remedy.
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_file_validate");
   });
 
   it("refuses a mobile requirement on vega alone", () => {
@@ -1340,6 +1343,8 @@ describe("requires folded along the leading run: chain", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
     // Validation, so a directory run fails this flow alone, not the batch.
     expect(getFailureSignal(err)?.error_kind).toBe("validation");
+    // Reachable only through a run — every file here parses clean on its own.
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_run_validate");
     expect((err as Error).message).toMatch(/"composed"/);
     expect((err as Error).message).toMatch(/"android-frag"/);
     // The platform arm, named: the kind arms below must not be able to answer
@@ -1499,6 +1504,8 @@ describe("requires folded along the leading run: chain", () => {
     expect(getFailureSignal(err)?.error_code).not.toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
     // Validation, so a directory run fails this flow alone and keeps going.
     expect(getFailureSignal(err)?.error_kind).toBe("validation");
+    // Reachable only through a run — every file here parses clean on its own.
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_run_validate");
     expect((err as Error).message).toMatch(
       /a launch step in "hoist-fold" declares no app id for ios/
     );
