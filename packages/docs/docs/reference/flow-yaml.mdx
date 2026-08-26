@@ -268,6 +268,8 @@ Argent removes every other name. Argent removes its own token, its own port and 
 
 Two groups in the list give the script access to a credential. `SSH_AUTH_SOCK` gives access to your SSH agent. An `npm_config_` name can contain a registry token. Run a script only when you trust it.
 
+Argent discards what the script writes to `stdout` and to `stderr`. A recording discards it, and a replay discards it. The report of a step holds no console output. The result of a script is the verdict, plus the document that the script returns. A script that must report a detail throws an error with that detail. The message of the error becomes the reason of the step.
+
 A failed step stops the flow. The verdict names the side that caused the failure.
 
 | Verdict | Cause      | Examples                                                                                                                   |

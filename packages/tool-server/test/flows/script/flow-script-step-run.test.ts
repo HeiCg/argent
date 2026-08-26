@@ -50,6 +50,34 @@ function flow(name: string, yaml: string): Promise<string> {
   return write(path.join(".argent", "flows", `${name}.yaml`), yaml);
 }
 
+function markPath(mark: string): string {
+  return path.join(root, `${mark}.mark`);
+}
+
+/**
+ * A script whose job is to leave proof it ran, at `<root>/<mark>.mark`.
+ *
+ * A `console.log` used to be that proof — which file ran, from which anchor,
+ * in which directory — and the runner keeps nothing a script prints, so the
+ * script writes the answer somewhere the test can read it back instead.
+ */
+function markingScript(relative: string, mark: string, expression?: string): Promise<string> {
+  return write(
+    relative,
+    `import fs from "node:fs";\n` +
+      `fs.writeFileSync(${JSON.stringify(markPath(mark))}, ` +
+      `String(${expression ?? JSON.stringify(mark)}));`
+  );
+}
+
+function readMark(mark: string): string | undefined {
+  try {
+    return fsSync.readFileSync(markPath(mark), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function boundaryCtx(flowPath: string): ToolContext {
   return {
     artifacts: new ArtifactStore(),
@@ -106,8 +134,14 @@ afterEach(async () => {
 });
 
 describe("a script step in a run", () => {
-  it("runs the file, passes, and carries its output into the report", async () => {
-    await write("scripts/seed.mjs", `console.log("seeded order 4711");`);
+  it("runs the file, passes, and reports nothing the script printed", async () => {
+    await write(
+      "scripts/seed.mjs",
+      `import fs from "node:fs";\n` +
+        `console.log("seeded order 4711");\n` +
+        `console.error("and a warning");\n` +
+        `fs.writeFileSync(${JSON.stringify(markPath("seed"))}, "ran");`
+    );
     await flow("seed", "steps:\n  - script: { path: ../../scripts/seed.mjs }\n");
 
     const { result, invokeTool } = await runFlow("seed");
@@ -119,59 +153,37 @@ describe("a script step in a run", () => {
       status: "pass",
       target: "../../scripts/seed.mjs",
     });
-    expect(result.steps[0]!.scriptLog).toContain("seeded order 4711");
+    // The report of a replay is what an agent reads, so the whole of it is
+    // checked, not one named field.
+    const whole = JSON.stringify(result);
+    expect(whole).not.toContain("seeded order 4711");
+    expect(whole).not.toContain("and a warning");
+    expect(readMark("seed")).toBe("ran");
     expect(result.device).toBe("");
     expect(listedDevices(invokeTool)).toBe(false);
   });
 
-  it("carries stderr into the same log as stdout", async () => {
-    // Cross-STREAM interleaving is the kernel's to decide (stdout and stderr
-    // are separate pipes), so only each stream's own order is pinned.
-    await write(
-      "scripts/noisy.mjs",
-      `console.log("one");\nconsole.error("problem");\nconsole.log("three");`
-    );
-    await flow("noisy", "steps:\n  - script: { path: ../../scripts/noisy.mjs }\n");
-
-    const { result } = await runFlow("noisy");
-
-    const log = result.steps[0]!.scriptLog!;
-    expect(log).toContain("problem");
-    expect(log.indexOf("one")).toBeGreaterThanOrEqual(0);
-    expect(log.indexOf("three")).toBeGreaterThan(log.indexOf("one"));
-    expect(result.steps[0]!.scriptLogTruncated).toBeUndefined();
-  });
-
-  it("flags a log a limit cut short, because the text carries no marker", async () => {
+  // Nothing reads the streams any more, so nothing may leave them unread
+  // either: a pipe left paused fills its buffer at 64 KiB and blocks the child
+  // there — the script never finishes and the step dies at its time limit
+  // instead of passing. Both streams, across several steps of one run.
+  it("drains a script that floods stdout and stderr, on every step of the run", async () => {
     await write(
       "scripts/chatty.mjs",
-      `for (let i = 0; i < 4000; i++) console.log("line " + i + " " + "x".repeat(40));`
+      `import fs from "node:fs";\n` +
+        `process.stdout.write("z".repeat(512 * 1024));\n` +
+        `process.stderr.write("e".repeat(512 * 1024));\n` +
+        `fs.appendFileSync(${JSON.stringify(markPath("chatty"))}, "x");`
     );
-    await flow("chatty", "steps:\n  - script: { path: ../../scripts/chatty.mjs }\n");
+    const chattyStep = "  - script: { path: ../../scripts/chatty.mjs, timeout: 10000 }\n";
+    await flow("chatty", "steps:\n" + chattyStep.repeat(3));
 
     const { result } = await runFlow("chatty");
 
-    expect(result.steps[0]).toMatchObject({ status: "pass", scriptLogTruncated: true });
-    expect(result.steps[0]!.scriptLog).toContain("line 0 ");
-  });
-
-  it("spends one run-wide budget across the run's steps through the runner", async () => {
-    await write("scripts/chatty.mjs", `process.stdout.write("z".repeat(64 * 1024));`);
-    await write("scripts/quiet.mjs", `console.log("the quiet one ran");`);
-    const chattyStep = "  - script: { path: ../../scripts/chatty.mjs }\n";
-    await flow(
-      "budget",
-      "steps:\n" + chattyStep.repeat(5) + "  - script: { path: ../../scripts/quiet.mjs }\n"
-    );
-
-    const { result } = await runFlow("budget");
-
+    expect(result.steps.map((s) => s.status)).toEqual(["pass", "pass", "pass"]);
     expect(result.ok).toBe(true);
-    for (const starved of result.steps.slice(4)) {
-      expect(starved.scriptLog).toBeUndefined();
-      expect(starved.scriptLogTruncated).toBe(true);
-    }
-    expect(result.steps[0]!.scriptLog).not.toBe("");
+    expect(readMark("chatty")).toBe("xxx");
+    expect(JSON.stringify(result)).not.toContain("zzz");
   });
 
   it("classifies as needing no device", () => {
@@ -212,7 +224,10 @@ describe("a script step that fails", () => {
 
     expect(result.steps[0]).toMatchObject({ status: "fail" });
     expect(result.steps[0]!.reason).toContain("exit code 3");
-    expect(result.steps[0]!.scriptLog).toContain("about to bail");
+    // The line the script printed on its way out is the natural place for the
+    // real cause, and it is still not reported: `reason` names how the process
+    // stopped, and that is the whole of what a red script step says.
+    expect(JSON.stringify(result)).not.toContain("about to bail");
   });
 
   it("reports a script the host stopped at its time limit as an error", async () => {
@@ -360,7 +375,7 @@ describe("a script path is checked at its own step", () => {
 
 describe("where a script path resolves", () => {
   it("anchors at the flow file that names the step, not the root flow", async () => {
-    await write("scripts/shared.mjs", `console.log("shared script ran");`);
+    await markingScript("scripts/shared.mjs", "shared");
     await write(
       path.join(".argent", "flows", "frag", "seed.yaml"),
       "steps:\n  - script: { path: ../../../scripts/shared.mjs }\n"
@@ -372,6 +387,9 @@ describe("where a script path resolves", () => {
     );
 
     const a = await runFlow("root-a", { booted: [DEVICE], device: DEVICE });
+    const aMark = readMark("shared");
+    await fs.rm(markPath("shared"), { force: true });
+
     const bPath = path.join(root, ".argent", "flows", "deep", "root-b.yaml");
     const b = await run(
       mockRegistry({ booted: [DEVICE] }).registry,
@@ -382,12 +400,14 @@ describe("where a script path resolves", () => {
     for (const result of [a.result, b]) {
       const script = result.steps.find((s) => s.kind === "script");
       expect(script, JSON.stringify(result.steps)).toMatchObject({ status: "pass" });
-      expect(script!.scriptLog).toContain("shared script ran");
     }
+    // Each root reached the same file through its own fragment.
+    expect(aMark).toBe("shared");
+    expect(readMark("shared")).toBe("shared");
   });
 
   it("reaches a sibling directory's script through `..`", async () => {
-    await write("shared/scripts/seed.mjs", `console.log("sideways");`);
+    await markingScript("shared/scripts/seed.mjs", "sideways");
     await write(
       path.join(".argent", "flows", "onboarding", "login.yaml"),
       "steps:\n  - script: { path: ../../../shared/scripts/seed.mjs }\n"
@@ -397,25 +417,25 @@ describe("where a script path resolves", () => {
     const { result } = await runFlow("compose", { booted: [DEVICE], device: DEVICE });
 
     expect(result.ok).toBe(true);
-    expect(result.steps.find((s) => s.kind === "script")!.scriptLog).toContain("sideways");
+    expect(result.steps.find((s) => s.kind === "script")).toMatchObject({ status: "pass" });
+    expect(readMark("sideways")).toBe("sideways");
   });
 
   it("resolves a `..` after a symlinked component with kernel semantics", async () => {
     await fs.mkdir(path.join(root, "lex", "other"), { recursive: true });
-    await fs.writeFile(path.join(root, "lex", "seed.mjs"), `console.log("kernel-resolved");`);
-    await write(path.join(".argent", "flows", "seed.mjs"), `console.log("lexical decoy");`);
+    await markingScript(path.join("lex", "seed.mjs"), "which", '"kernel-resolved"');
+    await markingScript(path.join(".argent", "flows", "seed.mjs"), "which", '"lexical decoy"');
     await flow("linked", "steps:\n  - script: { path: link/../seed.mjs }\n");
     await fs.symlink(path.join(root, "lex", "other"), path.join(root, ".argent", "flows", "link"));
 
     const { result } = await runFlow("linked");
 
     expect(result.steps[0]).toMatchObject({ status: "pass", kind: "script" });
-    expect(result.steps[0]!.scriptLog).toContain("kernel-resolved");
-    expect(result.steps[0]!.scriptLog).not.toContain("lexical decoy");
+    expect(readMark("which")).toBe("kernel-resolved");
   });
 
   it("runs a script reached through a symlink under the name the flow spells", async () => {
-    await write("scripts/real.mjs", `console.log("through the alias");`);
+    await markingScript("scripts/real.mjs", "alias", '"through the alias"');
     await fs.symlink(
       path.join(root, "scripts", "real.mjs"),
       path.join(root, "scripts", "alias.mjs")
@@ -425,11 +445,11 @@ describe("where a script path resolves", () => {
     const { result } = await runFlow("alias");
 
     expect(result.steps[0]).toMatchObject({ status: "pass", kind: "script" });
-    expect(result.steps[0]!.scriptLog).toContain("through the alias");
+    expect(readMark("alias")).toBe("through the alias");
   });
 
   it("anchors an explicit flow_path at that YAML's own directory", async () => {
-    await write("elsewhere/scripts/seed.mjs", `console.log("from flow_path");`);
+    await markingScript("elsewhere/scripts/seed.mjs", "anchor", '"from flow_path"');
     await write("elsewhere/standalone.yaml", "steps:\n  - script: { path: scripts/seed.mjs }\n");
 
     const flowPath = path.join(root, "elsewhere", "standalone.yaml");
@@ -440,11 +460,11 @@ describe("where a script path resolves", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(result.steps[0]!.scriptLog).toContain("from flow_path");
+    expect(readMark("anchor")).toBe("from flow_path");
   });
 
   it("runs the script in project_root, not in the flow file's directory", async () => {
-    await write("scripts/cwd.mjs", `console.log(process.cwd());`);
+    await markingScript("scripts/cwd.mjs", "cwd", "process.cwd()");
     await write(
       path.join("elsewhere", "standalone.yaml"),
       "steps:\n  - script: { path: ../scripts/cwd.mjs }\n"
@@ -457,7 +477,7 @@ describe("where a script path resolves", () => {
     );
 
     expect(result.ok).toBe(true);
-    const reported = fsSync.realpathSync(result.steps[0]!.scriptLog!.trim());
+    const reported = fsSync.realpathSync(readMark("cwd")!.trim());
     expect(reported).toBe(fsSync.realpathSync(root));
     expect(reported).not.toBe(fsSync.realpathSync(path.join(root, "elsewhere")));
   });

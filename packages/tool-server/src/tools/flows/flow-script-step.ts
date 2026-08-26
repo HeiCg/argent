@@ -6,7 +6,6 @@ import { resolveFlowRelativeFile } from "./flow-file-refs";
 import {
   flowScriptExecutor,
   type FlowScriptFailureKind,
-  type FlowScriptLogBudget,
   type FlowScriptResult,
 } from "./script/flow-script-executor";
 
@@ -22,8 +21,6 @@ import {
 interface FlowScriptStepOutcome {
   status: "pass" | "fail" | "error";
   reason?: string;
-  scriptLog?: string;
-  scriptLogTruncated?: true;
 }
 
 interface FlowScriptStepRun {
@@ -40,7 +37,6 @@ interface FlowScriptStepRequest {
   flowDir: string;
   step: Extract<FlowStep, { kind: "script" }>;
   projectRoot: string;
-  logBudget?: FlowScriptLogBudget;
   signal?: AbortSignal;
 }
 
@@ -97,17 +93,12 @@ export async function runFlowScriptStep(
     projectRoot: request.projectRoot,
     flowDir,
     // No `secrets`: nothing resolves one into a script step yet, so there is
-    // nothing for the executor to redact out of the captured log.
-    ...(request.logBudget ? { logBudget: request.logBudget } : {}),
+    // nothing for the executor to redact out of the verdict it reports.
     ...(request.signal ? { signal: request.signal } : {}),
   });
 
   return {
-    outcome: {
-      ...scriptVerdict(result),
-      ...(result.log ? { scriptLog: result.log } : {}),
-      ...(result.logTruncated ? { scriptLogTruncated: true } : {}),
-    },
+    outcome: scriptVerdict(result),
     result,
     ran: scriptRan(result),
   };

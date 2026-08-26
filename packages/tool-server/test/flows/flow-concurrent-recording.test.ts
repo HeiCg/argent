@@ -1410,7 +1410,7 @@ describe("a restart that lands while a step is still running", () => {
     expect((err as Error).message).toMatch(
       /ran and passed in \d+ms and nothing it did was rolled back/
     );
-    expect((err as Error).message).toContain("logs and output document are lost");
+    expect((err as Error).message).toContain("output document is lost");
 
     expect(await readMarkers(root, "alpha")).toEqual([]);
   });

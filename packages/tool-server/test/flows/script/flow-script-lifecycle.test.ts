@@ -187,7 +187,7 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 
-  it("keeps the logs a timed-out script already wrote", async () => {
+  it("reports nothing a timed-out script printed on its way to the limit", async () => {
     const ws = workspace();
     const script = ws.write(
       "noisy-hang.mjs",
@@ -200,7 +200,10 @@ describe("flow script executor — time limits and cancellation", () => {
     });
 
     expect(result.failure?.kind).toBe("timeout");
-    expect(result.log).toContain("started the seed");
+    // A hang is the shape where the last line printed is the best clue, and it
+    // is still not the executor's to hand back: `reason` says how the script
+    // stopped, and a script with more to say has to `throw` it.
+    expect(JSON.stringify(result)).not.toContain("started the seed");
   });
 
   it("cancels a running script when the signal aborts", async () => {
@@ -225,10 +228,12 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("honours an abort raised in the same tick as the call", async () => {
     const ws = workspace();
+    const finished = ws.resolve("finished.txt");
     const script = ws.write(
       "slow.mjs",
-      `await new Promise((r) => setTimeout(r, 2000));
-       console.log("finished work");
+      `import fs from "node:fs";
+       await new Promise((r) => setTimeout(r, 2000));
+       fs.writeFileSync(${JSON.stringify(finished)}, "done");
        output.done = true;`
     );
     const controller = new AbortController();
@@ -242,7 +247,7 @@ describe("flow script executor — time limits and cancellation", () => {
     const result = await pending;
 
     expect(result.failure?.kind).toBe("cancelled");
-    expect(result.log).not.toContain("finished work");
+    expect(fs.existsSync(finished)).toBe(false);
     expect(result.durationMs).toBeLessThan(1_000);
     expect(result.failure?.beforeFork).toBe(true);
   });
@@ -289,27 +294,35 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.kind).toBe("cancelled");
   }, 30_000);
 
-  const GRACEFUL_SIGTERM = `import { setTimeout as delay } from "node:timers/promises";
+  /**
+   * The graceful shutdown leaves its mark on disk rather than on the console:
+   * the executor keeps nothing a script prints, and `output` is dropped with
+   * the failed verdict, so a file is the only witness left that the handler
+   * really ran before the step was judged.
+   */
+  const gracefulSigterm = (mark: string) => `import fs from "node:fs";
+     import { setTimeout as delay } from "node:timers/promises";
      output.phase = "seeding";
      const ac = new AbortController();
      process.on("SIGTERM", () => ac.abort());
      async function main() {
        try { await delay(60000, undefined, { signal: ac.signal }); }
-       catch { console.log("work aborted"); return; }
+       catch { fs.writeFileSync(${JSON.stringify(mark)}, "aborted"); return; }
        output.phase = "done";
      }
      main();`;
 
   it("fails a timed-out script that shuts down gracefully on SIGTERM", async () => {
     const ws = workspace();
-    const script = ws.write("graceful.mjs", GRACEFUL_SIGTERM);
+    const aborted = ws.resolve("aborted.txt");
+    const script = ws.write("graceful.mjs", gracefulSigterm(aborted));
     const result = await executor().execute({
       scriptPath: script,
       projectRoot: ws.dir,
       timeoutMs: 700,
     });
 
-    expect(result.log).toContain("work aborted");
+    expect(fs.existsSync(aborted)).toBe(true);
     expect(result.failure?.kind).toBe(TIMEOUT);
     expect(result.ok).toBe(false);
     expect(result.output).toBeUndefined();
@@ -317,7 +330,8 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("keeps a cancellation a cancellation when the script shuts down gracefully", async () => {
     const ws = workspace();
-    const script = ws.write("graceful.mjs", GRACEFUL_SIGTERM);
+    const aborted = ws.resolve("aborted.txt");
+    const script = ws.write("graceful.mjs", gracefulSigterm(aborted));
     const controller = new AbortController();
     const pending = executor().execute({
       scriptPath: script,
@@ -329,7 +343,7 @@ describe("flow script executor — time limits and cancellation", () => {
     controller.abort();
     const result = await pending;
 
-    expect(result.log).toContain("work aborted");
+    expect(fs.existsSync(aborted)).toBe(true);
     expect(result.failure?.kind).toBe("cancelled");
     expect(result.ok).toBe(false);
     expect(result.output).toBeUndefined();
@@ -352,18 +366,20 @@ describe("flow script executor — time limits and cancellation", () => {
     };
   }
 
-  const EXITS_ON_SIGTERM = `output.phase = "half-written";
+  const exitsOnSigterm = (mark: string) => `import fs from "node:fs";
+     output.phase = "half-written";
      const held = setInterval(() => {}, 1000);
      process.on("SIGTERM", () => {
        clearInterval(held);
        output.phase = "cleaned-up";
-       console.log("work aborted");
+       fs.writeFileSync(${JSON.stringify(mark)}, "aborted");
        process.exit(0);
      });`;
 
   it("fails a timed-out script that exits zero from its SIGTERM handler while the server stalls", async () => {
     const ws = workspace();
-    const script = ws.write("graceful-exit.mjs", EXITS_ON_SIGTERM);
+    const aborted = ws.resolve("aborted.txt");
+    const script = ws.write("graceful-exit.mjs", exitsOnSigterm(aborted));
     const pending = executor().execute({
       scriptPath: script,
       projectRoot: ws.dir,
@@ -373,7 +389,7 @@ describe("flow script executor — time limits and cancellation", () => {
     const result = await pending;
     endStall();
 
-    expect(result.log).toContain("work aborted");
+    expect(fs.existsSync(aborted)).toBe(true);
     expect(result.ok).toBe(false);
     expect(result.failure?.kind).toBe(TIMEOUT);
     expect(result.output).toBeUndefined();
@@ -381,7 +397,8 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("keeps a cancellation a cancellation when the server stalls across the stop", async () => {
     const ws = workspace();
-    const script = ws.write("graceful-exit.mjs", EXITS_ON_SIGTERM);
+    const aborted = ws.resolve("aborted.txt");
+    const script = ws.write("graceful-exit.mjs", exitsOnSigterm(aborted));
     const controller = new AbortController();
     const pending = executor().execute({
       scriptPath: script,
@@ -395,7 +412,7 @@ describe("flow script executor — time limits and cancellation", () => {
     clearTimeout(abort);
     endStall();
 
-    expect(result.log).toContain("work aborted");
+    expect(fs.existsSync(aborted)).toBe(true);
     expect(result.ok).toBe(false);
     expect(result.failure?.kind).toBe("cancelled");
     expect(result.output).toBeUndefined();
@@ -469,14 +486,13 @@ describe("flow script executor — exit classification", () => {
     const ws = workspace();
     const script = ws.write(
       "exits.mjs",
-      `async function main() { output.orderId = "ord_1"; console.log("seeded"); }
+      `async function main() { output.orderId = "ord_1"; }
        main().then(() => process.exit(0));`
     );
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
     expect(result.failure).toBeUndefined();
     expect(result.output).toEqual({ orderId: "ord_1" });
-    expect(result.log).toContain("seeded");
   });
 
   it("keeps an output too large for the pipe buffer when the script exits zero", async () => {
@@ -542,12 +558,11 @@ describe("flow script executor — exit classification", () => {
 
   it("names the exit code when the script stops its own process", async () => {
     const ws = workspace();
-    const script = ws.write("bye.mjs", `console.log("leaving"); process.exit(3);`);
+    const script = ws.write("bye.mjs", `process.exit(3);`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
     expect(result.failure?.kind).toBe("exit");
     expect(result.failure?.message).toContain("exit code 3");
-    expect(result.log).toContain("leaving");
   });
 
   it("fails a step whose script set a non-zero process.exitCode", async () => {
@@ -565,7 +580,10 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.message).toBe(
       "The script set process.exitCode to 1, which means it failed."
     );
-    expect(result.log).toContain("validation failed");
+    // The script's own account of the failure went to its console, so it is
+    // gone: the sentence above is the whole verdict. A script with something to
+    // say has to `throw` it or return it in `output`.
+    expect(JSON.stringify(result)).not.toContain("validation failed");
   });
 
   it("reports a signal death as a runner error naming the signal", async () => {
@@ -582,7 +600,10 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.message).toContain("did not stop itself");
   });
 
-  it("reports heap exhaustion as a heap limit, collapses the frame dump and keeps the script's own logs", async () => {
+  // V8's banner is the one thing still read off a script's stderr, and it is
+  // read to classify, never to report: the verdict names the heap limit and
+  // carries neither the banner, the frame dump, nor the line the script wrote.
+  it("reports heap exhaustion as a heap limit and nothing V8 printed getting there", async () => {
     const ws = workspace();
     const script = ws.write(
       "hungry.mjs",
@@ -598,12 +619,15 @@ describe("flow script executor — exit classification", () => {
 
     expect(result.failure?.kind).toBe("heap");
     expect(result.failure?.message).toBe("The script exceeded its 64 MiB heap limit.");
-    expect(result.log).toContain("allocating");
-    expect(result.log).toMatch(/\[\d+ V8 stack frames omitted]/);
-    expect(result.log).not.toMatch(/^\s*\d+: 0x[0-9a-f]{6}/m);
+    const whole = JSON.stringify(result);
+    expect(whole).not.toContain("allocating");
+    expect(whole).not.toContain("FATAL ERROR");
+    expect(whole).not.toMatch(/\d+: 0x[0-9a-f]{6}/);
   }, 60_000);
 
-  it("still reports a heap limit when the script logged past its log budget first", async () => {
+  // The banner arrives after a flood, so the scan cannot be a one-shot look at
+  // the first chunks: it runs over a sliding window for the whole run.
+  it("still reports a heap limit when the script printed a flood first", async () => {
     const ws = workspace();
     const script = ws.write(
       "chatty-hungry.mjs",
@@ -617,9 +641,9 @@ describe("flow script executor — exit classification", () => {
       timeoutMs: 30_000,
     });
 
-    expect(result.logTruncated).toBe(true);
     expect(result.failure?.kind).toBe("heap");
     expect(result.failure?.message).toBe("The script exceeded its 64 MiB heap limit.");
+    expect(JSON.stringify(result)).not.toContain("progress line");
   }, 60_000);
 
   it("does not call an abort with no heap banner a heap limit", async () => {
@@ -633,7 +657,7 @@ describe("flow script executor — exit classification", () => {
 
     expect(result.failure?.kind).toBe("signal");
     expect(result.failure?.message).toContain("SIGABRT");
-    expect(result.log).toContain("about to abort");
+    expect(JSON.stringify(result)).not.toContain("about to abort");
   }, 30_000);
 
   it("does not call a forwarded 134 exit status a heap limit", async () => {

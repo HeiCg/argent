@@ -25,6 +25,8 @@ A recorded `flow-execute` has two names. The top-level `name` identifies the rec
 
 **Argent does not undo what a failed script did.** Read `message`: it says whether anything ran, or that the runner cannot tell. A transport error returns no `message`, and the call can have run the script more than one time. Check the state that the script touches before you retry.
 
+The call returns nothing the script printed, on any verdict, and replaying the finished flow returns nothing either: `reason` is what a script says for itself. Tell the author to `throw` the detail they need, or to put it in the returned `output` document, rather than `console.log` it.
+
 Obey these lifecycle rules:
 
 1. Pass the same `name` and absolute `project_root` to every recording tool.

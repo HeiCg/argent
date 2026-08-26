@@ -120,7 +120,7 @@ Classify before editing:
 Then:
 
 1. Record the first failure or divergence index and message.
-2. Capture `screenshot` and `describe`. Use native or React Native discovery when needed.
+2. Capture `screenshot` and `describe`. Use native or React Native discovery when needed. A `script:` step uses no device, so neither says anything about it, and Argent reports nothing the script printed: its `reason` is the whole account. When that reason only names how the process stopped — an exit code, a signal, a time limit, a heap limit — edit the script to `throw` the detail, then replay.
 3. Compare actual state with the preceding echo and expected destination.
 4. Classify the cause: selector, screen, missing element, readiness, stale data, optional interstitial, or product behavior.
 5. State the diagnosis in one sentence before correcting it.

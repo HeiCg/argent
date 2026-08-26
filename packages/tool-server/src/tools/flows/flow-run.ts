@@ -42,7 +42,6 @@ import {
   LAUNCH_PLATFORMS,
   SELECTOR_RELATIONS,
 } from "./flow-utils";
-import { createScriptLogBudget, type FlowScriptLogBudget } from "./script/flow-script-executor";
 import { canonicalFlowPath, resolveFlowRelativeFile } from "./flow-file-refs";
 import { runFlowScriptStep } from "./flow-script-step";
 import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
@@ -238,8 +237,6 @@ export interface StepReport {
   snapshotKey?: string;
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
-  scriptLog?: string;
-  scriptLogTruncated?: boolean;
   /**
    * Nesting depth for display: omitted at top level, +1 inside each nesting
    * step's expanded steps. The report is a flat list with no block-end marker,
@@ -942,7 +939,6 @@ interface ExecState extends Omit<ActionEnv, "device"> {
    */
   attachedAppPath?: string;
   projectRoot: string;
-  scriptLogBudget: FlowScriptLogBudget;
   /** Live progress hook: receives every report the moment it is appended. */
   onStepReport?: (report: StepReport) => void;
 }
@@ -1101,7 +1097,8 @@ runs only); \`script\` runs a local .mjs file in a fresh Node process for setup,
 (\`script: { path: scripts/seed.mjs, timeout?: <ms> }\` — always a map, never a bare path; the path is
 resolved against the flow file that names the step, exactly as a \`run\` target is, and the step needs no
 device, so a script-only flow runs with nothing booted — though a \`run\` step beside it still resolves
-one. Its stdout and stderr come back on the step report. Co-located runs only.).
+one. What the script prints is discarded, never reported: \`reason\` is what a failed script says for
+itself. Co-located runs only.).
 A selector-less gesture — a coordinate \`tap\`/\`long-press\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
 no frame out of the tree, so an unreadable tree source does NOT stop it the way it stops \`idle\`: it
 settles best-effort, dispatches anyway, and the step PASSES carrying a \`warning\` that quotes the source's
@@ -1266,7 +1263,6 @@ Pass exactly one flow source: name for a saved flow under project_root, or flow_
         chromiumLaunched: false,
         snapshotApps: new Map(),
         projectRoot: params.project_root,
-        scriptLogBudget: createScriptLogBudget(),
         ...(!resolved.booted && device?.platform === "chromium"
           ? { attachedDeviceId: device.id }
           : {}),
@@ -2211,7 +2207,7 @@ async function execRunStep(
   );
 }
 
-type ScriptStepOutcome = Pick<StepReport, "status" | "reason" | "scriptLog" | "scriptLogTruncated">;
+type ScriptStepOutcome = Pick<StepReport, "status" | "reason">;
 
 async function runScriptStep(
   state: ExecState,
@@ -2222,7 +2218,6 @@ async function runScriptStep(
     flowDir: scopeFlowDir(scope),
     step,
     projectRoot: state.projectRoot,
-    logBudget: state.scriptLogBudget,
     ...(state.signal ? { signal: state.signal } : {}),
   });
   return outcome;

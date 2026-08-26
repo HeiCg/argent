@@ -223,6 +223,8 @@ Argent does not give the script your shell environment. Argent does not read a p
 
 The failure verdict names the side at fault: **failed** names the script, and **errored** names the host that ran it.
 
+Argent discards the script's stdout and stderr — while recording and on every replay — so no report carries it and no parameter asks for it. What a step answers with is its verdict and its `reason`. `reason` is the script's own message only when the script threw, returned a bad output document, or failed to load; the exit-code, signal, timeout, heap and cancelled verdicts name how the process stopped and nothing else. A script that has to explain itself must `throw` the explanation rather than print it.
+
 On Chromium the leading `launch:` boots before step 1, so a `script:` above it runs while the app is already running.
 
 ## Snapshots and standalone runs

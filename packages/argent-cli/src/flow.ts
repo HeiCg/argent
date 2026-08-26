@@ -46,8 +46,6 @@ export interface StepReport {
    * server-side hostPath/filename — or null when a download failed.
    */
   artifacts?: Record<string, unknown>;
-  scriptLog?: string;
-  scriptLogTruncated?: boolean;
 }
 
 export interface FlowReport {
@@ -244,19 +242,6 @@ export function renderUnderStepLine(s: StepReport, n: number, text: string): str
   return `${" ".repeat(5 + Math.max(2, String(n).length))}${stepIndent(s.depth)}${text}`;
 }
 
-export function renderScriptLogLines(s: StepReport, n: number): string[] {
-  const log = typeof s.scriptLog === "string" ? s.scriptLog : "";
-  const lines: string[] = [];
-  if (log) {
-    const body = log.endsWith("\n") ? log.slice(0, -1) : log;
-    for (const line of body.split("\n")) lines.push(renderUnderStepLine(s, n, `│ ${line}`));
-  }
-  if (s.scriptLogTruncated === true) {
-    lines.push(renderUnderStepLine(s, n, "│ … output truncated"));
-  }
-  return lines;
-}
-
 export function renderSummary(report: FlowReport, opts: { withDevice?: boolean } = {}): string {
   const warnings = report.steps.filter((s) => s.warning).length;
   const warningsNote = warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : "";
@@ -302,10 +287,6 @@ export function renderArtifactLines(report: FlowReport): string[] {
  * A PASSING step carrying a warning needs attention too: renderSummary counts
  * every warning whatever its status, so skipping those printed "1 warning" with
  * the text nowhere on screen.
- *
- * A PASSING script step's log is the same case: it is the step's only output,
- * every other report surface prints it whatever the status, and a seed script
- * that ran here is what explains a later step that failed.
  */
 export function renderFailedSteps(report: FlowReport): string[] {
   const lines: string[] = [];
@@ -313,13 +294,9 @@ export function renderFailedSteps(report: FlowReport): string[] {
   for (const s of report.steps) {
     if (s.kind === "echo") continue;
     n++;
-    const scriptLog = renderScriptLogLines(s, n);
-    if (s.status !== "fail" && s.status !== "error" && !s.warning && scriptLog.length === 0) {
-      continue;
-    }
+    if (s.status !== "fail" && s.status !== "error" && !s.warning) continue;
     lines.push(renderStepLine(s, n, report.flow));
     if (s.warning) lines.push(renderUnderStepLine(s, n, `⚠ ${s.warning}`));
-    lines.push(...scriptLog);
     if (s.artifacts && typeof s.artifacts === "object") {
       for (const [k, v] of Object.entries(s.artifacts)) {
         if (typeof v === "string") lines.push(renderUnderStepLine(s, n, `${k}: ${v}`));
@@ -723,7 +700,6 @@ export function renderReport(report: FlowReport): string {
     n++;
     lines.push(renderStepLine(s, n, report.flow));
     if (s.warning) lines.push(renderUnderStepLine(s, n, `⚠ ${s.warning}`));
-    lines.push(...renderScriptLogLines(s, n));
     if (s.artifacts && typeof s.artifacts === "object") {
       for (const [k, v] of Object.entries(s.artifacts)) {
         if (typeof v === "string") lines.push(renderUnderStepLine(s, n, `${k}: ${v}`));
@@ -1390,7 +1366,6 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     liveIndex++;
     console.log(renderStepLine(s, liveIndex, flowName));
     if (s.warning) console.log(renderUnderStepLine(s, liveIndex, `⚠ ${s.warning}`));
-    for (const line of renderScriptLogLines(s, liveIndex)) console.log(line);
   };
 
   let report: FlowReport;

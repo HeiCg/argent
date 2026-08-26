@@ -50,8 +50,6 @@ interface FlowAddScriptResult {
   message: string;
   status: "pass" | "fail" | "error";
   reason?: string;
-  log?: string;
-  logTruncated?: true;
   durationMs?: number;
   /**
    * The document the script returned, as JSON text. Present only on a pass.
@@ -144,7 +142,7 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
   description: `Run a local .mjs file and record it as a \`script:\` step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). It runs the file exactly as a replay will.
 Use for work no device step can do: seed a database, write a fixture file, call an API, clean up after a run. Record it where it belongs in the walkthrough — a setup script goes BEFORE the restart-app it prepares for, because that is where it runs at replay.
 UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would be walked against. Nothing the script did before it stopped is rolled back, and \`message\` says whether anything ran — clean up, or make the re-run safe, before calling again. A call that ends in a TRANSPORT error returns no \`message\` at all and may have run the script more than once.
-\`log\` is the script's stdout and stderr, capped at 64 KiB. \`logTruncated\` says output is missing from it: the cap cut it, or the executor collapsed a fatal error's frame dump. Neither leaves a mark in the text, so read the flag rather than trusting what you see. \`outputJson\` is the document the script returned; no flow step can reference it yet.
+What the script prints is discarded, here and at replay: \`reason\` is the whole account of a failure, so a script whose only report of itself is a console line has to \`throw\` that line instead. \`outputJson\` is the document the script returned; no flow step can reference it yet.
 Refused when the recording's project root is not on this tool server's filesystem: the .mjs stays on the client, so there is nothing here to run.`,
   // A script's default limit is 30s and its host cap five minutes, against the
   // MCP adapter's 30s per-request fetch budget. Without this the adapter aborts
@@ -199,9 +197,6 @@ Refused when the recording's project root is not on this tool server's filesyste
     // Run BEFORE taking the flow-file lock: a script may run for minutes, and
     // appendStepToFlow holds a per-key lock that would block every other call on
     // this recording for that whole duration.
-    //
-    // No `logBudget`: the run-scoped allowance would silently truncate a late
-    // script's logs during authoring. The per-step limit still applies.
     const { outcome, result, ran } = await runFlowScriptStep({
       flowDir,
       step,
@@ -212,8 +207,6 @@ Refused when the recording's project root is not on this tool server's filesyste
     const common = {
       status: outcome.status,
       ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
-      ...(outcome.scriptLog !== undefined ? { log: outcome.scriptLog } : {}),
-      ...(outcome.scriptLogTruncated ? { logTruncated: true as const } : {}),
       ...(result ? { durationMs: result.durationMs } : {}),
     };
 
@@ -255,10 +248,10 @@ Refused when the recording's project root is not on this tool server's filesyste
           (refusedAnEarlierStep
             ? `a step ALREADY in the flow file spells an output reference, so the append re-read ` +
               `it and refused. The step named below is that one, not this script — remove the ` +
-              `reference from ${session.filePath} and the recording continues. This call's logs ` +
-              `and output document are lost with this error. `
-            : `recording it failed — so the step is not in the flow, and its logs and output ` +
-              `document are lost with this error. `) +
+              `reference from ${session.filePath} and the recording continues. This call's ` +
+              `output document is lost with this error. `
+            : `recording it failed — so the step is not in the flow, and its output document is ` +
+              `lost with this error. `) +
           `${err instanceof Error ? err.message : String(err)}`
       );
     }
