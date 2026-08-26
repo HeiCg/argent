@@ -1164,9 +1164,9 @@ async function runFlowDirectory(
   // get an exit-2 build with an empty log.
   if (ranNothing) {
     console.error(
-      `No step executed: every flow in ${dir} was skipped or passed vacuously (all steps ` +
-        `when:-skipped). Check the requires: blocks and when: guards against the target ` +
-        `this run selected.`
+      `No step executed: every flow in ${dir} was skipped or passed vacuously (no step ` +
+        `did work of its own). Check the requires: blocks and when: guards against the ` +
+        `target this run selected.`
     );
     return exitAfterFlush(2);
   }
