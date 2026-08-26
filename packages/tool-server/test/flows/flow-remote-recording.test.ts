@@ -1026,7 +1026,7 @@ describe("concurrent recordings against a remote client", () => {
     );
     // A name never recorded before: no file was replaced and none is known to
     // have existed, so the note must not read as a loss that happened.
-    expect(started.message).not.toContain("is gone");
+    expect(started.message).not.toContain("was carried over");
     expect(started.message).not.toContain("was dropped");
     await flowInsertEchoTool.execute(
       {},
