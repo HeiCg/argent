@@ -3685,6 +3685,41 @@ describe("flow-read-prerequisite", () => {
     expect(result.requires).toBe("platform: [ios]");
   });
 
+  it("refuses a chain whose folded block can never be satisfied, as the run would", async () => {
+    // Each file is fine alone; only the fold collides. Reporting the root's own
+    // block here would answer "platform: [chromium]" for a run that cannot
+    // start on any target at all.
+    const dir = path.join(tmpDir, ".argent", "flows");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "tv-fragment.yaml"),
+      serializeFlow({
+        executionPrerequisite: "",
+        requires: { runtimeKind: "tv" },
+        steps: [{ kind: "echo", message: "from the fragment" }],
+      })
+    );
+    await fs.writeFile(
+      path.join(dir, "impossible-root.yaml"),
+      serializeFlow({
+        executionPrerequisite: "App on home screen",
+        requires: { platform: ["chromium"] },
+        steps: [{ kind: "run", flow: "tv-fragment.yaml" }],
+      })
+    );
+
+    let err: unknown;
+    try {
+      await flowReadPrerequisiteTool.execute({}, { name: "impossible-root", project_root: tmpDir });
+    } catch (e) {
+      err = e;
+    }
+    expect((err as Error | undefined)?.message).toMatch(
+      /can never be satisfied together.*platform: \[chromium\].*runtimeKind: tv/s
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
+  });
+
   it("throws when the flow file does not exist", async () => {
     await expect(
       flowReadPrerequisiteTool.execute({}, { name: "nonexistent", project_root: tmpDir })
