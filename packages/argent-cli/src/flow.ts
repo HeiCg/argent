@@ -1239,8 +1239,9 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     }
     return runFlowDirectory(resolvedPath, args, recursive, projectRoot, options);
   }
-  // The flag as typed, not the effective mode: this explains --recursive, and
-  // a bare run never passed it.
+  // The flag as typed, which here is also the effective mode: a defaulted ref
+  // has returned above, at the directory dispatch or the `defaulted` arm
+  // before it.
   if (args.recursive) {
     return fail(
       fromName
