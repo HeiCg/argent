@@ -370,6 +370,33 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
   });
 });
 
+describe("ios-device-runner blueprint: dispose", () => {
+  it("sends shutdown as the mutating command it is, so the send layer cannot resend it", async () => {
+    const { child, clientRun } = stubLaunch();
+    const instance = await callFactory();
+
+    await instance.dispose();
+
+    // readOnly is what runner-route reads to decide a command may be resent;
+    // marking a mutating shutdown read-only both breaks the send-once contract
+    // and turns the 3s into three attempts plus backoff.
+    expect(clientRun).toHaveBeenCalledWith({ command: "shutdown" }, { timeoutMs: 3_000 });
+    expect(killRunnerProcess).toHaveBeenCalledWith(child);
+  });
+
+  it("kills the child anyway when the graceful shutdown fails", async () => {
+    const { child, clientRun } = stubLaunch();
+    const instance = await callFactory();
+    clientRun.mockRejectedValueOnce(
+      new IosDeviceTransportError("timeout", "runner never answered", { retryable: true })
+    );
+
+    await instance.dispose();
+
+    expect(killRunnerProcess).toHaveBeenCalledWith(child);
+  });
+});
+
 describe("ios-device-runner blueprint: recoverable classification", () => {
   it("keys the runner-exited case off the typed marker, not message text", () => {
     expect(recoverable(Object.assign(new Error("anything at all"), { runnerExited: true }))).toBe(

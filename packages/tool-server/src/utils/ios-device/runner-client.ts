@@ -36,6 +36,8 @@ const RUNNER_READY_POLL_INTERVAL_MS = 250;
 const RUNNER_READY_PROBE_TIMEOUT_MS = 2_000;
 
 const RUNNER_BUSY_ERROR_CODE = "RUNNER_BUSY";
+/** unwrapEnvelope's verdict for a reply that was not a runner envelope at all. */
+const INVALID_RUNNER_RESPONSE_CODE = "INVALID_RUNNER_RESPONSE";
 
 export interface RunnerCommand {
   command: string;
@@ -236,9 +238,14 @@ export function createRunnerClient(options: {
 }
 
 /**
- * Poll `status` until the runner produces its first parsed response. Any
- * parsed envelope counts as ready: even an ok:false one proves the HTTP
- * stack on the device is up, which is all readiness means here.
+ * Poll `status` until the runner produces its first parsed envelope. Even an
+ * ok:false envelope counts as ready: it proves the HTTP stack on the device is
+ * up, which is all readiness means here.
+ *
+ * A reply that is NOT an envelope does not count. The port comes from
+ * pickFreePort and the runner binds it only later, so whatever else grabbed it
+ * in between would otherwise answer the first probe, end the wait in success,
+ * and leave the first real command to fail.
  */
 export async function waitForRunnerReady(
   client: RunnerClient,
@@ -265,7 +272,9 @@ export async function waitForRunnerReady(
       );
       return;
     } catch (error) {
-      if (error instanceof RunnerCommandError) return;
+      if (error instanceof RunnerCommandError && error.code !== INVALID_RUNNER_RESPONSE_CODE) {
+        return;
+      }
       lastError = error;
     }
     await sleep(RUNNER_READY_POLL_INTERVAL_MS);
@@ -286,7 +295,7 @@ function unwrapEnvelope(response: unknown): unknown {
   const envelope = asEnvelope(response);
   if (!envelope) {
     throw new RunnerCommandError("Runner returned an unrecognized response shape", {
-      code: "INVALID_RUNNER_RESPONSE",
+      code: INVALID_RUNNER_RESPONSE_CODE,
     });
   }
   if (envelope.ok) return withEnvelopeMarkers(envelope);

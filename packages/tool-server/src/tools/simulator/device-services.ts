@@ -1,4 +1,5 @@
 import { SIMULATOR_SERVER_NAMESPACE } from "../../blueprints/simulator-server";
+import { IOS_DEVICE_RUNNER_NAMESPACE } from "../../blueprints/ios-device-runner";
 import { NATIVE_DEVTOOLS_NAMESPACE } from "../../blueprints/native-devtools";
 import { ANDROID_DEVTOOLS_NAMESPACE } from "../../blueprints/android-devtools";
 import { CHROMIUM_CDP_NAMESPACE } from "../../blueprints/chromium-cdp";
@@ -74,6 +75,7 @@ export const PORT_KEYED_NAMESPACES: readonly string[] = [
  */
 export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
   SIMULATOR_SERVER_NAMESPACE,
+  IOS_DEVICE_RUNNER_NAMESPACE,
   NATIVE_DEVTOOLS_NAMESPACE,
   ANDROID_DEVTOOLS_NAMESPACE,
   CHROMIUM_CDP_NAMESPACE,
@@ -88,7 +90,9 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
 
 /**
  * The subset `stop-simulator-server` disposes: the device's transport session,
- * plus the TV-control daemons a tvOS udid may own alongside it.
+ * plus the TV-control daemons a tvOS udid may own alongside it. On a physical
+ * iPhone that transport is `IosDeviceRunner` rather than `SimulatorServer`,
+ * whose factory rejects `kind: "device"` outright.
  *
  * Deliberately narrower than {@link DEVICE_OWNED_NAMESPACES}. That tool is the
  * documented recovery for a wedged transport, so widening it to devtools/AX
@@ -105,8 +109,9 @@ export function transportNamespacesForPlatform(platform: string): readonly strin
   if (platform === "chromium") return [CHROMIUM_CDP_NAMESPACE];
   if (platform === "android") return [SIMULATOR_SERVER_NAMESPACE, ANDROID_TV_CONTROL_NAMESPACE];
   // A tvOS UDID is iOS-shaped and can't be told apart from a phone here without
-  // an async probe, so cover both.
-  return [SIMULATOR_SERVER_NAMESPACE, TV_CONTROL_NAMESPACE];
+  // an async probe, and a simulator UDID is only told from a physical one by
+  // its shape, so cover all three.
+  return [SIMULATOR_SERVER_NAMESPACE, IOS_DEVICE_RUNNER_NAMESPACE, TV_CONTROL_NAMESPACE];
 }
 
 /**

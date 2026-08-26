@@ -339,7 +339,11 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       dispose: async () => {
         disposed = true;
         try {
-          await client.run({ command: "shutdown" }, { readOnly: true, timeoutMs: 3_000 });
+          // Mutating, so it goes out at most once (PROTOCOL.md, Send-once
+          // contract): a resend after a lost reply is forbidden, and it keeps
+          // the 3s a real teardown budget instead of three attempts plus
+          // backoff. The child is killed below either way.
+          await client.run({ command: "shutdown" }, { timeoutMs: 3_000 });
         } catch {
           /* best-effort graceful stop */
         }

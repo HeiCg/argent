@@ -461,6 +461,43 @@ describe("waitForRunnerReady", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("keeps polling when the answer is not an envelope at all", async () => {
+    vi.useFakeTimers();
+    // The port comes from pickFreePort and the runner binds it only later, so
+    // anything else that grabbed it in between answers HTTP without speaking
+    // the envelope. Accepting that would end the 120s wait in success and
+    // leave the first real command to fail.
+    const { send, sent } = createFakeSend([
+      { result: "some other listener" },
+      { ok: true, data: { state: "idle" } },
+    ]);
+    const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+    const pending = waitForRunnerReady(client, { timeoutMs: 10_000 });
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(sent).toHaveLength(2);
+  });
+
+  it("times out with a typed error when only non-envelope answers come back", async () => {
+    vi.useFakeTimers();
+    const { send } = createFakeSend(Array.from({ length: 50 }, () => ({ result: "not mine" })));
+    const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+    const pending = waitForRunnerReady(client, { timeoutMs: 1_000 }).catch(
+      (caught: unknown) => caught
+    );
+    await vi.runAllTimersAsync();
+    const error = await pending;
+
+    expect(error).toBeInstanceOf(IosDeviceTransportError);
+    expect((error as IosDeviceTransportError).kind).toBe("timeout");
+    // The last unrecognized answer is kept as the cause, so the timeout names
+    // what was actually on the port.
+    expect((error as IosDeviceTransportError).cause).toBeInstanceOf(RunnerCommandError);
+  });
+
   it("times out with a typed error when the runner never answers", async () => {
     vi.useFakeTimers();
     const { send } = createFakeSend(Array.from({ length: 50 }, () => transportError()));
