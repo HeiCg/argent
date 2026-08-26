@@ -1764,6 +1764,53 @@ describe("argent flow run <dir>", () => {
     expect(out).toContain("FAIL — 2 flows: 1 passed, 1 failed, 0 skipped");
   });
 
+  it("separates an unverifiable requires probe from an invalid file in --json", async () => {
+    // Both reject as `status: "fail"` with prose in `error`; only the code and
+    // the kind let a CI consumer tell a flow that could not be judged from a
+    // broken file, and either from a flow that ran and failed.
+    toolsClientMock.callTool
+      .mockRejectedValueOnce(
+        new ToolInvocationError(
+          "This flow declares requires: { runtimeKind: tv }, which cannot be verified.",
+          { errorCode: "FLOW_REQUIREMENTS_UNVERIFIABLE", errorKind: "validation" }
+        )
+      )
+      .mockRejectedValueOnce(
+        new ToolInvocationError("flow file is not valid YAML", {
+          errorCode: "FLOW_FILE_INVALID",
+          errorKind: "validation",
+        })
+      )
+      .mockResolvedValueOnce({
+        data: report({
+          flow: "c-search",
+          ok: false,
+          passed: 0,
+          failed: 1,
+          steps: [{ index: 0, kind: "assert", status: "fail", reason: "never visible" }],
+        }),
+      });
+
+    await expect(flow(["run", flowsDir, "--json", "-r"], opts)).rejects.toThrow("process.exit:1");
+
+    const parsed = JSON.parse(logs.join("\n")) as { flows: Record<string, unknown>[] };
+    expect(parsed.flows[0]).toMatchObject({
+      status: "fail",
+      errorCode: "FLOW_REQUIREMENTS_UNVERIFIABLE",
+      errorKind: "validation",
+    });
+    expect(parsed.flows[1]).toMatchObject({
+      status: "fail",
+      errorCode: "FLOW_FILE_INVALID",
+      errorKind: "validation",
+    });
+    // A flow that ran and broke is neither, and carries no code to be confused
+    // with one.
+    expect(parsed.flows[2]).toMatchObject({ status: "fail" });
+    expect(parsed.flows[2]).not.toHaveProperty("errorCode");
+    expect(parsed.flows[2]).not.toHaveProperty("errorKind");
+  });
+
   it("exits 2 when every flow was skipped — nothing ran, which is not a pass", async () => {
     // Otherwise a mistyped requires (or a target nobody meant to run against)
     // reads as a green suite.

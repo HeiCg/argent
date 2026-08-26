@@ -983,6 +983,13 @@ interface BatchFlowResult {
   error?: string;
   /** Why a skipped flow was skipped — its unmet `requires`, or the batch stop. */
   skipReason?: string;
+  /**
+   * The rejection's classification, on a flow the tool-server threw on — what
+   * separates an unverifiable `requires:` probe from an invalid file. A flow
+   * that ran and failed carries neither.
+   */
+  errorCode?: string;
+  errorKind?: string;
 }
 
 /**
@@ -1070,7 +1077,17 @@ async function runFlowDirectory(
         continue;
       }
       console.error(message);
-      results.push({ path: rel, status: "fail", error: message });
+      results.push({
+        path: rel,
+        status: "fail",
+        error: message,
+        ...(err instanceof ToolInvocationError && err.errorCode
+          ? { errorCode: err.errorCode }
+          : {}),
+        ...(err instanceof ToolInvocationError && err.errorKind
+          ? { errorKind: err.errorKind }
+          : {}),
+      });
       const rejectedThisFlowOnly =
         err instanceof ToolInvocationError && err.errorKind === "validation";
       if (!rejectedThisFlowOnly) stopped = true;
