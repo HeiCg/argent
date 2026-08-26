@@ -80,10 +80,11 @@ export const flowReadPrerequisiteTool: ToolDefinition<
   description: `Read what a flow demands before it runs, without running it — a saved flow from the .argent/flows/ directory, or an explicit boundary-managed flow_path.
 Returns both halves of that contract: \`executionPrerequisite\`, the app/simulator state the flow expects to
 start from, and \`requires\`, the target it must be given — its YAML spelling ("platform: [ios, android],
-runtimeKind: tv"), or "" when the flow runs anywhere. A target that does not satisfy \`requires\` is refused,
-not run, so check both before calling flow-execute.
-\`requires\` is the run's EFFECTIVE block: the blocks of every fragment the leading \`run:\` chain enters fold
-into it, so it can name constraints the flow file itself does not declare.
+runtimeKind: tv"), or "" when the flow runs anywhere.
+\`requires\` is the run's EFFECTIVE block — the root's own plus every fragment the leading \`run:\` chain
+enters — and it bounds the run's START: a target it excludes is refused there, not run. A fragment reached
+past the first executable step is judged only when that step runs and can refuse mid-run, and a run that
+resolves no device is judged against nothing but a \`device\` or \`platform\` you name.
 Use when you need to check what state and which target a flow needs before executing it; pass the same flow
 source (name or flow_path) you will pass to flow-execute, so what you read is the contract of the flow that
 will actually run.

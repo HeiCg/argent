@@ -55,6 +55,8 @@ requires:
 
 On a target that does not satisfy them, `argent flow run <dir>` **skips** the flow — that is the point, one command over a mixed suite. Running that flow on its own is an **error**, and so is a `run:` fragment the run device cannot satisfy once execution reaches it: a composed fragment silently not running would leave a green report for a scenario that only half happened. A fragment the leading `run:` chain enters before the first executable step is judged earlier: it is certain to run, so its block folds into the run's effective block and refuses the whole root flow at setup — a skip in a directory run, an error on its own. Use `when:` when you mean "optionally".
 
+A run that resolves **no device** is judged against no block at all: with no target there is nothing to judge, so an ios-only flow whose steps all stay off the device — narration, or a teardown that recorded its own `devices` scope — passes on any host. Naming a `device` or `platform` the block excludes still refuses it, turning that same run back into a skip or an error.
+
 Combinations nothing could satisfy are rejected at parse: `runtimeKind: tv` with `platform: [chromium]`, or a `launch` step that always runs declaring no app id for a platform `requires.platform` claims. A `launch` inside a `when: { platform: … }` guard is judged against that guard's platform only; one inside any other `when:` guard may never be reached, so it is not judged at all. Setup judges launch coverage a second time across the leading chain, against the folded block, so factoring a launch into a fragment does not escape the rule: a composition no target could run **fails** (`FLOW_REQUIRES_UNSATISFIABLE`) instead of being skipped.
 
 ## Selectors
