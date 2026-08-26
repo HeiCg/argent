@@ -704,15 +704,20 @@ describe("requirements narrow device auto-detection", () => {
 
   it("refuses a lone survivor while another device's kind went unread", async () => {
     // Without the block the two booted devices report as ambiguous; the block
-    // must not turn that into a silent pick over a rival it never judged.
+    // must not turn that into a silent pick over a rival it never judged. The
+    // survivor's own kind WAS read, so what is unknown is only whether a second
+    // device qualifies — the ambiguity code, not the unverifiable one.
     await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
     const { registry } = mockRegistry([iosEntry(IOS_TV, "tv"), androidEntry(ANDROID)]);
 
     const err = await run(registry, "tv-only").catch((e: unknown) => e);
 
-    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNVERIFIABLE);
-    expect((err as Error).message).toMatch(
-      new RegExp(`runtime kind of ${ANDROID} could not be read`)
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_DEVICE_RESOLUTION);
+    expect((err as Error).message).toContain(
+      `1 booted device matched, but the runtime kind of ${ANDROID} could not be read from the ` +
+        `listing, so the field was never narrowed to one — pass --device or --platform to ` +
+        `disambiguate. Available devices: ${IOS_TV} (ios, Booted, tv), ` +
+        `${ANDROID} (android, device, kind unknown).`
     );
   });
 
@@ -735,6 +740,17 @@ describe("requirements narrow device auto-detection", () => {
     const { registry } = mockRegistry([iosEntry(IOS_TV, "tv"), androidEntry(ANDROID)]);
 
     expect((await run(registry, "ios-tv")).device).toBe(IOS_TV);
+  });
+
+  it("offers --device alone when the unread rival shares the survivor's platform", async () => {
+    // Same rule the multi-candidate arm applies, over the field the survivor
+    // and the rival make up: `--platform android` would leave it untouched.
+    await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
+    const { registry } = mockRegistry([androidEntry(ANDROID, "tv"), androidEntry(ANDROID_2)]);
+
+    const err = await run(registry, "tv-only").catch((e: unknown) => e);
+
+    expect((err as Error).message).toMatch(/pass --device to disambiguate\./);
   });
 
   it("admits a listed vega device by its constant kind, with no listing field", async () => {
@@ -864,10 +880,10 @@ describe("requirements narrow device auto-detection", () => {
     expect((err as Error).message).toMatch(new RegExp(`${IOS} \\(ios, Shutdown, kind unknown\\)`));
   });
 
-  it("enumerates it on the barred-survivor arm as well", async () => {
-    // The second call into unreadKindError: one candidate matched, one went
-    // unread, so the lone survivor is refused - and the same shut-down row has
-    // to survive into that message too.
+  it("enumerates only what --device can name on the barred-survivor arm", async () => {
+    // That arm asks the caller to pick, so it lists the field they pick from -
+    // the survivor and the rival nobody judged - exactly as the ambiguity arm
+    // does, and not the shut-down row the unverifiable arm prints.
     await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
     const { registry } = mockRegistry([
       iosEntry(IOS_TV, "tv"),
@@ -877,8 +893,10 @@ describe("requirements narrow device auto-detection", () => {
 
     const err = await run(registry, "tv-only").catch((e: unknown) => e);
 
-    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNVERIFIABLE);
-    expect((err as Error).message).toMatch(new RegExp(`${IOS} \\(ios, Shutdown, kind unknown\\)`));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_DEVICE_RESOLUTION);
+    expect((err as Error).message).toContain(
+      `Available devices: ${IOS_TV} (ios, Booted, tv), ${ANDROID} (android, device, kind unknown).`
+    );
   });
 
   it("names a remote simulator by the id --device accepts, not `?`", async () => {
@@ -1847,6 +1865,20 @@ describe("a cleanup flow that only scopes a device", () => {
 
     expect((await run(registry, "composed-teardown")).ok).toBe(true);
     expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [IOS] });
+  });
+
+  it("sweeps unscoped when an unread rival leaves the field un-narrowed", async () => {
+    // A field never narrowed to one is the "no single answer" this path
+    // swallows: the flow needs no device, so a rival it could not judge must
+    // not turn a cleanup run red.
+    await writeFlow("mobile-teardown", { requires: { runtimeKind: "mobile" }, steps: [TEARDOWN] });
+    const { registry, invokeTool } = scopeRegistry([
+      iosEntry(IOS, "mobile"),
+      androidEntry(ANDROID),
+    ]);
+
+    expect((await run(registry, "mobile-teardown")).ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {});
   });
 
   it("still sweeps unscoped when nothing is booted for the requirements to rule out", async () => {

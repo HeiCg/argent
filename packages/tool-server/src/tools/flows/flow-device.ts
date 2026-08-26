@@ -338,11 +338,11 @@ function availableDevices(all: RawDevice[], requires: FlowRequires): string {
 }
 
 /**
- * The refusal for candidates the listing could not classify — worded once, since
- * both auto-detect arms reach it. `--device` is deliberately not offered as a
- * remedy: on every platform that can reach this message its probe funnels into
- * the same read the listing already made (`listIosSimulators` on ios,
- * `resolveRuntimeKindCached` on android), so it re-asks the question instead of
+ * The refusal for candidates the listing could not classify — the empty-field
+ * arm, where nothing was judged to match at all. `--device` is deliberately not
+ * offered as a remedy: on every platform that can reach this message its probe
+ * funnels into the same read the listing already made
+ * (`resolveRuntimeKindCached` on android), so it re-asks the question instead of
  * answering it.
  */
 function unreadKindError(
@@ -360,6 +360,17 @@ function unreadKindError(
 }
 
 /**
+ * `--platform` narrows nothing once every candidate already sits on one
+ * platform: filtering by that platform leaves the field untouched, so the rerun
+ * would throw the same message again, and any other value empties it.
+ */
+function disambiguationFlags(field: RawDevice[]): string {
+  return field.every((d) => d.platform === field[0].platform)
+    ? "--device"
+    : "--device or --platform";
+}
+
+/**
  * Resolve the device a flow runs against. Order: explicit `device` id → the
  * single booted device matching `platform` and the flow's requirements → the
  * single booted device overall → throw, enumerating what is available.
@@ -372,9 +383,10 @@ function unreadKindError(
  * rather than a device-resolution failure. Unless a candidate was ruled out
  * only because its listed kind could not be READ: the requirement was never
  * checked for it, so the throw is FLOW_REQUIREMENTS_UNVERIFIABLE, which a
- * directory run fails on rather than skips. That throw also bars a LONE
- * survivor — a field holding a rival nobody judged was never narrowed to one,
- * so picking it would trade the ambiguity report for a silent guess.
+ * directory run fails on rather than skips. An unjudged rival bars a LONE
+ * survivor too — a field holding one was never narrowed to one — but there the
+ * survivor's own kind WAS read, so that throw is the ambiguity report a
+ * `--device` settles, not an unverifiable requirement.
  */
 export async function resolveFlowDevice(
   registry: Registry,
@@ -407,7 +419,17 @@ export async function resolveFlowDevice(
     : [];
 
   if (eligible.length === 1) {
-    if (requires && unread.length > 0) throw unreadKindError(requires, unread, devices);
+    if (requires && unread.length > 0) {
+      const field = [...eligible, ...unread];
+      const ids = unread.map((d) => deviceEntryId(d) ?? "?").join(", ");
+      throw deviceResolutionError(
+        `1 booted device matched, but the runtime kind of ${ids} could not be read from the ` +
+          `listing, so the field was never narrowed to one — pass ` +
+          `${disambiguationFlags(field)} to disambiguate.`,
+        field,
+        true
+      );
+    }
     const id = deviceEntryId(eligible[0]);
     if (id) return resolveDevice(id);
   }
@@ -429,12 +451,7 @@ export async function resolveFlowDevice(
       : "No booted device found.";
     throw deviceResolutionError(`${what} Pass a device id or platform explicitly.`, devices);
   }
-  // `--platform` narrows nothing once every candidate already sits on one
-  // platform: filtering by that platform leaves the field untouched, so the
-  // rerun would throw this same message, and any other value empties it.
-  const flags = eligible.every((d) => d.platform === eligible[0].platform)
-    ? "--device"
-    : "--device or --platform";
+  const flags = disambiguationFlags(eligible);
   // An unjudged rival did not match, but it is a device `--device` could name,
   // and omitting it hides that the field held a judged-vs-unjudged choice at
   // all. It joins the enumeration and never the COUNT, which speaks only for
