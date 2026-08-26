@@ -59,9 +59,9 @@ const zodSchema = z.object({
 
 type Params = z.infer<typeof zodSchema>;
 
+/** `dispatched: false` marks a step that provably sent NO action to the device. */
 type StepResult =
-  | { tool: string; result: unknown }
-  /** `dispatched: false` marks a step that provably sent NO action to the device. */
+  | { tool: string; result: unknown; dispatched?: false }
   | { tool: string; error: string; dispatched?: false };
 
 type RunSequenceResult = {
@@ -97,7 +97,7 @@ export function createRunSequenceTool(
     description: `Execute multiple device interaction steps in a single call (iOS simulator, Android emulator, Apple TV / Android TV, or Chromium app).
 Use when you need sequential actions and do NOT need to observe the screen between them
 (e.g. scrolling multiple times, typing then pressing enter, rotating back and forth).
-Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops). A step that sent nothing to the device — an unlisted tool name, one this target does not support, args that fail the tool's schema, or an \`await-ui-element\` whose condition never held, which only reads the UI tree — carries \`dispatched: false\`, so a caller can tell "never acted on the device" from "acted and then failed".
+Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops). A step that sent nothing to the device — an unlisted tool name, one this target does not support, args that fail the tool's schema, or an \`await-ui-element\`, which only polls the UI tree and acts on nothing whether or not its condition held — carries \`dispatched: false\`, so a caller can tell "never acted on the device" from "acted and then failed".
 One screenshot is captured automatically after the whole sequence (not per step) — call screenshot separately only for a baseline BEFORE it, or to observe an intermediate step.
 That single capture is also why a secret belongs in this call rather than in two bare ones: the skip is decided from the whole request, so a \`{{secret:...}}\` in any step suppresses the capture that would otherwise follow the submit.
 
@@ -214,7 +214,14 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
             });
             break;
           }
-          results.push({ tool: step.tool, result });
+          // A met wait acts on nothing either: it read the tree and stopped. The
+          // unmet arm above already says so, and a caller reading only one of
+          // the two would score the same device reality both ways.
+          results.push(
+            step.tool === AWAIT_UI_ELEMENT_TOOL_ID
+              ? { tool: step.tool, result, dispatched: false as const }
+              : { tool: step.tool, result }
+          );
         } catch (err) {
           const reframed = describeNestedParamError(
             registry,

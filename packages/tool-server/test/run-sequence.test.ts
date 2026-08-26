@@ -273,6 +273,33 @@ describe("run-sequence", () => {
     expect(result.steps.every((s) => "result" in s)).toBe(true);
   });
 
+  it("marks a MET await-ui-element `dispatched: false` as well — it read, it did not act", async () => {
+    const registry = mockRegistry((id: string) =>
+      id === "await-ui-element" ? { success: true, elapsed: 120 } : { tapped: true }
+    );
+    const tool = createRunSequenceTool(registry);
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS,
+        steps: [
+          {
+            tool: "await-ui-element",
+            args: { condition: "visible", selector: { text: "Continue" } },
+          },
+          { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+        ],
+      }
+    );
+
+    // Whether the condition held changes nothing at the device, so the marker
+    // must not either — the unmet twin above carries it as well.
+    expect(result.steps[0]).toMatchObject({ tool: "await-ui-element", dispatched: false });
+    expect(result.steps[1]).not.toHaveProperty("dispatched");
+    expect(result.completed).toBe(2);
+  });
+
   it("only the await-ui-element tool's success:false halts — other tools are unaffected", async () => {
     // A non-wait step returning a success:false-shaped object must NOT stop the run.
     const registry = mockRegistry(() => ({ success: false }));

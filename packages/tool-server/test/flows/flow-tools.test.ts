@@ -1621,6 +1621,58 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("sequence-wait-first")).steps).toEqual([]);
   });
 
+  it("stays silent when the only step run-sequence completed was a wait that HELD", async () => {
+    const inner = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "await-ui-element" ? { success: true, elapsed: 12 } : { ok: 1 }
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-wait-held", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-wait-held",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [
+            {
+              tool: "await-ui-element",
+              args: { condition: "visible", selector: { text: "Home" } },
+              delayMs: 0,
+            },
+            { tool: "screenshot", args: {}, delayMs: 0 },
+          ],
+        }),
+      }
+    );
+
+    // Same device reality as the unmet twin above: the wait polled and the
+    // second step was rejected before dispatch, so nothing moved.
+    expect(result.message).toContain("run-sequence stopped at screenshot after 1 of 2 steps");
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).not.toContain("may already have");
+    expect(vi.mocked(inner.invokeTool).mock.calls.map((c) => c[0])).toEqual(["await-ui-element"]);
+    expect(parseFlow(await onDisk("sequence-wait-held")).steps).toEqual([]);
+  });
+
   it("still warns when a rejected step follows one that DID run", async () => {
     const inner = {
       invokeTool: vi.fn(async () => ({ tapped: true })),
