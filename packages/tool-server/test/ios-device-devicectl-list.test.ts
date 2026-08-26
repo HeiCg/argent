@@ -100,3 +100,17 @@ describe("listIosPhysicalDevices filters on hardwareProperties.reality", () => {
     expect(fake.argv.slice(0, 3)).toEqual(["devicectl", "list", "devices"]);
   });
 });
+
+describe("listIosPhysicalDevices falls back for absent name and model", () => {
+  it("names a row after its udid and leaves the model null", async () => {
+    fake.payload = {
+      result: { devices: [{ hardwareProperties: { udid: "00008030-DEADBEEF", platform: "iOS" } }] },
+    };
+
+    const devices = await listIosPhysicalDevices();
+
+    // Absent fields read as null everywhere else in the row, and a device with
+    // no reported name is still addressable by its udid.
+    expect(devices[0]).toMatchObject({ name: "00008030-DEADBEEF", model: null });
+  });
+});

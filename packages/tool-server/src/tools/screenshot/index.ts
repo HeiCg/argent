@@ -11,12 +11,9 @@ import { getScreenshotScale } from "../../utils/simulator-client";
 import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
 import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
 import { isTvOsSimulator } from "../../utils/ios-devices";
-import {
-  captureScreenshot as captureIosDeviceScreenshot,
-  supportsHostScreenshot,
-} from "../../utils/ios-device/devicectl";
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { captureRunnerScreenshotPng } from "../../utils/ios-device/runner-commands";
+import { RUNNER_COMMAND_TIMEOUT_MS } from "../../utils/ios-device/runner-client";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
@@ -81,15 +78,12 @@ const capability: ToolCapability = {
 };
 
 /**
- * Physical-iOS screenshot. Primary: host-side `xcrun devicectl device
- * screenshot` (no runner needed). Not every Xcode ships that subcommand;
- * devicectl 518.x (iOS 26 SDK) does not, so the memoized
- * `supportsHostScreenshot` probe picks the route structurally up front:
- * unsupported goes straight to the runner with no doomed devicectl attempt per
- * capture, and no dependency on Apple's error wording. On the host-side route
- * the old unknown-option/subcommand match survives only as a last-resort net
- * for a probe that answered wrong. Both routes finish with the same
- * best-effort `sips` downscale as the tvOS path.
+ * Physical-iOS screenshot: a device-wide capture through the on-device
+ * XCUITest runner, finished with the same best-effort `sips` downscale as the
+ * tvOS path. The runner is the only route. There is no host-side capture to
+ * try first: `xcrun devicectl` advertises no `screenshot` subcommand on the
+ * toolchains Argent supports (devicectl 518.x, the iOS 26 SDK, does not ship
+ * one).
  */
 async function iosPhysicalScreenshot(
   registry: Registry,
@@ -100,45 +94,15 @@ async function iosPhysicalScreenshot(
     os.tmpdir(),
     `argent-ios-device-screenshot-${device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
-  if (!(await supportsHostScreenshot())) {
-    await runnerScreenshotToFile(registry, device, file);
-  } else {
-    try {
-      await captureIosDeviceScreenshot(device.id, file);
-    } catch (error) {
-      const text = `${(error as Error).message}\n${String((error as Error & { cause?: Error }).cause?.message ?? "")}`;
-      const missingSubcommand = /unknown option|unknown subcommand|unrecognized subcommand/i.test(
-        text
-      );
-      if (!missingSubcommand) throw error;
-      await runnerScreenshotToFile(registry, device, file, error);
-    }
-  }
-  await downscalePngInPlace(file, scale);
-  return file;
-}
-
-/**
- * Device-wide capture through the on-device XCUITest runner
- * (captureRunnerScreenshotPng), landing in `file`. `cause` chains the
- * devicectl failure that sent the capture here, when there was one.
- */
-async function runnerScreenshotToFile(
-  registry: Registry,
-  device: DeviceInfo,
-  file: string,
-  cause?: unknown
-): Promise<void> {
   const ref = iosDeviceRunnerRef(device);
   const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
-  try {
-    await fs.writeFile(file, await captureRunnerScreenshotPng(runner, 30_000));
-  } catch (error) {
-    if (cause !== undefined && error instanceof Error && error.cause === undefined) {
-      error.cause = cause;
-    }
-    throw error;
-  }
+  // The client window must strictly exceed the runner's own 30s screenshot
+  // budget (see PROTOCOL.md): at or below it, the runner's COMMAND_TIMED_OUT
+  // verdict arrives here as a raw transport timeout and forces journal
+  // recovery for an answer the runner was already delivering.
+  await fs.writeFile(file, await captureRunnerScreenshotPng(runner, RUNNER_COMMAND_TIMEOUT_MS));
+  await downscalePngInPlace(file, scale);
+  return file;
 }
 
 /**
@@ -219,9 +183,9 @@ export function createScreenshotTool(registry: Registry): ToolDefinition<Params,
       completedMsg: ({ result }) => `Captured screenshot ${result.image.filename}`,
       failedMsg: ({ failureSignal }) => `Failed to capture screenshot: ${failureSignal.error_code}`,
     },
-    description: `Capture a screenshot of the device screen (iOS simulator, Android emulator, Apple TV simulator, Vega, or Chromium app). Returns { image }; the MCP adapter renders it as a visible image unless the caller passed includeImageInContext: false.
+    description: `Capture a screenshot of the device screen (iOS simulator or physical device, Android emulator, Apple TV simulator, Vega, or Chromium app). Returns { image }; the MCP adapter renders it as a visible image unless the caller passed includeImageInContext: false.
 Use when you need a baseline image before an interaction or to inspect the current screen state after a delay.
-Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device.`,
+Fails if the device backend is not reachable: the simulator-server for iOS simulators, the XCUITest runner for a physical iOS device, the emulator backend for Android, or Chromium CDP.`,
     alwaysLoad: true,
     searchHint: "device simulator emulator chromium screen image capture baseline tvos apple tv",
     zodSchema,
@@ -253,7 +217,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
         return { image };
       }
 
-      // Physical iPhones/iPads capture host-side via devicectl, before the
+      // Physical iPhones/iPads capture through the on-device runner, before the
       // tvOS probe (which shells out to simctl and can't know hardware UDIDs).
       if (isIosPhysicalDevice(device)) {
         const pngPath = await iosPhysicalScreenshot(registry, device, scale);

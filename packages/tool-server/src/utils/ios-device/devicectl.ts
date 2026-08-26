@@ -11,20 +11,13 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Wrappers around `xcrun devicectl`, Apple's CoreDevice CLI (Xcode 15+) and
- * the control plane for physical iPhones/iPads: discovery, app lifecycle,
- * screenshots, and tunnel readiness. The XCUITest runner (interaction/
- * snapshot path) is separate; see runner-build.ts / the ios-device-runner
- * blueprint.
+ * the control plane for physical iPhones/iPads: discovery, app lifecycle, and
+ * connection readiness. The XCUITest runner (interaction/snapshot path) is
+ * separate; see runner-build.ts / the ios-device-runner blueprint.
  *
- * Two invariants that follow from how devicectl actually behaves (verified
- * against real devices):
- *
- * - JSON output goes to a FILE (`--json-output <tmp>`), never stdout. stdout/
- *   stderr are only good for error-hint matching.
- * - Capabilities are feature-PROBED, never version-gated: older Xcodes lack
- *   subcommands/flags, and the reliable detection is asking the binary (the
- *   subcommand list `--help` advertises, or the error text), not a version
- *   comparison.
+ * One invariant that follows from how devicectl actually behaves (verified
+ * against real devices): JSON output goes to a FILE (`--json-output <tmp>`),
+ * never stdout. stdout/stderr are only good for error-hint matching.
  */
 
 /** Default timeout for one-shot devicectl calls. Installs get a longer one. */
@@ -208,8 +201,8 @@ export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
       if (!udid) continue;
       // iPhone/iPad only for now; tvOS/visionOS hardware is untested here.
       const platform = (hw.platform ?? "").toLowerCase();
-      const productType = hw.productType ?? "";
-      if (platform !== "ios" && !/^(iphone|ipad|ipod)/i.test(productType)) continue;
+      const productType = hw.productType ?? null;
+      if (platform !== "ios" && !/^(iphone|ipad|ipod)/i.test(productType ?? "")) continue;
       // Physical hardware only. Live-verified payloads: real phones report
       // reality "physical"; simulators, when CoreDevice lists them, report
       // "simulated" with otherwise-passing platform/productType. The field is
@@ -274,63 +267,15 @@ export async function launchApp(
   await runDevicectl(args, `launch ${bundleId}`);
 }
 
-/**
- * Capture a PNG screenshot host-side. Requires a devicectl that has the
- * screenshot subcommand; consult {@link supportsHostScreenshot} first, and
- * treat an unknown-subcommand error that still slips through as "use the
- * runner path".
- */
-export async function captureScreenshot(udid: string, outPath: string): Promise<void> {
-  await runDevicectl(["device", "screenshot", "--device", udid, outPath], "capture screenshot", {
-    timeoutMs: 30_000,
-  });
-}
-
-// Memoized as a promise so concurrent first callers share one probe.
-let hostScreenshotProbe: Promise<boolean> | null = null;
-
-/**
- * A row in the SUBCOMMANDS table of `devicectl device --help` whose name is
- * `screenshot`: modest indent, the bare token, then its description. The
- * bounded indent keeps a deeply-indented description continuation line that
- * happens to start with the word from counting as a subcommand.
- */
-const SCREENSHOT_SUBCOMMAND_ROW = /^[ \t]{1,10}screenshot\b/m;
-
-/**
- * Whether this Xcode's devicectl has the `device screenshot` subcommand at
- * all: no toolchain verified here ships it (devicectl 518.x does not); the
- * probe, not this comment, decides at runtime.
- * Probed structurally, per the header's convention: list the subcommands
- * `devicectl device --help` advertises and look for a `screenshot` row, the
- * binary's own declaration of its command tree, independent of Apple's error
- * wording. NOT probed via `device screenshot --help` exiting cleanly: verified
- * live on 518.33, ArgumentParser answers an unknown subcommand's `--help` with
- * the parent's help and exit 0, so that exit status reads "supported" on
- * exactly the toolchains that are not. Memoized for the process (one extra
- * subprocess ever, not one doomed capture attempt each call), and any way of
- * failing to probe (missing devicectl, timeout) reads as "unsupported", which
- * routes callers to the runner path that works everywhere.
- */
-export function supportsHostScreenshot(): Promise<boolean> {
-  hostScreenshotProbe ??= execFileAsync("xcrun", ["devicectl", "device", "--help"], {
-    timeout: DEVICECTL_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-  }).then(
-    ({ stdout }) => SCREENSHOT_SUBCOMMAND_ROW.test(stdout),
-    () => false
-  );
-  return hostScreenshotProbe;
-}
-
-interface DeviceTunnelInfo {
+interface DeviceConnectionInfo {
+  transportType: string | null;
   tunnelState: string | null;
 }
 
 interface DevicectlDetailsPayload {
   result?: {
-    connectionProperties?: { tunnelState?: string };
-    device?: { connectionProperties?: { tunnelState?: string } };
+    connectionProperties?: { transportType?: string; tunnelState?: string };
+    device?: { connectionProperties?: { transportType?: string; tunnelState?: string } };
   };
 }
 
@@ -338,12 +283,13 @@ interface DevicectlDetailsPayload {
  * Read the device's CoreDevice connection details. `tunnelState: "connecting"`
  * means NOT ready; commands issued in that window time out. (The tunnel is
  * CoreDevice's own control channel and exists over USB too; this is a
- * readiness probe, not a Wi-Fi route.)
+ * readiness probe, not a Wi-Fi route.) `transportType` reports the same wired/
+ * localNetwork values as `list devices` (live-verified, devicectl 518.33).
  */
 async function deviceInfoDetails(
   udid: string,
   opts: { timeoutSeconds?: number } = {}
-): Promise<DeviceTunnelInfo> {
+): Promise<DeviceConnectionInfo> {
   const timeoutSeconds = opts.timeoutSeconds ?? 10;
   const { json } = await runDevicectl(
     ["device", "info", "details", "--device", udid, "--timeout", String(timeoutSeconds)],
@@ -354,6 +300,7 @@ async function deviceInfoDetails(
   const conn =
     payload?.result?.connectionProperties ?? payload?.result?.device?.connectionProperties;
   return {
+    transportType: conn?.transportType ?? null,
     tunnelState: conn?.tunnelState ?? null,
   };
 }
@@ -362,14 +309,24 @@ const READY_MEMO_TTL_MS = 5_000;
 const readyMemo = new Map<string, number>();
 
 /**
- * Ensure the device is reachable and its CoreDevice tunnel is not mid-
- * handshake. Memoized for 5s per device: callers sprinkle this before
- * commands, and a fresh probe per call would dominate hot-path latency.
+ * Ensure the device is cabled and its CoreDevice tunnel is not mid-handshake.
+ * The cable check is not redundant with the tunnel one: an unplugged paired
+ * device keeps a connected tunnel over localNetwork (live-verified), yet
+ * argent drives it over usbmux, which needs the cable. Without this gate the
+ * failure surfaces minutes later, after a full runner build. transportType is
+ * absent on older toolchains, so only an explicit non-wired value rejects.
+ * Memoized for 5s per device: callers sprinkle this before commands, and a
+ * fresh probe per call would dominate hot-path latency.
  */
 export async function ensureDeviceReady(udid: string): Promise<void> {
   const at = readyMemo.get(udid);
   if (at != null && Date.now() - at < READY_MEMO_TTL_MS) return;
   const info = await deviceInfoDetails(udid, { timeoutSeconds: 15 });
+  if (info.transportType != null && info.transportType !== "wired") {
+    throw new IosDeviceControlError(`Device transport is ${info.transportType}, not wired`, {
+      hint: "Connect the device by USB cable and unlock it, then retry.",
+    });
+  }
   if (info.tunnelState === "connecting") {
     throw new IosDeviceControlError("Device tunnel is still connecting", {
       hint: "Keep the device unlocked and connected; retry in a few seconds.",
