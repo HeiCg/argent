@@ -249,6 +249,29 @@ describe("parsing a requires block", () => {
     );
   });
 
+  it("refuses a block that is not a map, signal and all", () => {
+    // The bodyless and `~` spellings parse as null, and `Object.keys(null)`
+    // throws a bare TypeError — no failure signal, and `parseRequires` runs
+    // outside any try. Hence the signal assertion, not just a throw.
+    for (const yaml of [
+      "requires:\nsteps: []",
+      "requires: ~\nsteps: []",
+      "requires: [ios]\nsteps: []",
+      "requires: hello\nsteps: []",
+    ]) {
+      let err: unknown;
+      try {
+        parse(yaml);
+      } catch (e) {
+        err = e;
+      }
+      expect((err as Error | undefined)?.message).toMatch(
+        /requires must be a map of platform \/ runtimeKind/
+      );
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_INVALID);
+    }
+  });
+
   it("classifies its parse errors as an invalid file, like the top-level-key check", () => {
     // `requires` is a top-level key, not a step: the step-shaped
     // FLOW_ENTRY_UNRECOGNIZED / flow_file_parse_step classification would point
