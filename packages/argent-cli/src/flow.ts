@@ -1008,8 +1008,18 @@ const REQUIREMENTS_UNMET_CODE: string = FAILURE_CODES.FLOW_REQUIREMENTS_UNMET;
  * own summary omits too. Hand-mirrored, not imported: the CLI takes no
  * tool-server dependency and types `kind` as a bare string, so a marker kind
  * added there has to be added here as well or this guard silently reopens.
+ * NESTED_FLOW_TOOL is the fourth such shape, kept beside the set because its
+ * kind is `tool`, not a marker kind of its own.
  */
 const NON_EXECUTING_STEP_KINDS: ReadonlySet<string> = new Set(["when", "run", "echo"]);
+
+/**
+ * The `tool:` spelling of a composition — hand-authored only, since the
+ * recorder captures a recorded flow-execute as `run:`. Its report is one step
+ * for work performed entirely inside another flow, so it proves no more than
+ * the `run:` marker does.
+ */
+const NESTED_FLOW_TOOL = "flow-execute";
 
 /**
  * Run every discovered flow in `dir` sequentially. Reports failures only (no
@@ -1134,7 +1144,10 @@ async function runFlowDirectory(
     (n, r) =>
       n +
       (r.report?.steps ?? []).filter(
-        (s) => !NON_EXECUTING_STEP_KINDS.has(s.kind) && s.status !== "skip"
+        (s) =>
+          !NON_EXECUTING_STEP_KINDS.has(s.kind) &&
+          s.tool !== NESTED_FLOW_TOOL &&
+          s.status !== "skip"
       ).length,
     0
   );

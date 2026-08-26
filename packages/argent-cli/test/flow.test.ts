@@ -1995,6 +1995,49 @@ describe("argent flow run <dir>", () => {
     expect(errs.join("\n")).not.toContain("No step executed");
   });
 
+  // The `tool:` spelling of the same composition, hand-authored: one step
+  // reporting work performed entirely inside another flow.
+  const wrapperPass = (): Record<string, unknown> =>
+    report({
+      flow: "b-checkout",
+      ok: true,
+      passed: 1,
+      failed: 0,
+      errored: 0,
+      skipped: 0,
+      steps: [{ index: 0, kind: "tool", tool: "flow-execute", status: "pass" }],
+    });
+
+  it("exits 2 when the only executing step was a tool: flow-execute wrapper", async () => {
+    // Every authored step under the wrapper skipped, so adding one file that
+    // only delegates must not flip the batch from NONE RAN to green.
+    toolsClientMock.callTool
+      .mockResolvedValueOnce({ data: vacuousPass() })
+      .mockResolvedValueOnce({ data: wrapperPass() });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
+
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 2 passed, 0 failed, 0 skipped");
+    expect(errs.join("\n")).toContain("No step executed");
+  });
+
+  it("stays PASS when a tool step other than the wrapper executed", async () => {
+    // Only `flow-execute` is discounted — every other `tool:` step is work.
+    toolsClientMock.callTool
+      .mockResolvedValueOnce({
+        data: report({
+          flow: "a-login",
+          steps: [{ index: 0, kind: "tool", tool: "screenshot", status: "pass" }],
+        }),
+      })
+      .mockResolvedValueOnce({ data: wrapperPass() });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:0");
+
+    expect(logs.join("\n")).toContain("PASS — 2 flows: 2 passed, 0 failed, 0 skipped");
+    expect(errs.join("\n")).not.toContain("No step executed");
+  });
+
   // A met `when:` guard reports a marker of its own — a pass in the runner's
   // summary — before the guarded steps expand under it. Those steps still all
   // skip here, behind a nested guard the run's platform does not match.
