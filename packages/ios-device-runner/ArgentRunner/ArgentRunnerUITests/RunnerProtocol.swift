@@ -15,7 +15,7 @@ enum CommandKind: String, Codable {
   case drag
   case type
   case keyboardReturn
-  case home
+  case button
   case snapshot
   case screenshot
   case shutdown
@@ -29,7 +29,7 @@ extension CommandKind {
     switch self {
     case .status, .viewport, .snapshot, .screenshot:
       return true
-    case .tap, .longPress, .drag, .type, .keyboardReturn, .home, .shutdown:
+    case .tap, .longPress, .drag, .type, .keyboardReturn, .button, .shutdown:
       return false
     }
   }
@@ -42,7 +42,7 @@ extension CommandKind {
     switch self {
     case .viewport, .tap, .longPress, .drag, .type, .keyboardReturn, .snapshot:
       return true
-    case .status, .home, .screenshot, .shutdown:
+    case .status, .button, .screenshot, .shutdown:
       return false
     }
   }
@@ -76,6 +76,19 @@ extension CommandKind {
   }
 }
 
+/// Hardware buttons the `button` command accepts, mapped onto
+/// `XCUIDevice.Button` in ArgentRunnerSession+Commands.swift (this file stays
+/// XCTest-free, so the wire shapes decode without an XCTest import). The
+/// power/lock button and the app switcher are absent because XCUIDevice exposes
+/// no public API for either; `camera` is absent because it only exists in newer
+/// SDKs and naming it would pin the runner to a newer Xcode.
+enum DeviceButton: String, Codable {
+  case home
+  case volumeUp
+  case volumeDown
+  case actionButton
+}
+
 struct CommandRequest: Codable {
   let command: CommandKind
   let commandId: String?
@@ -103,6 +116,8 @@ struct CommandRequest: Codable {
   let settle: Bool?
   /// `type`: the text delivered to the focused input.
   let text: String?
+  /// `button`: which hardware button to press.
+  let button: DeviceButton?
 
   var normalizedCommandId: String? {
     guard let trimmed = commandId?.trimmingCharacters(in: .whitespacesAndNewlines),

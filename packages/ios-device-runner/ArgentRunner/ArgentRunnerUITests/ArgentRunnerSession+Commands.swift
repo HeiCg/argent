@@ -1,9 +1,25 @@
+import UIKit
 import XCTest
+
+extension DeviceButton {
+  /// The XCUIDevice member for this wire name. Volume up/down are
+  /// `XCUI_SIMULATOR_UNAVAILABLE` in the iOS SDK, which costs nothing here: the
+  /// runner is only ever built for `generic/platform=iOS` (runner-build.ts),
+  /// never against the Simulator SDK that marks them unavailable.
+  var hardwareButton: XCUIDevice.Button {
+    switch self {
+    case .home: return .home
+    case .volumeUp: return .volumeUp
+    case .volumeDown: return .volumeDown
+    case .actionButton: return .action
+    }
+  }
+}
 
 extension ArgentRunnerSession {
   enum TargetResolution {
-    /// `reactivated` is true when the target was backgrounded (or its state
-    /// unreadable) and the runner had to re-front it for this command.
+    /// `reactivated` is true when the target was alive but backgrounded and
+    /// the runner had to re-front it for this command.
     case ready(XCUIApplication, reactivated: Bool)
     case unavailable(Envelope)
   }
@@ -88,9 +104,8 @@ extension ArgentRunnerSession {
       }
     }
     switch request.command {
-    case .home:
-      XCUIDevice.shared.press(.home)
-      return .success(MessagePayload(message: "pressed home"))
+    case .button:
+      return pressDeviceButton(request)
     case .screenshot:
       return captureScreenshot()
     case .shutdown:
@@ -123,17 +138,43 @@ extension ArgentRunnerSession {
     }
   }
 
-  /// Resolves the target app and brings it frontmost, refusing a target that
-  /// reports `.notRunning`: on a not-running app `activate()` performs a full
-  /// launch (after launch X → HOME, an app-scoped command would silently put
-  /// X back over the home screen), and launching stays an explicit, named
-  /// action (launch-app). A backgrounded or suspended target is re-fronted,
-  /// and the reply is stamped `reactivated: true` so the agent learns the
-  /// foreground changed underneath the command.
+  /// Presses one hardware button. `hasHardwareButton` is consulted first: not
+  /// every iPhone has every button (a non-Pro iPhone has no Action button), and
+  /// `press` on an absent one is a no-op the agent would read as a successful
+  /// press. Naming the device class keeps the refusal actionable, since which
+  /// buttons exist is a property of the hardware, not of the runner.
+  private func pressDeviceButton(_ request: CommandRequest) -> Envelope {
+    guard let button = request.button else {
+      return .failure(
+        .invalidRequest,
+        "button requires a button name",
+        hint: "Send one of: home, volumeUp, volumeDown, actionButton."
+      )
+    }
+    let device = XCUIDevice.shared
+    guard device.hasHardwareButton(button.hardwareButton) else {
+      return .failure(
+        .unsupportedOperation,
+        "this \(UIDevice.current.model) has no \(button.rawValue) button",
+        hint: "Press a button this hardware has, or drive the equivalent from on-screen UI."
+      )
+    }
+    device.press(button.hardwareButton)
+    return .success(MessagePayload(message: "pressed \(button.rawValue)"))
+  }
+
+  /// Resolves the target app and brings it frontmost. Only a live but
+  /// backgrounded target is re-fronted, and the reply is stamped
+  /// `reactivated: true` so the agent learns the foreground changed underneath
+  /// the command. Every other state is refused, because `activate()` on an app
+  /// that is not already running performs a FULL LAUNCH (after launch X then
+  /// HOME, an app-scoped command would silently put X back over the home
+  /// screen), and launching stays an explicit, named action (launch-app).
   ///
-  /// The refusal is best-effort, not a guarantee: on hardware a swipe-killed
-  /// app this session never launched reports `.unknown`, not `.notRunning`,
-  /// so the activate arm below can amount to a full launch for such targets.
+  /// That is why `.unknown` is refused alongside `.notRunning`: on hardware a
+  /// swipe-killed app this session never launched reports `.unknown`, so
+  /// activating it would be exactly the hidden launch the refusal exists to
+  /// prevent.
   ///
   /// A fresh XCUIApplication proxy per command is deliberate: proxies are
   /// cheap, and never caching them removes the whole class of stale-target
@@ -144,20 +185,7 @@ extension ArgentRunnerSession {
     switch app.state {
     case .runningForeground:
       return .ready(app, reactivated: false)
-    case .notRunning:
-      return .unavailable(
-        .failure(
-          .appNotAvailable,
-          "app '\(bundleId)' is not running",
-          hint: "Launch it first with launch-app."
-        )
-      )
-    default:
-      // .runningBackground / .runningBackgroundSuspended: activation resumes.
-      // .unknown is riskier: hardware reports it for a swipe-killed foreign
-      // app too, where this activate becomes a launch, but whether a live
-      // foreign app ever reads .unknown is unprobed, so refusing it could
-      // break legitimate commands.
+    case .runningBackground, .runningBackgroundSuspended:
       app.activate()
       guard app.wait(for: .runningForeground, timeout: 15) else {
         return .unavailable(
@@ -171,6 +199,25 @@ extension ArgentRunnerSession {
       // Give the first frame of a fresh activation a beat before interacting.
       Thread.sleep(forTimeInterval: 0.25)
       return .ready(app, reactivated: true)
+    case .notRunning:
+      return .unavailable(
+        .failure(
+          .appNotAvailable,
+          "app '\(bundleId)' is not running",
+          hint: "Launch it first with launch-app."
+        )
+      )
+    default:
+      // .unknown, plus any state a future SDK adds: XCTest cannot tell a
+      // killed app from a live one here, so the command is refused rather
+      // than gambling a launch on it.
+      return .unavailable(
+        .failure(
+          .appNotAvailable,
+          "app '\(bundleId)' is not reachable: its state is unreadable",
+          hint: "Launch it first with launch-app."
+        )
+      )
     }
   }
 }

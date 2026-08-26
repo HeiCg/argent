@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Platform, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
-import { pressHome } from "../../utils/ios-device/runner-commands";
+import { pressButton, type RunnerButton } from "../../utils/ios-device/runner-commands";
 import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { UnsupportedOperationError } from "../../utils/capability";
 import { sendCommand } from "../../utils/simulator-client";
@@ -47,10 +47,24 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
 };
 
-// The XCUITest runner exposes exactly one hardware button (`XCUIDevice.press(.home)`);
-// the rest of the iOS set is simulator-HID-only, so a physical device narrows
-// BUTTONS_BY_PLATFORM.ios further at execute time.
-const PHYSICAL_IOS_BUTTONS: ReadonlySet<Params["button"]> = new Set(["home"]);
+// `XCUIDevice.press(_:)` covers home, both volume buttons and the Action
+// button on hardware: volumeUp/volumeDown are marked unavailable on the
+// SIMULATOR SDK, not on devices. `power` and `appSwitch` are the two the runner
+// cannot do: XCUIDevice exposes no public API for the power/lock button or the
+// app switcher. So a physical device narrows BUTTONS_BY_PLATFORM.ios at execute
+// time, and the runner additionally refuses a button this hardware lacks (a
+// non-Pro iPhone has no Action button).
+const PHYSICAL_IOS_BUTTONS: ReadonlySet<string> = new Set<RunnerButton>([
+  "home",
+  "volumeUp",
+  "volumeDown",
+  "actionButton",
+]);
+
+/** Narrows an accepted button to the runner's `button` wire names. */
+function isPhysicalIosButton(button: Params["button"]): button is RunnerButton {
+  return PHYSICAL_IOS_BUTTONS.has(button);
+}
 
 export const buttonTool: ToolDefinition<Params, Result> = {
   id: "button",
@@ -60,23 +74,28 @@ export const buttonTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ params, failureSignal }) =>
       `Failed to press ${params.button} button: ${failureSignal.error_code}`,
   },
-  description: `Press a device hardware button (iOS simulator or physical device, Android emulator or device). iOS simulators send a Down then Up event automatically; a physical iOS device presses through the XCUITest runner ('home' only); Android injects a single \`adb\` key event.
-Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton; buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android, anything but 'home' on a physical iPhone) are rejected with a clear error.
+  description: `Press a device hardware button (iOS simulator or physical device, Android emulator or device). iOS simulators send a Down then Up event automatically; a physical iOS device presses through the XCUITest runner ('home', 'volumeUp', 'volumeDown', 'actionButton'; 'power' and 'appSwitch' have no XCUITest API); Android injects a single \`adb\` key event.
+Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton; buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android, 'power' or 'appSwitch' on a physical iPhone) are rejected with a clear error, as is a button the hardware itself lacks ('actionButton' on a non-Pro iPhone).
 Use when you need to trigger hardware button events.
 Returns { pressed: buttonName }.
 Fails if the device backend is not reachable — the simulator-server for iOS, or \`adb\` for Android (Android presses are injected with \`adb shell input keyevent\`).`,
   zodSchema,
   capability,
-  // The Android path uses `adb`, so declaring the service for an Android target
-  // would spawn a sim-server the tool never uses (up to a 30s ready-wait) and
-  // could throw ServiceInitializationError before the adb path even runs.
-  // Physical iOS presses go through the on-device runner; declare only the
-  // service each path actually consumes.
+  // Declare only the service the resolved path actually consumes. The Android
+  // path uses `adb`, so a sim-server here would spawn a service the tool never
+  // uses (up to a 30s ready-wait) and could throw ServiceInitializationError
+  // before the adb path even runs. The physical-iOS runner costs far more on a
+  // cold start (an xcodebuild build of up to 15 minutes, then a 120s
+  // ready-wait), so it is declared only for a button `execute` will actually
+  // send: a button this backend cannot press is rejected below without ever
+  // standing a runner up.
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
     if (device.platform === "android") return {};
     if (isIosPhysicalDevice(device)) {
-      return { iosDeviceRunner: iosDeviceRunnerRef(device) };
+      return isPhysicalIosButton(params.button)
+        ? { iosDeviceRunner: iosDeviceRunnerRef(device) }
+        : {};
     }
     return { simulatorServer: simulatorServerRef(device) };
   },
@@ -90,14 +109,15 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
       );
     }
     if (isIosPhysicalDevice(device)) {
-      if (!PHYSICAL_IOS_BUTTONS.has(params.button)) {
+      if (!isPhysicalIosButton(params.button)) {
         throw new UnsupportedOperationError(
           "button",
           device,
-          `button '${params.button}' is not available on a physical iOS device (only 'home')`
+          `button '${params.button}' is not available on a physical iOS device: XCUITest ` +
+            "exposes no API for the power/lock button or the app switcher"
         );
       }
-      await pressHome(services.iosDeviceRunner as IosDeviceRunnerApi);
+      await pressButton(services.iosDeviceRunner as IosDeviceRunnerApi, params.button);
       return { pressed: params.button };
     }
     if (device.platform === "android") {

@@ -5,6 +5,7 @@ import {
   captureRunnerScreenshotPng,
   captureSnapshot,
   getViewport,
+  pressButton,
   tapAt,
   toPoints,
   type RunnerViewport,
@@ -91,6 +92,31 @@ describe("tapAt wire shape", () => {
       x: 1,
       y: 2,
     });
+  });
+});
+
+describe("pressButton wire shape", () => {
+  it("sends one device-scoped command carrying the button name", async () => {
+    const run = vi.fn().mockResolvedValue({});
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await pressButton(api, "volumeUp");
+
+    // No appBundleId: `button` is device-scoped, so the runner must not demand
+    // a target app for it (RunnerProtocol.swift's requiresAppBundleId).
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0]).toEqual({ command: "button", button: "volumeUp" });
+  });
+
+  it("is not sent as a read-only command: a press is a mutation", async () => {
+    const run = vi.fn().mockResolvedValue({});
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await pressButton(api, "home");
+
+    // Read-only would let the client retry a press after a lost reply, pressing
+    // twice. Presses recover through the journal instead.
+    expect(run.mock.calls[0][1]?.readOnly).toBeUndefined();
   });
 });
 

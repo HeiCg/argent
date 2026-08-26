@@ -156,9 +156,21 @@ export async function dragBetween(
   );
 }
 
-/** Press the hardware Home button (device-scoped; no app target needed). */
-export async function pressHome(api: IosDeviceRunnerApi): Promise<void> {
-  await api.run({ command: "home" });
+/**
+ * Hardware buttons the runner's `button` command accepts (PROTOCOL.md). The
+ * power/lock button and the app switcher are absent because XCUIDevice exposes
+ * no public API for either.
+ */
+export type RunnerButton = "home" | "volumeUp" | "volumeDown" | "actionButton";
+
+/**
+ * Press a hardware button (device-scoped; no app target needed). The runner
+ * checks `hasHardwareButton` before pressing, so a button this hardware lacks
+ * (no Action button on a non-Pro iPhone) comes back as a failure rather than a
+ * silent no-op.
+ */
+export async function pressButton(api: IosDeviceRunnerApi, button: RunnerButton): Promise<void> {
+  await api.run({ command: "button", button });
 }
 
 export async function typeText(

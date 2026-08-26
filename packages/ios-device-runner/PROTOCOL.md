@@ -52,15 +52,16 @@ healthy gestures, so a warning that does appear is signal, not noise.
 | `durationMs`          | `longPress`, `drag` | Press duration / movement duration.                                     |
 | `settle`              | `drag`              | Rest at the destination before lifting (~0 release velocity, no fling). |
 | `text`                | `type`              | Text for the focused input.                                             |
+| `button`              | `button`            | `home`, `volumeUp`, `volumeDown` or `actionButton`.                     |
 
 ## Commands
 
-App-scoped (require `appBundleId`; a backgrounded target is re-fronted first
-and the reply stamped `reactivated: true`, while a target that reports
-`.notRunning` fails with `APP_NOT_AVAILABLE`; launching is launch-app's
-job, never a command side effect. That refusal is best-effort: on hardware a
-killed app this session never launched can report an unreadable state, and
-the re-front then amounts to a launch, still stamped `reactivated: true`):
+App-scoped (require `appBundleId`; a live but backgrounded target is re-fronted
+first and the reply stamped `reactivated: true`. Every other state fails with
+`APP_NOT_AVAILABLE`: both a target that reports `.notRunning` and one whose
+state is unreadable, which is what hardware reports for an app killed outside
+this session. Activating either would be a full launch, and launching is
+launch-app's job, never a command side effect):
 
 - `viewport` → `{x, y, width, height}`: `XCUIApplication.frame` (full app,
   keyboard included). Same rect describe normalizes against, so 0-1 tap
@@ -103,7 +104,14 @@ errorHint?}`. `responseJson` is the completed command's full envelope,
   and error fields, so recovery can find a command `completed` with no
   `responseJson`: the effect happened, but the response was too large to
   retain.
-- `home` → presses the home button.
+- `button` → `{message}`: presses the hardware button named by the `button`
+  field (`XCUIDevice.press(_:)`). `hasHardwareButton` is checked first, so a
+  button this device does not have (a non-Pro iPhone has no Action button)
+  fails with `UNSUPPORTED_OPERATION` instead of no-opping into a reply the
+  agent reads as a press. The power/lock button and the app switcher are not on
+  the wire: XCUIDevice exposes no public API for either. `volumeUp` and
+  `volumeDown` are marked unavailable on the SIMULATOR SDK only, which costs
+  nothing here: the runner is built for `generic/platform=iOS`.
 - `screenshot` → `{imageBase64}`: full-screen PNG, always inline.
 - `shutdown` → acknowledges, then ends the session cleanly after the reply
   is flushed.

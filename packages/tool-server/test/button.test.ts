@@ -31,6 +31,8 @@ import { sendCommand } from "../src/utils/simulator-client";
 
 const iosUdid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const androidUdid = "emulator-5554";
+// Physical-iOS UDID shape (8 hex, dash, 16 hex) routes to the runner branch.
+const deviceUdid = "00008110-000978540290401E";
 const services = { simulatorServer: {} } as never;
 
 describe("button tool — per-platform validation", () => {
@@ -128,6 +130,59 @@ describe("button tool — per-platform validation", () => {
         { cmd: "button", direction: "Up", button },
       ]);
       expect(injectAndroidKeycode).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("button tool: physical iOS", () => {
+  // The buttons XCUIDevice can press on hardware. volumeUp/volumeDown are
+  // unavailable on the SIMULATOR SDK only, so hardware gets them; power and
+  // appSwitch have no XCUIDevice API at all.
+  const runnerButtons = ["home", "volumeUp", "volumeDown", "actionButton"] as const;
+
+  function runnerRig() {
+    const run = vi.fn().mockResolvedValue({});
+    return { run, services: { iosDeviceRunner: { udid: deviceUdid, run } } as never };
+  }
+
+  it("presses every runner-capable button through the runner's `button` command", async () => {
+    for (const button of runnerButtons) {
+      const { run, services: runnerServices } = runnerRig();
+      vi.mocked(sendCommand).mockClear();
+      vi.mocked(injectAndroidKeycode).mockClear();
+      await expect(
+        buttonTool.execute(runnerServices, { udid: deviceUdid, button })
+      ).resolves.toEqual({ pressed: button });
+      // One device-scoped command carrying the button name: no appBundleId, and
+      // no per-button command kind. Asserting the exact request keeps the wire
+      // shape pinned to PROTOCOL.md's `button` entry.
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(run.mock.calls[0][0]).toEqual({ command: "button", button });
+      // Hardware never rides the simulator-server HID transport or adb.
+      expect(sendCommand).not.toHaveBeenCalled();
+      expect(injectAndroidKeycode).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects the buttons XCUITest exposes no API for", async () => {
+    for (const button of ["power", "appSwitch"] as const) {
+      const { run, services: runnerServices } = runnerRig();
+      await expect(
+        buttonTool.execute(runnerServices, { udid: deviceUdid, button })
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(run).not.toHaveBeenCalled();
+    }
+  });
+
+  it("declares the runner service only for a button it can actually press", () => {
+    for (const button of runnerButtons) {
+      expect(buttonTool.services({ udid: deviceUdid, button })).toHaveProperty("iosDeviceRunner");
+    }
+    // A button `execute` refuses must not stand a runner up first: a cold start
+    // is an xcodebuild build of up to 15 minutes plus a 120s ready-wait, paid
+    // for a request that never reaches the device.
+    for (const button of ["power", "appSwitch", "back"] as const) {
+      expect(buttonTool.services({ udid: deviceUdid, button })).toEqual({});
     }
   });
 });
