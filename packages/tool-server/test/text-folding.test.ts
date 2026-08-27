@@ -461,6 +461,31 @@ describe("a miss with BOTH causes is explained by both", () => {
     expect(note).not.toContain("what is left differs");
   });
 
+  it("asks the invisible question of every candidate before the typographic one", () => {
+    // The rationale promises the codepoint answer first, because it names exact
+    // characters. Nothing enforced it: swapping the two loops in
+    // selectorMissNote left the whole selector suite green, while an author
+    // whose screen holds both kinds of near-miss got the vaguer answer.
+    const CGJ = "\u034F";
+    const leaf = (label: string, identifier: string): DescribeNode => ({
+      role: "button",
+      label,
+      identifier,
+      frame: { x: 0, y: 0, width: 0.4, height: 0.08 },
+      children: [],
+    });
+    const variantOnly = leaf("Ｓave changes", "fullwidth"); // a typographic variant
+    const invisibleOnly = leaf(`Save${CGJ} changes`, "cgj"); // a blocking invisible
+    for (const candidates of [
+      [variantOnly, invisibleOnly],
+      [invisibleOnly, variantOnly],
+    ]) {
+      const note = selectorMissNote(candidates, "Save changes")!;
+      expect(note).toContain("U+034F");
+      expect(note).not.toContain("typographic");
+    }
+  });
+
   it("leaves a single-cause miss with its single explanation", () => {
     expect(confusableTextNote(`Load${SHY}ing`, "Loading")).not.toContain("typographic variant");
     expect(confusableTextNote("Loading…", "Loading...")).toBeUndefined();
