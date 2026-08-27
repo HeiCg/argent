@@ -185,10 +185,6 @@ describe("tool interaction messages", () => {
   });
 
   it("does not log a recorded step for a return that recorded nothing", () => {
-    // flow-add-step has several success-SHAPED returns that append no line: a
-    // refused directive command, or a nested orchestrator that failed or was
-    // cancelled. An "Added …" line for those makes the event log contradict the
-    // message in the same result. `recorded` is the documented discriminator.
     const definitions = definitionsById(createRegistry());
     const completedMsg = definitions.get("flow-add-step")!.interaction!.completedMsg!;
     const params = { name: "checkout", project_root: "/tmp/proj", command: "run-sequence" };

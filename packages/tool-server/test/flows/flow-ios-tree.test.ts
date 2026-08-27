@@ -577,9 +577,13 @@ describe("flow iOS full-hierarchy source", () => {
     // failing `await` repeats it once per poll. At about 900 characters, one
     // stuck screen made the recorder the largest context consumer of a session.
     for (const { branch, api, launched } of targetingFailures(2)) {
-      const error = await queryFullHierarchyTree(registryFor(api), DEVICE, launched).catch(
-        (err) => err
-      );
+      // Unpinned: these branches are auto-targeting's, and a launched id is only
+      // the hint auto-resolve falls back to.
+      const error = await queryFullHierarchyTree(
+        registryFor(api),
+        DEVICE,
+        launched ? { bundleId: launched, pinned: false, probeAnswered: false } : undefined
+      ).catch((err) => err);
       expect(`${branch}: ${error.message.length}`).toBe(
         `${branch}: ${Math.min(error.message.length, MAX_TARGETING_REASON_CHARS)}`
       );
