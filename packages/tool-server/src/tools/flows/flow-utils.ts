@@ -68,7 +68,7 @@ export function flowsDirFor(root: string): string {
 }
 
 /** The flows dir under a root that has not been validated yet. */
-export function getFlowsDir(projectRoot: string): string {
+function getFlowsDir(projectRoot: string): string {
   assertValidProjectRoot(projectRoot);
   return flowsDirFor(projectRoot);
 }
@@ -141,7 +141,7 @@ export function getFlowPath(projectRoot: string, name: string): string {
  */
 // `async`, so `getFlowPath`'s validation throws land as a rejection like every
 // other failure here rather than synchronously out of a promise-returning call.
-export async function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
+async function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
   const spelled = getFlowPath(projectRoot, name);
   const inFlight = keyResolutions.get(spelled);
   if (inFlight) return inFlight;
@@ -181,7 +181,7 @@ const keyResolutions = new Map<string, Promise<string>>();
  * whether the on-disk spelling is one the flow layer's own ladders accept, so a
  * caller can be pointed at it instead of at a rename.
  */
-export type OnDiskSpelling =
+type OnDiskSpelling =
   | { state: "listed" }
   | { state: "case_folded"; actual: string; addressable: boolean }
   | { state: "absent" };
@@ -362,17 +362,6 @@ export async function withFlowFileLock<T>(
   return withFlowLock(await resolveFlowKey(projectRoot, name), fn);
 }
 
-/**
- * The same lock for a caller that already holds a session. The returns that
- * record NOTHING read the file back to report the step count, and that read
- * must not straddle a restart.
- *
- * Keyed off `session.key`, not re-resolved from (projectRoot, name), for the
- * reason {@link appendStepToFlow} takes its own lock the same way: the key this
- * holds and the identity {@link assertSessionStillLive} checks must be one key.
- * A key that moved under the session — a symlink repointed mid-recording —
- * would otherwise let a caller hold one lock while asserting about another.
- */
 export async function withRecordingLock<T>(
   session: RecordingSession,
   fn: () => Promise<T>
@@ -417,7 +406,7 @@ function evictIfOverCapacity(): void {
   }
 }
 
-export interface RecordingSessionInit {
+interface RecordingSessionInit {
   name: string;
   projectRoot: string;
   persist: FlowPersistMode;
@@ -757,7 +746,7 @@ export function isBlockStep(step: FlowStep): step is BlockStep {
  * state, so it must not declare an `executionPrerequisite`. Everything else is a
  * fragment.
  */
-export function isE2eFlow(flow: FlowFile): boolean {
+function isE2eFlow(flow: FlowFile): boolean {
   const first = flow.steps.find((s) => s.kind !== "echo");
   return first?.kind === "launch";
 }
@@ -3170,7 +3159,7 @@ export async function countStepsOnDisk(filePath: string): Promise<number | undef
 }
 
 /** Read and parse the flow file, append a step, write it back. */
-export async function appendStep(filePath: string, step: FlowStep): Promise<string> {
+async function appendStep(filePath: string, step: FlowStep): Promise<string> {
   const content = await fs.readFile(filePath, "utf8");
   const flow = parseFlow(content);
   flow.steps.push(step);
@@ -3210,14 +3199,6 @@ export type FlowSavedTo = string | ClientFileDirective;
  * drop this session between the check and the write. That race is benign — the
  * step still lands in the file it was recorded for, and only the NEXT call on
  * the key reports the recording gone.
- *
- * The returns that record NOTHING call it too, under the same lock: same window,
- * same stake — the count and file path they report would otherwise be a
- * different take's.
- *
- * `ranOnDevice` picks the recovery clause, because only the caller knows whether
- * the action ran. An author told that a step they never ran "already ran on the
- * device" undoes something that never happened.
  */
 export function assertSessionStillLive(session: RecordingSession, ranOnDevice: boolean): void {
   const current = recordings.get(session.key);
@@ -3386,9 +3367,10 @@ export function dropMovedWarnings(
  * mode this process never sees the client's disk, so the in-memory copy is
  * authoritative and the updated YAML travels back in the directive.
  *
- * That re-read is also the only chance anyone gets to NOTICE a hand edit, so
- * it is checked against the view it replaces — see {@link dropMovedWarnings}.
- * Client mode needs no such check: this host never sees the client's file.
+ * That re-read is one of the two moments a hand edit can be NOTICED — the other
+ * is a recorder return that appends nothing — so it is checked against the view
+ * it replaces; see {@link dropMovedWarnings}. Client mode needs no such check:
+ * this host never sees the client's file.
  */
 export async function appendStepToFlow(
   session: RecordingSession,
