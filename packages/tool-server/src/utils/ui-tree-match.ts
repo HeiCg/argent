@@ -201,14 +201,59 @@ const BIDI_SENSITIVE =
 // - The RTL directional controls, plus their LTR counterparts in a bidi string.
 //   See {@link LTR_BIDI} and {@link BIDI_SENSITIVE}.
 
-const foldCache = new Map<string, string>();
 /**
- * Large enough for one worst-case tree, so the clear below costs one refill.
- * A 12k-node tree folds a label and a value per node, so up to 24k keys. A
- * smaller cap cleared the map several times per `findAll` and doubled its cost.
- * This cap holds about 4 MB.
+ * Large enough for one worst-case tree, so a rotation costs one refill. A 12k-
+ * node tree folds a label and a value per node, so up to 24k keys. A smaller cap
+ * rotated the map several times per `findAll` and doubled its cost.
  */
 const FOLD_CACHE_MAX = 32_768;
+
+/**
+ * The same bound in CHARACTERS, because an entry is not a fixed size: the key
+ * retains the ORIGINAL string and the JSDoc on {@link codepoints} cites an
+ * 11,532-character label on a single card. Counting entries alone let the map
+ * hold megabytes of dead originals for the lifetime of the server. Set so that
+ * one worst-case tree of ordinary labels still fits a generation - 24k entries
+ * of about 80 characters each, key and folded copy together - so this bound
+ * binds only where the strings are long. About 8 MB of UTF-16 per generation.
+ */
+const FOLD_CACHE_MAX_CHARS = 4_000_000;
+
+/**
+ * The fold cache, in two generations. A lookup reads both and promotes a hit
+ * from the old one, so a warm entry survives a wave of keys that never repeat.
+ *
+ * A single map cleared wholesale could not do that. A screen that emits more
+ * distinct strings per poll than the cap — timestamped rows, a ticking relative
+ * time — wiped every stable label beside them on every pass, and the next pass
+ * refolded 24k strings cold. Rotating instead keeps the previous generation as
+ * a second chance, so a string read once per pass is never evicted, and memory
+ * stays bounded at two generations.
+ */
+let foldCacheYoung = new Map<string, string>();
+let foldCacheOld = new Map<string, string>();
+let foldCacheYoungChars = 0;
+/** Strings actually folded, so a test can prove a warm entry stayed warm. */
+let foldCacheMisses = 0;
+
+function foldCacheGet(key: string): string | undefined {
+  const young = foldCacheYoung.get(key);
+  if (young !== undefined) return young;
+  const old = foldCacheOld.get(key);
+  // Promote, so the next rotation cannot drop a string this pass still reads.
+  if (old !== undefined) foldCacheSet(key, old);
+  return old;
+}
+
+function foldCacheSet(key: string, folded: string): void {
+  foldCacheYoung.set(key, folded);
+  foldCacheYoungChars += key.length + folded.length;
+  if (foldCacheYoung.size >= FOLD_CACHE_MAX || foldCacheYoungChars >= FOLD_CACHE_MAX_CHARS) {
+    foldCacheOld = foldCacheYoung;
+    foldCacheYoung = new Map();
+    foldCacheYoungChars = 0;
+  }
+}
 
 /**
  * The comparable form of a piece of UI text:
@@ -275,8 +320,9 @@ function foldPairLoose(a: string, b: string, bIsNeedle = false): [string, string
  */
 function foldWith(value: string, stripLtr: boolean, edgeBreaks = false): string {
   const key = `${stripLtr ? "1" : "0"}${edgeBreaks ? "1" : "0"}${value}`;
-  const hit = foldCache.get(key);
+  const hit = foldCacheGet(key);
   if (hit !== undefined) return hit;
+  foldCacheMisses += 1;
   // Remove the invisibles before composition. An invisible between a base letter
   // and its combining mark blocks NFC, which leaves a decomposed grapheme.
   let stripped = value.replace(INVISIBLE, "");
@@ -298,8 +344,7 @@ function foldWith(value: string, stripLtr: boolean, edgeBreaks = false): string 
     // case fold left one visibly identical pair unequal.
     .normalize("NFC");
   // Trees are re-read on every poll, so the same strings recur constantly.
-  if (foldCache.size >= FOLD_CACHE_MAX) foldCache.clear();
-  foldCache.set(key, folded);
+  foldCacheSet(key, folded);
   return folded;
 }
 
@@ -880,7 +925,11 @@ export const uiTreeMatchInternals = {
   },
   /** How many folds are cached right now - for pinning {@link FOLD_CACHE_MAX}. */
   foldCacheSize(): number {
-    return foldCache.size;
+    return foldCacheYoung.size + foldCacheOld.size;
+  },
+  /** How many strings have been folded rather than read from the cache. */
+  foldCacheMisses(): number {
+    return foldCacheMisses;
   },
 };
 

@@ -182,27 +182,56 @@ describe("foldText", () => {
     expect(foldText("PLN 42.00")).not.toBe(foldText("PLN 42.0"));
   });
 
-  it("clears at its cap, and keeps folding correctly afterwards", () => {
-    // The cache clears completely at FOLD_CACHE_MAX entries. The loop finds the
-    // cap, so a change to the cap cannot make the test miss the clear.
+  it("bounds itself at its cap, and keeps folding correctly afterwards", () => {
+    // The cache rotates its young generation at FOLD_CACHE_MAX entries. The
+    // loop finds the bound, so a change to the cap cannot make the test miss it.
     const probe = `Amount, PLN${NBSP}42.00`;
     const before = foldText(probe);
     const LIMIT = 200_000; // far above any plausible cap; a bound, not a target
-    let cleared = false;
+    let peak = 0;
+    let rotated = false;
     let previous = uiTreeMatchInternals.foldCacheSize();
-    for (let i = 0; i < LIMIT && !cleared; i++) {
+    for (let i = 0; i < LIMIT; i++) {
       foldText(`filler-${i}`);
       const size = uiTreeMatchInternals.foldCacheSize();
-      // The cache grows by one for each distinct key, so a drop is the clear.
-      cleared = size < previous;
+      // Two generations, so the total falls only when the older one is dropped.
+      rotated = rotated || size < previous;
+      peak = Math.max(peak, size);
       previous = size;
     }
-    expect(cleared).toBe(true);
-    expect(uiTreeMatchInternals.foldCacheSize()).toBeLessThan(LIMIT);
+    expect(rotated).toBe(true);
+    expect(peak).toBeLessThan(LIMIT / 2);
     expect(foldText(probe)).toBe(before);
     expect(equalsCI(probe, "Amount, PLN 42.00")).toBe(true);
-    // A bidi-sensitive string still takes the conditional path after a clear.
+    // A bidi-sensitive string still takes the conditional path after a rotation.
     expect(equalsCI("5‏-3", "5-3")).toBe(false);
+  });
+
+  it("keeps a warm entry through a wave of keys that never repeat", () => {
+    // A screen with a ticking relative time on every row emits more distinct
+    // strings per pass than the cap. One map cleared wholesale lost every stable
+    // label beside them, and the next pass refolded the whole tree cold - every
+    // pass, since each wave wiped the map again.
+    const stable = `Amount, PLN${NBSP}42.00 warm-probe`;
+    const expected = foldText(stable);
+    const WAVE = 40_000; // more than the cap, so each pass rotates at least once
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < WAVE; i++) foldText(`row ${pass}-${i} - 2 minutes ago`);
+      const folded = uiTreeMatchInternals.foldCacheMisses();
+      expect(foldText(stable)).toBe(expected);
+      // Read from the cache, not folded again.
+      expect(uiTreeMatchInternals.foldCacheMisses()).toBe(folded);
+    }
+  });
+
+  it("bounds itself by CHARACTERS as well, because a key holds the original string", () => {
+    // An entry is not a fixed size: the key retains the string that was folded,
+    // and one card's label has reached 11,532 characters. Counting entries alone
+    // let the map hold megabytes of dead originals for the process's lifetime.
+    const LONG = 12_000;
+    const ENTRIES = 300; // far below the entry cap, far above the character cap
+    for (let i = 0; i < ENTRIES; i++) foldText(`${i}`.padEnd(LONG, "x"));
+    expect(uiTreeMatchInternals.foldCacheSize()).toBeLessThan(ENTRIES);
   });
 });
 
