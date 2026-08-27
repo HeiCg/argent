@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
+import { createRunSequenceTool } from "../../src/tools/run-sequence";
 
 const PROJECT_ROOT = path.join(os.tmpdir(), `flow-await-tests-${process.pid}`);
 
@@ -142,10 +143,6 @@ describe("flow-execute with await-ui-element gating", () => {
   });
 
   it("keeps a nested orchestrator's own abort wording and payload on the skip", async () => {
-    // A nested run-sequence honours the cancel by returning a PARTIAL result
-    // and knows how far it got. The generic "run aborted during tool" wording
-    // would drop that progress, and a skip without `result` or `args` hides the
-    // partial sequence.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: run-sequence
@@ -182,15 +179,10 @@ steps:
       result: { completed: 1, total: 2 },
     });
     expect(result.steps[0]!.args).toBeDefined();
-    // One nested tap went out before the cancel, and the partial result says
-    // so, so the skip carries the marker the recorder's warning reads.
     expect(result.steps[0]!.reached).toBe(true);
   });
 
   it("calls a CANCELLED await-ui-element a skip, not a condition the app failed", async () => {
-    // A cancelled wait returns unmet, the same shape as one that timed out.
-    // Scored on the shape alone, it blames the app for the author's own cancel
-    // and fails a run that was only stopped.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: await-ui-element
@@ -224,15 +216,100 @@ steps:
       reason: "run aborted during wait",
     });
     expect(result.steps[0]!.reason).not.toContain("condition not met");
-    // The sub-tool ran and returned, so this skip is not proof the device is
-    // untouched. The recorder reads the marker to decide whether to warn.
-    expect(result.steps[0]!.reached).toBe(true);
+    // Unmarked: the wait read the tree and dispatched nothing, so the skip IS
+    // proof of an untouched device - the same answer `wait` and `await:` give.
+    expect(result.steps[0]!.reached).toBeUndefined();
+  });
+
+  it("scores the same cancelled wait the same way through run-sequence", async () => {
+    const flowFile = await writeFlow(`executionPrerequisite: ""
+steps:
+  - tool: run-sequence
+    args:
+      udid: X
+      steps:
+        - tool: await-ui-element
+          args:
+            condition: visible
+            selector:
+              text: Continue
+`);
+    const controller = new AbortController();
+    // The real batch tool, so the entry the runner reads is the one it builds.
+    const inner = makeRegistry(async () => {
+      controller.abort();
+      return {
+        success: false,
+        elapsed: 12,
+        note: "wait was cancelled before the condition was met",
+        cause: "cancelled",
+      };
+    });
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      // Declared so the runner binds the run device onto the batch, as it does
+      // for a real registration.
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "gated", project_root: PROJECT_ROOT, flow_file: flowFile, device: "X" },
+        { signal: controller.signal } as never
+      )
+    );
+
+    // The spelling must not decide the verdict: the direct case above is a
+    // skip, so this one is too, and neither reason may call the condition unmet.
+    expect(result.steps[0]).toMatchObject({ tool: "run-sequence", status: "skip" });
+    expect(result.steps[0]!.reason).not.toContain("condition not met");
+    expect(result.steps[0]!.reached).toBeUndefined();
+  });
+
+  it("keeps a GENUINE miss a failure when an unrelated cancel lands in the same tick", async () => {
+    const flowFile = await writeFlow(`executionPrerequisite: ""
+steps:
+  - tool: await-ui-element
+    args:
+      udid: X
+      condition: visible
+      selector:
+        text: Continue
+`);
+    const controller = new AbortController();
+    const registry = makeRegistry(async () => {
+      controller.abort();
+      return {
+        success: false,
+        elapsed: 5000,
+        note: "no element matched the selector before timeout",
+        cause: "unmet",
+      };
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "gated", project_root: PROJECT_ROOT, flow_file: flowFile, device: "X" },
+        { signal: controller.signal } as never
+      )
+    );
+
+    expect(result.steps[0]).toMatchObject({
+      tool: "await-ui-element",
+      status: "fail",
+    });
+    expect(result.steps[0]!.reason).toContain("condition not met");
+    expect(result.steps[0]!.reason).not.toContain("run aborted");
   });
 
   it("leaves a step the cancel caught in its pre-invoke delay unmarked", async () => {
-    // The control for the marker above. Same status, same kind, one step
-    // earlier in the same function — the cancel lands in the delay BEFORE the
-    // sub-tool is invoked, so nothing could have gone to the device.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: gesture-tap
@@ -269,9 +346,6 @@ steps:
   });
 
   it("keeps a plain tool that finished before the cancel a PASS", async () => {
-    // The cancel landed after the tap was dispatched and answered. That step
-    // ran in full, and the recorder records this shape. A `skip` here would
-    // contradict it and would mean something other than "did not run".
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: gesture-tap
@@ -298,9 +372,6 @@ steps:
   });
 
   it("keeps a nested step's FAILURE and its detail when the cancel lands too", async () => {
-    // A cancel that arrives while a nested step is failing must not overwrite
-    // the verdict. "run aborted" would hide the failure and drop the name of
-    // the step that caused it.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: run-sequence

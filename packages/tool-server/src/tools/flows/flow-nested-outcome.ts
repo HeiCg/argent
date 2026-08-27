@@ -20,28 +20,13 @@ import type { StepStatus } from "./flow-run";
  * verdict.
  */
 
-export const FLOW_EXECUTE_TOOL_ID = "flow-execute";
-export const RUN_SEQUENCE_TOOL_ID = "run-sequence";
+const FLOW_EXECUTE_TOOL_ID = "flow-execute";
+const RUN_SEQUENCE_TOOL_ID = "run-sequence";
 
-export interface NestedOutcome {
+interface NestedOutcome {
   status: StepStatus;
   reason: string;
-  /**
-   * Whether the nested run got as far as a step AT THE DEVICE. Read by the
-   * RUNNER to mark a cancelled nested step `reached`, and by
-   * the RECORDER to decide whether to warn that the device may no longer be
-   * where the recorded prefix leaves it. One answer, so the two agree.
-   *
-   * Not "did a step succeed". A step often acts and THEN fails. A `scroll-to`
-   * scrolls to the end of the list before it reports a miss. A `keyboard`
-   * types part of its text before it throws. Both leave `passed` and
-   * `completed` at 0 while the screen moved. The result settles only whether a
-   * step was reached.
-   *
-   * `true` when the shape is unrecognised: a false warning costs a check the
-   * author can make, and silence leaves them recording against a screen the
-   * prefix cannot reach.
-   */
+  /** Whether the nested run got as far as a step AT THE DEVICE. */
   reached: boolean;
 }
 
@@ -49,22 +34,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/**
- * Whether a nested run's step list shows a step was reached.
- *
- * The flow runner reports one entry per DECLARED step and marks the ones it
- * never reached `skip`. A step CUT SHORT by a cancel is a skip too, and that one
- * can have acted, so the runner marks those `reached`.
- *
- * `run-sequence` appends one entry per step it got to, so its entries are
- * attempts. The exceptions carry `dispatched: false`: an unlisted tool, one the
- * platform does not support, or args the registry refuses. A sequence rejected
- * on its FIRST step touched nothing, and a warning there would contradict
- * "after 0 of N steps" in the same message.
- */
 function reachedAStep(steps: unknown): boolean {
-  // Only a prerequisite notice has no step list, because it ran nothing, and
-  // that branch answers directly. Any other shape must assume a step ran.
   if (!Array.isArray(steps)) return true;
   return steps.some((entry) => {
     if (!isRecord(entry)) return true;
@@ -119,12 +89,6 @@ function flowExecuteOutcome(result: Record<string, unknown>): NestedOutcome | un
 
   // Cancellation is a skip, never a failure — the rule the runner applies to
   // its own steps.
-  //
-  // `summarize` folds the abort into the verdict: `ok` is false whenever
-  // `aborted` is set, so a composed step that FAILED and was then cancelled
-  // reaches this branch, not the one below. Carry the failing step in `reason`
-  // — the only string the RECORDER's refusal renders — or two identically
-  // worded cancellations read the same.
   if (result.aborted === true) {
     const detail = firstFailingStep(result.steps);
     return {
@@ -159,16 +123,9 @@ function runSequenceOutcome(result: Record<string, unknown>): NestedOutcome | un
   const steps = result.steps;
   if (!Array.isArray(steps)) return undefined;
 
-  // A nested step failed if it carries an `error` KEY. Success pushes
-  // `{ tool, result }` and never sets one. Keyed on presence, not on a
-  // non-empty message. A tool that throws `new Error("")` records `error: ""`,
-  // and a skip there would score a failed step as a pass. An empty message is
-  // named instead, so the report does not trail off after the colon.
   const failed = steps.find((s) => isRecord(s) && typeof s.error === "string");
   if (failed && isRecord(failed)) {
     const tool = typeof failed.tool === "string" ? failed.tool : "step";
-    // Re-narrowed, not coerced: the proof from `find` does not survive into
-    // `failed`, and a coerced object would render "[object Object]".
     const message = typeof failed.error === "string" ? failed.error : "";
     const why = message || "failed without an error message";
     return {
