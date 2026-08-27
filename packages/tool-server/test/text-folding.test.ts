@@ -587,6 +587,31 @@ describe("confusableTextNote", () => {
     expect(confusableTextNote("ﬁle", "file")).toBeUndefined();
   });
 
+  it("drops the word ONLY when a case difference stands beside the invisible one", () => {
+    // The gate accepts a pair the COMPARATOR equates, so case can differ too -
+    // and the dumps print it. Claiming the strings differ only in invisible
+    // characters is then false against the two lists in the same sentence.
+    const note = confusableTextNote(`Home${CGJ}`, "home");
+    expect(note).toContain("U+0048");
+    expect(note).toContain("U+0068");
+    expect(note).not.toContain("differ only in invisible characters");
+    expect(note).toContain("differ in invisible characters");
+    expect(note).toContain("what is left differs in case, spacing or composition");
+  });
+
+  it("keeps ONLY when nothing but the invisible characters differs", () => {
+    const note = confusableTextNote(`home${CGJ}`, "home");
+    expect(note).toContain("differ only in invisible characters");
+    expect(note).not.toContain("what is left differs");
+  });
+
+  it("drops the word ONLY from the DIRECTIONAL lead on the same grounds", () => {
+    const note = confusableTextNote(`Home${RLM}`, "home");
+    expect(note).toContain("differ in directional formatting");
+    expect(note).not.toContain("differ only in directional formatting");
+    expect(note).toContain("what is left differs in case, spacing or composition");
+  });
+
   it("says nothing for a difference the fold already absorbs", () => {
     expect(equalsCI(`PLN${NBSP}42`, "PLN 42")).toBe(true);
     expect(confusableTextNote(`PLN${NBSP}42`, "PLN 42")).toBeUndefined();

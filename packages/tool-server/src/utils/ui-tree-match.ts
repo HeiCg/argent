@@ -471,7 +471,7 @@ export function confusableTextNote(actual: string, expected: string): string | u
   // Raw equality sits beside the folded test so the gate only widens: a pair
   // that folds to nothing is equal as strings, while `equalsCI` refuses it.
   if (bareActual !== bareExpected && !equalsCI(bareActual, bareExpected)) return undefined;
-  return ignorableDifferenceNote(actual, expected, equalsCI);
+  return ignorableDifferenceNote(actual, expected, equalsCI, bareActual === bareExpected);
 }
 
 const codepointName = (ch: string): string =>
@@ -553,25 +553,39 @@ function codepointPair(
  * characters that differ, then print both strings as code points. A reorder
  * wins a mixed difference, and only the last branch says "invisible". `holds`
  * is the comparator {@link blockingIgnorables} asks.
+ *
+ * The word "only" is conditional, because the gate is: it accepts a pair whose
+ * remainders are merely COMPARATOR-equal, so a difference of case, of spacing
+ * or of composition can sit beside the invisible one. The dumps print that
+ * difference — `U+0048` against `U+0068` for `Home<CGJ>` against `home` — and a
+ * lead claiming the strings differ ONLY in invisible characters reads as false
+ * against the two lists directly beneath it. `restIdentical` comes from the
+ * caller, because the question is the caller's relation asked without the fold:
+ * equality for one note, "appears in" for the substring one.
  */
 function ignorableDifferenceNote(
   actual: string,
   expected: string,
-  holds: (a: string, b: string) => boolean
+  holds: (a: string, b: string) => boolean,
+  restIdentical: boolean
 ): string | undefined {
   const differing = blockingIgnorables(actual, expected, holds);
   if (differing.length === 0) return undefined;
+  const only = restIdentical ? "only " : "";
   const lead = differing.some((ch) => DIRECTIONAL.test(ch))
-    ? "the two strings differ only in directional formatting, which draws nothing itself but " +
+    ? `the two strings differ ${only}in directional formatting, which draws nothing itself but ` +
       "REORDERS the characters around it, so the screen does not read the way the text does"
     : differing.some((ch) => RENDERING_AFFECTING.test(ch))
       ? "the two strings differ in a character that draws nothing itself but changes what IS " +
         "drawn — a soft hyphen paints a real hyphen where the line breaks, U+180E breaks " +
         "Arabic cursive joining as ZWNJ does — so this is a real difference, not one the " +
         "comparison can ignore"
-      : "the two strings differ only in invisible characters";
+      : `the two strings differ ${only}in invisible characters`;
   const [dumpActual, dumpExpected] = codepointPair(actual, expected, differing);
-  return `${lead} — actual [${dumpActual}] vs expected [${dumpExpected}]`;
+  const rest = restIdentical
+    ? ""
+    : " — what is left differs in case, spacing or composition, which the comparison folds together";
+  return `${lead} — actual [${dumpActual}] vs expected [${dumpExpected}]${rest}`;
 }
 
 /**
@@ -584,7 +598,7 @@ export function confusableTextNoteIn(haystack: string, needle: string): string |
   const bareHaystack = withoutInertIgnorables(haystack);
   const bareNeedle = withoutInertIgnorables(needle);
   if (!includesCI(bareHaystack, bareNeedle)) return undefined;
-  return ignorableDifferenceNote(haystack, needle, includesCI);
+  return ignorableDifferenceNote(haystack, needle, includesCI, bareHaystack.includes(bareNeedle));
 }
 
 /**
