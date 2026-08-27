@@ -144,7 +144,7 @@ What to do next depends on `toolResult.cause`, which the refusal message names. 
 
 Nothing has to be deleted, because nothing was written. A stale `hidden` whose selector matches nothing would replay as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent, and which the recorder refuses to write for the same reason. Never proceed as though a refused gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
 
-A wait inside `run-sequence` stops the batch and discards it. The sequence turns a nested `success: false` into an error entry and stops there, so the recorder refuses the whole call: `message` names the unmet wait, nothing is written, and `stepCount` does not move. A recorded `run-sequence` therefore cannot hold a wait that did not pass. Record each wait as its own `flow-add-step` call, which is also what gives it the runner-tree check below.
+A wait inside `run-sequence` stops the batch and discards it. The sequence stops at the first wait that did not pass, so the recorder refuses the whole call: `message` names the unmet wait, nothing is written, and `stepCount` does not move. A cancelled wait stops the batch too, and the refusal then reports the cancel rather than the wait. A recorded `run-sequence` therefore cannot hold a wait that did not pass. Record each wait as its own `flow-add-step` call, which is also what gives it the runner-tree check below.
 
 The live tool and flow runner use [different trees](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). After a successful wait, the recorder checks the same condition on the runner tree:
 
