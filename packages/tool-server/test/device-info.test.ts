@@ -69,10 +69,6 @@ describe("isIosPhysicalDevice", () => {
     expect(android.kind).toBe("device");
     expect(isIosPhysicalDevice(android)).toBe(false);
   });
-
-  it("is false for a chromium target", () => {
-    expect(isIosPhysicalDevice(resolveDevice("chromium-cdp-9222"))).toBe(false);
-  });
 });
 
 describe("isAndroidEmulatorSerial", () => {

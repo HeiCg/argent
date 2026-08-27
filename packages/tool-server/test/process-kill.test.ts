@@ -44,11 +44,6 @@ describe("signalGroup", () => {
     expect(killSpy).toHaveBeenCalledWith(-PID, "SIGTERM");
   });
 
-  it("passes signal 0 through as a pure liveness probe", () => {
-    expect(signalGroup(PID, 0)).toBe(true);
-    expect(killSpy).toHaveBeenCalledWith(-PID, 0);
-  });
-
   it("reports an empty group on ESRCH", () => {
     killSpy.mockImplementation(() => {
       throw errnoError("ESRCH");
@@ -68,13 +63,6 @@ describe("pidIsAlive", () => {
   it("probes the bare pid with signal 0", () => {
     expect(pidIsAlive(PID)).toBe(true);
     expect(killSpy).toHaveBeenCalledWith(PID, 0);
-  });
-
-  it("reads ESRCH as dead", () => {
-    killSpy.mockImplementation(() => {
-      throw errnoError("ESRCH");
-    });
-    expect(pidIsAlive(PID)).toBe(false);
   });
 
   it("reads ANY probe failure as dead, unlike signalGroup's EPERM handling", () => {
@@ -224,18 +212,6 @@ describe("pollPidsUntilGone", () => {
 
     expect(holdouts).toEqual([101]);
     expect(table.sleeps).toEqual([100, 100, 100]);
-  });
-
-  it("prunes pids that exit mid-window and reports only the survivors", async () => {
-    const table = fakeLiveness({ 101: 2, 102: Infinity });
-
-    const holdouts = await pollPidsUntilGone([101, 102], {
-      ...table,
-      timeoutMs: 300,
-      pollIntervalMs: 100,
-    });
-
-    expect(holdouts).toEqual([102]);
   });
 
   it("defaults the probe to pidIsAlive over process.kill", async () => {

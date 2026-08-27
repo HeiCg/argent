@@ -8,7 +8,7 @@ const SIM_UDID = "2E35A650-9618-41E1-9E8D-5E4E7CC20929";
 const PHYSICAL_UDID = "00008110-000978540290401E";
 
 describe("physical iOS UDID classification", () => {
-  it("classifies the modern physical shape as ios / device", () => {
+  it("splits the modern physical shape from simulator UUIDs", () => {
     expect(isIosPhysicalUdid(PHYSICAL_UDID)).toBe(true);
     expect(classifyDevice(PHYSICAL_UDID)).toBe("ios");
     expect(resolveDevice(PHYSICAL_UDID)).toEqual({
@@ -16,9 +16,7 @@ describe("physical iOS UDID classification", () => {
       platform: "ios",
       kind: "device",
     });
-  });
-
-  it("keeps simulator UUIDs as ios / simulator", () => {
+    // An RFC-4122 simulator UUID must never satisfy the physical predicate.
     expect(isIosPhysicalUdid(SIM_UDID)).toBe(false);
     expect(resolveDevice(SIM_UDID)).toEqual({
       id: SIM_UDID,

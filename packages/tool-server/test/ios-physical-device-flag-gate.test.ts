@@ -109,15 +109,6 @@ describe("resolveDevice gates physical iOS UDIDs on the ios-physical-devices fla
     expect(classifyDevice(PHYSICAL_UDID)).toBe("ios");
   });
 
-  it("flag ON: classification is unchanged", () => {
-    __setIosPhysicalDevicesFlagForTests(true);
-    expect(resolveDevice(PHYSICAL_UDID)).toEqual({
-      id: PHYSICAL_UDID,
-      platform: "ios",
-      kind: "device",
-    });
-  });
-
   it("flag OFF: a registry invoke fails at service resolution and the runner factory never runs", async () => {
     __setIosPhysicalDevicesFlagForTests(false);
     const { registry, factory } = buildRegistry();

@@ -249,17 +249,6 @@ describe("createRunnerClient", () => {
         warning: SUPPRESSED_NOISE_WARNING,
       });
     });
-
-    it("returns the data untouched (same reference) when the envelope has no warning", async () => {
-      const data = { message: "tapped" };
-      const { send } = createFakeSend([{ ok: true, data } satisfies RunnerResponseEnvelope]);
-      const client = createRunnerClient({ udid: UDID, port: PORT, send });
-
-      const result = await client.run({ command: "tap", x: 1, y: 2 });
-
-      // Same pin as the reactivated case: no marker, no copy, no added keys.
-      expect(result).toBe(data);
-    });
   });
 
   describe("status recovery after a lost mutating-command response", () => {

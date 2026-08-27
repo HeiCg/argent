@@ -122,7 +122,7 @@ describe("ios-device Swift lockstep", () => {
     }
   });
 
-  it("no ROLE_MAP_EXEMPT entry is stale", () => {
+  it("no exemption entry is stale", () => {
     for (const type of Object.keys(ROLE_MAP_EXEMPT)) {
       expect(
         swiftInteractive.has(type),
@@ -144,9 +144,6 @@ describe("ios-device Swift lockstep", () => {
           "contains it; re-justify or map it"
       ).toBe(true);
     }
-  });
-
-  it("no LABELED_ONLY_ROLE_KEYS entry is stale", () => {
     for (const key of Object.keys(LABELED_ONLY_ROLE_KEYS)) {
       expect(
         key in RUNNER_TYPE_TO_ROLE,

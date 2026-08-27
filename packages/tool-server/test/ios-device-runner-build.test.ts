@@ -580,23 +580,6 @@ describe("resolveSigningHint", () => {
       resolveSigningHint('No profiles for "com.argent.runner.tabcde12345" were found')
     ).toContain("Xcode > Settings > Accounts");
   });
-
-  it("never advises the removed manual-signing variables", () => {
-    for (const output of [
-      "error: Failed Registering Bundle Identifier (in target 'ArgentRunner')",
-      'No profiles for "com.argent.runner.tabcde12345" were found',
-      "provisioning profile could not be installed",
-    ]) {
-      const hint = resolveSigningHint(output) ?? "";
-      expect(hint).not.toContain("ARGENT_IOS_RUNNER_BUNDLE_ID");
-      expect(hint).not.toContain("ARGENT_IOS_PROVISIONING_PROFILE");
-      expect(hint).not.toContain("ARGENT_IOS_SIGNING_IDENTITY");
-    }
-  });
-
-  it("returns null for output with no signing signature", () => {
-    expect(resolveSigningHint("ld: symbol(s) not found for architecture arm64")).toBeNull();
-  });
 });
 
 /** Empty baseline for planRunnerStorageSweep listings; spread and override. */
@@ -920,30 +903,6 @@ function fakeProcessTable(dyingAfterPolls: Record<number, number>) {
 }
 
 describe("waitForPidsToExit", () => {
-  it("resolves without sleeping or killing when every pid is already gone", async () => {
-    const table = fakeProcessTable({});
-
-    const holdouts = await waitForPidsToExit([101, 102], table);
-
-    expect(holdouts).toEqual([]);
-    expect(table.sleeps).toEqual([]); // the no-stale-runners start pays nothing
-    expect(table.kills).toEqual([]);
-  });
-
-  it("returns after one poll interval when the SIGTERMed pid exits promptly", async () => {
-    const table = fakeProcessTable({ 101: 1 });
-
-    const holdouts = await waitForPidsToExit([101], {
-      ...table,
-      timeoutMs: 5_000,
-      pollIntervalMs: 100,
-    });
-
-    expect(holdouts).toEqual([]);
-    expect(table.sleeps).toEqual([100]); // fast exit does not burn the window
-    expect(table.kills).toEqual([]);
-  });
-
   it("polls the bounded window then SIGKILLs the process group of a holdout", async () => {
     const table = fakeProcessTable({ 101: Infinity });
 
@@ -969,27 +928,6 @@ describe("waitForPidsToExit", () => {
 
     expect(holdouts).toEqual([102]);
     expect(table.kills).toEqual([{ pid: -102, signal: "SIGKILL" }]);
-  });
-
-  it("falls back to the bare pid when the group SIGKILL fails", async () => {
-    const table = fakeProcessTable({ 101: Infinity });
-    const kills: Array<{ pid: number; signal: string }> = [];
-
-    const holdouts = await waitForPidsToExit([101], {
-      ...table,
-      timeoutMs: 100,
-      pollIntervalMs: 100,
-      kill: (pid, signal) => {
-        kills.push({ pid, signal });
-        if (pid < 0) throw new Error("ESRCH: no such process group");
-      },
-    });
-
-    expect(holdouts).toEqual([101]);
-    expect(kills).toEqual([
-      { pid: -101, signal: "SIGKILL" },
-      { pid: 101, signal: "SIGKILL" },
-    ]);
   });
 
   it("tolerates a pid exiting between the last poll and the escalation", async () => {

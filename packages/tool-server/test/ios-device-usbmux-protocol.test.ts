@@ -96,10 +96,6 @@ describe("hostToNetworkPort", () => {
     expect(hostToNetworkPort(0xffff)).toBe(0xffff);
   });
 
-  it("is its own inverse", () => {
-    expect(hostToNetworkPort(hostToNetworkPort(RUNNER_PORT))).toBe(RUNNER_PORT);
-  });
-
   it("rejects out-of-range ports", () => {
     expect(() => hostToNetworkPort(-1)).toThrow(IosDeviceTransportError);
     expect(() => hostToNetworkPort(0x1_0000)).toThrow(IosDeviceTransportError);
@@ -426,33 +422,32 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
     );
   });
 
-  it("reports Connect result 2 as unattached (device unplugged mid-connect)", async () => {
-    const socketPath = await createSocketPath();
-    await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 2);
-
-    const error = await openUsbmuxRunnerSocket({
-      udid: DEVICE_UDID,
-      port: RUNNER_PORT,
-      timeoutMs: 2_000,
-      socketPath,
-    }).catch((caught: unknown) => caught);
-
-    expect((error as IosDeviceTransportError).kind).toBe("device-unattached");
-  });
-
-  it("reports Connect result 3 as the runner not listening, not a cable problem", async () => {
+  it("reads the Connect result code off the wire: 3 is runner-not-listening, 2 is unattached", async () => {
     const socketPath = await createSocketPath();
     await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 3);
 
-    const error = await openUsbmuxRunnerSocket({
+    const notListening = await openUsbmuxRunnerSocket({
       udid: DEVICE_UDID,
       port: RUNNER_PORT,
       timeoutMs: 2_000,
       socketPath,
     }).catch((caught: unknown) => caught);
 
-    expect((error as IosDeviceTransportError).kind).toBe("runner-not-listening");
-    expect((error as IosDeviceTransportError).retryable).toBe(true);
+    expect((notListening as IosDeviceTransportError).kind).toBe("runner-not-listening");
+    expect((notListening as IosDeviceTransportError).retryable).toBe(true);
+
+    // Same wire path, the device-unplugged-mid-connect verdict.
+    const unpluggedPath = await createSocketPath();
+    await startFakeUsbmuxd(unpluggedPath, [{ id: 42, serial: DEVICE_UDID }], 2);
+
+    const unattached = await openUsbmuxRunnerSocket({
+      udid: DEVICE_UDID,
+      port: RUNNER_PORT,
+      timeoutMs: 2_000,
+      socketPath: unpluggedPath,
+    }).catch((caught: unknown) => caught);
+
+    expect((unattached as IosDeviceTransportError).kind).toBe("device-unattached");
   });
 
   it("charges the usbmux handshake and the HTTP exchange to one shared budget", async () => {

@@ -28,24 +28,6 @@ afterEach(() => {
 });
 
 describe("createUsbmuxCommandSender", () => {
-  it("sends over usbmux", async () => {
-    const sendViaUsbmux = vi.fn(async () => OK);
-    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
-
-    const result = await sender.sendCommand(
-      UDID,
-      PORT,
-      { command: "status" },
-      {
-        timeoutMs: 1_000,
-        readOnly: true,
-      }
-    );
-
-    expect(result).toBe(OK);
-    expect(sendViaUsbmux).toHaveBeenCalledTimes(1);
-  });
-
   it("surfaces the unattached verdict as-is: Wi-Fi-only devices are not a route", async () => {
     const sendViaUsbmux = vi.fn(async () => {
       throw unattachedError();

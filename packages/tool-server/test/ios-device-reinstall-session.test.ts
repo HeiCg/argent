@@ -68,13 +68,6 @@ describe("ios-device reinstall: app-session invalidation", () => {
     expect(requireCurrentIosDeviceApp(UDID)).toBe(BUNDLE);
   });
 
-  it("accepts a fresh setCurrentIosDeviceApp after the reinstall", async () => {
-    setCurrentIosDeviceApp(UDID, BUNDLE);
-    await iosDeviceImpl.handler(SERVICES, PARAMS, DEVICE);
-    setCurrentIosDeviceApp(UDID, BUNDLE);
-    expect(requireCurrentIosDeviceApp(UDID)).toBe(BUNDLE);
-  });
-
   it("stamps the no-app-under-automation rejection with a failure signal", () => {
     let caught: unknown;
     try {

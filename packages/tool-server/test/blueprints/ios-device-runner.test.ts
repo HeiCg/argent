@@ -436,13 +436,8 @@ describe("ios-device-runner blueprint: recoverable classification", () => {
       true
     );
     expect(recoverable(new Error("iOS device runner exited (code 1)"))).toBe(false);
-  });
-
-  it("is false for RunnerCommandError: the runner answered, so it is alive", () => {
-    expect(recoverable(new RunnerCommandError("Element not found"))).toBe(false);
-  });
-
-  it("is false for bare transport errors and the retired Wi-Fi-era message shapes", () => {
+    // Neither bare transport errors nor the retired Wi-Fi-era message shapes
+    // revive the case without the marker.
     expect(
       recoverable(
         new IosDeviceTransportError("timeout", "Timed out waiting for XCUITest runner response", {
@@ -452,6 +447,10 @@ describe("ios-device-runner blueprint: recoverable classification", () => {
     ).toBe(false);
     expect(recoverable(new Error("connect ECONNREFUSED 127.0.0.1:8080"))).toBe(false);
     expect(recoverable(new Error("the tunnel did not accept connection"))).toBe(false);
+  });
+
+  it("is false for RunnerCommandError: the runner answered, so it is alive", () => {
+    expect(recoverable(new RunnerCommandError("Element not found"))).toBe(false);
   });
 
   it("marks the runner-not-ready factory error so teardown-and-respawn stays typed", async () => {
@@ -467,6 +466,7 @@ describe("ios-device-runner blueprint: recoverable classification", () => {
     expect(thrown.runnerExited).toBe(true);
     expect(recoverable(thrown)).toBe(true);
     expect(killRunnerProcess).toHaveBeenCalledTimes(1);
+    expect(getFailureSignal(thrown)?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
   });
 });
 
@@ -482,18 +482,6 @@ describe("ios-device-runner blueprint: failure signals", () => {
     expect(getFailureSignal(thrown)?.error_code).toBe(
       FAILURE_CODES.IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING
     );
-  });
-
-  it("stamps the runner-not-ready error with IOS_DEVICE_RUNNER_NOT_READY", async () => {
-    stubLaunch();
-    vi.mocked(waitForRunnerReady).mockRejectedValueOnce(
-      new IosDeviceTransportError("timeout", "Runner did not become ready within 120000ms", {
-        retryable: false,
-      })
-    );
-
-    const signal = getFailureSignal(await rejectionOf(callFactory()));
-    expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
   });
 
   it("stamps the mid-command post-mortem with IOS_DEVICE_RUNNER_EXITED and the exit code", async () => {

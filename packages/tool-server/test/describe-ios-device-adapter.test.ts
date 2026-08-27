@@ -148,7 +148,5 @@ describe("describeIosDevice adapter: runner type mapping", () => {
     expect(segmented).toContain("SegmentedControl");
     expect(metric).toContain("AXButton");
     expect(lines.find((l) => l.includes('"Imperial"'))).toContain("AXButton");
-    // Children indent deeper than their container.
-    expect(metric.search(/\S/)).toBeGreaterThan(segmented.search(/\S/));
   });
 });

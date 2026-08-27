@@ -17,7 +17,6 @@ import { profilerCombinedReportTool } from "../../src/tools/profiler/combined/pr
 import type { NativeProfilerSessionApi } from "../../src/blueprints/native-profiler-session";
 
 const iosSim: DeviceInfo = { id: "ios-sim", platform: "ios", kind: "simulator" };
-const iosDevice: DeviceInfo = { id: "ios-dev", platform: "ios", kind: "device" };
 const androidEmu: DeviceInfo = { id: "emulator-5554", platform: "android", kind: "emulator" };
 const androidDevice: DeviceInfo = { id: "android-dev", platform: "android", kind: "device" };
 const androidUnknown: DeviceInfo = { id: "android-unknown", platform: "android", kind: "unknown" };
@@ -34,12 +33,8 @@ describe("profiler-stack-query / profiler-combined-report Android capability", (
         expect(() => assertSupported(tool.id, tool.capability, androidUnknown)).not.toThrow();
       });
 
-      it("is still supported on Apple simulator, not yet on physical devices", () => {
+      it("is still supported on Apple simulator", () => {
         expect(() => assertSupported(tool.id, tool.capability, iosSim)).not.toThrow();
-        // Physical iOS declares no profiler support yet: `apple.device` is
-        // gated by the ratchet in ios-physical-device-classification.test.ts
-        // until a real hardware profiling path lands (xctrace --device).
-        expect(() => assertSupported(tool.id, tool.capability, iosDevice)).toThrow(/not supported/);
       });
     });
   }

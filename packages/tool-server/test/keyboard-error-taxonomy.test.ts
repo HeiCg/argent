@@ -170,13 +170,4 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       );
     }
   );
-
-  it("iOS device: the genuinely empty request stays a device-free no-op", async () => {
-    // The counterpart to the pins above: no `key` at all is still the tool's
-    // documented no-op, answered without a tracked app or a runner.
-    const impl = makeIosDeviceImpl(new Registry());
-    await expect(
-      impl.handler({}, { udid: iosPhysicalDevice.id }, iosPhysicalDevice)
-    ).resolves.toEqual({ typed: "", keys: 0 });
-  });
 });

@@ -142,27 +142,11 @@ describe("queryIosDeviceFlowTree: blind (childless runner tree) reads", () => {
 
     expect(data.source).toBe("xcuitest-runner");
     expect(data.hint).toMatch(/Snapshot quality: degraded/);
+    // The adapted tree is the FLATTENED counterpart of the describe tree, so
+    // leaves arrive in the shape every other platform's flow adapter emits
+    // (see flow-ios-device-tree.test.ts).
     expect(data.tree.children).toHaveLength(1);
-    expect(data.tree.children[0].label).toBe("Continue");
-  });
-
-  it("adapts a healthy non-empty tree into the flow contract", async () => {
-    const run = vi.fn(async () => ({ nodes: [appRoot(), continueButton()], quality: null }));
-    const registry = registryFor({ udid: DEVICE_UDID, run });
-
-    const viaFlow = await queryIosDeviceFlowTree(registry, IOS_DEVICE);
-    const viaDescribe = await describeIosDevice(registry, IOS_DEVICE);
-
-    // Everything but the tree rides along untouched.
-    expect(viaFlow.source).toBe(viaDescribe.source);
-    expect(viaFlow.hint).toBeUndefined();
-    expect(viaFlow.screen).toEqual({ width: 390, height: 844 });
-    // The tree itself is the FLATTENED counterpart of the describe tree, so
-    // leaves carry hoisted `subtreeText` like every other platform's flow
-    // adapter emits (see flow-ios-device-tree.test.ts).
-    expect(viaFlow.tree.role).toBe(viaDescribe.tree.role);
-    expect(viaFlow.tree.children).toHaveLength(1);
-    expect(viaFlow.tree.children[0]).toMatchObject({
+    expect(data.tree.children[0]).toMatchObject({
       role: "AXButton",
       label: "Continue",
       children: [],

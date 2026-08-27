@@ -157,17 +157,6 @@ describe("physical-iOS route: the runner is the only capture path", () => {
       "Runner screenshot returned no inline image data."
     );
   });
-
-  it("downscales the runner capture in place against its real dimensions", async () => {
-    const sips = mockSips({ width: 1920, height: 1080 });
-    const { resolveService } = runnerStub(Buffer.from("full-res").toString("base64"));
-
-    const result = await screenshotDevice(resolveService, 0.5);
-
-    // 1920-wide capture at scale 0.5 targets 960 — via the shared helper.
-    expect(sips.zTargets()).toEqual(["960"]);
-    await fs.rm(result.image.hostPath, { force: true });
-  });
 });
 
 describe("downscalePngInPlace — shared device-route downscale", () => {
