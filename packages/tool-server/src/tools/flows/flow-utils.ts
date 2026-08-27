@@ -3132,7 +3132,7 @@ export async function writeNewFlowFile(filePath: string, content: string): Promi
  * and this host cannot read it at all, so the in-memory copy is both the take
  * and the only thing countable — the guarantee below does not carry across that
  * boundary. The agent-facing statement of it lives in
- * `packages/skills/skills/argent-create-flow/references/live-authoring.md`.
+ * `packages/skills/skills/argent-create-flow/references/record.md`.
  *
  * The file — not the session's in-memory `flow` — is the take in "host" mode:
  * {@link appendStep} re-reads it before every append and `flow-finish-recording`
