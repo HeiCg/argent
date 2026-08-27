@@ -104,7 +104,7 @@ Argent never folds `id`, because an id is a machine key. Argent never folds a `m
 
 A leading or trailing space in a `contains` needle is significant. The space must match a real space in the label.
 
-A value that holds only invisible characters folds to nothing. Such a value matches nothing, not every element. Use `any: true` with a relational scope for "any element in there".
+A `role` or an `id` that holds only invisible characters folds to nothing. Such a value matches nothing, not every element. A `text` that holds only invisible characters is a parse error: the parser tells you to select by `id` or `role`. Use `any: true` with a relational scope for "any element in there".
 
 When a check fails against two strings that look the same, the failure reason names the code points that differ. The reason also names a typographic variant. A rendered `…` is one character, not three dots. Argent keeps the two apart, because a fold that makes them equal also makes a styled display name equal to the plain name it imitates.
 
