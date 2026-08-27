@@ -1097,10 +1097,7 @@ runs only); \`script\` runs a local .mjs file in a fresh Node process for setup,
 (\`script: { path: scripts/seed.mjs, timeout?: <ms> }\` — always a map, never a bare path; the path is
 resolved against the flow file that names the step, exactly as a \`run\` target is, and the step needs no
 device, so a script-only flow runs with nothing booted — though a \`run\` step beside it still resolves
-one. What the script prints is discarded, never reported: \`reason\` is all the step says for itself — the
-script's own error where it threw one, the runner's account of how the process stopped otherwise (an
-exit code, a signal, a time limit), and on a PASS any note about how the step really ran, such as a
-time limit clamped to this host's maximum. Co-located runs only.).
+one. Co-located runs only.).
 A selector-less gesture — a coordinate \`tap\`/\`long-press\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
 no frame out of the tree, so an unreadable tree source does NOT stop it the way it stops \`idle\`: it
 settles best-effort, dispatches anyway, and the step PASSES carrying a \`warning\` that quotes the source's

@@ -736,8 +736,7 @@ function classifyOutcome(
   return failed(
     "exit",
     `The script stopped its own process with exit code ${exit.code ?? 0} instead of returning, ` +
-      `so it left no output document behind. Nothing it printed was kept either: throw the ` +
-      `reason instead of exiting on it.`
+      `so it left no output document behind: throw the reason instead of exiting on it.`
   );
 }
 

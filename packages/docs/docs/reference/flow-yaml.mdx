@@ -268,8 +268,6 @@ Argent removes every other name. Argent removes its own token, its own port and 
 
 Two groups in the list give the script access to a credential. `SSH_AUTH_SOCK` gives access to your SSH agent. An `npm_config_` name can contain a registry token. Run a script only when you trust it.
 
-Argent discards what the script writes to `stdout` and to `stderr`. A recording discards it, and a replay discards it. The report of a step holds no console output. The result of a script is the verdict, plus the document that the script returns. A script that must report a detail throws an error with that detail. The message of the error becomes the reason of the step.
-
 A failed step stops the flow. The verdict names the side that caused the failure.
 
 | Verdict | Cause      | Examples                                                                                                                   |
@@ -311,7 +309,7 @@ argent flow run ~/shared-flows/checkout.yaml --device <UDID> --update-baselines
 argent flow run .argent/flows --recursive
 ```
 
-The file name without `.yaml` names the report and the artifacts. It contains only letters, numbers, `_` and `-`. A directory run prints only the steps that need attention: each failure and each warning. It also prints a summary. An invalid file fails alone and the batch continues. An infrastructure error stops the batch and counts the remaining flows as skipped.
+The file name without `.yaml` names the report and the artifacts. It contains only letters, numbers, `_` and `-`. A directory run prints only the failing steps and a summary. An invalid file fails alone and the batch continues. An infrastructure error stops the batch and counts the remaining flows as skipped.
 
 Pin `--platform` and `--device` on iOS, Android and Vega. On Chromium, pass `--platform chromium` and omit `--device`. Then the runner boots the declared app path with a reproducible window size.
 

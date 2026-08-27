@@ -47,7 +47,7 @@ A fragment declares its start state in a prerequisite. The prerequisite is a sen
 
 A flow can contain more than taps and text. A step can wait for an element, wait for the screen to settle, check a condition, take a screenshot and compare it to a baseline, run a different flow, or run a local script. See [Baselines in flows](/docs/features/visual-regression#baselines-in-flows) for the screenshot comparison.
 
-A local script does work that no device step can do. For example, a script seeds the test data. The agent adds a script step only when you ask for one. Argent discards what the script prints. The agent reads the verdict of the step, not the console output of the script.
+A local script does work that no device step can do. For example, a script seeds the test data. The agent adds a script step only when you ask for one.
 
 The file is plain text. You can commit the file, review the file in a pull request and edit a step by hand.
 
