@@ -453,12 +453,28 @@ function blockingIgnorables(
   return blocking.length > 0 ? blocking : displaced;
 }
 
+/** {@link equalsCI}, allowing a compatibility variant. See {@link confusableTextNote}. */
+const equalsOrVariantOf = (a: string, b: string): boolean =>
+  equalsCI(a, b) || compatibilityVariantOf(a, b);
+
+/** {@link includesCI}, allowing a compatibility variant. */
+const includesOrVariantIn = (haystack: string, needle: string): boolean =>
+  includesCI(haystack, needle) || compatibilityVariantIn(haystack, needle);
+
 /**
  * A note that names the difference between two strings that look equal. Its
  * gate is wider than {@link foldText}: the comparator holds once every inert
  * default-ignorable is removed. It must not call a real rendering difference
  * invisible, so it excludes {@link isSequenceBuilding} characters and gives
  * {@link DIRECTIONAL} and {@link RENDERING_AFFECTING} their own leads.
+ *
+ * A typographic variant is allowed to sit beside the invisible one, and the
+ * note then names both. This gate and {@link compatibilityVariantOf} used to
+ * PARTITION the misses instead of composing: a never-folded invisible survives
+ * NFKC and defeated the typographic question, while the rendered `…` remained
+ * after the ignorables were gone and defeated this one. Hyphenation inserting a
+ * soft hyphen and truncation inserting an ellipsis are plausible together, and
+ * `Load<SHY>ing…` against `Loading...` was explained by neither note.
  */
 export function confusableTextNote(actual: string, expected: string): string | undefined {
   if (actual === expected) return undefined;
@@ -470,8 +486,26 @@ export function confusableTextNote(actual: string, expected: string): string | u
   const bareExpected = visible(expected);
   // Raw equality sits beside the folded test so the gate only widens: a pair
   // that folds to nothing is equal as strings, while `equalsCI` refuses it.
-  if (bareActual !== bareExpected && !equalsCI(bareActual, bareExpected)) return undefined;
-  return ignorableDifferenceNote(actual, expected, equalsCI, bareActual === bareExpected);
+  const bareHolds = bareActual === bareExpected || equalsCI(bareActual, bareExpected);
+  // Only when the ignorables are part of the answer. A pair the typographic
+  // question already explains keeps its single note: a stray ZWSP beside a
+  // ligature is absorbed by the fold and blocks nothing, so naming it would add
+  // a code point the reader has no use for.
+  const variant =
+    !bareHolds &&
+    !compatibilityVariantOf(actual, expected) &&
+    compatibilityVariantOf(bareActual, bareExpected);
+  if (!bareHolds && !variant) return undefined;
+  // On the composed path the per-character necessity test has to allow the
+  // variant too, or no single character is ever found to block and
+  // {@link blockingIgnorables} falls back to naming them all.
+  return ignorableDifferenceNote(
+    actual,
+    expected,
+    variant ? equalsOrVariantOf : equalsCI,
+    bareActual === bareExpected,
+    variant
+  );
 }
 
 const codepointName = (ch: string): string =>
@@ -549,6 +583,17 @@ function codepointPair(
 }
 
 /**
+ * What a compatibility variant is, and why the fold keeps those apart. Shared,
+ * so this note and the clause {@link ignorableDifferenceNote} appends when a
+ * variant stands beside an invisible character cannot drift.
+ */
+const VARIANT_BODY =
+  `variant (a rendered "…" is ONE character, not three dots; likewise ligatures and ` +
+  `fullwidth forms). Those are not folded together, because doing so would also equate a ` +
+  `styled display name with the plain one it imitates. Copy the text exactly as this ` +
+  `message quotes it.`;
+
+/**
  * The shared body of the two confusable notes: pick the lead that names the
  * characters that differ, then print both strings as code points. A reorder
  * wins a mixed difference, and only the last branch says "invisible". `holds`
@@ -567,7 +612,8 @@ function ignorableDifferenceNote(
   actual: string,
   expected: string,
   holds: (a: string, b: string) => boolean,
-  restIdentical: boolean
+  restIdentical: boolean,
+  alsoVariant: boolean
 ): string | undefined {
   const differing = blockingIgnorables(actual, expected, holds);
   if (differing.length === 0) return undefined;
@@ -582,23 +628,42 @@ function ignorableDifferenceNote(
         "comparison can ignore"
       : `the two strings differ ${only}in invisible characters`;
   const [dumpActual, dumpExpected] = codepointPair(actual, expected, differing);
-  const rest = restIdentical
-    ? ""
-    : " — what is left differs in case, spacing or composition, which the comparison folds together";
-  return `${lead} — actual [${dumpActual}] vs expected [${dumpExpected}]${rest}`;
+  // The second cause, when the pair carries one. The exact code points come
+  // first, because they are the more precise half.
+  const variant = alsoVariant ? ` — the two also differ by a typographic ${VARIANT_BODY}` : "";
+  // What is left, when the variant clause is not already the account of it.
+  const rest =
+    restIdentical || alsoVariant
+      ? ""
+      : " — what is left differs in case, spacing or composition, which the comparison folds together";
+  return `${lead} — actual [${dumpActual}] vs expected [${dumpExpected}]${rest}${variant}`;
 }
 
 /**
  * The substring form of {@link confusableTextNote}: the needle failed to appear
- * in the label only because of inert ignorable characters. Both strings print
- * whole, not as the matched region, because an index cannot map back.
+ * in the label because of inert ignorable characters, and possibly a
+ * compatibility variant with them. Both strings print whole, not as the matched
+ * region, because an index cannot map back.
  */
 export function confusableTextNoteIn(haystack: string, needle: string): string | undefined {
   if (includesCI(haystack, needle)) return undefined;
   const bareHaystack = withoutInertIgnorables(haystack);
   const bareNeedle = withoutInertIgnorables(needle);
-  if (!includesCI(bareHaystack, bareNeedle)) return undefined;
-  return ignorableDifferenceNote(haystack, needle, includesCI, bareHaystack.includes(bareNeedle));
+  const bareHolds = includesCI(bareHaystack, bareNeedle);
+  // See {@link confusableTextNote}: a miss the typographic question answers on
+  // its own does not gain a codepoint list.
+  const variant =
+    !bareHolds &&
+    !compatibilityVariantIn(haystack, needle) &&
+    compatibilityVariantIn(bareHaystack, bareNeedle);
+  if (!bareHolds && !variant) return undefined;
+  return ignorableDifferenceNote(
+    haystack,
+    needle,
+    variant ? includesOrVariantIn : includesCI,
+    bareHaystack.includes(bareNeedle),
+    variant
+  );
 }
 
 /**
@@ -717,12 +782,7 @@ export function typographicVariantNote(shown?: string): string {
     shown === undefined
       ? `the two strings above differ only by a typographic`
       : `the element's text is "${quoteScreenText(shown)}", which differs only by a typographic`;
-  return (
-    `${lead} variant (a rendered "…" is ONE character, not three dots; likewise ligatures and ` +
-    `fullwidth forms). Those are not folded together, because doing so would also equate a ` +
-    `styled display name with the plain one it imitates. Copy the text exactly as this ` +
-    `message quotes it.`
-  );
+  return `${lead} ${VARIANT_BODY}`;
 }
 
 export function includesCI(haystack: string | undefined, needle: string): boolean {

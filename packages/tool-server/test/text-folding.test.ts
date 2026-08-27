@@ -11,6 +11,7 @@ import {
   identifierMatches,
   quoteScreenText,
   includesCI,
+  selectorMissNote,
   selectorToFrame,
   ignorableTextNote,
   textMatches,
@@ -376,6 +377,65 @@ describe("compatibilityVariantOf", () => {
   it("says nothing when the strings already fold together, or genuinely differ", () => {
     expect(compatibilityVariantOf(`PLN${NBSP}42`, "PLN 42")).toBe(false);
     expect(compatibilityVariantOf("Save", "Saved")).toBe(false);
+  });
+});
+
+describe("a miss with BOTH causes is explained by both", () => {
+  // The two questions used to partition the misses: a never-folded invisible
+  // survives NFKC and defeats the typographic gate, while the rendered `…`
+  // outlives the ignorable strip and defeats the codepoint gate. Hyphenation
+  // and truncation are plausible together, so the pair reached a bare reason.
+  const SHY = "­";
+  const RLM = "‏";
+
+  it("names the code points AND the typographic variant, in that order", () => {
+    const note = confusableTextNote(`Load${SHY}ing…`, "Loading...")!;
+    expect(note).toBeDefined();
+    expect(note).toContain("U+00AD");
+    expect(note).toContain("typographic variant");
+    expect(note.indexOf("U+00AD")).toBeLessThan(note.indexOf("typographic variant"));
+  });
+
+  it("does the same for the substring comparator, which is the default", () => {
+    const note = confusableTextNoteIn(`${RLM}Loa${RLM}ding…`, "Loading...")!;
+    expect(note).toContain("U+200F");
+    expect(note).toContain("typographic variant");
+  });
+
+  it("names the character that blocks, not every ignorable in the label", () => {
+    // With the variant left out of the necessity test, no single character was
+    // ever found to block and the note fell back to listing them all.
+    const note = confusableTextNote(`${RLM}Load${SHY}ing…`, `${RLM}Loading...`)!;
+    expect(note).toContain("U+00AD");
+    expect(note).toContain("changes what IS drawn");
+  });
+
+  it("still explains a selector miss that carries both", () => {
+    const nodes: DescribeNode[] = [
+      {
+        role: "button",
+        label: `Load${SHY}ing…`,
+        frame: { x: 0, y: 0, width: 0.4, height: 0.08 },
+        children: [],
+      },
+    ];
+    const note = selectorMissNote(nodes, "Loading...")!;
+    expect(note).toContain("U+00AD");
+    expect(note).toContain("typographic variant");
+  });
+
+  it("lets the variant clause account for the rest, not the case/spacing one", () => {
+    // What is left of the pair IS the typographic variant, so the two clauses
+    // would contradict each other.
+    const note = confusableTextNote(`Load${SHY}ing…`, "Loading...")!;
+    expect(note).toContain("typographic variant");
+    expect(note).not.toContain("what is left differs");
+  });
+
+  it("leaves a single-cause miss with its single explanation", () => {
+    expect(confusableTextNote(`Load${SHY}ing`, "Loading")).not.toContain("typographic variant");
+    expect(confusableTextNote("Loading…", "Loading...")).toBeUndefined();
+    expect(compatibilityVariantOf("Loading…", "Loading...")).toBe(true);
   });
 });
 
