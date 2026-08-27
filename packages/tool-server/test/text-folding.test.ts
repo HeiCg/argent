@@ -385,6 +385,19 @@ describe("bidi wrappers", () => {
       expect(equalsCI(`${LRE}${HEB}${PDF}`, HEB)).toBe(false);
     });
 
+    it("matches a wrapper half only where the label carries that half", () => {
+      // What the skill reference states about a needle copied out of a wrapped
+      // label. A half at the label's own edge matches; the same half anywhere
+      // else does not, and the bare text always does.
+      const HEB = "שלום";
+      const label = `${LRE}@alice ${HEB}${PDF}`;
+      expect(includesCI(label, `${LRE}@alice`)).toBe(true);
+      expect(includesCI(label, `${HEB}${PDF}`)).toBe(true);
+      expect(includesCI(label, `alice ${PDF}`)).toBe(false);
+      expect(includesCI(label, `${LRE}alice`)).toBe(false);
+      expect(includesCI(label, "@alice")).toBe(true);
+    });
+
     it("still folds an LTR wrapper around text that merely LOOKS exotic", () => {
       // No strong RTL character anywhere, so the wrapper is inert.
       expect(equalsCI(`${LRE}Ελένη Παπαδοπούλου${PDF}`, "Ελένη Παπαδοπούλου")).toBe(true);
