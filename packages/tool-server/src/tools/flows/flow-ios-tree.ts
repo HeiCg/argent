@@ -575,8 +575,8 @@ async function explainTargetingFailure(
   device: DeviceInfo
 ): Promise<Error> {
   const failureCode = getFailureSignal(err)?.error_code;
-  const terminate = await terminateCommand(device);
   if (failureCode === FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS) {
+    const terminate = await terminateCommand(device);
     // The reason does not offer to background the other apps. They stay
     // connected, so the set stays ambiguous, and iOS then suspends one until it
     // no longer answers the state probe. That turns this failure into the
@@ -618,18 +618,20 @@ async function explainTargetingFailure(
   // cannot help when another app is the stale one.
   const stillConnected = nativeApi.listConnectedBundleIds();
   if (stillConnected.length > 0) {
+    // Say this only when another connection exists to clear, and name a command
+    // that exists: argent has no terminate tool, and restart-app would bring the
+    // other app to the front.
+    const clearOthers =
+      stillConnected.length > 1
+        ? ` To clear the others use \`${await terminateCommand(device)}\` — argent ` +
+          `exposes no terminate tool, and restart-app would bring that app to the front instead.`
+        : ``;
     return wrapPreservingFailure(
       `could not read the state of the native-devtools-connected apps, so none could be ` +
         `auto-targeted (${firstClause(err)}). Connected: ${cappedList(stillConnected)}. ` +
         `They are instrumented — do not relaunch. A suspended app stops answering: foreground ` +
         `the app the flow drives with launch-app (it does not terminate), then retry.` +
-        // Say this only when another connection exists to clear, and name a
-        // command that exists: argent has no terminate tool, and restart-app
-        // would bring the other app to the front.
-        (stillConnected.length > 1
-          ? ` To clear the others use \`${terminate}\` — argent ` +
-            `exposes no terminate tool, and restart-app would bring that app to the front instead.`
-          : ``),
+        clearOthers,
       err
     );
   }
@@ -664,6 +666,11 @@ async function explainTargetingFailure(
  * knows its device and picks the app to clear. A default-set device gets the
  * plain command, so its reason keeps the same size budget (see
  * {@link MAX_TARGETING_REASON_CHARS}).
+ *
+ * Call this only from a branch that interpolates the result. With additional
+ * sets configured, a default-set UDID matches none of them, so `deviceSetForUdid`
+ * caches nothing and re-runs the whole `simctl list devices` sweep on every
+ * call - seconds, and a failing `await:` rebuilds its reason once per poll.
  */
 async function terminateCommand(device: DeviceInfo): Promise<string> {
   const prefix = simctlPrefix(await deviceSetForUdid(device.id));
