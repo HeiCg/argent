@@ -897,6 +897,37 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
     expect(selectorToFrame(screen([suffixId, exactId]), selector)).toMatchObject({ width: 0.4 });
   });
 
+  it("keeps ONE literal field below TWO folded ones, which decides the tap centre", () => {
+    // The existing grade tests all catch a DEMOTION. Raising EXACT_LITERAL
+    // instead survived every one of them, yet it moves what an action targets:
+    // at the sum boundary the large container beats the small leaf outright
+    // rather than tying with it and losing the smallest-frame tiebreak.
+    const WORD_JOINER = "\u2060";
+    const container: DescribeNode = {
+      role: "gridcell", // matches `cell` as a substring only, so it grades zero
+      label: "Settings",
+      identifier: "container",
+      frame: { x: 0, y: 0, width: 0.9, height: 0.5 },
+      children: [],
+    };
+    const leaf: DescribeNode = {
+      role: `ce${ZWSP}ll`, // folds to `cell`
+      label: `${WORD_JOINER}Settings`, // folds to `settings`
+      identifier: "leaf",
+      frame: { x: 0.4, y: 0.2, width: 0.08, height: 0.05 },
+      children: [],
+    };
+    const selector = { text: "Settings", role: "cell" };
+    // 2 for the container's one literal field, 1 + 1 for the leaf's two folded
+    // ones: a tie, which the smallest frame then settles.
+    expect(selectorToFrame(screen([container, leaf]), selector)).toMatchObject({
+      width: 0.08,
+    });
+    expect(selectorToFrame(screen([leaf, container]), selector)).toMatchObject({
+      width: 0.08,
+    });
+  });
+
   it("grades a literal role above one only the fold equates", () => {
     // `role` is a folded substring test, so both roles match and only the grade
     // separates them. The literal node is again the larger one.
