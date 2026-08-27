@@ -411,6 +411,53 @@ describe("await-ui-element tool", () => {
     expect(result.note).toMatch(/U\+034F/);
   });
 
+  it("does not name a zero-area look-alike to `visible`, and does name it to `exists`", async () => {
+    // The flow runner's twin of this filter is pinned; this one was not, in
+    // either direction. Dropping the filter would let a `visible` timeout point
+    // at a node that is off screen, and applying it unconditionally would take
+    // the explanation away from `exists`, which accepts zero-area nodes. The
+    // Chromium path, because the iOS AX adapter prunes them before the tree.
+    const tree = {
+      role: "html",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        {
+          role: "generic",
+          label: "Add more languages…",
+          frame: { x: 0.1, y: 0.3, width: 0, height: 0 },
+          children: [],
+        },
+      ],
+    };
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const visible = await tool.execute(
+      { chromium: makeChromiumApi(tree) },
+      {
+        udid: CHROMIUM_ID,
+        condition: "visible",
+        selector: { text: "Add more languages..." },
+        timeoutMs: 60,
+        pollIntervalMs: 10,
+      }
+    );
+    expect(visible.success).toBe(false);
+    expect(visible.note).not.toMatch(/typographic variant/);
+
+    const exists = await tool.execute(
+      { chromium: makeChromiumApi(tree) },
+      {
+        udid: CHROMIUM_ID,
+        condition: "exists",
+        selector: { text: "Add more languages..." },
+        timeoutMs: 60,
+        pollIntervalMs: 10,
+      }
+    );
+    expect(exists.success).toBe(false);
+    expect(exists.note).toMatch(/typographic variant/);
+  });
+
   it("stays bare when nothing on screen resembles the selector", async () => {
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Loading…", value: "", frame: FRAME, traits: [] }]),
