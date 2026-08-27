@@ -363,9 +363,14 @@ const DIRECTIONAL_G = new RegExp(DIRECTIONAL.source, "gu");
 const RENDERING_AFFECTING = /[\u00ad\u180e]/u;
 
 /**
- * Every default-ignorable code point except the sequence-building ones - the
- * characters whose removal leaves the same appearance. The property, not `Cf`:
- * `Cf` holds the concatenation marks and misses U+034F, which is `Mn`.
+ * Every default-ignorable code point, with no exception: the sequence builders
+ * and the two {@link RENDERING_AFFECTING} members are members too. Narrowing
+ * the set is the job of the helpers below - {@link isInertIgnorable} drops the
+ * sequence builders, and {@link ignorableDifferenceNote} gives U+00AD and
+ * U+180E a lead of their own rather than calling them noise.
+ *
+ * The property, not `Cf`: `Cf` holds the concatenation marks and misses U+034F,
+ * which is `Mn`.
  */
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 /** {@link DEFAULT_IGNORABLE}, non-global - for a single-character test. */
@@ -381,7 +386,12 @@ function inertIgnorables(text: string): string[] {
   return (text.match(DEFAULT_IGNORABLE) ?? []).filter((ch) => !isSequenceBuilding(ch));
 }
 
-/** `text` with every inert ignorable removed - what the eye reads. */
+/**
+ * `text` with every inert ignorable removed - roughly what the eye reads, and
+ * the wide form the note's gate asks about. Only roughly, because U+00AD and
+ * U+180E go too: a note that dropped them from its gate could not name them,
+ * so they are removed here and then told apart by their own lead.
+ */
 function withoutInertIgnorables(text: string): string {
   return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) ? ch : ""));
 }
