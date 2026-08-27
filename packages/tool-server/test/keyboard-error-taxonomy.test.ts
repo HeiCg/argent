@@ -18,7 +18,6 @@ import { injectAndroidNamedKey, injectAndroidText } from "../src/utils/android-i
 // that STILL carries #420's granular telemetry code (the 400 mapping keys off the
 // error class, not the code — see InvalidToolInputError in utils/capability.ts).
 
-/** Assert the error is a 400-class input error carrying the given telemetry code. */
 async function expectInvalidInput(p: Promise<unknown>, code: string): Promise<void> {
   const err = await p.then(
     () => {

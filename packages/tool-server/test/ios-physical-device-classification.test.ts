@@ -16,7 +16,6 @@ describe("physical iOS UDID classification", () => {
       platform: "ios",
       kind: "device",
     });
-    // An RFC-4122 simulator UUID must never satisfy the physical predicate.
     expect(isIosPhysicalUdid(SIM_UDID)).toBe(false);
     expect(resolveDevice(SIM_UDID)).toEqual({
       id: SIM_UDID,

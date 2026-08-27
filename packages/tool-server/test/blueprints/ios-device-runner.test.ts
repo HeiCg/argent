@@ -23,12 +23,6 @@ import {
 } from "../../src/utils/ios-device/runner-build";
 import { readRunnerCrashSummary } from "../../src/utils/ios-device/runner-crash";
 
-// The factory's device I/O is stubbed at its module seams (devicectl probe,
-// xcodebuild build/launch, crash-summary read, runner client) so the tests
-// exercise only what the blueprint owns: death classification, the post-mortem
-// enrichment, the poisoned-cache self-heal, and recoverable(). The runner
-// client is stubbed per test; the child process is a bare EventEmitter whose
-// "exit" event simulates the xcodebuild child dying.
 vi.mock("../../src/utils/ios-device/devicectl", () => ({
   ensureDeviceReady: vi.fn(async () => {}),
 }));
@@ -57,7 +51,6 @@ vi.mock("../../src/utils/ios-device/runner-build", async (importOriginal) => {
   };
 });
 
-/** What the mocked resolveRunnerSigningConfig hands the factory. */
 const SIGNING_CONFIG = {
   teamId: "ABCDE12345",
   appBundleId: "com.argent.runner.tabcde12345",
@@ -105,7 +98,6 @@ async function createInstance() {
   return { ...stubs, api: instance.api };
 }
 
-/** Await a promise that must reject, returning the rejection reason. */
 function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
     () => {
@@ -223,8 +215,6 @@ describe("ios-device-runner blueprint: mid-command runner death", () => {
 
   it("uses the rebuilt artifact's derivedDataPath for a post-mortem after the profile-missing retry", async () => {
     const { child, clientRun } = stubLaunch();
-    // First startRunner: readiness fails with the profile-missing signature,
-    // so the factory rebuilds against the concrete device and retries once.
     vi.mocked(waitForRunnerReady).mockRejectedValueOnce(new Error("no runner"));
     vi.mocked(isProfileMissingDeviceFailure).mockReturnValueOnce(true);
     const { api } = await callFactory();
@@ -244,7 +234,6 @@ describe("ios-device-runner blueprint: mid-command runner death", () => {
 });
 
 describe("ios-device-runner blueprint: launch child exits during the readiness wait", () => {
-  /** Readiness never settles on its own; the child dies as soon as it is polled. */
   function hangReadinessThenExit(child: EventEmitter, code: number) {
     vi.mocked(waitForRunnerReady).mockImplementationOnce(() => {
       queueMicrotask(() => child.emit("exit", code));
@@ -325,8 +314,6 @@ describe("ios-device-runner blueprint: launch child exits during the readiness w
 });
 
 describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
-  /** A real on-disk stand-in for the artifact's derived-data dir, so the wipe
-   * (or its absence) is asserted against the filesystem, not a mock. */
   async function makeDerivedDir(): Promise<string> {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "argent-heal-derived-"));
     await fsp.writeFile(path.join(dir, "poisoned.xctestrun"), "torn");
@@ -359,11 +346,9 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
 
     await callFactory();
 
-    // The poisoned cache dir is gone from disk, not merely marked.
     await expect(fsp.access(derived)).rejects.toMatchObject({ code: "ENOENT" });
     expect(ensureRunnerArtifact).toHaveBeenCalledTimes(2);
     expect(ensureRunnerArtifact).toHaveBeenNthCalledWith(2, SIGNING_CONFIG, { force: true });
-    // The poisoned attempt died at prepare time; only the healed one launched.
     expect(launchRunner).toHaveBeenCalledTimes(1);
     expect(rebuildRunnerArtifactForDevice).not.toHaveBeenCalled();
   });
@@ -380,7 +365,6 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
     stubLaunch();
 
     expect(await rejectionOf(callFactory())).toBe(drift);
-    // Exactly one heal attempt: wipe, forced rebuild, then fail loudly.
     expect(ensureRunnerArtifact).toHaveBeenCalledTimes(2);
     expect(launchRunner).not.toHaveBeenCalled();
   });

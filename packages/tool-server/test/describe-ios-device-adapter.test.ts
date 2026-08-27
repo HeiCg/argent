@@ -83,7 +83,6 @@ describe("describeIosDevice adapter: runner type mapping", () => {
     expect(lines).toHaveLength(fixtures.length);
     expect(lines.filter((l) => l.includes("AXButton"))).toHaveLength(buttonish.length);
     expect(lines.filter((l) => l.includes("AXAdjustable"))).toHaveLength(adjustable.length);
-    // The raw XCTest names are gone: each survives AS its content role.
     for (const type of [...buttonish, ...adjustable]) {
       expect(out).not.toContain(type);
     }

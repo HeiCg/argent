@@ -34,11 +34,6 @@ function extractElementTypeNames(source: string): Map<string, string> {
   return map;
 }
 
-/**
- * Members of `static let <name>: Set<XCUIElement.ElementType> = [...]`,
- * translated to the wire names the runner emits. Tolerant of whitespace,
- * line breaks, trailing commas, and `//` comments inside the brackets.
- */
 function extractSwiftTypeList(source: string, name: string): string[] {
   const list = source.match(
     new RegExp(`let\\s+${name}\\s*:\\s*Set<XCUIElement\\.ElementType>\\s*=\\s*\\[([^\\]]*)\\]`)

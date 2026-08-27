@@ -14,8 +14,6 @@ const APP_FRAME: RunnerViewport = { x: 0, y: 0, width: 390, height: 844 };
 
 describe("toPoints (physical iOS 0-1 contract)", () => {
   it("inverts describe's Application-frame normalization", () => {
-    // A button at the bottom of the FULL app (where a CTA sits). Describe
-    // reports 0-1 against this frame; the tap must land on the same point.
     const frame = {
       x: 16 / APP_FRAME.width,
       y: 760 / APP_FRAME.height,

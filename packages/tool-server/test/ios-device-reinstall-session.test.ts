@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock the devicectl seam so the handler runs without hardware; the app-session
-// module stays real: its map is the state under test.
 const ensureDeviceReady = vi.fn();
 const uninstallApp = vi.fn();
 const installApp = vi.fn();
@@ -20,7 +18,6 @@ import {
   setCurrentIosDeviceApp,
 } from "../src/utils/ios-device/app-session";
 
-// Physical-iOS UDID shape (8 hex, dash, 16 hex); see utils/device-info.ts.
 const UDID = "00008110-000978540290401E";
 const BUNDLE = "com.example.app";
 
@@ -33,7 +30,6 @@ beforeEach(() => {
   ensureDeviceReady.mockReset().mockResolvedValue(undefined);
   uninstallApp.mockReset().mockResolvedValue(undefined);
   installApp.mockReset().mockResolvedValue(undefined);
-  // The session map is module-level state; start every test without an entry.
   clearCurrentIosDeviceApp(UDID);
 });
 

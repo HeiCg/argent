@@ -126,7 +126,6 @@ describe("resolveDevice gates physical iOS UDIDs on the ios-physical-devices fla
     // the hint and the validation signal on the cause chain.
     expect((err as Error).message).toContain(ENABLE_HINT);
     expect(getFailureSignal(err)?.error_kind).toBe("validation");
-    // The bypass is closed: nothing touched the phone.
     expect(factory.ran).toBe(false);
   });
 

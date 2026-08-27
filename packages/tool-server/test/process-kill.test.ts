@@ -1,11 +1,3 @@
-/**
- * Focused tests for the shared SIGTERM-to-SIGKILL primitives in
- * utils/process-kill. Everything runs against fake kill/liveness/sleep
- * functions or a spied process.kill, so no real signal ever leaves the test.
- * The two consumers pin their own end-to-end escalation behavior in
- * ios-device-runner-build.test.ts and boot-electron-kill.test.ts.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   pidIsAlive,
@@ -130,7 +122,7 @@ describe("scheduleGroupSigkill", () => {
 
     expect(() => vi.advanceTimersByTime(5_000)).not.toThrow();
     const signals = killSpy.mock.calls.map((c) => c[1]);
-    expect(signals).toEqual(["SIGKILL"]); // no 0-probe on the ungated path
+    expect(signals).toEqual(["SIGKILL"]);
   });
 
   it("gated: probes the group and escalates while anything in it survives", () => {
@@ -156,11 +148,6 @@ describe("scheduleGroupSigkill", () => {
   });
 });
 
-/**
- * Fake liveness table: `dyingAfterPolls` maps a pid to the number of sleeps
- * after which its probe starts reporting it gone; absent pids are dead from
- * the start, Infinity never dies. Mirrors ios-device-runner-build.test.ts.
- */
 function fakeLiveness(dyingAfterPolls: Record<number, number>) {
   let polls = 0;
   const sleeps: number[] = [];

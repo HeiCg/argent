@@ -94,7 +94,6 @@ describe.skipIf(process.platform !== "darwin")("prepareXctestrunWithPort", () =>
     const clone = await readPlistAsJson(clonePath);
     const target = clone["ArgentRunnerUITests"] as Target;
     expectPortInAllEnvMaps(target, 50505);
-    // Pre-existing entries survive the injection.
     expect(target["EnvironmentVariables"]?.["OS_ACTIVITY_DT_MODE"]).toBe("YES");
   });
 
@@ -167,7 +166,7 @@ describe.skipIf(process.platform !== "darwin")("prepareXctestrunWithPort", () =>
     expect(error).toBeInstanceOf(XctestrunFormatError);
     expect((error as Error).message).toContain("could not be parsed as a plist");
     expect((error as Error).message).toContain(truncatedPath);
-    expect((error as Error).cause).toBeDefined(); // the raw plutil failure rides along
+    expect((error as Error).cause).toBeDefined();
   });
 });
 
@@ -275,7 +274,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** Yield the event loop until `cond` holds (bounded, then assert it). */
 async function until(cond: () => boolean): Promise<void> {
   for (let i = 0; i < 1_000 && !cond(); i += 1) {
     await new Promise((resolve) => setImmediate(resolve));
@@ -379,7 +377,7 @@ describe("ensureRunnerArtifact", () => {
       gate.resolve();
 
       const [a, b] = await Promise.all([first, second]);
-      expect(counter.builds).toBe(1); // the straggler waited, then hit the cache
+      expect(counter.builds).toBe(1);
       expect(a.fromCache).toBe(false);
       expect(b.fromCache).toBe(true);
       expect(b.xctestrunPath).toBe(a.xctestrunPath);
@@ -411,7 +409,7 @@ describe("ensureRunnerArtifact", () => {
       const fast = await ensureRunnerArtifact(otherConfig, { build: fakeBuild(fastCounter) });
       expect(fast.fromCache).toBe(false);
       expect(fastCounter.builds).toBe(1);
-      expect(slowSettled).toBe(false); // the other key never waited on this one
+      expect(slowSettled).toBe(false);
 
       slowGate.resolve();
       expect((await slow).fromCache).toBe(false);
@@ -459,12 +457,10 @@ describe("resolveRunnerProjectPath", () => {
       const probed: string[] = [];
       const resolved = resolveRunnerProjectPath((candidate) => {
         probed.push(candidate);
-        // The checkout shape is absent (an npm install); the packaged copy hits.
         return probed.length === 2;
       });
 
       expect(probed).toHaveLength(2);
-      // Both candidates end at the same project; only the base differs.
       for (const candidate of probed) {
         expect(candidate).toMatch(/ios-device-runner\/ArgentRunner\/ArgentRunner\.xcodeproj$/);
       }
@@ -582,7 +578,6 @@ describe("resolveSigningHint", () => {
   });
 });
 
-/** Empty baseline for planRunnerStorageSweep listings; spread and override. */
 const EMPTY_LISTING = {
   currentCacheDirName: "cache-aaaa111122223333",
   cacheDirNames: [] as string[],
@@ -598,11 +593,7 @@ describe("planRunnerStorageSweep", () => {
   it("deletes every cache-* sibling except the current key's dir", () => {
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
-      cacheDirNames: [
-        "cache-aaaa111122223333", // current: the in-flight artifact
-        "cache-0123456789abcdef", // pre-update key
-        "cache-ffff000011112222", // older key shape, also stale
-      ],
+      cacheDirNames: ["cache-aaaa111122223333", "cache-0123456789abcdef", "cache-ffff000011112222"],
     });
 
     expect(plan.cacheDirNames.sort()).toEqual(["cache-0123456789abcdef", "cache-ffff000011112222"]);
@@ -615,11 +606,7 @@ describe("planRunnerStorageSweep", () => {
     // build-for-testing tree looks exactly like a superseded sibling.
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
-      cacheDirNames: [
-        "cache-aaaa111122223333", // current
-        "cache-0123456789abcdef", // in flight elsewhere
-        "cache-ffff000011112222", // genuinely superseded
-      ],
+      cacheDirNames: ["cache-aaaa111122223333", "cache-0123456789abcdef", "cache-ffff000011112222"],
       busyCacheDirNames: ["cache-0123456789abcdef"],
     });
 
@@ -631,8 +618,8 @@ describe("planRunnerStorageSweep", () => {
       ...EMPTY_LISTING,
       cacheDirNames: [
         ".DS_Store",
-        "cache-README.txt", // cache- prefix but not a hex key
-        "cache-", // no key at all
+        "cache-README.txt",
+        "cache-",
         "Cache-0123456789abcdef", // wrong case: not ours
         "scratch",
       ],
@@ -645,10 +632,10 @@ describe("planRunnerStorageSweep", () => {
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
       productNames: [
-        "ArgentRunner_iphoneos18.0-arm64.xctestrun", // base: never a clone
+        "ArgentRunner_iphoneos18.0-arm64.xctestrun",
         "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
         "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
-        "Debug-iphoneos", // build products dir
+        "Debug-iphoneos",
       ],
       keepCloneName: "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
     });
@@ -676,11 +663,11 @@ describe("planRunnerStorageSweep", () => {
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
       logNames: [
-        "runner-00008120-100.log", // oldest
-        "runner-00008120-300.log", // newest
+        "runner-00008120-100.log",
+        "runner-00008120-300.log",
         "runner-0000aaaa-200.log",
-        "usbmux.log", // foreign: no runner- prefix
-        "runner-note.txt", // foreign: not a .log with a timestamp
+        "usbmux.log",
+        "runner-note.txt",
       ],
       maxLogFiles: 2,
     });
@@ -696,7 +683,6 @@ describe("planRunnerStorageSweep", () => {
 
     const plan = planRunnerStorageSweep({ ...EMPTY_LISTING, logNames });
 
-    // The three oldest fall off the cap; the 20 newest survive.
     expect(plan.logNames.sort()).toEqual([
       "runner-00008120-1000.log",
       "runner-00008120-1001.log",
@@ -708,8 +694,8 @@ describe("planRunnerStorageSweep", () => {
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
       testLogNames: [
-        xcresultName("2026.08.20_09-30-00"), // oldest
-        xcresultName("2026.08.22_08-00-00"), // newest: same day, later clock
+        xcresultName("2026.08.20_09-30-00"),
+        xcresultName("2026.08.22_08-00-00"),
         xcresultName("2026.08.22_07-59-00"),
         xcresultName("2026.08.21_23-59-59"),
         "LogStoreManifest.plist", // foreign: Xcode's own index, never ours
@@ -761,14 +747,11 @@ describe("sweepRunnerStorage", () => {
       maxLogFiles: 2,
     });
 
-    // The stale cache sibling is gone; the current dir and foreign dir stay.
     expect((await fsp.readdir(derived)).sort()).toEqual(["cache-aaaa111122223333", "foreign-dir"]);
-    // The base xctestrun and the excluded clone survive; the stale clone dies.
     expect((await fsp.readdir(products)).sort()).toEqual([
       "ArgentRunner_iphoneos18.0-arm64.env.port-2.xctestrun",
       "ArgentRunner_iphoneos18.0-arm64.xctestrun",
     ]);
-    // Newest two logs and the foreign file survive the cap.
     expect((await fsp.readdir(logDir)).sort()).toEqual([
       "keep-me.txt",
       "runner-00008120-200.log",
@@ -872,7 +855,7 @@ describe("launchRunner", () => {
       path.join(tmpRoot, ".argent", "ios-device-runner", "logs")
     );
     expect(path.basename(launched.logPath)).toMatch(/^runner-00008120-\d+\.log$/);
-    await fsp.access(launched.logPath); // the log file was created for postmortems
+    await fsp.access(launched.logPath);
     // The swallow listener that keeps a late "error" from becoming uncaught.
     expect(launched.child.listenerCount("error")).toBe(1);
   });
@@ -913,7 +896,7 @@ describe("waitForPidsToExit", () => {
     });
 
     expect(holdouts).toEqual([101]);
-    expect(table.sleeps).toEqual([100, 100, 100, 100, 100]); // ceil(500/100) polls
+    expect(table.sleeps).toEqual([100, 100, 100, 100, 100]);
     expect(table.kills).toEqual([{ pid: -101, signal: "SIGKILL" }]);
   });
 
@@ -942,7 +925,7 @@ describe("waitForPidsToExit", () => {
       },
     });
 
-    expect(holdouts).toEqual([101]); // reported as escalated, never thrown
+    expect(holdouts).toEqual([101]);
   });
 });
 
@@ -975,7 +958,6 @@ function runnerPsLine(opts: {
   ].join(" ");
 }
 
-/** fakeProcessTable plus the ps seam: killStaleRunnersForDevice's full deps. */
 function fakeSweepDeps(dyingAfterPolls: Record<number, number>, psLines: string[]) {
   return {
     ...fakeProcessTable(dyingAfterPolls),
@@ -988,7 +970,7 @@ function fakeSweepDeps(dyingAfterPolls: Record<number, number>, psLines: string[
 describe("killStaleRunnersForDevice", () => {
   it("SIGTERMs an orphan re-parented to launchd (ppid 1), ignoring unrelated lines", async () => {
     const deps = fakeSweepDeps({}, [
-      "  400     1 /usr/local/bin/node /opt/argent/dist/server.js", // not a runner
+      "  400     1 /usr/local/bin/node /opt/argent/dist/server.js",
       runnerPsLine({ pid: 101, ppid: 1 }),
     ]);
 
@@ -996,7 +978,7 @@ describe("killStaleRunnersForDevice", () => {
 
     expect(killed).toBe(1);
     expect(deps.kills).toEqual([{ pid: -101, signal: "SIGTERM" }]);
-    expect(deps.sleeps).toEqual([]); // pid 101 dead on the first exit probe
+    expect(deps.sleeps).toEqual([]);
   });
 
   it("SIGTERMs an orphan whose parent pid is no longer alive", async () => {
@@ -1017,7 +999,7 @@ describe("killStaleRunnersForDevice", () => {
 
     expect(killed).toBe(0); // the peer's session conflict is testmanagerd's to report
     expect(deps.kills).toEqual([]);
-    expect(deps.sleeps).toEqual([]); // nothing signaled, nothing awaited
+    expect(deps.sleeps).toEqual([]);
   });
 
   it("never signals its own pid, even when it would count as an orphan", async () => {
@@ -1066,7 +1048,7 @@ describe("killStaleRunnersForDevice", () => {
     const killed = await killStaleRunnersForDevice(STALE_UDID, deps);
 
     expect(killed).toBe(1);
-    expect(deps.sleeps).toEqual([100, 100, 100]); // the bounded exit wait ran
+    expect(deps.sleeps).toEqual([100, 100, 100]);
     expect(deps.kills).toEqual([
       { pid: -101, signal: "SIGTERM" },
       { pid: -101, signal: "SIGKILL" },
@@ -1105,7 +1087,7 @@ describe("killStaleRunnersForDevice", () => {
   it("default ps provider spawns the absolute PS_BIN, immune to a GUI-launched /bin-less PATH", () => {
     const [bin, ...args] = PROCESS_TABLE_ARGV;
     expect(bin).toBe(PS_BIN);
-    expect(path.isAbsolute(bin)).toBe(true); // a bare "ps" would ENOENT under launchd's PATH
+    expect(path.isAbsolute(bin)).toBe(true);
     expect(args).toEqual(["-ax", "-o", "pid=,ppid=,command="]);
   });
 });

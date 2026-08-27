@@ -399,7 +399,6 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
     expect(error).toBeInstanceOf(IosDeviceTransportError);
     expect((error as IosDeviceTransportError).kind).toBe("device-unattached");
-    // The connect-the-cable guidance travels in the message itself.
     expect((error as IosDeviceTransportError).message).toMatch(/cable/);
   });
 
@@ -436,7 +435,6 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
     expect((notListening as IosDeviceTransportError).kind).toBe("runner-not-listening");
     expect((notListening as IosDeviceTransportError).retryable).toBe(true);
 
-    // Same wire path, the device-unplugged-mid-connect verdict.
     const unpluggedPath = await createSocketPath();
     await startFakeUsbmuxd(unpluggedPath, [{ id: 42, serial: DEVICE_UDID }], 2);
 
@@ -452,8 +450,6 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
   it("charges the usbmux handshake and the HTTP exchange to one shared budget", async () => {
     const socketPath = await createSocketPath();
-    // Connect succeeds after a slow handshake; the "runner" then never answers
-    // the HTTP request, so the request runs its timeout down.
     await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 0, {
       listDevicesDelayMs: 600,
     });

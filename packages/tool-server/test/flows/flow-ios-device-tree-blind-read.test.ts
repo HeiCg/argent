@@ -82,10 +82,7 @@ describe("queryIosDeviceFlowTree: blind (childless runner tree) reads", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       const err = await outcome;
       expect(err).toBeInstanceOf(Error);
-      // The runner's hint text travels verbatim: the flow author must see the
-      // real cause, not the offscreen "add a scroll-to step" guess.
       expect((err as Error).message).toContain(BLIND_READ_HINT);
-      // The settle-and-retry ran: the throw is a second opinion, not a blip.
       expect(run).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -109,7 +106,6 @@ describe("queryIosDeviceFlowTree: blind (childless runner tree) reads", () => {
       expect(data.tree.role).toBe("Application");
       expect(data.tree.children).toHaveLength(0);
       expect(data.hint).toBe(BLIND_READ_HINT);
-      // The settle-and-retry still fired; the hint is a post-retry verdict.
       expect(run).toHaveBeenCalledTimes(2);
 
       const flowRun = vi.fn(async () => ({ nodes: [appRoot()], quality: null }));
@@ -129,8 +125,6 @@ describe("queryIosDeviceFlowTree: blind (childless runner tree) reads", () => {
     }
   });
 
-  // The scope fence: a degraded-QUALITY hint rides on a NON-empty tree: that
-  // read has matchable nodes, so it must resolve (hint intact) rather than throw.
   it("does not throw for a degraded-quality hint on a non-empty tree", async () => {
     const run = vi.fn(async () => ({
       nodes: [appRoot(), continueButton()],

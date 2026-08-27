@@ -21,17 +21,12 @@ function callbackOf(args: unknown[]): ExecFileCallback | undefined {
   return args.find((a) => typeof a === "function") as ExecFileCallback | undefined;
 }
 
-/** Reply to every execFile spawn with an error — the safe default. */
 function failAllSpawns(message = "unexpected execFile call"): void {
   execFileMock.mockImplementation((...args: unknown[]) => {
     callbackOf(args)?.(new Error(message));
   });
 }
 
-/**
- * Serve `sips -g` with the given dimensions and record `sips -Z` targets;
- * everything else errors.
- */
 function mockSips(dims: { width: number; height: number }): { zTargets: () => string[] } {
   const zCalls: string[] = [];
   execFileMock.mockImplementation((...args: unknown[]) => {

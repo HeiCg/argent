@@ -17,7 +17,6 @@ const PORT = 8_100;
 
 type SentCommand = { body: RunnerCommand; options: SendRunnerCommandOptions };
 
-/** Records every send and replays scripted responses (a value) or failures (an Error). */
 const createFakeSend = (script: Array<unknown | Error>) => {
   const sent: SentCommand[] = [];
   const send = vi.fn(
@@ -135,7 +134,6 @@ describe("createRunnerClient", () => {
       .catch((caught: unknown) => caught as RunnerCommandError);
 
     expect((error as RunnerCommandError).retryable).toBe(true);
-    // Hint-less envelopes keep their message untouched.
     expect((error as RunnerCommandError).message).toBe("busy");
   });
 
@@ -181,7 +179,6 @@ describe("createRunnerClient", () => {
 
       const result = await client.run({ command: "tap", x: 1, y: 2 });
 
-      // Byte-identical behavior for the common case: no copy, no added keys.
       expect(result).toBe(data);
     });
 
