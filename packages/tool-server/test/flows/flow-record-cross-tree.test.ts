@@ -1492,14 +1492,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("raises no warning for a wait nested inside a recorded run-sequence", async () => {
-    // The recorder keys wait warnings off the tool id, so a `run-sequence` is
-    // never probed, however its nested wait ended. `flow-start-recording`'s
-    // description tells the author that, so the claim has to stay true.
-    //
-    // The sequence must be a CLEAN one. A sequence that stopped short is refused
-    // a recording, so it could never reach a wait warning and would pass for the
-    // wrong reason. A nested wait that PASSED discriminates, because a top-level
-    // wait that passed is what gets re-probed.
     const registry = {
       invokeTool: vi.fn(async (id: string) => {
         if (id === "run-sequence")
@@ -2018,13 +2010,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("drops the verdict when the call that absorbed the edit recorded nothing", async () => {
-    // A refusal re-reads the file just as an append does, so it ABSORBS a hand
-    // edit — and once `session.flow` has caught up, the finish's length check
-    // compares the edit against itself and passes. The twins defeat the anchor
-    // compare that is left: step 1 diverges, step 2 is its byte-identical twin
-    // that AGREED, and deleting step 1 slides the verdict onto the twin that
-    // checked out. The refusal itself is correct either way; what it must not
-    // do is take a signal away without saying so.
     await startRecording("refused-absorb");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("refused-absorb", { condition: "visible", selector: { text: "Continue" } });
