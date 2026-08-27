@@ -352,8 +352,6 @@ function isSequenceBuilding(ch: string): boolean {
 
 /** The directional controls: no glyph of their own, but they reorder text. */
 const DIRECTIONAL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
-/** {@link DIRECTIONAL}, global - for {@link quoteScreenText}'s replace. */
-const DIRECTIONAL_G = new RegExp(DIRECTIONAL.source, "gu");
 
 /**
  * The two never-folded characters that draw no glyph but change which glyphs a
@@ -373,17 +371,53 @@ const RENDERING_AFFECTING = /[\u00ad\u180e]/u;
  * which is `Mn`.
  */
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+/**
+ * The C0 controls and DEL. `Cc` is NOT `Default_Ignorable_Code_Point`, so
+ * U+0000, U+001C-U+001F and DEL fell outside every question the notes ask, and
+ * the failure reason quoted them into tool JSON as raw bytes. A copy-paste out
+ * of a log or a PDF carries them, DEL is legal in HTML text, and the chromium
+ * walker joins DOM text-node values with no `Cc` filter.
+ *
+ * Tab, the line breaks, the vertical tab and the form feed are `Cc` too, and
+ * the fold already reads those as whitespace - {@link isFoldedWhitespace} takes
+ * them back out. The property rather than a range, because a range has to spell
+ * the control characters out and `no-control-regex` bans that.
+ */
+const CONTROL = /\p{Cc}/u;
+
 /** {@link DEFAULT_IGNORABLE}, non-global - for a single-character test. */
 const DEFAULT_IGNORABLE_ONE = new RegExp(DEFAULT_IGNORABLE.source, "u");
 
-/** True for a default-ignorable character that builds no glyph in sequence. */
-function isInertIgnorable(ch: string): boolean {
-  return DEFAULT_IGNORABLE_ONE.test(ch) && !isSequenceBuilding(ch);
+/** Whitespace, non-global - for a single-character test. */
+const WHITESPACE_ONE = /\s/u;
+
+/** True for whitespace the fold turns into a space or a line break. */
+function isFoldedWhitespace(ch: string): boolean {
+  return WHITESPACE_ONE.test(ch);
 }
 
-/** Every inert ignorable in `text`, in order, sequence-builders excluded. */
+/**
+ * Every character that draws nothing on its own: {@link DEFAULT_IGNORABLE} and
+ * {@link CONTROL} together. Wider than what the helpers keep, so each of them
+ * asks {@link isInertIgnorable} about a match rather than trusting the class.
+ */
+const UNDRAWN = new RegExp(`${DEFAULT_IGNORABLE.source}|${CONTROL.source}`, "gu");
+
+/**
+ * True for an undrawn character that builds no glyph in sequence. U+FEFF is
+ * asked as a default-ignorable, not as whitespace: it is both, and only the
+ * `Cc` branch defers to the fold.
+ */
+function isInertIgnorable(ch: string): boolean {
+  if (isSequenceBuilding(ch)) return false;
+  if (DEFAULT_IGNORABLE_ONE.test(ch)) return true;
+  return CONTROL.test(ch) && !isFoldedWhitespace(ch);
+}
+
+/** Every inert ignorable in `text`, in order. */
 function inertIgnorables(text: string): string[] {
-  return (text.match(DEFAULT_IGNORABLE) ?? []).filter((ch) => !isSequenceBuilding(ch));
+  return (text.match(UNDRAWN) ?? []).filter(isInertIgnorable);
 }
 
 /**
@@ -393,12 +427,12 @@ function inertIgnorables(text: string): string[] {
  * so they are removed here and then told apart by their own lead.
  */
 function withoutInertIgnorables(text: string): string {
-  return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) ? ch : ""));
+  return text.replace(UNDRAWN, (ch) => (isInertIgnorable(ch) ? "" : ch));
 }
 
 /** `text` with every inert ignorable removed except `keep`. */
 function keepOnlyIgnorable(text: string, keep: string): string {
-  return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) || ch === keep ? ch : ""));
+  return text.replace(UNDRAWN, (ch) => (isInertIgnorable(ch) && ch !== keep ? "" : ch));
 }
 
 /** Every inert ignorable in `text`, tagged with the count of visible characters before it. */
@@ -669,24 +703,32 @@ export function confusableTextNoteIn(haystack: string, needle: string): string |
 /**
  * Screen text, made safe for a failure message. A label with an unbalanced
  * U+202E survives the fold, and quoted as it stands it reverses every character
- * after it. Replace the directional controls with names, and keep the rest.
+ * after it. A {@link CONTROL} member is worse than confusing:
+ * quoted raw it puts a NUL or an ESC into the tool's JSON reply and into the
+ * log line beside it. Replace both classes with names, and keep the rest.
  *
  * An {@link LTR_BIDI} control the fold STRIPS is dropped instead of named. It
  * reorders nothing there, the comparison never saw it, and naming it printed
  * eight characters of ASCII the screen does not draw — directly above a
  * sentence telling the reader to copy what it does draw. Copying the named
- * form then missed a second time, with nothing to explain it.
+ * form then missed a second time, with nothing to explain it. A control
+ * character is not in that position: nothing folds it away, so the reader has
+ * to see it and take it out.
  */
 export function quoteScreenText(text: string): string {
   // Same question the fold asks. A bidi-sensitive string keeps its LTR
   // controls, so there they are named like the rest.
   const keepsLtr = isBidiSensitive(text);
-  return text.replace(DIRECTIONAL_G, (ch) =>
-    !keepsLtr && LTR_BIDI_ONE.test(ch)
-      ? ""
-      : `<U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`
-  );
+  return text.replace(QUOTE_UNSAFE_G, (ch) => {
+    // A tab or a line break prints as itself: the fold reads it as whitespace,
+    // so naming it would print ASCII the comparison does not want back.
+    if (isFoldedWhitespace(ch)) return ch;
+    return !keepsLtr && LTR_BIDI_ONE.test(ch) ? "" : `<${codepointName(ch)}>`;
+  });
 }
+
+/** What {@link quoteScreenText} must not print as it stands. */
+const QUOTE_UNSAFE_G = new RegExp(`${DIRECTIONAL.source}|${CONTROL.source}`, "gu");
 
 /**
  * A note that names the invisible characters in one string, with no comparison.

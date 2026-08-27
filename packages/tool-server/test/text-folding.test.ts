@@ -982,6 +982,31 @@ describe("the character sets are pinned member by member, not by a representativ
     expect(quoteScreenText("Add more languages…")).toBe("Add more languages…");
   });
 
+  it("names a control character rather than putting a raw byte in the reply", () => {
+    // Cc is not Default_Ignorable_Code_Point, so DEL and the C0 controls fell
+    // outside every question here - and the quote passed them through into the
+    // tool's JSON and the log line beside it. A copy-paste out of a log or a
+    // PDF is the usual source, and DEL is legal in HTML text.
+    const DEL = "\u007F";
+    const NUL = "\u0000";
+    expect(quoteScreenText(`Sign${DEL} in`)).toBe("Sign<U+007F> in");
+    expect(quoteScreenText(`Save${NUL} file`)).toBe("Save<U+0000> file");
+    expect(quoteScreenText("Save\u001B[0m")).toBe("Save<U+001B>[0m");
+    // The whitespace members fold to a space or a break, so they stay as they
+    // are: naming one would print ASCII the comparison does not want back.
+    expect(quoteScreenText("a\tb\nc")).toBe("a\tb\nc");
+  });
+
+  it("names a control character in the codepoint note as well", () => {
+    const DEL = "\u007F";
+    expect(equalsCI(`Sign${DEL} in`, "sign in")).toBe(false);
+    const note = confusableTextNote(`Sign${DEL} in`, "sign in")!;
+    expect(note).toContain("U+007F");
+    expect(note).toContain("invisible characters");
+    // And it stays silent when the control is not the only thing in the way.
+    expect(confusableTextNote(`Sign${DEL}in`, "sign in")).toBeUndefined();
+  });
+
   it("DROPS an LTR wrapper the fold strips, rather than naming it", () => {
     // Naming it printed eight characters of ASCII the screen does not draw, one
     // line above "copy the text exactly as it is quoted here" — and copying
