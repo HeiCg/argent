@@ -724,7 +724,8 @@ export type DeclaredRequires = {
   /**
    * Platforms the flow may run on. Non-empty when present; `ios` covers a
    * remote simulator too, matching how the `when: { platform }` guard folds
-   * `ios-remote` into `ios`.
+   * `ios-remote` into `ios`. Only on a run pointed at one, though: auto-detection
+   * never makes a remote simulator a candidate (`isBooted`).
    */
   platform?: WhenPlatform[];
   runtimeKind?: FlowRuntimeKind;

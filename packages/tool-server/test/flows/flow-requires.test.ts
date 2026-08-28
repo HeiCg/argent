@@ -1123,7 +1123,7 @@ describe("requirements narrow device auto-detection", () => {
     const err = await run(registry, "tv-only").catch((e: unknown) => e);
 
     expect((err as Error).message).toMatch(
-      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, kind unknown\\)`)
+      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, kind unknown, needs --device\\)`)
     );
     expect((err as Error).message).not.toMatch(/\? \(ios-remote/);
   });
@@ -1145,9 +1145,24 @@ describe("requirements narrow device auto-detection", () => {
     // so the readable `tv` changes the reporting and nothing else.
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
     expect((err as Error).message).toMatch(
-      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, tv\\)`)
+      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, tv, needs --device\\)`)
     );
     expect((err as Error).message).not.toMatch(/kind unknown/);
+  });
+
+  it("says a booted remote simulator is not one auto-detection can pick", async () => {
+    // `platformMeets` folds ios-remote into ios, so the row satisfies the block
+    // while `isBooted` keeps it out of the candidates. Enumerated bare, it reads
+    // as a Booted iOS device standing beside "no booted device satisfies".
+    await writeFlow("ios-only", { requires: { platform: ["ios"] } });
+    const { registry } = mockRegistry([androidEntry(ANDROID), remoteIosEntry(IOS_REMOTE, "mobile")]);
+
+    const err = await run(registry, "ios-only").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
+    expect((err as Error).message).toMatch(
+      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, needs --device\\)`)
+    );
   });
 
   it("enumerates a device outside an explicit --platform too", async () => {

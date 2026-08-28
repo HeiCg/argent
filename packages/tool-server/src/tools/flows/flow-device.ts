@@ -119,7 +119,11 @@ function isBooted(d: RawDevice): boolean {
 function describeDevice(d: RawDevice, withRuntimeKind = false): string {
   const state = d.state ? `, ${d.state}` : "";
   const kind = withRuntimeKind ? `, ${listedRuntimeKind(d) ?? "kind unknown"}` : "";
-  return `${deviceEntryId(d) ?? "?"} (${d.platform}${state}${kind})`;
+  // A booted remote simulator does satisfy `platform: [ios]` — `platformMeets`
+  // folds it — but `isBooted` never makes one a candidate, so a bare Booted row
+  // beside "no booted device satisfies" reads as a contradiction.
+  const reach = d.platform === "ios-remote" ? ", needs --device" : "";
+  return `${deviceEntryId(d) ?? "?"} (${d.platform}${state}${kind}${reach})`;
 }
 
 function deviceResolutionError(
