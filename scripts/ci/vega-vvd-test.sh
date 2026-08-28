@@ -280,10 +280,16 @@ clear_resp="$(curl -sS -m 60 -w '\n%{http_code}' -X POST "${TOOLS_URL}/tools/key
   -d "$(printf '{"udid":"%s","clear":true}' "$SERIAL")" 2>/dev/null)"
 clear_code="$(printf '%s' "$clear_resp" | tail -n 1)"
 echo "clear response: ${clear_resp:0:200}"
-if [ "$clear_code" = "400" ] && printf '%s' "$clear_resp" | grep -q "TOOL_CAPABILITY_UNSUPPORTED_OPERATION"; then
+# The code alone is not enough: TOOL_CAPABILITY_UNSUPPORTED_OPERATION is what
+# EVERY capability refusal returns, so a regression making `keyboard` wholly
+# unsupported on Vega would pass it. The message names this refusal in
+# particular (platforms/vega.ts), so match on both.
+if [ "$clear_code" = "400" ] &&
+   printf '%s' "$clear_resp" | grep -q "TOOL_CAPABILITY_UNSUPPORTED_OPERATION" &&
+   printf '%s' "$clear_resp" | grep -q "clear\` is not supported on Vega"; then
   echo "OK: keyboard clear refused on Vega as an unsupported operation"
 else
-  fail "keyboard clear should be refused on Vega (http='${clear_code}')"
+  fail "keyboard clear should be refused on Vega with its own message (http='${clear_code}')"
 fi
 endg
 

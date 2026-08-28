@@ -242,11 +242,11 @@ The guard accepts one `exists`, `visible`, `hidden` or `text` condition, or `{ p
 
 A `run:` path resolves against the directory of the flow file that contains the step. The `.yaml` suffix is optional.
 
-| Platform     | Behavior                                                                                                                                                                                    |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| iOS, Android | A nested fragment or end-to-end flow runs inline. A nested launch restarts the app                                                                                                          |
-| Chromium     | Each `launch` step boots one instance. A later launch boots a fresh instance and stops the previous one of that app. Argent runs `swipe` as a mouse drag. `pinch` and `rotate` are rejected |
-| Vega         | Use `tool: tv-remote` and `tool: keyboard` with `text` or `key`. `clear` and the touch directives are unsupported                                                                           |
+| Platform     | Behavior                                                                                                                                                                                                                                 |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| iOS, Android | A nested fragment or end-to-end flow runs inline. A nested launch restarts the app                                                                                                                                                       |
+| Chromium     | Each `launch` step boots one instance. A later launch boots a fresh instance and stops the previous one of that app. Argent runs `swipe` as a mouse drag. `pinch` and `rotate` are rejected                                              |
+| Vega, TV     | Use `tool: tv-remote` and `tool: keyboard`. `clear` is unsupported on Vega, Apple TV and Android TV. On Vega, `keyboard` also takes `key`; on the two TV targets it takes `text` only. The touch directives are unsupported on all three |
 
 A fragment whose `run:` chain reaches a launch cannot declare `executionPrerequisite`. Parsing accepts the file, the run rejects it.
 
