@@ -153,9 +153,11 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     merge: "prioritize-local",
     example: "~/Movies/argent",
   },
-  // Global-scope only: a checked-in `.argent/config.json` must not raise the
-  // ceiling on how much of the machine a script step may occupy. `merge` is
-  // nominal here — the project scope of a global-only key is never read.
+  // The two bounds below are global-scope only: a checked-in
+  // `.argent/config.json` must not raise the ceiling on how much of the machine
+  // a script step may occupy. `merge` is nominal there — the project scope of a
+  // global-only key is never read. `scripts.bash` after them is not a bound and
+  // takes both scopes.
   {
     key: "scripts.maxTimeoutMs",
     description:
@@ -176,7 +178,8 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
   {
     key: "scripts.heapLimitMb",
     description:
-      "Old-space heap limit, in MiB, given to each flow `script` process (default 512). " +
+      "Old-space heap limit, in MiB, given to each Node process a flow `script` step starts " +
+      "(default 512); a bash script is not bounded by it. " +
       `Values below ${MIN_SCRIPT_HEAP_LIMIT_MB} MiB are refused: that is already below what ` +
       "importing a real npm dependency needs, and under about 5 MiB the process dies inside " +
       "V8's own startup before any script runs.",
@@ -189,6 +192,26 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     merge: "prioritize-global",
     default: 512,
     example: "512",
+  },
+  {
+    key: "scripts.bash",
+    description:
+      "Absolute path to the bash a flow `script` step runs a `.sh` file with. Unset ⇒ the " +
+      "first bash on the tool server's PATH, then /bin/bash and /usr/bin/bash (on Windows, " +
+      "Git for Windows' bash.exe). Project scope is allowed here: which bash a project's own " +
+      "`.sh` files were written for is the project's own fact, and it raises no ceiling on " +
+      "the host.",
+    scopes: ["global", "project"],
+    // Deliberately as permissive as `asString`: `readScopeValue` hands back
+    // `undefined` for a value its `parse` rejected, which is indistinguishable
+    // from an absent key — so a schema that refused a relative path would make a
+    // hand-edited config file fall through to PATH and hide the mistake behind a
+    // bash that happens to exist on this machine. The resolver checks the value
+    // and refuses the step, naming the key.
+    parse: asString,
+    expected: "an absolute path to a bash executable",
+    merge: "prioritize-local",
+    example: "/opt/homebrew/bin/bash",
   },
 ] as const;
 

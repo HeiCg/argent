@@ -190,14 +190,14 @@ export type OnDiskSpelling =
 /**
  * Classify the supplied basename against `dir`'s listing. One classifier serves
  * every route that turns a caller's spelling into a file it will open — a flow,
- * or since the `script:` step a plain `.mjs` — so they can never drift apart in
- * which spellings they accept.
+ * or since the `script:` step a plain `.mjs` or `.sh` — so they can never drift
+ * apart in which spellings they accept.
  *
  * readdir, not realpath: realpath rewrites a symlinked flow to its target's
  * name, and a flow deliberately runs — and composes — under the link's own
  * name. Every call site hands a pure-ASCII basename (the flow-name charset,
- * plus ".yaml" or ".mjs"), so Unicode-normalizing filesystems cannot make the
- * comparison lie.
+ * plus ".yaml", ".mjs" or ".sh"), so Unicode-normalizing filesystems cannot make
+ * the comparison lie.
  *
  * What an `absent` verdict means is the caller's to decide, and they differ:
  * `flow_path` arrives with the boundary's stat already vouching for the file,
@@ -2531,7 +2531,7 @@ function parseScriptStep(raw: unknown, body: unknown): FlowStep {
   if (typeof body === "string") {
     badEntry(
       raw,
-      "a `script` step takes a map, not a bare path — write `script: { path: scripts/seed.mjs }`"
+      "a `script` step takes a map, not a bare path — write `script: { path: scripts/seed.sh }`"
     );
   }
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -2551,7 +2551,7 @@ export function parseScriptPath(raw: unknown, value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     badEntry(
       raw,
-      "a `script` step needs a `path` — a .mjs file path relative to this flow's file, e.g. `script: { path: scripts/seed.mjs }`"
+      "a `script` step needs a `path` — a .mjs or .sh file path relative to this flow's file, e.g. `script: { path: scripts/seed.mjs }`"
     );
   }
   if (value.includes("\\")) {
@@ -2563,23 +2563,41 @@ export function parseScriptPath(raw: unknown, value: unknown): string {
   if (path.posix.isAbsolute(value) || /^[A-Za-z]:/.test(value)) {
     badEntry(raw, "a `script` path must be relative to the flow file that references it");
   }
-  if (!value.endsWith(".mjs")) {
-    if (value.toLowerCase().endsWith(".mjs")) {
-      badEntry(raw, "a `script` path must use the lowercase .mjs extension");
+  if (!SCRIPT_EXTENSIONS.some((extension) => value.endsWith(extension))) {
+    const miscased = SCRIPT_EXTENSIONS.find((extension) => value.toLowerCase().endsWith(extension));
+    if (miscased) {
+      badEntry(raw, `a \`script\` path must use the lowercase ${miscased} extension`);
     }
     badEntry(
       raw,
-      "a `script` path must end in .mjs — the extension pins the module type whatever the project's package.json says"
+      "a `script` path must end in .mjs or .sh — the extension is what picks the interpreter, and .mjs also pins the module type whatever the project's package.json says"
     );
   }
   if (!SCRIPT_FILE_NAME_PATTERN.test(path.posix.basename(value))) {
     badEntry(
       raw,
-      `a \`script\` path's filename must match ${SCRIPT_FILE_NAME_PATTERN} — letters, digits, underscore, hyphen before the .mjs`
+      `a \`script\` path's filename must match ${SCRIPT_FILE_NAME_PATTERN} — letters, digits, underscore, hyphen before the extension`
     );
   }
   return value;
 }
+
+/**
+ * Which interpreter runs a `script` step's file, keyed on the extension
+ * {@link SCRIPT_FILE_NAME_PATTERN} accepted. There is no `language:` key to
+ * disagree with it: the extension already carries the language fact, and a
+ * second spelling of it would be a second thing for an author to get wrong and
+ * a second thing every refusal would have to print.
+ *
+ * `.mjs` runs under the tool server's own Node; `.sh` under the bash the
+ * executor resolves per step. Pinned against the pattern by one test, so
+ * widening either without the other fails a test rather than a flow.
+ */
+export function scriptInterpreter(scriptPath: string): "node" | "bash" {
+  return scriptPath.endsWith(".sh") ? "bash" : "node";
+}
+
+const SCRIPT_EXTENSIONS = [".mjs", ".sh"] as const;
 
 /**
  * Floor on a `script` step's `timeout`, sized from the fixed cost of the step
@@ -2590,6 +2608,16 @@ export function parseScriptPath(raw: unknown, value: unknown): string {
  * core busy, 0 of 20 finished within 30ms, 1 within 40ms and 17 within 50ms.
  * 100ms is the lowest round value that finished every trial in both states, so
  * below it the step is either out of reach or decided by host load.
+ *
+ * A `.sh` adds the interpreter lookup, the exchange directory and bash's own
+ * start in front of the script, and the floor was re-measured rather than
+ * assumed when bash arrived: on the published bundle layout, 30 runs each, the
+ * lookup is 5-9ms (almost all of it the one PATH probe), the exchange directory
+ * is under a millisecond, and a whole `.sh` step costs 8-14ms more than the
+ * `.mjs` step beside it at the median — the same order as the Node boot both
+ * pay. The floor stands for both, and for both it is tight rather than
+ * generous: a step that asks for 100ms is asking to be bounded by its own
+ * start.
  */
 const SCRIPT_MIN_TIMEOUT_MS = 100;
 

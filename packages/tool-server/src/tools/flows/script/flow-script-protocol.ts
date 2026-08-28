@@ -3,10 +3,15 @@
  * `flow-script-runner.mjs` child it forks: an `execute` request out, then
  * `started` and one terminal response back.
  *
- * Script logs never travel here — they ride stdout/stderr, so that console text
- * and any subprocess the script starts land in one stream in written order, and
- * so that a limit can apply while draining rather than after a whole message
- * has been serialized.
+ * The runner has two modes, and `interpreter` is what picks one. In `node` mode
+ * it rides in as an `--import` preload in front of the script itself, and the
+ * document crosses this channel in both directions. In `bash` mode it is the
+ * entry module and spawns bash as its own child, so the document travels
+ * through the two files the executor names in the request instead — bash has no
+ * IPC channel, and the runner closes its own to what it starts.
+ *
+ * Script logs never travel here — they ride stdout/stderr, which the parent
+ * drains and discards.
  */
 
 export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -22,8 +27,14 @@ export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const SCRIPT_MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
 export const SCRIPT_MAX_FAILURE_STACK_CHARS = 16 * 1024;
 
-export interface ScriptExecuteRequest {
+interface ScriptExecuteCommon {
   type: "execute";
+  deadlineMs: number;
+  maxOutputBytes: number;
+}
+
+export interface ScriptExecuteNodeRequest extends ScriptExecuteCommon {
+  interpreter: "node";
   /**
    * The script, as the real-path file URL Node resolved its entry module to.
    * The runner re-imports it — a cache hit — to tell a script that finished
@@ -31,11 +42,34 @@ export interface ScriptExecuteRequest {
    */
   scriptUrl: string;
   outputJson: string;
-  deadlineMs: number;
-  maxOutputBytes: number;
 }
 
-export type ScriptFailureType = "load" | "runtime" | "output" | "exit" | "protocol";
+export interface ScriptExecuteBashRequest extends ScriptExecuteCommon {
+  interpreter: "bash";
+  /** Absolute, resolved by the parent; the runner runs what it is told. */
+  interpreterPath: string;
+  /** bash's one argument, and `$0`. Forward slashes on every platform. */
+  scriptPath: string;
+  /** `$ARGENT_OUTPUT`: the document, in and out. Created by the parent. */
+  outputFile: string;
+  /** `$ARGENT_REASON`: the failure text, read only on a non-zero exit. */
+  reasonFile: string;
+}
+
+/**
+ * The runner never inspects an extension — it runs what the request names,
+ * which is what lets a test drive bash mode with any file name.
+ */
+export type ScriptExecuteRequest = ScriptExecuteNodeRequest | ScriptExecuteBashRequest;
+
+export type ScriptFailureType =
+  | "load"
+  | "runtime"
+  | "output"
+  | "exit"
+  | "protocol"
+  | "spawn"
+  | "signal";
 
 /**
  * Child → parent. `started` is the only thing that lets the parent tell "the
@@ -60,6 +94,11 @@ const FAILURE_TYPES: readonly ScriptFailureType[] = [
   "output",
   "exit",
   "protocol",
+  // Bash mode only: the runner spawns its own child there, so it is the side
+  // that learns bash could not be started or was killed by a signal. In node
+  // mode the parent reaches both conclusions itself.
+  "spawn",
+  "signal",
 ];
 
 export function parseScriptResponse(raw: unknown): ScriptResponse | null {

@@ -203,12 +203,15 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 
 ## Local scripts
 
-A `script:` step runs a local `.mjs` file and uses no device. **Add one only when the user asks for a script in the prompt.**
+A `script:` step runs a local script file and uses no device. **Add one only when the user asks for a script in the prompt.**
 
 ```yaml
 - script: { path: ../../scripts/seed-order.mjs }
+- script: { path: ../../scripts/seed-order.sh }
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
+
+The extension picks the interpreter: `.mjs` runs under Node, `.sh` under bash. There is no `language` key. Lowercase only; `.bash` and `.js` are refused.
 
 Record the step live with `flow-add-script`. Do not write it by hand. See [Live authoring](live-authoring.md#recorder-contract).
 
@@ -217,13 +220,23 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 - **`path`** resolves against the directory of the flow file that **contains the step**. Thus a fragment finds the same script in each flow that composes it. Always write the extension, and match the letter case on disk. Argent refuses a mis-cased name on every platform. A case-sensitive checkout, for example Linux CI, cannot open the file.
 - **`timeout`** is a time in milliseconds. The default is 30000 and the minimum is 100. The host caps the value at five minutes by default. Argent clamps a larger value and names the clamp in the step's reason.
 
-Argent runs the script from the project root, not from the directory of the script file. Thus `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`.
+Argent runs the script from the project root, not from the directory of the script file. Thus `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. In a `.sh`, `"$(dirname "${BASH_SOURCE[0]}")"` is the directory of the script file.
 
-Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file.
+Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file. A `.sh` resolves `curl`, `jq`, `adb` and `gh` against the PATH the tool-server started with, which an editor may have set to a short login PATH; the symptom is exit code 127.
 
 The failure verdict names the side at fault: **failed** names the script, and **errored** names the host that ran it.
 
 On Chromium the leading `launch:` boots before step 1, so a `script:` above it runs while the app is already running.
+
+### A `.sh` step
+
+- The exit code is the verdict. 0 passes.
+- `$ARGENT_OUTPUT` names a file holding the output document as JSON. Argent reads it after exit 0. Write a sibling and `mv` it into place: `> "$ARGENT_OUTPUT"` truncates the file before the command that fills it runs, and Argent refuses an empty one.
+- `$ARGENT_REASON` names a file for the failure text. Argent reads it after a non-zero exit and puts it in the step's reason. A failing script that writes nothing there reports only its exit code.
+- Argent runs `bash <file>`: no execute bit needed, the `#!` line is a comment, no arguments, stdin is empty. Nothing the script prints is reported.
+- Argent finds bash from `scripts.bash`, then PATH, then `/bin/bash` and `/usr/bin/bash` (Git for Windows on Windows). macOS ships bash 3.2 at `/bin/bash`; pin `scripts.bash` for bash 4 features.
+- Check the file out with LF line endings. CRLF fails under bash with `$'\r': command not found` and exit 127. Add `*.sh text eol=lf` to `.gitattributes`.
+- A background job dies with the step's process group unless it `setsid`s, and one that writes `$ARGENT_OUTPUT` after bash exits writes to a file nobody reads.
 
 ## Snapshots and standalone runs
 

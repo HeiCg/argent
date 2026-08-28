@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { SCRIPT_FILE_NAME_PATTERN } from "@argent/registry";
-import type { FlowStep } from "./flow-utils";
+import { scriptInterpreter, type FlowStep } from "./flow-utils";
 import { resolveFlowRelativeFile } from "./flow-file-refs";
 import {
   flowScriptExecutor,
@@ -88,6 +88,9 @@ export async function runFlowScriptStep(
 
   const result = await flowScriptExecutor().execute({
     scriptPath: canonical,
+    // Decided here, from the path the parser accepted, and passed explicitly:
+    // the executor runs what it is told and never inspects an extension.
+    interpreter: scriptInterpreter(target),
     output: {},
     ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}),
     projectRoot: request.projectRoot,

@@ -1,7 +1,9 @@
 // Imports nothing from the tool-server, so it needs no build step: it is copied
 // next to the compiled executor and resolves its watchdogs against its own URL.
 
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import { isMainThread, Worker } from "node:worker_threads";
 
 const LIFELINE_WATCHDOG = "flow-script-watchdog-lifeline.mjs";
@@ -24,6 +26,13 @@ let probing = false;
 let idleResources = [];
 
 let runnerIsSending = false;
+
+/**
+ * Set before anything can act on it, and read only by `exitOnParentDisconnect`.
+ * In bash mode the process this file runs in has a child that nothing else will
+ * reap once it is gone, so its exits are not interchangeable with node mode's.
+ */
+let bashMode = false;
 
 const ENTRY_SETTLE_PROBE_MS = 1_000;
 
@@ -65,6 +74,30 @@ const decodeJson = JSON.parse;
 
 const runnerListeners = [];
 
+/**
+ * Every pattern and separator the functions below read, declared ABOVE the
+ * activation call rather than beside its reader.
+ *
+ * `await prepare()` suspends this module's evaluation, and in bash mode
+ * `prepare` never returns — it parks in `never()` so no entry module can load
+ * behind the verdict — so a `const` written after that line stays in its
+ * temporal dead zone for the life of the process. `errorMessage` is reached
+ * from bash mode's very first failure (a bash that would not start), and
+ * reading `CAUSED_BY` from there threw a ReferenceError that replaced the
+ * report with an exit code 1 the parent could only call `protocol`. Node mode
+ * had the same hazard on its own decode-failure path.
+ */
+const POSIX_ERRNO_RE = /^E[A-Z]+$/;
+
+/** Node's module loader, ESM and CommonJS alike. */
+const LOADER_FRAME_RE = /node:internal\/modules\//;
+
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+const MAX_CAUSE_DEPTH = 8;
+const CAUSED_BY = " — caused by: ";
+const ALSO = "; ";
+
 if (isMainThread && process.env[ACTIVATION_ENV] === "1") {
   delete process.env[ACTIVATION_ENV];
   await prepare();
@@ -84,6 +117,13 @@ async function prepare() {
 
   maxOutputBytes = request.maxOutputBytes;
   startWatchdogs(request.deadlineMs);
+
+  // The whole node-mode apparatus below — the `uncaughtException` claim, the
+  // `beforeExit` settle probe, `closeChannelToScript`, `reportOnScriptExit`,
+  // the idle-resource snapshot and the entry re-import — guards script code
+  // running INSIDE this process. In bash mode none of it does: the script is a
+  // child, and its verdict is an exit status.
+  if (request.interpreter === "bash") return runBash(request);
 
   try {
     globalThis.output = decodeJson(request.outputJson);
@@ -151,6 +191,242 @@ async function prepare() {
   // Read last, so it is the loop as the script inherits it. Node awaits this
   // module before it loads the entry, so there is no later point that holds.
   idleResources = process.getActiveResourcesInfo();
+}
+
+/**
+ * Bash mode: bash is an ordinary child of this process, and this process leads
+ * the group both watchdogs kill — so the parent's group stop, the deadline
+ * watchdog's kill and the lifeline watchdog's kill all reach a bash descendant
+ * with no new code, and the parent classifies a bash step through exactly the
+ * `classifyOutcome` a `.mjs` step goes through.
+ */
+function runBash(request) {
+  bashMode = true;
+  // Registered here for the reason node mode registers it here: Node references
+  // the IPC channel while a `disconnect` listener exists.
+  keepListener("disconnect", exitOnParentDisconnect);
+
+  let child;
+  // In this process, 3 is the parent's sink, 4 is the lifeline and 5 is the
+  // protocol channel. A bash `echo … >&5` landing on the protocol channel would
+  // be parsed by Node inside its own read callback in the parent, and a forged
+  // `result` line would be a forged verdict. Node marks every descriptor it
+  // inherited close-on-exec at startup, so `"ignore"` in those slots happens to
+  // close them — but that is a runtime startup detail, not a contract this may
+  // rest on. Three null devices make the guarantee this process's own, on every
+  // platform. One descriptor in three slots would be closed three times in the
+  // child, which works and should not be relied on.
+  const nulls = [];
+  try {
+    for (let slot = 0; slot < 3; slot++) nulls.push(fs.openSync(os.devNull, "r+"));
+    child = spawn(request.interpreterPath, [request.scriptPath], {
+      // The parent chose it, and it built this process's environment: the
+      // allowlist, minus the activation flag this file deleted before anything
+      // else ran, minus the `NODE_CHANNEL_FD` Node removes at its own startup.
+      // The two exchange names are all this side adds.
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ARGENT_OUTPUT: request.outputFile,
+        ARGENT_REASON: request.reasonFile,
+      },
+      // `bash <file>`, never `shell: true` and never the shebang: a path with a
+      // space or a `$` must reach bash as one argument, the file needs no
+      // execute bit, and honouring a `#!` would run an interpreter other than
+      // the one the step resolved, reports and lets an operator pin. No `-e` or
+      // `-u` either — strictness is the script's own `set -euo pipefail`.
+      //
+      // stdin is the null device, so a `read` gets end of file; there is no
+      // caller to answer it. stdout and stderr are this process's pipes, which
+      // the parent drains and discards.
+      stdio: ["ignore", "inherit", "inherit", ...nulls],
+      // bash joins this process's group on POSIX; on Windows the parent's
+      // `taskkill /t` on this process walks to it.
+      windowsHide: true,
+    });
+  } catch (err) {
+    finish(spawnFailure(request, err));
+    return never();
+  } finally {
+    for (const fd of nulls) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Already closed by a spawn that threw after taking it.
+      }
+    }
+  }
+
+  // The only thing that lets the parent tell "the runner never began the
+  // script" apart from "the script stopped its own process".
+  child.on("spawn", () => sendToParent({ type: "started" }));
+  child.on("error", (err) => finish(spawnFailure(request, err)));
+  child.on("exit", (code, signal) => {
+    // One of the two is always non-null for a process that really ran, so both
+    // null is a spawn that failed — and Node says `exit` "may or may not"
+    // follow `error` there. Reading it as an exit code of 0 would send the
+    // parent a document nothing wrote; the `error` handler above is what
+    // reports it, and the deadline watchdog bounds a spawn that reported
+    // neither.
+    if (code === null && signal === null) return;
+    finish(bashOutcome(request, code, signal));
+  });
+  return never();
+}
+
+function spawnFailure(request, err) {
+  return {
+    type: "failure",
+    failureType: "spawn",
+    message: `bash (${request.interpreterPath}) could not be started: ${errorMessage(err)}`,
+  };
+}
+
+/**
+ * The exit status is the whole verdict. A `128+N` status is bash reporting a
+ * foreground command killed by signal N, and it is read as the script's own
+ * exit code — the script chose to run that command and could have handled its
+ * status — so it stays a `fail` and the message does not try to decode it. A
+ * signal on THIS child is a different thing: nothing the script did.
+ */
+function bashOutcome(request, code, signal) {
+  if (signal) {
+    return {
+      type: "failure",
+      failureType: "signal",
+      message:
+        `The script was killed by ${signal} before it exited ` +
+        `(bash: ${request.interpreterPath}).`,
+    };
+  }
+  const status = code ?? 0;
+  if (status !== 0) {
+    const reason = readReasonFile(request.reasonFile);
+    return {
+      type: "failure",
+      failureType: "exit",
+      message:
+        `The script exited with code ${status} (bash: ${request.interpreterPath}).` +
+        exitCodeHint(status) +
+        (reason ? ` ${reason}` : ""),
+    };
+  }
+  const read = readOutputFile(request.outputFile, request.maxOutputBytes);
+  return read.error
+    ? { type: "failure", failureType: "output", message: read.error }
+    : { type: "result", outputJson: read.json };
+}
+
+/**
+ * The two statuses that carry a meaning of bash's own rather than the script's.
+ * In a terminal the author would see the line that caused either; here the
+ * report is all there is, and both are the cases a missing tool produces.
+ */
+function exitCodeHint(status) {
+  if (status === 127) {
+    return (
+      " Code 127 is bash's own \"command not found\": a tool missing from the tool server's PATH " +
+      "snapshot, or a script checked out with CRLF line endings."
+    );
+  }
+  if (status === 126) return ' Code 126 is bash\'s own "found, but not executable".';
+  return "";
+}
+
+/**
+ * The document, after exit 0. One bounded read of `maxOutputBytes + 1` bytes:
+ * the text becomes one IPC message the parent deserializes whole, and a `stat`
+ * first would leave the read itself unbounded against a descendant still
+ * writing. The parent parses and validates it exactly as it does a `.mjs`
+ * script's — `encodeOutput` is for a live JavaScript value and JSON text is not
+ * one.
+ */
+function readOutputFile(file, maxOutputBytes) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch (err) {
+    return {
+      error:
+        err && err.code === "ENOENT"
+          ? "the file named by $ARGENT_OUTPUT is gone, so the script returned no output document"
+          : `the file named by $ARGENT_OUTPUT could not be read: ${errorMessage(err)}`,
+    };
+  }
+  try {
+    const cap = maxOutputBytes + 1;
+    const buffer = Buffer.alloc(cap);
+    const read = readInto(fd, buffer, cap);
+    if (read > maxOutputBytes) {
+      return {
+        error:
+          `the document the script wrote to $ARGENT_OUTPUT is over the ` +
+          `${describeBytes(maxOutputBytes)} limit`,
+      };
+    }
+    if (read === 0) {
+      return {
+        error:
+          "the file named by $ARGENT_OUTPUT is empty — a redirection truncates it before the " +
+          "command writing it runs, so write to a sibling and `mv` it into place",
+      };
+    }
+    return { json: buffer.subarray(0, read).toString("utf8") };
+  } catch (err) {
+    return { error: `the file named by $ARGENT_OUTPUT could not be read: ${errorMessage(err)}` };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The failure text, read only on a non-zero exit. `MAX_FAILURE_MESSAGE_CHARS`
+ * counts characters, so four bytes per character is the widest the ceiling can
+ * be — plus room to see that more followed, and a cut on a UTF-8 boundary so a
+ * character split by the bound does not arrive as a replacement. `finish`
+ * clamps the whole message afterwards, and the marker's count is of what was
+ * read rather than of the file.
+ */
+function readReasonFile(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    // Never written, or the script removed it. A failed step that wrote no
+    // reason says only its exit code.
+    return "";
+  }
+  try {
+    const keep = MAX_FAILURE_MESSAGE_CHARS * 4;
+    const buffer = Buffer.alloc(keep + 4);
+    const read = readInto(fd, buffer, buffer.length);
+    return buffer
+      .subarray(0, utf8SafeCut(buffer, Math.min(read, keep)))
+      .toString("utf8")
+      .trim();
+  } catch {
+    return "";
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Reads until the buffer is full or the file ends; a short read is not an end. */
+function readInto(fd, buffer, cap) {
+  let read = 0;
+  while (read < cap) {
+    const chunk = fs.readSync(fd, buffer, read, cap - read, null);
+    if (chunk === 0) break;
+    read += chunk;
+  }
+  return read;
+}
+
+/** In step with the parent's copy, which this file cannot import. */
+function utf8SafeCut(buffer, max) {
+  let cut = Math.min(max, buffer.length);
+  while (cut > 0 && (buffer[cut] & 0xc0) === 0x80) cut -= 1;
+  return cut;
 }
 
 /**
@@ -311,9 +587,44 @@ function acknowledge(args) {
 /**
  * Only reached while the event loop is still turning; a synchronous infinite
  * loop never gets here, which is what the lifeline watchdog thread is for.
+ *
+ * In bash mode a bare exit would leave bash — and everything bash started —
+ * running under a runner that is gone, so this takes the group first. The four
+ * lines are in step with the lifeline watchdog's `stop`, which is a module
+ * constant on the worker's own thread and so cannot be called from here.
  */
 function exitOnParentDisconnect() {
-  realExit(0);
+  if (!bashMode) {
+    realExit(0);
+    return;
+  }
+  stopOwnGroup();
+  process.kill(process.pid, "SIGKILL");
+}
+
+/**
+ * In step with both watchdogs' `stop`. On Windows there is no group to name, so
+ * `taskkill /t` walks the live tree from this process down — which reaches
+ * bash and a `.mjs` script's own subprocesses alike, neither of which anything
+ * reached there before.
+ */
+function stopOwnGroup() {
+  try {
+    process.kill(-process.pid, "SIGKILL");
+  } catch {
+    // No process group to name (Windows, or a runner that never led one).
+  }
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/pid", String(process.pid), "/t", "/f"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+    } catch {
+      // taskkill is absent or could not be launched; the self-kill is what is
+      // left, and it is the outcome this call never returns from anyway.
+    }
+  }
 }
 
 function nextRequest() {
@@ -330,13 +641,27 @@ function never() {
   return new Promise(() => {});
 }
 
+/**
+ * The protocol carries no version field, so an absent `interpreter` means the
+ * pre-2.7 shape — node. The loader resolves whichever runner sits beside the
+ * compiled executor, so an older parent really can reach this file.
+ */
 function parseRequest(raw) {
   if (typeof raw !== "object" || raw === null) return null;
   if (raw.type !== "execute") return null;
-  if (typeof raw.scriptUrl !== "string") return null;
-  if (typeof raw.outputJson !== "string") return null;
   if (!Number.isFinite(raw.deadlineMs) || raw.deadlineMs <= 0) return null;
   if (!Number.isFinite(raw.maxOutputBytes) || raw.maxOutputBytes <= 0) return null;
+  const interpreter = raw.interpreter ?? "node";
+  if (interpreter === "node") {
+    if (typeof raw.scriptUrl !== "string") return null;
+    if (typeof raw.outputJson !== "string") return null;
+    return { ...raw, interpreter };
+  }
+  if (interpreter !== "bash") return null;
+  if (typeof raw.interpreterPath !== "string" || raw.interpreterPath === "") return null;
+  if (typeof raw.scriptPath !== "string" || raw.scriptPath === "") return null;
+  if (typeof raw.outputFile !== "string" || raw.outputFile === "") return null;
+  if (typeof raw.reasonFile !== "string" || raw.reasonFile === "") return null;
   return raw;
 }
 
@@ -404,11 +729,6 @@ function classifyScriptError(err) {
   if (typeof code === "string" && POSIX_ERRNO_RE.test(code)) return fromLoader ? "load" : "runtime";
   return "runtime";
 }
-
-const POSIX_ERRNO_RE = /^E[A-Z]+$/;
-
-/** Node's module loader, ESM and CommonJS alike. */
-const LOADER_FRAME_RE = /node:internal\/modules\//;
 
 /**
  * True only for a loader frame with no frame naming a file above it. A file
@@ -551,8 +871,6 @@ function isPlainObject(value) {
   return proto === Object.prototype || proto === null;
 }
 
-const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-
 function memberPath(key) {
   return IDENTIFIER_RE.test(key) ? `.${key}` : `[${encodeJson(key)}]`;
 }
@@ -599,10 +917,6 @@ function describeThrown(value) {
 function addPart(parts, joiner, text) {
   if (text && !parts.some((part) => part.text.includes(text))) parts.push({ joiner, text });
 }
-
-const MAX_CAUSE_DEPTH = 8;
-const CAUSED_BY = " — caused by: ";
-const ALSO = "; ";
 
 function visitError(err, depth, joiner, parts, seen) {
   if (depth > MAX_CAUSE_DEPTH) return;

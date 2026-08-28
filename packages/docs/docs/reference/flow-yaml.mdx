@@ -123,7 +123,7 @@ Each step contains one directive. A failed directive stops the flow.
 | `wait`       | `<milliseconds>`                                                   | Pause for a fixed time                                                                            |
 | `snapshot`   | `<name>` or `{ name, maxMismatch, cropOn }`                        | Compare a screenshot with a stored baseline. See [Snapshots](#snapshots)                          |
 | `run`        | `<path>`                                                           | Run another flow file inline. See [Composition](#composition)                                     |
-| `script`     | `{ path, timeout }`                                                | Run a local `.mjs` file in a new Node process. See [Local scripts](#local-scripts)                |
+| `script`     | `{ path, timeout }`                                                | Run a local `.mjs` or `.sh` file in a new process. See [Local scripts](#local-scripts)            |
 | `when`       | `{ <condition> }` or `{ platform }`, with `steps:`                 | Run the nested steps only when the condition holds. See [Optional steps](#optional-steps)         |
 | `echo`       | `<message>`                                                        | Print a message in the report                                                                     |
 | `tool`       | `<tool name>`, with `args:` and optional `delayMs:`                | Call any Argent tool with the given arguments                                                     |
@@ -243,17 +243,27 @@ Use a snapshot for layout, color, spacing, typography, clipping and icons. Do no
 
 ```yaml
 - script: { path: ../../scripts/seed-order.mjs }
+- script: { path: ../../scripts/seed-order.sh }
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-A `script` step runs a local `.mjs` file in a new Node process. Use a script for work that no device step can do, for example to seed a database or to clean up after a run.
+A `script` step runs a local script file in a new process. Use a script for work that no device step can do, for example to seed a database or to clean up after a run.
+
+The extension selects the interpreter. There is no `language` key.
+
+| Extension | Interpreter                                |
+| --------- | ------------------------------------------ |
+| `.mjs`    | Node.js, the one that runs the tool-server |
+| `.sh`     | bash. See [Bash scripts](#bash-scripts)    |
+
+`.sh` support is newer than `.mjs` support. A flow that names a `.sh` does not parse on an Argent that predates it. The error names the extension. Run `argent --version` on the host that reports the error.
 
 The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
-| Key       | Required | Description                                                                                                                        |
-| --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `path`    | yes      | An `.mjs` file, relative to the flow file that holds the step. Write the extension in lowercase, and match the letter case on disk |
-| `timeout` | no       | The time limit of the step in milliseconds. The minimum is 100, and the default is 30000                                           |
+| Key       | Required | Description                                                                                                                                 |
+| --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | yes      | An `.mjs` or `.sh` file, relative to the flow file that holds the step. Write the extension in lowercase, and match the letter case on disk |
+| `timeout` | no       | The time limit of the step in milliseconds. The minimum is 100, and the default is 30000                                                    |
 
 Argent runs the script with the project root as the working directory. Argent gives the script an allowlist of environment names, not your full environment. The allowlist holds these groups:
 
@@ -272,14 +282,66 @@ A failed step stops the flow. The verdict names the side that caused the failure
 
 | Verdict | Cause      | Examples                                                                                                                   |
 | ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Failed  | The script | A missing file, a load error, a thrown error, or a non-zero exit code                                                      |
+| Failed  | The script | A missing file, a load error, a thrown error, a non-zero exit code, or an output document that is not a JSON object        |
 | Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
 
-Parsing rejects a `timeout` below 100 milliseconds. The step starts a Node process before the script runs, and that start alone costs tens of milliseconds. A smaller limit ends the step at the time limit, or makes the result depend on the load of the host.
+Parsing rejects a `timeout` below 100 milliseconds. The step starts a process before the script runs, and that start alone costs tens of milliseconds. A smaller limit ends the step at the time limit, or makes the result depend on the load of the host.
 
-`scripts.maxTimeoutMs` caps the `timeout` of each step. `scripts.heapLimitMb` sets the heap of the process. See [Available keys](/docs/reference/configuration#available-keys).
+`scripts.maxTimeoutMs` caps the `timeout` of each step. `scripts.heapLimitMb` sets the heap of each Node process a step starts. A bash script has no memory limit. See [Available keys](/docs/reference/configuration#available-keys).
 
 On Chromium, Argent boots the app before step 1. A script above the `launch` step therefore runs while the app is already running.
+
+### Bash scripts
+
+```bash
+# scripts/seed-order.sh
+set -euo pipefail
+api="$(cat ./fixtures/api-url.txt)"
+id="$(curl -fsS -X POST "$api/orders" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+printf '{"order":{"id":"%s"}}\n' "$id" > "$ARGENT_OUTPUT.new"
+mv "$ARGENT_OUTPUT.new" "$ARGENT_OUTPUT"
+```
+
+The script reads the URL from a file because Argent gives it an allowlist of environment names, not your shell environment. There is no `env` key.
+
+A `.sh` file is a trusted script, the same as an `.mjs` file. Argent does not sandbox it. It has the reach of the account that runs the tool-server.
+
+The contract of a bash script:
+
+| Channel          | Meaning                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| The environment  | The input. See the allowlist above                                                                  |
+| `$ARGENT_OUTPUT` | A file that holds the output document as JSON. Argent reads it after an exit code of 0              |
+| `$ARGENT_REASON` | A file for the failure text. Argent reads it after a different exit code, and adds it to the report |
+| The exit code    | The verdict. 0 passes the step. A different code fails it                                           |
+
+Argent runs the file as `bash <file>`. The file needs no execute bit, and Argent ignores the `#!` line. The script gets no arguments. `$0` is the path of the script file. The standard input of the script is empty, so a `read` gets the end of the file. Argent does not report the standard output or the standard error of the script.
+
+Write the output document to a sibling file, then move the file into place. A redirection to `$ARGENT_OUTPUT` empties the file before the command that writes it runs. Argent refuses an empty file. Argent also refuses a file that is missing, a document that is not a JSON object, and a document above 1 MiB.
+
+A failed step that writes no reason shows only the exit code. Two exit codes have a meaning of bash: 127 means "command not found", and 126 means "found, but not executable".
+
+#### The bash that Argent runs
+
+Argent looks for bash in this order, and takes the first result:
+
+1. The `scripts.bash` key. See [Available keys](/docs/reference/configuration#available-keys). A value that is set but wrong fails the step. Argent does not fall through to the next source
+2. `bash` on the PATH of the tool-server
+3. `/bin/bash`, then `/usr/bin/bash`. On Windows, the `bash.exe` of Git for Windows
+
+macOS ships bash 3.2 at `/bin/bash`. Homebrew installs bash 5 earlier on the PATH. Associative arrays, `${var,,}` and `mapfile` need bash 4 or later. Set `scripts.bash` to pin one version. The report names the interpreter path in each failure.
+
+#### What a bash author must know
+
+- **The PATH of the tool-server is a snapshot from when it started.** `curl`, `jq`, `adb` and `gh` resolve against that snapshot. An editor can start the tool-server with a short login PATH. The symptom is exit code 127. Restart the tool-server after you change the PATH
+- **A variable your shell exports does not reach the script.** `DATABASE_URL` and `NODE_ENV` are absent even when your shell sets them. Read a secret or a URL from a file
+- **Use LF line endings.** A `.sh` file with CRLF line endings fails under bash with `$'\r': command not found` and exit code 127. Argent does not read the source of the script, so Argent cannot warn you. Add `*.sh text eol=lf` to `.gitattributes`
+- **On Windows, Argent runs the bash of Git for Windows.** `$PWD` is a `/c/...` path there, and `$0` and `$ARGENT_OUTPUT` are `C:/...` paths. Both forms work as an argument and in a redirection. Write for bash, not for `cmd.exe`
+- **A background job ends with the step.** Argent stops the process group of the step after the script exits. A job survives only after `setsid`. A background job that holds the standard output open costs the step a wait of 500 milliseconds
+- **The exchange files are read when bash exits.** A background job that writes `$ARGENT_OUTPUT` later writes to a file that nobody reads
+- **A `TERM` trap gets 1.5 seconds.** Argent then sends `KILL` to the group. bash also holds a trap until the foreground command returns
+
+Argent writes `$ARGENT_OUTPUT` and `$ARGENT_REASON` into a private directory of the step. The directory is readable by your user only. Argent removes the directory when the step ends. A tool-server that dies during the step leaves the directory behind; the next bash step on a new tool-server then removes it. The report never carries the document.
 
 ## The `argent flow` command
 

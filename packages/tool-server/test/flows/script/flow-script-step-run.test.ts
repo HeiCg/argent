@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { ArtifactStore, type Registry, type ToolContext } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../../src/tools/flows/flow-run";
 import { stepRequiresDevice } from "../../../src/tools/flows/flow-device";
+import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
 
 /**
  * The `script:` step in a run; the executor's own behaviour is covered beside
@@ -119,6 +120,18 @@ async function until(predicate: () => boolean, label: string, timeoutMs = 15_000
   throw new Error(`timed out waiting for ${label}`);
 }
 
+/** The bash cases skip where there is none; see flow-script-bash.test.ts. */
+let noBash: string | undefined;
+
+beforeAll(async () => {
+  const found = await resolveBashInterpreter(undefined);
+  if (!("path" in found)) noBash = found.problem;
+});
+
+function skipWithoutBash(ctx: { skip: (note?: string) => void }): void {
+  if (noBash) ctx.skip(`this host has no bash to run a .sh step with: ${noBash}`);
+}
+
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "flow-script-step-"));
 });
@@ -176,6 +189,87 @@ describe("a script step in a run", () => {
   it("classifies as needing no device", () => {
     const registry = mockRegistry().registry;
     expect(stepRequiresDevice(registry, { kind: "script", path: "seed.mjs" })).toBe(false);
+    expect(stepRequiresDevice(registry, { kind: "script", path: "seed.sh" })).toBe(false);
+  });
+});
+
+describe("a bash step in a run", () => {
+  it("runs the .sh, passes, and reports nothing the script printed", async (ctx) => {
+    skipWithoutBash(ctx);
+    await write(
+      "scripts/seed.sh",
+      `set -euo pipefail\n` +
+        `echo "seeded order 4711"\n` +
+        `echo "and a warning" >&2\n` +
+        `printf 'ran' > ${JSON.stringify(markPath("seed-sh"))}\n`
+    );
+    await flow("seed-sh", "steps:\n  - script: { path: ../../scripts/seed.sh }\n");
+
+    const { result, invokeTool } = await runFlow("seed-sh");
+
+    expect(result.ok).toBe(true);
+    expect(result.steps[0]).toMatchObject({
+      kind: "script",
+      status: "pass",
+      target: "../../scripts/seed.sh",
+    });
+    const whole = JSON.stringify(result);
+    expect(whole).not.toContain("seeded order 4711");
+    expect(whole).not.toContain("and a warning");
+    expect(readMark("seed-sh")).toBe("ran");
+    expect(result.device).toBe("");
+    expect(listedDevices(invokeTool)).toBe(false);
+  });
+
+  it("stops the flow on a failing .sh and carries its reason into the report", async (ctx) => {
+    skipWithoutBash(ctx);
+    await write("scripts/boom.sh", `echo "seed API returned 500" > "$ARGENT_REASON"\nexit 1\n`);
+    await flow(
+      "boom-sh",
+      "steps:\n" +
+        "  - script: { path: ../../scripts/boom.sh }\n" +
+        "  - echo: never reached\n" +
+        "  - wait: 1\n"
+    );
+
+    const { result } = await runFlow("boom-sh");
+
+    expect(result.ok).toBe(false);
+    expect(result.steps[0]).toMatchObject({ kind: "script", status: "fail" });
+    expect(result.steps[0]!.reason).toContain("seed API returned 500");
+    expect(result.steps.slice(1).map((s) => [s.kind, s.status])).toEqual([
+      ["echo", "skip"],
+      ["wait", "skip"],
+    ]);
+  });
+
+  it("runs a .mjs and a .sh in one flow", async (ctx) => {
+    skipWithoutBash(ctx);
+    await markingScript("scripts/first.mjs", "mixed-mjs");
+    await write("scripts/second.sh", `printf 'ran' > ${JSON.stringify(markPath("mixed-sh"))}\n`);
+    await flow(
+      "mixed",
+      "steps:\n" +
+        "  - script: { path: ../../scripts/first.mjs }\n" +
+        "  - script: { path: ../../scripts/second.sh }\n"
+    );
+
+    const { result } = await runFlow("mixed");
+
+    expect(result.steps.map((s) => s.status)).toEqual(["pass", "pass"]);
+    expect(readMark("mixed-mjs")).toBe("mixed-mjs");
+    expect(readMark("mixed-sh")).toBe("ran");
+  });
+
+  it("reports a looping .sh stopped at its time limit as an error", async (ctx) => {
+    skipWithoutBash(ctx);
+    await write("scripts/slow.sh", `while true; do sleep 1; done\n`);
+    await flow("slow-sh", "steps:\n  - script: { path: ../../scripts/slow.sh, timeout: 800 }\n");
+
+    const { result } = await runFlow("slow-sh");
+
+    expect(result.steps[0]).toMatchObject({ status: "error" });
+    expect(result.steps[0]!.reason).toMatch(/did not finish within its 800ms time limit/);
   });
 });
 
@@ -315,6 +409,32 @@ describe("a script path is checked at its own step", () => {
       'mis-cased script path "../../scripts/CreateUser.mjs"'
     );
     expect(result.steps[0]!.reason).toContain('write it as "../../scripts/createUser.mjs"');
+  });
+
+  // The casing check takes the widened pattern, so the recovery it quotes has
+  // to name both extensions rather than the one it named before bash.
+  it("refuses a mis-cased .sh the same way, quoting the widened pattern", async () => {
+    await write("scripts/createUser.sh", `exit 0\n`);
+    await flow("cased-sh", "steps:\n  - script: { path: ../../scripts/CreateUser.sh }\n");
+
+    const { result } = await runFlow("cased-sh");
+
+    expect(result.steps[0]).toMatchObject({ status: "error" });
+    expect(result.steps[0]!.reason).toContain(
+      'mis-cased script path "../../scripts/CreateUser.sh"'
+    );
+    expect(result.steps[0]!.reason).toContain('write it as "../../scripts/createUser.sh"');
+  });
+
+  it("asks for a rename quoting a pattern that names both extensions", async () => {
+    await write("scripts/ALT.SH", `exit 0\n`);
+    await flow("noncase-sh", "steps:\n  - script: { path: ../../scripts/alt.sh }\n");
+
+    const { result } = await runFlow("noncase-sh");
+
+    expect(result.steps[0]).toMatchObject({ status: "error" });
+    expect(result.steps[0]!.reason).toContain('rename "ALT.SH" to "alt.sh" to run it');
+    expect(result.steps[0]!.reason).toContain("mjs|sh");
   });
 
   it("refuses a mis-cased spelling of a script reached through a cross-directory symlink", async () => {
@@ -525,6 +645,31 @@ describe("a script step in an uploaded flow", () => {
         }
       )
     ).rejects.toThrow(/script is not on this host/i);
+  });
+
+  it("is rejected naming a .sh step just as it names a .mjs one", async () => {
+    const uploaded = await write(
+      "materialized-upload.yaml",
+      "steps:\n  - script: { path: seed.sh }\n"
+    );
+    const { registry } = mockRegistry({ booted: [DEVICE] });
+
+    await expect(
+      createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: root, flow_file: uploaded, device: DEVICE },
+        {
+          artifacts: new ArtifactStore(),
+          fileInputs: {
+            flow_file: {
+              clientPath: "/client/.argent/flows/main.yaml",
+              presentOnHost: false,
+              viaUpload: true,
+            },
+          },
+        }
+      )
+    ).rejects.toThrow(/script: \{ path: seed\.sh \}/);
   });
 
   it("is rejected from inside a when: block that would not fire", async () => {

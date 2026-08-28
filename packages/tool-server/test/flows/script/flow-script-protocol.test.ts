@@ -87,6 +87,16 @@ describe("script response parsing", () => {
     ).toEqual({ type: "failure", failureType: "runtime", message: "x" });
   });
 
+  // Both arise only in bash mode, where the runner spawns its own child and so
+  // is the side that learns bash could not start or was killed.
+  it.each(["spawn", "signal"] as const)("accepts the bash-mode failure type %s", (failureType) => {
+    expect(parseScriptResponse({ type: "failure", failureType, message: "x" })).toEqual({
+      type: "failure",
+      failureType,
+      message: "x",
+    });
+  });
+
   it.each([
     ["a non-object", "started"],
     ["null", null],
@@ -517,6 +527,42 @@ describe("flow script runner — the watchdogs, driven directly", () => {
         maxOutputBytes: 1,
       },
     ],
+    // The protocol carries no version field, so an interpreter the runner does
+    // not know is malformed rather than a default.
+    [
+      "a request naming an interpreter the runner does not know",
+      {
+        type: "execute",
+        interpreter: "zsh",
+        scriptUrl: "file:///x",
+        outputJson: "{}",
+        deadlineMs: 1,
+        maxOutputBytes: 1,
+      },
+    ],
+    [
+      "a bash request with no interpreter path",
+      {
+        type: "execute",
+        interpreter: "bash",
+        scriptPath: "/tmp/x.sh",
+        outputFile: "/tmp/o.json",
+        reasonFile: "/tmp/r.txt",
+        deadlineMs: 1,
+        maxOutputBytes: 1,
+      },
+    ],
+    [
+      "a bash request with no exchange files",
+      {
+        type: "execute",
+        interpreter: "bash",
+        interpreterPath: "/bin/bash",
+        scriptPath: "/tmp/x.sh",
+        deadlineMs: 1,
+        maxOutputBytes: 1,
+      },
+    ],
   ])(
     "refuses %s, from the child's side of the protocol",
     async (_label, message) => {
@@ -538,6 +584,25 @@ describe("flow script runner — the watchdogs, driven directly", () => {
     },
     30_000
   );
+
+  // The loader resolves whichever runner sits beside the compiled executor, so
+  // a pre-2.7 parent — one that names no interpreter at all — really can reach
+  // this file. Its request means node, which is the shape every case above
+  // sends.
+  it("reads a request that names no interpreter as a node one", async () => {
+    const ws = workspace();
+    const script = ws.write("legacy.mjs", `output.ran = true;`);
+    const child = forkRunner(script, 20_000);
+    const result = await new Promise<{ outputJson?: string } | null>((resolve) => {
+      child.on("message", (raw) => {
+        const m = raw as { type?: string; outputJson?: string };
+        if (m.type === "result") resolve(m);
+      });
+      child.once("exit", () => resolve(null));
+    });
+
+    expect(result?.outputJson).toBe('{"ran":true}');
+  }, 30_000);
 
   it("obeys the first request and ignores a second", async () => {
     const ws = workspace();

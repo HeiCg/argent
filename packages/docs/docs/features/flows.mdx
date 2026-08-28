@@ -47,7 +47,7 @@ A fragment declares its start state in a prerequisite. The prerequisite is a sen
 
 A flow can contain more than taps and text. A step can wait for an element, wait for the screen to settle, check a condition, take a screenshot and compare it to a baseline, run a different flow, or run a local script. See [Baselines in flows](/docs/features/visual-regression#baselines-in-flows) for the screenshot comparison.
 
-A local script does work that no device step can do. For example, a script seeds the test data. The agent adds a script step only when you ask for one.
+A local script does work that no device step can do. For example, a script seeds the test data. A script is a JavaScript file or a bash file. The agent adds a script step only when you ask for one.
 
 The file is plain text. You can commit the file, review the file in a pull request and edit a step by hand.
 
@@ -64,6 +64,7 @@ A flow also runs without an agent. The `argent flow run` command replays a flow 
 - "Run the login flow on the iOS simulator and on the Android emulator. Compare the results."
 - "Add a label before each screen change in the onboarding flow."
 - "Record the checkout flow. Seed the cart with the scripts/seed-cart.mjs script."
+- "Record the checkout flow. Seed the order with the scripts/seed-order.sh script."
 - "Profile the app while you run the search flow. Then apply my fix and run the flow again."
 
 ## Limits

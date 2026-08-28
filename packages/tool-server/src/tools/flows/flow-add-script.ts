@@ -36,13 +36,13 @@ const zodSchema = z.object({
   path: z
     .string()
     .describe(
-      'The .mjs file to run, relative to the flow file being recorded (`<project_root>/.argent/flows/<name>.yaml`) — so a script at `<project_root>/scripts/seed-order.mjs` is "../../scripts/seed-order.mjs". Forward slashes, lowercase .mjs; `..` is allowed. Recorded verbatim as the step\'s `path`.'
+      'The script file to run, relative to the flow file being recorded (`<project_root>/.argent/flows/<name>.yaml`) — so a script at `<project_root>/scripts/seed-order.mjs` is "../../scripts/seed-order.mjs". A `.mjs` runs under Node, a `.sh` under bash. Forward slashes, lowercase extension; `..` is allowed. Recorded verbatim as the step\'s `path`.'
     ),
   timeout: z
     .number()
     .optional()
     .describe(
-      "Hard time limit for the script, in milliseconds (default 30000, minimum 100, capped by the host's `scripts.maxTimeoutMs`). Below the minimum the step would spend the limit starting its own Node process, so it is refused here rather than run. Recorded verbatim as the step's `timeout`, so the run here and the replay share one limit."
+      "Hard time limit for the script, in milliseconds (default 30000, minimum 100, capped by the host's `scripts.maxTimeoutMs`). Below the minimum the step would spend the limit starting its own process, so it is refused here rather than run. Recorded verbatim as the step's `timeout`, so the run here and the replay share one limit."
     ),
 });
 
@@ -139,11 +139,11 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
     failedMsg: ({ params, failureSignal }) =>
       `Failed to add script step to flow ${params.name}: ${failureSignal.error_code}`,
   },
-  description: `Run a local .mjs file and record it as a \`script:\` step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). It runs the file exactly as a replay will.
+  description: `Run a local script file — a \`.mjs\` in a fresh Node process, or a \`.sh\` under bash — and record it as a \`script:\` step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). It runs the file exactly as a replay will.
 Use for work no device step can do: seed a database, write a fixture file, call an API, clean up after a run. Record it where it belongs in the walkthrough — a setup script goes BEFORE the restart-app it prepares for, because that is where it runs at replay.
 UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would be walked against. Nothing the script did before it stopped is rolled back, and \`message\` says whether anything ran — clean up, or make the re-run safe, before calling again. A call that ends in a TRANSPORT error returns no \`message\` at all and may have run the script more than once.
 \`outputJson\` is the document the script returned; no flow step can reference it yet.
-Refused when the recording's project root is not on this tool server's filesystem: the .mjs stays on the client, so there is nothing here to run.`,
+Refused when the recording's project root is not on this tool server's filesystem: the script file stays on the client, so there is nothing here to run.`,
   // A script's default limit is 30s and its host cap five minutes, against the
   // MCP adapter's 30s per-request fetch budget. Without this the adapter aborts
   // a slow call and RETRIES it, re-running a script whose whole purpose is a
@@ -161,8 +161,8 @@ Refused when the recording's project root is not on this tool server's filesyste
     if (session.persist !== "host") {
       throw new FailureError(
         `Cannot record a script step for "${params.name}": this recording's project root is not ` +
-          `on the tool server's filesystem, so ${session.filePath} — and the .mjs file beside it ` +
-          `— exist only on your machine. There is nothing here to resolve "${params.path}" ` +
+          `on the tool server's filesystem, so ${session.filePath} — and the script file beside ` +
+          `it — exist only on your machine. There is nothing here to resolve "${params.path}" ` +
           `against and nothing to run. Record against a tool server that shares your filesystem, ` +
           `or finish the recording, add the \`script:\` step to the YAML by hand, and replay it ` +
           `locally.`,
