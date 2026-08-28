@@ -1302,6 +1302,13 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
 
       const { savedTo, stepCount } = await appendStepToFlow(session, step);
 
+      // What the take actually ran against, for the finish to hold a carried
+      // `requires` block against. Read off the live args, not the recorded
+      // step, which drops the device id to stay portable.
+      if (typeof args.udid === "string") {
+        (session.recordedOn ??= new Set()).add(resolveDevice(args.udid).platform);
+      }
+
       // Keep the probe's verdict for `flow-finish-recording`. It answers a
       // polish-time question, and polish starts after the recording closes — by
       // which point this `message` is many tool results back. Filed under the

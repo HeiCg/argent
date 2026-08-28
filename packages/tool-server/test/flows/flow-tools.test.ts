@@ -2174,6 +2174,68 @@ describe("flow-finish-recording", () => {
     expect(result.requiresPrompt).not.toContain("likely answer");
   });
 
+  it("asks about a carried fence the take was recorded against a different platform on", async () => {
+    // A reset carries the old file's block forward, so re-recording on another
+    // target inherits a fence that answers for a take it never saw. Nothing
+    // else on the path compares them: flow-add-step has no requires logic, and
+    // `restart-app` records a bare app id, which reads as serving every
+    // platform.
+    const registry = createMockRegistry({ tap: { result: { tapped: true } } });
+    const addStep = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute({}, { name: "fenced-ios", project_root: tmpDir });
+    await overwriteFlowFile("fenced-ios", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios"] },
+      steps: [],
+    });
+    await flowStartRecordingTool.execute({}, { name: "fenced-ios", project_root: tmpDir });
+    await addStep.execute(
+      {},
+      {
+        name: "fenced-ios",
+        project_root: tmpDir,
+        command: "tap",
+        args: '{"udid":"emulator-5554","x":0.5,"y":0.3}',
+      }
+    );
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "fenced-ios", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toContain("but the steps just recorded ran on android");
+    expect(result.requiresPrompt).toContain("Ask the user");
+  });
+
+  it("stays quiet when the carried fence admits the platform the take ran on", async () => {
+    const registry = createMockRegistry({ tap: { result: { tapped: true } } });
+    const addStep = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute({}, { name: "fenced-android", project_root: tmpDir });
+    await overwriteFlowFile("fenced-android", {
+      executionPrerequisite: "",
+      requires: { platform: ["android"] },
+      steps: [],
+    });
+    await flowStartRecordingTool.execute({}, { name: "fenced-android", project_root: tmpDir });
+    await addStep.execute(
+      {},
+      {
+        name: "fenced-android",
+        project_root: tmpDir,
+        command: "tap",
+        args: '{"udid":"emulator-5554","x":0.5,"y":0.3}',
+      }
+    );
+
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "fenced-android", project_root: tmpDir }
+    );
+
+    expect(result.requiresPrompt).toBeUndefined();
+  });
+
   it("suggests the platforms the recorded launch already limits the flow to", async () => {
     await flowStartRecordingTool.execute({}, { name: "ios-launch", project_root: tmpDir });
     await overwriteFlowFile("ios-launch", {

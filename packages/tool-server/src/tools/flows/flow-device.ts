@@ -186,7 +186,7 @@ function requirementsUnverifiableError(message: string): FailureError {
  * accepts no `ios-remote` spelling, so without it no remote sim could ever
  * satisfy an iOS requirement.
  */
-function platformMeets(platform: Platform, required: readonly WhenPlatform[]): boolean {
+export function platformMeets(platform: Platform, required: readonly WhenPlatform[]): boolean {
   const folded = platform === "ios-remote" ? "ios" : platform;
   return (required as readonly string[]).includes(folded);
 }

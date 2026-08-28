@@ -1,6 +1,6 @@
 import { z } from "zod";
 import * as fs from "node:fs/promises";
-import type { ToolDefinition } from "@argent/registry";
+import type { Platform, ToolDefinition } from "@argent/registry";
 import {
   launchCoverage,
   requireRecordingSession,
@@ -22,6 +22,7 @@ import {
   type WhenPlatform,
 } from "./flow-utils";
 import { effectiveComposition } from "./flow-run";
+import { platformMeets } from "./flow-device";
 import type { TextMatchMode } from "../../utils/ui-tree-match";
 
 /**
@@ -99,9 +100,14 @@ async function composedFlow(
  * silently for the rest, so the default is offered rather than assumed. Absent
  * once the RUN composes a block ({@link composedFlow}), declared here or folded
  * in from a leading `run:` fragment: the question has been answered.
+ *
+ * Except by a block the reset carried in from the old file, which answers for a
+ * take it never saw: `recordedOn` holds it against the platforms this one was
+ * actually driven on, and a fence excluding all of them gets asked about rather
+ * than inherited.
  */
-function requiresPrompt(composed: ComposedFlow): string | undefined {
-  if (composed.requires) return undefined;
+function requiresPrompt(composed: ComposedFlow, recordedOn?: Set<Platform>): string | undefined {
+  if (composed.requires) return staleFencePrompt(composed.requires, recordedOn);
   const platforms = launchPlatforms(composed.steps);
   const hint = platforms
     ? ` Its launch step declares an app id only for ${platforms.join(", ")}, so ` +
@@ -124,6 +130,29 @@ function requiresPrompt(composed: ComposedFlow): string | undefined {
     `launches serve. Leaving the block out is the right answer for a genuinely portable ` +
     `flow; restrict it when the scenario is platform-specific (a platform-only screen, an OS ` +
     `settings flow) or form-factor-specific (focus/remote navigation rather than touch).${hint}`
+  );
+}
+
+/**
+ * The question for a `requires` block that excludes every platform the take ran
+ * on. Nothing else on the recording path compares the two: flow-add-step has no
+ * requires logic, and launch coverage cannot help because `restart-app` records
+ * a bare app id, which `appIdForPlatform` reads as serving every platform.
+ */
+function staleFencePrompt(
+  requires: FlowRequires,
+  recordedOn: Set<Platform> | undefined
+): string | undefined {
+  const platform = requires.platform;
+  if (!platform || !recordedOn?.size) return undefined;
+  const ran = [...recordedOn];
+  if (ran.some((p) => platformMeets(p, platform))) return undefined;
+  return (
+    `This flow declares \`requires: { platform: [${platform.join(", ")}] }\`, but the steps just ` +
+    `recorded ran on ${ran.join(", ")}. The block came from the file this recording replaced, so ` +
+    `it answers for a take it never saw and the flow will fail at its launch step. Ask the user ` +
+    `which is right, then either edit the block to match what was recorded or re-record on a ` +
+    `target it admits.`
   );
 }
 
@@ -310,7 +339,7 @@ export const flowFinishRecordingTool: ToolDefinition<
   description: `Finish recording the flow named by \`name\` + \`project_root\`, leaving recordings under any other key untouched. Returns { message, path, executionPrerequisite, steps, summary, flowFile, savedTo, requiresPrompt? } - a summary of all recorded steps plus the final YAML. Use when you have added all desired steps and want to finalize the flow file. Fails if that flow has no recording in progress.
 A warning flow-add-step raised on a recorded \`await-ui-element\` is repeated in \`summary\` as a \`warning:\` line of its own, right below the step it judges, and \`message\` counts them by kind. A warning is repeated only while the step it judges is still identifiable by its number: hand-editing the .yaml during the recording moves the steps, so those warnings are DROPPED rather than pinned on whichever step inherited the number, and \`message\` says how many were dropped. A step that carries a cross-tree warning was re-probed against the runner's tree: read it before converting that wait to \`await:\`/\`assert:\`, which is what the verdict is about and what this moment is for. A step that recorded a wait which did not pass was never probed at all, and its own warning names the CAUSE, because only one of them judges the condition: an unmet wait was read and found false, and it stops the run at replay; a wait whose tree source could not be read, or one that was cancelled, observed nothing and leaves the condition UNKNOWN rather than known-bad. Read those before replaying.
 You can still edit the .yaml file directly afterwards to remove or reorder steps.
-When the run composes no \`requires:\` block, the result carries a \`requiresPrompt\` — put that question to the user (should this flow be restricted to some platforms / to a TV?) and write the block into the YAML yourself if they say yes. This is the moment to ask: it is the first time the whole flow exists, and a flow with no block runs against every target.`,
+When the run composes no \`requires:\` block, the result carries a \`requiresPrompt\` — put that question to the user (should this flow be restricted to some platforms / to a TV?) and write the block into the YAML yourself if they say yes. This is the moment to ask: it is the first time the whole flow exists, and a flow with no block runs against every target. A block the reset carried over from the file this recording replaced gets the same prompt when the steps just recorded ran on a platform it excludes.`,
   zodSchema,
   services: () => ({}),
   async execute(_services, params) {
@@ -359,7 +388,10 @@ When the run composes no \`requires:\` block, the result carries a \`requiresPro
         const headline = warningHeadline(anchored, discarded);
         // Ahead of the clear for the same reason as the summary: it walks step
         // bodies, and nothing that can throw may run once the session is gone.
-        const prompt = requiresPrompt(await composedFlow(flow, session, params.name));
+        const prompt = requiresPrompt(
+          await composedFlow(flow, session, params.name),
+          session.recordedOn
+        );
         clearRecordingSession(session);
         return { filePath, flowFile, savedTo, flow, summary, headline, prompt };
       }

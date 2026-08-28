@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { FAILURE_CODES, FailureError } from "@argent/registry";
+import { FAILURE_CODES, FailureError, type Platform } from "@argent/registry";
 import { stringify as yamlStringify, parse as yamlParse } from "yaml";
 import {
   CLIENT_FILE_MARKER,
@@ -290,6 +290,13 @@ export interface RecordingSession {
    * because the verdicts themselves are gone by then.
    */
   discardedWarnings?: number;
+  /**
+   * Platforms the take was actually driven against, read off each recorded
+   * step's device id. flow-finish-recording holds it against a `requires` block
+   * the flow carried in: that is the one moment designed to ask about the
+   * fence, and a stale one is exactly when it has to.
+   */
+  recordedOn?: Set<Platform>;
   /** LRU order for the eviction backstop. See {@link touch}. */
   lastTouchedSeq: number;
 }
