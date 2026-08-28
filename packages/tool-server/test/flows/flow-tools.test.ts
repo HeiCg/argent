@@ -2236,6 +2236,41 @@ describe("flow-finish-recording", () => {
     expect(result.requiresPrompt).toBeUndefined();
   });
 
+  it("answers from the file alone when the composed walk outruns its budget", async () => {
+    // The walk reads a whole run: chain while holding the flow file's lock, on
+    // a tool the MCP client gives 30 s. A caller that gives up mid-walk loses
+    // its session, its summary and the prompt, so the advisory answer is what
+    // gives way.
+    await flowStartRecordingTool.execute({}, { name: "slow-chain", project_root: tmpDir });
+    await fs.writeFile(
+      path.join(flowsDirFor(tmpDir), "fenced-frag.yaml"),
+      serializeFlow({ executionPrerequisite: "", requires: { platform: ["ios"] }, steps: [] }),
+      "utf8"
+    );
+    await overwriteFlowFile("slow-chain", {
+      executionPrerequisite: "",
+      steps: [{ kind: "run", flow: "fenced-frag.yaml" }],
+    });
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, "readFile").mockImplementation(((p: string, ...rest: unknown[]) =>
+      String(p).endsWith("fenced-frag.yaml")
+        ? new Promise(() => {})
+        : (realReadFile as (...a: unknown[]) => Promise<string>)(p, ...rest)) as typeof fs.readFile);
+
+    try {
+      const result = await flowFinishRecordingTool.execute(
+        {},
+        { name: "slow-chain", project_root: tmpDir }
+      );
+
+      // The fragment's block never arrived, so the prompt is the one a flow
+      // declaring none gets, not a silent "already answered".
+      expect(result.requiresPrompt).toContain("declares no `requires:` block");
+    } finally {
+      vi.mocked(fs.readFile).mockRestore();
+    }
+  }, 20_000);
+
   it("suggests the platforms the recorded launch already limits the flow to", async () => {
     await flowStartRecordingTool.execute({}, { name: "ios-launch", project_root: tmpDir });
     await overwriteFlowFile("ios-launch", {

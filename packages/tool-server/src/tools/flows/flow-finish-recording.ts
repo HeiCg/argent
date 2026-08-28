@@ -83,13 +83,35 @@ async function composedFlow(
   session: RecordingSession,
   flowName: string
 ): Promise<ComposedFlow> {
-  if (session.persist !== "host") return { requires: flow.requires, steps: flow.steps };
+  const own: ComposedFlow = { requires: flow.requires, steps: flow.steps };
+  if (session.persist !== "host") return own;
   try {
-    const composed = await effectiveComposition(flow, session.filePath, flowName);
+    const composed = await Promise.race([
+      effectiveComposition(flow, session.filePath, flowName),
+      timeoutAfter(COMPOSED_WALK_BUDGET_MS),
+    ]);
+    if (!composed) return own;
     return { requires: composed.requires, steps: composed.steps ?? flow.steps };
   } catch {
-    return { requires: flow.requires, steps: flow.steps };
+    return own;
   }
+}
+
+/**
+ * How long the prompt's composed walk may run before the finish answers from
+ * the file alone. Everything else this tool does is local, while the walk reads
+ * a whole `run:` chain off disk — and it runs holding the flow file's lock, on
+ * a tool the MCP client gives 30 s. A caller that gives up mid-walk loses its
+ * session, its summary and the prompt itself, so an advisory answer may not be
+ * what costs it those.
+ */
+const COMPOSED_WALK_BUDGET_MS = 5_000;
+
+function timeoutAfter(ms: number): Promise<undefined> {
+  return new Promise((resolve) => {
+    // Unreferenced: the loser of the race must not hold the process open.
+    setTimeout(() => resolve(undefined), ms).unref();
+  });
 }
 
 /**
