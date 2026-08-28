@@ -41,7 +41,7 @@ describe("drop notes", () => {
 
   it("tells a Chromium caller how to make it work", () => {
     const note = chromiumDropNote(["scale", "rotation"]);
-    expect(note).toContain("scale and rotation was not applied");
+    expect(note).toContain("scale and rotation were not applied");
     expect(note).toContain("npm install sharp");
     expect(note).toContain("unmodified capture");
   });
@@ -54,6 +54,10 @@ describe("drop notes", () => {
     const note = unsupportedDropNote(["rotation"], "Apple TV");
     expect(note).toContain("Apple TV");
     expect(note).toContain("will not change the result");
+    // A scale on the same call is still applied server-side, so the note must
+    // not claim the whole image is untransformed.
+    expect(note).toContain("returned unrotated");
+    expect(note).not.toContain("untransformed");
     // The Chromium remedy must not leak into a case where it cannot help.
     expect(note).not.toContain("npm install");
   });

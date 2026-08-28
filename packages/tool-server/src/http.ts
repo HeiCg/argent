@@ -348,15 +348,16 @@ const MAX_PENDING_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB
 /**
  * Pull a tool's per-call note off its result so it can ride the response
  * envelope. Mutates `data` so the reserved key never reaches the client, where
- * it would otherwise surface in `--json` output and in non-image results.
+ * it would otherwise surface in `--json` output and in non-image results. The
+ * key is stripped whatever its value; only a non-empty string becomes a note.
  */
 function takeToolNote(data: unknown): string | undefined {
   if (typeof data !== "object" || data === null) return undefined;
   const bag = data as Record<string, unknown>;
+  if (!(RESULT_NOTE_KEY in bag)) return undefined;
   const note = bag[RESULT_NOTE_KEY];
-  if (typeof note !== "string" || note.length === 0) return undefined;
   delete bag[RESULT_NOTE_KEY];
-  return note;
+  return typeof note === "string" && note.length > 0 ? note : undefined;
 }
 
 export function createHttpApp(registry: Registry, options?: HttpAppOptions): HttpAppHandle {

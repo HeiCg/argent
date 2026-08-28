@@ -105,15 +105,22 @@ export async function captureScreenshot(
         // Cheaper than asking sharp for `.metadata()`.
         const dims = readPngSize(bytes);
         if (dims) {
-          const targetW = Math.max(1, Math.round(dims.width * scale));
-          const targetH = Math.max(1, Math.round(dims.height * scale));
+          // sharp runs the rotation ahead of the resize regardless of call
+          // order, so a quarter turn means the resize sees swapped dimensions.
+          // Sizing the target from the unrotated header with `fit: "fill"`
+          // would squash the rotated image into the wrong aspect ratio.
+          const quarterTurn = rotation === "LandscapeLeft" || rotation === "LandscapeRight";
+          const rotatedW = quarterTurn ? dims.height : dims.width;
+          const rotatedH = quarterTurn ? dims.width : dims.height;
+          const targetW = Math.max(1, Math.round(rotatedW * scale));
+          const targetH = Math.max(1, Math.round(rotatedH * scale));
           pipeline = pipeline.resize(targetW, targetH, {
             kernel: DOWNSCALER_TO_KERNEL[opts.downscaler ?? "lanczos3"],
             fit: "fill",
           });
         } else {
-          // Header unreadable: rotation below still applies, but the resize
-          // cannot be sized, so the scale the caller asked for is lost.
+          // Header unreadable: the rotation still runs, but the resize cannot
+          // be sized, so the scale the caller asked for is lost.
           dropped.push("scale");
         }
       }

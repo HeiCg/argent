@@ -33,8 +33,9 @@ export function requestedGeometry(params: {
   return requested;
 }
 
-function list(dropped: DroppedGeometry[]): string {
-  return dropped.length === 2 ? "scale and rotation" : dropped[0]!;
+/** "scale was" / "scale and rotation were" — subject and verb agree. */
+function subject(dropped: DroppedGeometry[]): string {
+  return dropped.length === 2 ? "scale and rotation were" : `${dropped[0]!} was`;
 }
 
 /**
@@ -44,7 +45,7 @@ function list(dropped: DroppedGeometry[]): string {
 export function chromiumDropNote(dropped: DroppedGeometry[]): string | undefined {
   if (dropped.length === 0) return undefined;
   return (
-    `${list(dropped)} was not applied — this is the unmodified capture. Chromium image ` +
+    `${subject(dropped)} not applied — this is the unmodified capture. Chromium image ` +
     `post-processing needs the optional \`sharp\` package: run \`npm install sharp\` in the ` +
     `tool-server's environment and retry, or work with the full-size image.`
   );
@@ -52,7 +53,9 @@ export function chromiumDropNote(dropped: DroppedGeometry[]): string | undefined
 
 /**
  * The TV backends have no rotation step. Worded so it does not read as
- * retryable — the same call will always come back the same way.
+ * retryable — the same call will always come back the same way. It says
+ * "unrotated" rather than "untransformed" because a `scale` on the same call
+ * IS applied (server-side); only the rotation is missing.
  */
 export function unsupportedDropNote(
   dropped: DroppedGeometry[],
@@ -60,8 +63,8 @@ export function unsupportedDropNote(
 ): string | undefined {
   if (dropped.length === 0) return undefined;
   return (
-    `${list(dropped)} was not applied — ${target} screenshots cannot be transformed that way, ` +
-    `so retrying with the same parameter will not change the result. The image is the ` +
-    `untransformed capture.`
+    `${subject(dropped)} not applied — ${target} screenshots cannot be transformed that way, ` +
+    `so retrying with the same parameter will not change the result. The image is returned ` +
+    `unrotated.`
   );
 }
