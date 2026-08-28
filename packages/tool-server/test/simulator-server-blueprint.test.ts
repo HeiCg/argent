@@ -51,12 +51,14 @@ function makeFakeProc() {
   const proc = new EventEmitter() as EventEmitter & {
     stdout: Readable;
     stderr: Readable;
-    stdin: { write: ReturnType<typeof vi.fn> };
+    stdin: EventEmitter & { write: ReturnType<typeof vi.fn> };
     kill: ReturnType<typeof vi.fn>;
   };
   proc.stdout = new Readable({ read() {} });
   proc.stderr = new Readable({ read() {} });
-  proc.stdin = { write: vi.fn() };
+  // An EventEmitter, not a bare `{ write }`: a real `child.stdin` is a socket
+  // that emits `error`, and the blueprint has to listen for it.
+  proc.stdin = Object.assign(new EventEmitter(), { write: vi.fn() });
   proc.kill = vi.fn();
   return proc;
 }
@@ -228,6 +230,12 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
 
     expect(fakeProc.stdin.write).toHaveBeenNthCalledWith(1, "key Down 41\n");
     expect(fakeProc.stdin.write).toHaveBeenNthCalledWith(2, "key Up 41\n");
+    // `pressKey` writes with no callback, so a write racing the child's death
+    // emits EPIPE on the socket. With nothing listening, node's
+    // `uncaughtException` handler crash-shuts down the whole tool-server —
+    // which every agent session on the machine shares.
+    expect(fakeProc.stdin.listenerCount("error")).toBe(1);
+    expect(() => fakeProc.stdin.emit("error", new Error("write EPIPE"))).not.toThrow();
   });
 
   it("rejects when the caller forgets to pass DeviceInfo via options", async () => {

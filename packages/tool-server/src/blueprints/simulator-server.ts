@@ -363,6 +363,16 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
     proc.on("error", (err) => {
       events.emit("terminated", err);
     });
+    // `pressKey` writes to this pipe with no callback, so a write that races the
+    // child's death emits EPIPE on the socket with nothing listening — which
+    // `index.ts`'s `uncaughtException` handler turns into a `crashShutdown` of
+    // the WHOLE tool-server, and one tool-server is shared by every agent
+    // session on the machine. The race is ordinary: every session is told to
+    // call `stop-simulator-server` when it ends, and a `clear` writes 400 lines
+    // at a 2ms cadence. Same listener as the repo's two other stdin-writing
+    // spawn sites (screen-recording/capture.ts, utils/window-shake.ts); the
+    // death itself already reaches callers through `terminated` above.
+    proc.stdin?.on("error", () => {});
 
     const instance: ServiceInstance<SimulatorServerApi> = {
       api: {
