@@ -893,8 +893,10 @@ describe("requirements narrow device auto-detection", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_DEVICE_RESOLUTION);
     expect((err as Error).message).toContain(
       `1 booted device matched, but the runtime kind of ${ANDROID} could not be read from the ` +
-        `listing, so the field was never narrowed to one — pass --device or --platform to ` +
-        `disambiguate. Available devices: ${IOS_TV} (ios, Booted, tv), ` +
+        `listing, so the field was never narrowed to one. It may still be booting: re-list ` +
+        `once it is up, or shut it down. --device or --platform settles a single-flow run, ` +
+        `but a directory run would apply it to every flow in the directory. ` +
+        `Available devices: ${IOS_TV} (ios, Booted, tv), ` +
         `${ANDROID} (android, device, kind unknown).`
     );
   });
@@ -928,7 +930,7 @@ describe("requirements narrow device auto-detection", () => {
 
     const err = await run(registry, "tv-only").catch((e: unknown) => e);
 
-    expect((err as Error).message).toMatch(/pass --device to disambiguate\./);
+    expect((err as Error).message).toMatch(/--device settles a single-flow run/);
   });
 
   it("says the lone match has no id rather than asking to disambiguate one device", async () => {

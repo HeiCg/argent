@@ -460,8 +460,9 @@ export async function resolveFlowDevice(
       const ids = unread.map((d) => deviceEntryId(d) ?? "?").join(", ");
       throw deviceResolutionError(
         `1 booted device matched, but the runtime kind of ${ids} could not be read from the ` +
-          `listing, so the field was never narrowed to one — pass ` +
-          `${disambiguationFlags(field)} to disambiguate.`,
+          `listing, so the field was never narrowed to one. It may still be booting: re-list ` +
+          `once it is up, or shut it down. ${disambiguationFlags(field)} settles a single-flow ` +
+          `run, but a directory run would apply it to every flow in the directory.`,
         field,
         true
       );
