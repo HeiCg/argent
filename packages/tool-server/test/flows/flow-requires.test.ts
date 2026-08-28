@@ -1388,6 +1388,19 @@ describe("requires folded along the leading run: chain", () => {
     expect((await run(registry, "composed")).device).toBe(ANDROID);
   });
 
+  it("folds a fragment a leading wait: sits in front of", async () => {
+    // A wait acts on no device and cannot fail, so it is not the executable
+    // step that ends the chain. Letting it end one would give the same
+    // composition opposite dispositions on step order alone.
+    await writeFlow("ios-frag", { requires: { platform: ["ios"] } });
+    await writeFlow("wait-first", {
+      steps: [{ kind: "wait", ms: 50 }, { kind: "run", flow: "ios-frag.yaml" }],
+    });
+    const { registry } = mockRegistry([iosEntry(IOS), androidEntry(ANDROID)]);
+
+    expect((await run(registry, "wait-first")).device).toBe(IOS);
+  });
+
   it("intersects a two-platform root with a leading fragment's narrower list", async () => {
     // The fold's middle case, between the pass-through and the empty
     // intersection: [ios, android] ∩ [android] leaves [android], and the

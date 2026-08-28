@@ -1656,7 +1656,9 @@ async function scanLeadingLaunch(
     return null;
   };
   for (const step of flow.steps) {
-    if (step.kind === "echo") continue;
+    // Neither acts on a device nor can fail, so neither ends the chain: one
+    // that did would decide a composition's disposition on step order alone.
+    if (step.kind === "echo" || step.kind === "wait") continue;
     if (step.kind === "launch") return { app: step.app, flow: top.display };
     // Not an abandonment: the leading chain ends at the first executable step,
     // so nothing the fold or the picture wants is left unread.
