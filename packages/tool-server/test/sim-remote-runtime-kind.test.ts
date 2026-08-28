@@ -179,12 +179,33 @@ describe("getRemoteSimulatorRuntimeKind", () => {
   });
 });
 
+// Both callers (`shake`, `paste`) mock this function out, so the filters it is
+// routed through are exercised nowhere else.
 describe("isRemoteTvOsSimulator", () => {
+  it("rejects a tvOS simulator", async () => {
+    listing = under(TVOS_RUNTIME, sim(UDID));
+    expect(await isRemoteTvOsSimulator(UDID)).toBe(true);
+  });
+
   it("still rejects a tvOS simulator the listing marks unavailable", async () => {
     // The guard narrows an already-supported device, so an availability filter
     // must not hand a TV to `shake`, which would post a notification nothing
     // listens for and report a shake that never happened.
     listing = under(TVOS_RUNTIME, sim(UDID, { isAvailable: false }));
     expect(await isRemoteTvOsSimulator(UDID)).toBe(true);
+  });
+
+  it("admits an iOS simulator", async () => {
+    expect(await isRemoteTvOsSimulator(`remote:${UDID}`)).toBe(false);
+  });
+
+  it("admits a runtime neither iOS nor tvOS instead of guessing TV", async () => {
+    listing = under(WATCHOS_RUNTIME, sim(UDID));
+    expect(await isRemoteTvOsSimulator(UDID)).toBe(false);
+  });
+
+  it("admits the device when sim-remote cannot answer at all", async () => {
+    unreachable = true;
+    expect(await isRemoteTvOsSimulator(UDID)).toBe(false);
   });
 });
