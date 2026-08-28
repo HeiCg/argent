@@ -429,6 +429,53 @@ describe("flow-start-recording edge cases", () => {
     expect(result.message).not.toContain("did not parse");
   });
 
+  // Each carry outcome above is pinned at the START, where a `requires` block
+  // goes unjudged. The finish full-parses, so what a carry leaves behind has to
+  // survive that too.
+  it.each([
+    ["kept off a readable file", "kept-fence", false],
+    ["carried off the take, the file having vanished", "gone-fence", true],
+  ] as const)("finishes a take whose block was %s", async (_label, name, removeFile) => {
+    const requires = { platform: ["ios" as const] };
+    await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+    await overwriteFlowFile(name, { executionPrerequisite: "", requires, steps: [] });
+    await flowStartRecordingTool.execute({}, { name, project_root: tmpDir });
+    if (removeFile) await fs.rm(path.join(flowsDirFor(tmpDir), `${name}.yaml`));
+    await flowStartRecordingTool.execute({}, { name, project_root: tmpDir });
+    await flowInsertEchoTool.execute({}, { name, project_root: tmpDir, message: "one" });
+
+    const finished = await flowFinishRecordingTool.execute({}, { name, project_root: tmpDir });
+
+    expect(parseFlow(finished.flowFile).requires).toEqual(requires);
+    // The question has an answer already, and the take ran against no device
+    // for it to contradict.
+    expect(finished.requiresPrompt).toBeUndefined();
+  });
+
+  it("finishes a take whose carried block was dropped, and asks for one", async () => {
+    // The drop leaves a flow that runs anywhere, which is exactly the state the
+    // prompt exists for - and the finish is the first moment it can be asked.
+    await flowStartRecordingTool.execute({}, { name: "dropped-fence", project_root: tmpDir });
+    await fs.writeFile(
+      path.join(flowsDirFor(tmpDir), "dropped-fence.yaml"),
+      "requires:\n  platfrom: [ios]\nsteps: []\n",
+      "utf8"
+    );
+    await flowStartRecordingTool.execute({}, { name: "dropped-fence", project_root: tmpDir });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "dropped-fence", project_root: tmpDir, message: "one" }
+    );
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "dropped-fence", project_root: tmpDir }
+    );
+
+    expect(parseFlow(finished.flowFile).requires).toBeUndefined();
+    expect(finished.requiresPrompt).toContain("declares no `requires:` block");
+  });
+
   it("lets a hand edit that removed the block unfence the flow, over the take's copy", async () => {
     // A readable file is the authority: the edit is part of the take, so the
     // in-memory block the start below cached must not resurrect the fence.
