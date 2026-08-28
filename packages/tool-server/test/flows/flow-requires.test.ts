@@ -9,7 +9,11 @@ import {
   type Platform,
   type Registry,
 } from "@argent/registry";
-import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
+import {
+  createRunFlowTool,
+  effectiveRequires,
+  type FlowRunResult,
+} from "../../src/tools/flows/flow-run";
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { classifyDevice } from "../../src/utils/device-info";
 import {
@@ -1322,6 +1326,63 @@ describe("requirements narrow device auto-detection", () => {
 });
 
 describe("composed fragments", () => {
+  it("reads a fan of scaffolding fragments once each, not once per path", async () => {
+    // Every level's fragments only compose the next, so the walk finds an
+    // executable step nowhere and used to re-expand each subtree once per
+    // incoming edge: FAN ** (LEVELS - 1) passes over the leaves, inside two
+    // tools that are not longRunning. Judged by the clock because the walk
+    // leaves no other trace of how often it ran - this graph took 12 s before
+    // and 47 ms after.
+    const LEVELS = 7;
+    const FAN = 5;
+    for (let level = 0; level < LEVELS; level++) {
+      const steps: FlowStep[] =
+        level === LEVELS - 1
+          ? [{ kind: "echo", message: "leaf" }]
+          : Array.from({ length: FAN }, (_, i) => ({
+              kind: "run" as const,
+              flow: `fan${level + 1}-${i}.yaml`,
+            }));
+      for (let i = 0; i < FAN; i++) await writeFlow(`fan${level}-${i}`, { steps });
+    }
+    await writeFlow("fan-root", {
+      steps: Array.from({ length: FAN }, (_, i) => ({ kind: "run", flow: `fan0-${i}.yaml` })),
+    });
+    const flow = parseFlow(
+      await fs.readFile(path.join(tmpDir, ".argent", "flows", "fan-root.yaml"), "utf8")
+    );
+
+    const started = Date.now();
+    await effectiveRequires(
+      flow,
+      path.join(tmpDir, ".argent", "flows", "fan-root.yaml"),
+      "fan-root"
+    );
+
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("keeps a composition device-free when the same fragment is composed twice", async () => {
+    // The second `run:` resolves a fragment the walk already finished, so it
+    // descends no further — but the step still has to count as followed. Left
+    // in the composed picture it reads as device-requiring, since a `run:`
+    // whose body is unread has to.
+    await writeFlow("echo-frag", { steps: [{ kind: "echo", message: "hi" }] });
+    await writeFlow("twice", {
+      steps: [
+        { kind: "run", flow: "echo-frag.yaml" },
+        { kind: "run", flow: "echo-frag.yaml" },
+      ],
+    });
+    const { registry, invokeTool } = mockRegistry([iosEntry(IOS)]);
+
+    const result = await run(registry, "twice");
+
+    expect(result.ok).toBe(true);
+    expect(result.device).toBe("");
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
   it("error the run: step when the run device cannot satisfy them", async () => {
     // Not a skip: a fragment silently not running would leave a green report
     // for a scenario that only half happened. Composed after the first

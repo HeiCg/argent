@@ -1553,20 +1553,39 @@ interface LeadingScan {
    * Every fragment the walk entered, root excluded. Each is certain to be
    * reached, so both its `requires` block and its launches belong to the run —
    * the same certainty `validateRequires` already assumes within one file.
-   * `via` is the `run:` step it was reached through, which the composed
-   * picture drops in favour of these steps.
    */
-  entered: { flow: string; steps: FlowStep[]; requires?: FlowRequires; via: FlowStep }[];
+  entered: { flow: string; steps: FlowStep[]; requires?: FlowRequires }[];
   /**
    * Cleared once a hop is unreadable or refused: the picture is then missing
    * both launches and the blocks that could have narrowed them away, so it is
    * not safe to judge.
    */
   complete: boolean;
+  /**
+   * Files whose subtree the walk finished without finding an executable step.
+   * Reaching one again adds nothing — the fold intersects and the composed
+   * picture is only ever asked whether SOME step wants a device — so the walk
+   * declines to descend twice. Without it a B-way fan over D levels re-walks
+   * the leaves B^(D-1) times, and the walk now runs inside two tools that are
+   * not `longRunning`.
+   */
+  exhausted: Set<string>;
+  /**
+   * The `run:` steps the walk resolved, whether it descended into them or found
+   * the target already exhausted. The composed picture drops them in favour of
+   * the bodies they pulled in; one left behind would read as device-requiring,
+   * since a `run:` whose body is unread has to.
+   */
+  followed: Set<FlowStep>;
 }
 
 async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<LeadingRun> {
-  const scan: LeadingScan = { entered: [], complete: true };
+  const scan: LeadingScan = {
+    entered: [],
+    complete: true,
+    exhausted: new Set(),
+    followed: new Set(),
+  };
   const found = await scanLeadingLaunch(flow, [rootEntry], scan);
   const requires = foldLeadingRequires(
     rootEntry.display,
@@ -1582,12 +1601,11 @@ async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<Lea
       requires
     );
   }
-  const followed = new Set(scan.entered.map((f) => f.via));
   return {
     launch: found === NO_EXECUTABLE_STEP ? null : found,
     requires,
     composedSteps: scan.complete
-      ? [flow.steps, ...scan.entered.map((f) => f.steps)].flat().filter((s) => !followed.has(s))
+      ? [flow.steps, ...scan.entered.map((f) => f.steps)].flat().filter((s) => !scan.followed.has(s))
       : null,
   };
 }
@@ -1677,15 +1695,20 @@ async function scanLeadingLaunch(
     } catch {
       return abandon();
     }
+    scan.followed.add(step);
+    if (scan.exhausted.has(canonical)) continue;
     const display = runDisplayFor(step.flow, stack[0]!.display);
     scan.entered.push({
       flow: display,
       steps: nested.steps,
       ...(nested.requires ? { requires: nested.requires } : {}),
-      via: step,
     });
+    const wasComplete = scan.complete;
     const inner = await scanLeadingLaunch(nested, [...stack, { canonical, display }], scan);
     if (inner !== NO_EXECUTABLE_STEP) return inner;
+    // Only a subtree read end to end is settled: one a cycle or the depth guard
+    // cut short might have held a launch past the point it stopped.
+    if (wasComplete && scan.complete) scan.exhausted.add(canonical);
   }
   return NO_EXECUTABLE_STEP;
 }
