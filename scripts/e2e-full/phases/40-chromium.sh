@@ -38,6 +38,9 @@ JS
   # (a placeholder would take precedence and hide it) — which makes "the field
   # is empty" observable from outside the tool. The page focuses it on load, so
   # a reload is all the block needs to restore a focused, non-empty field.
+  # #dt is the counter-case: a date input passes every editability signal the
+  # clear script can read, yet `execCommand` leaves its structured value in
+  # place — so it must be REFUSED rather than reported as cleared.
   cat > "$dir/index.html" <<'HTML'
 <!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;height:100%;overflow:auto}
@@ -45,11 +48,13 @@ JS
   #b{position:absolute;left:45%;top:46%;width:10%;height:8%;font-size:20px;z-index:1}
   #i{position:absolute;left:40%;top:60%;width:20%;z-index:1}
   #clr{position:absolute;left:40%;top:68%;width:20%;z-index:1}
+  #dt{position:absolute;left:40%;top:76%;width:20%;z-index:1}
 </style></head><body>
   <canvas id="c" width="1024" height="768"></canvas>
   <button id="b" onclick="this.textContent='tapped'">Tap me</button>
   <input id="i" placeholder="type here"/>
   <input id="clr" value="argentclearmark"/>
+  <input id="dt" type="date" value="2020-01-02"/>
   <div id="scrollpad" style="height:3000px"></div>
   <script>
     const cv = document.getElementById('c'), x = cv.getContext('2d');
@@ -143,6 +148,12 @@ run_phase() {
   # focusable, so tapping it moves focus off the input.
   run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.05,\"y\":0.05}" >/dev/null 2>&1
   assert_reject "$P" keyboard clear-unfocused "{\"udid\":\"$DEV\",\"clear\":true}"
+  # A date input is editable by every signal the script can read, and
+  # `execCommand` still cannot empty it. Reporting that as a success is the one
+  # outcome the whole design rules out, so it must 400 — and, unlike the case
+  # above, with the field correctly focused.
+  run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.5,\"y\":0.77}" >/dev/null 2>&1
+  assert_reject "$P" keyboard clear-date-input "{\"udid\":\"$DEV\",\"clear\":true}"
   # Replace-a-value, the form the tool description prescribes: one round-trip,
   # and the field ends up holding ONLY the new text.
   run_tool open-url "{\"udid\":\"$DEV\",\"url\":\"http://127.0.0.1:$httpport/index.html\"}" >/dev/null 2>&1

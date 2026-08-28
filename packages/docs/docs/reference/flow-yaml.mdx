@@ -246,7 +246,7 @@ A `run:` path resolves against the directory of the flow file that contains the 
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | iOS, Android | A nested fragment or end-to-end flow runs inline. A nested launch restarts the app                                                                                                          |
 | Chromium     | Each `launch` step boots one instance. A later launch boots a fresh instance and stops the previous one of that app. Argent runs `swipe` as a mouse drag. `pinch` and `rotate` are rejected |
-| Vega         | Use `tool: tv-remote` and `tool: keyboard`. The touch directives are unsupported                                                                                                            |
+| Vega         | Use `tool: tv-remote` and `tool: keyboard` with `text` or `key`. `clear` and the touch directives are unsupported                                                                           |
 
 A fragment whose `run:` chain reaches a launch cannot declare `executionPrerequisite`. Parsing accepts the file, the run rejects it.
 

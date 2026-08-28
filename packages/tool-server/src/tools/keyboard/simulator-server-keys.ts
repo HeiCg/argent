@@ -40,7 +40,8 @@ export async function typeSimulatorServer(
     keysPressed++;
   };
 
-  // The tool rejects text + key (./index.ts), so at most one block below runs.
+  // The tool rejects more than one of text / key / clear (./index.ts), and a
+  // clear routes to `clearSimulatorServer` below, so at most one block here runs.
   if (params.text) {
     for (const char of params.text) {
       const press = charToKeyPress(char);

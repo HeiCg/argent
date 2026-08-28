@@ -15,8 +15,9 @@ import { makeChromiumImpl } from "./platforms/chromium";
 import { vegaImpl } from "./platforms/vega";
 
 // `text`, `key` and `clear` are at-most-one, and the advertised JSON Schema
-// cannot say so: `not` is one of the top-level combinators #782 banned repo-wide, and
-// `tool-input-schema-contract.test.ts` fails any tool declaring one — the
+// cannot say so: `not` is one of the top-level combinators #782 banned
+// repo-wide, and `tool-input-schema-contract.test.ts` fails any tool
+// declaring one — the
 // Messages API rejects such a request with a 400 that fails EVERY tool in it.
 // The check therefore runs in `execute`, and the constraint reaches a client
 // only as prose: all three fields' `.describe()` and the tool description each
@@ -57,9 +58,13 @@ const zodSchema = z.object({
         "Cannot be combined with `text` or `key` in one call — one call per action; to replace a value, put " +
         '`{ clear: true }` then `{ text: "new value" }` in one `run-sequence`. ' +
         "iOS and Android send 100 backspaces interleaved with 100 forward-deletes, so the caret can sit anywhere in the " +
-        "field and a multi-line one empties too; Chromium selects the focused editable and deletes the selection. " +
-        "A field holding more than 100 characters on either side of the caret keeps the remainder — call `clear` again. " +
-        "The field is never read back, so the result reports what was sent, not what the field now holds. " +
+        "field and a multi-line one empties too; on those two a field holding more than 100 characters on either side of " +
+        "the caret keeps the remainder — call `clear` again. Chromium instead selects the focused editable and deletes the " +
+        "selection, which has no length limit; there it fails when nothing editable has focus (tap the field first), and " +
+        'on a date/time input, whose structured value a select-and-delete cannot remove (press `key: "backspace"` on it ' +
+        "instead). " +
+        "The field is never read back, so the result reports what was sent, not what the field now holds: `keys` counts " +
+        "key events, so it is 200 on iOS and Android and 0 on Chromium, which sends none — read `cleared`, not `keys`. " +
         "Not supported on TV targets (Apple TV / Android TV) or Vega. `false` means the same as omitting it."
     ),
   delayMs: z
@@ -136,7 +141,7 @@ Returns { typed: string, keys: number, cleared?: true }. Fails if more than one 
 A failure is not rolled back. An unsupported key name is always rejected before anything is sent. Un-typeable text is not: the iOS simulator and Chromium reject it mid-string and leave the characters before it in the field (Android, Vega and TV targets check the whole string up front). A transport failure partway also leaves the text already sent. On a retry, read the field's actual contents — do not assume it is unchanged.
 - text: types a string (supports uppercase, digits, common punctuation). To type a credential, use \`{{secret:<NAME>}}\` — resolved server-side from the \`ARGENT_SECRET_<NAME>\` env var or an argent secrets file (\`.argent/secrets.env\` in the project, \`~/.argent/secrets.env\`, or an \`ARGENT_SECRET_\`-prefixed key in the project's \`.env\`/\`.env.local\`), so the plaintext never enters agent context; the result echoes the placeholder, not the value, and the after-typing auto-screenshot is skipped. To submit after typing a secret, put both steps in ONE \`run-sequence\` — that keeps the skip covering the Enter, which a second bare \`keyboard\` call would not.
 - key: presses a single named key (enter, escape, backspace, tab, arrow-up/down/left/right, f1–f12) — NOT supported on TV targets; move focus with \`tv-remote\` instead.
-- clear: empties the focused text field. Tap the field first — it goes wherever keyboard focus is. iOS and Android send 100 backspaces interleaved with 100 forward-deletes, so the caret can be anywhere and multi-line fields empty too; Chromium selects the focused editable and deletes the selection, and fails if nothing editable has focus. A field holding more than 100 characters on either side of the caret keeps the remainder — call clear again. Nothing is read back: the result says what was sent, not what the field now holds, so assert the field (or its consequence) if you need proof. NOT supported on TV targets or Vega. Prefer it over pressing backspace in a loop, and over typing over a filled field: appending to a value the app remembered is a data bug, not a slow path.
+- clear: empties the focused text field. Tap the field first — it goes wherever keyboard focus is. iOS and Android send 100 backspaces interleaved with 100 forward-deletes, so the caret can be anywhere and multi-line fields empty too; there, a field holding more than 100 characters on either side of the caret keeps the remainder — call clear again. Chromium instead selects the focused editable and deletes the selection (no length limit), and fails if nothing editable has focus or if the field kept its value (its date/time inputs do — press key: "backspace" on one of those instead). Nothing is read back: the result says what was sent, not what the field now holds (\`keys\` is 200 on iOS/Android and 0 on Chromium, which dispatches no key events), so assert the field or its consequence if you need proof. NOT supported on TV targets or Vega. Prefer it over pressing backspace in a loop, and over typing over a filled field: appending to a value the app remembered is a data bug, not a slow path.
 On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field first (with \`tv-remote\`), then type into it (injected HID keyboard on Apple TV, \`adb input text\` on Android TV).
 One call does one action: pass text, key OR clear, never two of them. To do two in a row, send two \`keyboard\` steps in one \`run-sequence\` — { text: "hello" } then { key: "enter" } to type and submit, or { clear: true } then { text: "hello" } to replace a value — which also keeps it to a single round-trip.`,
     zodSchema,

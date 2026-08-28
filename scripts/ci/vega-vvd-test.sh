@@ -270,6 +270,21 @@ if [ -n "$keys" ] && [ "$keys" -ge 1 ] 2>/dev/null; then
 else
   fail "keyboard did not report injected keys (keys='${keys}')"
 fi
+
+# `clear` is refused on Vega: the delete burst the other platforms send has no
+# measured `inputd-cli` equivalent, and a clear that silently removes one
+# character is worse than a refusal. Own curl, not post_tool: `-f` swallows the
+# 400 body, and the body is what carries the capability code.
+clear_resp="$(curl -sS -m 60 -w '\n%{http_code}' -X POST "${TOOLS_URL}/tools/keyboard" \
+  -H 'Content-Type: application/json' \
+  -d "$(printf '{"udid":"%s","clear":true}' "$SERIAL")" 2>/dev/null)"
+clear_code="$(printf '%s' "$clear_resp" | tail -n 1)"
+echo "clear response: ${clear_resp:0:200}"
+if [ "$clear_code" = "400" ] && printf '%s' "$clear_resp" | grep -q "TOOL_CAPABILITY_UNSUPPORTED_OPERATION"; then
+  echo "OK: keyboard clear refused on Vega as an unsupported operation"
+else
+  fail "keyboard clear should be refused on Vega (http='${clear_code}')"
+fi
 endg
 
 group "TEST restart-app"

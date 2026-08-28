@@ -1,6 +1,6 @@
 ---
 name: argent-device-interact
-description: Interact with an iOS simulator, Android emulator, or Chromium (CDP) app using argent MCP tools. Use when tapping UI elements, performing gestures, scrolling/swiping, typing text, pressing hardware buttons, launching apps, opening URLs, taking screenshots, waiting for an element to appear or disappear, or checking visible app state after interactions.
+description: Interact with an iOS simulator, Android emulator, or Chromium (CDP) app using argent MCP tools. Use when tapping UI elements, performing gestures, scrolling/swiping, typing text, clearing or replacing a field's value, pressing hardware buttons, launching apps, opening URLs, taking screenshots, waiting for an element to appear or disappear, or checking visible app state after interactions.
 ---
 
 ## Unified tool surface
@@ -190,9 +190,9 @@ One call does one action. `text`, `key` and `clear` are mutually exclusive, and 
 }
 ```
 
-The clear deletes on both sides of the cursor, so it does not matter where the tap left it, and a multi-line field empties too. Bounded: it removes up to 100 characters on each side and a longer field keeps the remainder — call `clear` again. Nothing is read back, so the result reports what was sent, not what the field holds; `describe` the field (or check what the app does with it) if you need proof. On Chromium it fails when nothing editable has focus — tap the field and retry. Not supported on TV targets or Vega; there, empty the field through the app's own on-screen keyboard with `tv-remote`.
+On iOS and Android the clear is a burst of delete keys in both directions, so it does not matter where the tap left the cursor and a multi-line field empties too — but it is bounded: it removes up to 100 characters on each side, and a longer field keeps the remainder, so call `clear` again. Chromium instead selects the focused editable and deletes the selection, with no length limit. It fails there when nothing editable has focus — tap the field and retry — and on a date/time input (`date`, `datetime-local`, `month`, `week`, `time`), whose structured value a select-and-delete cannot remove: clear one of those with `keyboard` `{ "key": "backspace" }` while it has focus. Nothing is read back on any platform, so the result reports what was sent, not what the field holds (`keys` is 200 on iOS/Android and 0 on Chromium, which sends no key events — read `cleared`); `describe` the field, or check what the app does with it, if you need proof. Not supported on TV targets or Vega; there, empty the field through the app's own on-screen keyboard with `tv-remote`.
 
-Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12`. Optional: `"delayMs": 100` between keystrokes (default 50ms) — applies to the iOS simulator and Chromium; it is ignored on Android phones/tablets (typed via `adb input text`, no per-key cadence), on Vega, and on TV targets.
+Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12`. Optional: `"delayMs": 100` between keystrokes (default 50ms) — it paces typing only, so `clear` (which runs at its own fixed cadence) ignores it, as do Android phones/tablets (typed via `adb input text`, no per-key cadence), Vega, and TV targets. It applies to `text` and `key` on the iOS simulator and Chromium.
 
 **Typing secrets.** To enter a credential without its plaintext ever entering your context, transcript, or logs, use a secret placeholder in `text` (works in `keyboard`, `paste`, `run-sequence` keyboard steps, and flow `type` steps):
 

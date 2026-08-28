@@ -257,6 +257,57 @@ describe("keyboard `clear` — refusal taxonomy", () => {
     expect(err.message).not.toMatch(/<null>/);
   });
 
+  it("chromium: a field that kept its value → 400 + KEYBOARD_CLEAR_UNSUPPORTED_FIELD", async () => {
+    // A different code from the focus refusal, because the repair is different:
+    // the caller DID focus the right field, and no amount of tapping fixes it.
+    // Chromium's date/time inputs pass every editability signal the script can
+    // read and still keep their value, so `execCommand("delete")` answering
+    // false is the only evidence — and it must not be reported as a success.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({
+        cleared: false,
+        focus: "input type=date",
+        reason: "delete-refused",
+      })),
+    } as never);
+    await expectInvalidInput(
+      makeChromiumImpl(registry).handler(
+        {},
+        { udid: chromiumDevice.id, clear: true },
+        chromiumDevice
+      ),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
+    );
+  });
+
+  it("chromium: the kept-value refusal names the field and a repair that works", async () => {
+    // "Tap the field first" is the WRONG advice here and would loop an agent
+    // forever. The repair measured on Chrome 151 is one backspace on the field
+    // that already has focus, so that is what the message has to say.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({
+        cleared: false,
+        focus: "input type=date",
+        reason: "delete-refused",
+      })),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the clear to reject");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(err.message).toMatch(/<input type=date>/);
+    expect(err.message).toMatch(/kept its value/);
+    expect(err.message).toMatch(/{ key: "backspace" }/);
+    // ...and NOT the focus remedy, which is what the other refusal prescribes.
+    expect(err.message).not.toMatch(/gesture-tap/);
+  });
+
   it("chromium: a renderer answer with no `cleared` is a refusal, not a success", async () => {
     // `evaluate` resolves `undefined` when the expression throws under
     // `returnByValue`, or when the page navigates mid-call. Reading that as a

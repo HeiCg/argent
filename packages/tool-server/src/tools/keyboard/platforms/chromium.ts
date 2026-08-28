@@ -27,19 +27,33 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // A custom element hands focus down into its shadow root, where the real
   // <input> lives; document.activeElement only ever names the host.
   while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  const tag = el ? String(el.tagName).toLowerCase() : null;
+  // Read \`.type\` only off an <input>: a textarea reflects the constant
+  // "textarea" and a contenteditable has none. An omitted attribute reflects
+  // as "text", so a bare <input> is a text field here as it is in the page.
+  const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
+  const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
   const editable =
     !!el &&
     !el.disabled &&
     !el.readOnly &&
-    ((el.tagName === "INPUT" &&
-      !/^(button|checkbox|radio|file|submit|reset|image|range|color)$/i.test(el.type)) ||
-      el.tagName === "TEXTAREA" ||
+    ((tag === "input" &&
+      !/^(button|checkbox|radio|file|submit|reset|image|range|color)$/.test(type)) ||
+      tag === "textarea" ||
       el.isContentEditable === true);
-  if (!editable) {
-    return { cleared: false, focus: el ? String(el.tagName).toLowerCase() : null };
-  }
+  if (!editable) return { cleared: false, focus: focus, reason: "not-editable" };
   document.execCommand("selectAll");
-  document.execCommand("delete");
+  // The return value is the only honest read of what happened, and it is exact.
+  // Measured on Chrome 151: \`delete\` answers true for every element that ends
+  // up empty — including one that was ALREADY empty, where \`selectAll\` answers
+  // false — and false for exactly the five date/time input types, which hold a
+  // structured value execCommand cannot touch while classifying as editable by
+  // every other signal (they are not in the denylist above, and nothing else
+  // distinguishes them). Discarding it reports a cleared field that still holds
+  // its date, which is the one outcome this tool must never produce.
+  if (!document.execCommand("delete")) {
+    return { cleared: false, focus: focus, reason: "delete-refused" };
+  }
   return { cleared: true };
 })()`;
 
@@ -48,6 +62,7 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
 interface ClearOutcome {
   cleared?: boolean;
   focus?: string | null;
+  reason?: string;
 }
 
 async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
@@ -56,6 +71,23 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   })) as ClearOutcome | null;
   if (outcome?.cleared !== true) {
     const focus = outcome?.focus;
+    // Two different refusals, two different repairs, so two codes. This one is
+    // about the KIND of field, not about focus: the element is editable by
+    // every signal the script can read, and the delete still did not land.
+    if (outcome?.reason === "delete-refused") {
+      throw new InvalidToolInputError(
+        `the focused <${focus ?? "input"}> kept its value — nothing was cleared. Chromium's ` +
+          "date and time inputs (date, datetime-local, month, week, time) hold a structured " +
+          "value that a select-and-delete cannot remove. Clear that one with `keyboard` " +
+          '`{ key: "backspace" }` while it has focus — one press empties it — or set it ' +
+          "through the app's own control.",
+        {
+          error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
+          failure_stage: "keyboard_clear_chromium_refused",
+          error_kind: "unsupported",
+        }
+      );
+    }
     // Caller input error → 400: the fix is a `gesture-tap` on the field, not a
     // retry of this call. The page is untouched either way — the script returns
     // before it selects anything, so no page-wide selection is left behind.
