@@ -31,9 +31,11 @@ import {
   isBlockStep,
   parseFlow,
   runTargetName,
+  swipeByLabel,
   type BlockStep,
   type FlowFile,
   type FlowSelector,
+  type GestureTarget,
   type FlowStep,
   type Launch,
   type WhenCondition,
@@ -193,10 +195,10 @@ export interface StepReport {
    * The step passed, but the WAY it passed weakens it as proof. Rendered as a
    * "⚠" suffix by the MCP client, and under the step line by the CLI. Raised by
    * `await: { idle: true }` whenever the screen could not be proved settled, and
-   * by a selector-less gesture (coordinate `tap`/`long-press`, centre-anchored
-   * `pinch`/`rotate`) that a tree-source outage left unsettled: it is dispatched
-   * regardless, and the warning is the only thing separating it from one that
-   * waited.
+   * by a selector-less gesture (coordinate `tap`/`long-press`/`swipe`,
+   * centre-anchored `pinch`/`rotate`) that a tree-source outage left unsettled:
+   * it is dispatched regardless, and the warning is the only thing separating it
+   * from one that waited.
    */
   warning?: string;
   /** Underlying tool id for `tool` steps. */
@@ -1042,6 +1044,9 @@ export function createRunFlowTool(
         `Failed to run flow ${displayFlowName(params)}: ${failureSignal.error_code}`,
     },
     description: `Run a saved flow from the .argent/flows/ directory, or an explicit boundary-managed flow_path.
+Use when a scenario is already authored as YAML and the whole of it should replay in one call with a
+per-step verdict; reach for the individual gesture tools when nothing is authored yet, and for
+run-sequence when the steps are an ad-hoc list rather than a stored flow.
 Steps run in order: \`launch\` starts an app from scratch (terminate + relaunch) and waits until it is
 ready (on iOS it also pins later element lookups to that app rather than auto-detecting the frontmost
 one); \`tool\` calls dispatch through the registry (a raw \`tool\` step ends that iOS pin, so lookups
@@ -1056,6 +1061,10 @@ order), \`next: <selector>\` (CSS \`+\` — the nearest such follower, which unl
 non-matching neighbour rather than failing), plus \`any: true\` (CSS \`*\` — legal only WITH a scope and
 never beside text/id/role). Scopes nest to disambiguate — \`within: { id: card, within: { id: list } }\`
 reads "inside card inside list", each container's frame inside the next);
+\`swipe\` performs one finger flick (\`swipe: left\`, or \`swipe: { from?, direction|to|by, settle?, duration? }\` —
+direction is the FINGER's travel, the opposite sense of scroll-to's content direction; \`by: { x?, y? }\` — signed
+0–1 screen fractions, combined length at least 0.03 (a diagonal clears it where neither axis does); duration in ms,
+default 300, minimum 150, maximum 10000; each bound is a parse error that rejects the file before any step runs);
 \`scroll-to\` scrolls (momentum-free) until a target is visible; \`pinch\` zooms
 (\`pinch: { on?, scale }\` — scale > 1 in, < 1 out; screen center when \`on\` is omitted); \`rotate\` is the
 two-finger rotation gesture (\`rotate: { on?, by }\` — degrees, + clockwise, within ±3000°; screen center
@@ -1072,7 +1081,7 @@ baseline (a missing baseline fails the step — set updateBaselines to adopt the
 cropped element whose size drifted fails on dimensions); \`echo\` annotates; \`run\` executes another flow
 inline — a YAML path resolved against the directory of the flow file that references it (co-located
 runs only).
-A selector-less gesture — a coordinate \`tap\`/\`long-press\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
+A selector-less gesture — a coordinate \`tap\`/\`long-press\`/\`swipe\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
 no frame out of the tree, so an unreadable tree source does NOT stop it the way it stops \`idle\`: it
 settles best-effort, dispatches anyway, and the step PASSES carrying a \`warning\` that quotes the source's
 own error. That green says the gesture was SENT, not that it landed. Restore the tree source (usually
@@ -1679,6 +1688,11 @@ function conditionLabel(
   return `${cond.condition} ${sel}`;
 }
 
+/** Human-readable selector/point spelling shared by gesture reports. */
+function gestureTargetLabel(target: GestureTarget): string {
+  return "selector" in target ? selectorLabel(target.selector) : `(${target.x}, ${target.y})`;
+}
+
 /** Display-only "what this step acts on" for {@link StepReport.target}. */
 function stepTarget(step: FlowStep): string | undefined {
   switch (step.kind) {
@@ -1687,6 +1701,19 @@ function stepTarget(step: FlowStep): string | undefined {
       if (step.selector) return selectorLabel(step.selector);
       if (step.x !== undefined && step.y !== undefined) return `(${step.x}, ${step.y})`;
       return undefined;
+    case "swipe": {
+      let travel: string;
+      if (step.direction !== undefined) {
+        travel = step.direction;
+      } else if (step.by !== undefined) {
+        travel = `by ${swipeByLabel(step.by)}`;
+      } else if (step.to !== undefined) {
+        travel = `to ${gestureTargetLabel(step.to)}`;
+      } else {
+        return undefined;
+      }
+      return `${travel}${step.from ? ` from ${gestureTargetLabel(step.from)}` : ""}`;
+    }
     case "type":
       return `into ${selectorLabel(step.into)}`;
     case "await":
@@ -2254,6 +2281,7 @@ async function execLeafStep(
 
     case "tap":
     case "long-press":
+    case "swipe":
     case "type":
     case "await":
     case "assert":
@@ -2441,6 +2469,13 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
+        // A gesture tool that consults the signal rejects when the run is
+        // cancelled mid-dispatch. Per ABORTED_OUTCOME that is a skip, the same
+        // as the directives and the delay above — never a step failure carrying
+        // the tool's own "aborted after N of M frames" as its reason.
+        if (signal?.aborted) {
+          return { ...base, status: "skip", tool: step.name, reason: ABORTED_OUTCOME.reason };
+        }
         const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
         return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
       }
