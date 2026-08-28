@@ -41,6 +41,15 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // as "text", so a bare <input> is a text field here as it is in the page.
   const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
   const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
+  // \`document.designMode = "on"\` and <body contenteditable> make the DOCUMENT
+  // its own editing host, and document.activeElement defaults to <body> — so a
+  // clear that has been aimed at nothing passes every editability test below and
+  // selects and deletes the entire page. Nothing bounds an editing host, and
+  // this one needs no prior interaction at all, so it is refused by identity
+  // before anything is selected.
+  if (el && (el === document.body || el === document.documentElement) && el.isContentEditable === true) {
+    return { cleared: false, focus: focus, reason: "document-editable" };
+  }
   const editable =
     !!el &&
     !el.disabled &&
@@ -135,10 +144,16 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     // Caller input error → 400: the fix is a `gesture-tap` on the field, not a
     // retry of this call. The page is untouched either way — the script returns
     // before it selects anything, so no page-wide selection is left behind.
+    // Same code and same repair for a document-wide editing host, which is a
+    // clear that has not been aimed at a field yet.
     throw new InvalidToolInputError(
-      (focus
-        ? `nothing editable has keyboard focus (it is on <${focus}>)`
-        : "no element has keyboard focus") +
+      (outcome?.reason === "document-editable"
+        ? "the whole document is editable here (`designMode` is on, or <body> carries " +
+          "`contenteditable`) and keyboard focus is still on it rather than on a field, so " +
+          "clearing would have emptied the ENTIRE page"
+        : focus
+          ? `nothing editable has keyboard focus (it is on <${focus}>)`
+          : "no element has keyboard focus") +
         " — nothing was cleared. Tap the field first (`gesture-tap`), then clear it. " +
         "A field inside an <iframe> reports as `iframe` here: the page's active element is " +
         "the frame, and this clear does not reach into it — for that one, select the text " +
