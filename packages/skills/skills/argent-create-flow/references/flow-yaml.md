@@ -41,7 +41,7 @@ The one exception is a device _scope_ rather than a target: `stop-all-simulator-
 
 ## Target requirements
 
-`requires:` names the targets a flow supports:
+`requires:` names the targets a flow supports. **No block means it runs anywhere.**
 
 ```yaml
 requires:
@@ -49,15 +49,18 @@ requires:
   runtimeKind: tv
 ```
 
-`platform` takes one platform or a list, and `ios` covers a remote simulator too, though only on a run pointed at one with `--device remote:<udid>` — a booted remote simulator is never an auto-detection candidate. `runtimeKind` is `tv` — a focus-driven remote environment, so Apple TV, Android TV, or Fire TV — or `mobile`, which is everything else, Chromium included. The keys are ANDed, so the block above means Apple TV or Android TV and excludes Fire TV, which `runtimeKind: tv` alone would admit.
+`platform` takes one platform or a list; `ios` also covers a remote simulator, which only a `--device remote:<udid>` run reaches, since auto-detection never picks one. `runtimeKind` is `tv` (Apple TV, Android TV, Fire TV) or `mobile` (everything else, Chromium included). The keys are ANDed: the block above means Apple TV or Android TV, not Fire TV. A block also narrows auto-detection, so an ios-only flow picks the booted simulator instead of failing as ambiguous beside an emulator.
 
-**No block means the flow runs anywhere**, so every existing flow is unaffected. Requirements also narrow device auto-detection: an ios-only flow picks the booted simulator instead of failing as ambiguous when an emulator is up beside it.
+Where a target does not satisfy it:
 
-On a target that does not satisfy them, `argent flow run <dir>` **skips** the flow — that is the point, one command over a mixed suite. Running that flow on its own is an **error**, and so is a `run:` fragment the run device cannot satisfy once execution reaches it: a composed fragment silently not running would leave a green report for a scenario that only half happened. A fragment the leading `run:` chain enters before the first executable step is judged earlier: it is certain to run, so its block folds into the run's effective block and refuses the whole root flow at setup — a skip in a directory run, an error on its own. Use `when:` when you mean "optionally".
+- `argent flow run <dir>` skips the flow and carries on.
+- One flow run by name or path is an error.
+- A fragment the leading `run:` chain enters folds into the run's block, so the root skips or errors as above.
+- A `run:` fragment execution reaches later errors that step. Skipping mid-run would leave a green report for a scenario that only half happened, so use `when:` when you mean "optionally".
 
-A run that resolves **no device** is judged against no block at all: with no target there is nothing to judge, so an ios-only flow whose steps all stay off the device — narration, or a teardown that recorded its own `devices` scope — passes on any host. Naming a `device` or `platform` the block excludes still refuses it, turning that same run back into a skip or an error.
+A requirement that could not be _verified_ errors rather than skipping. A run resolving **no device** is judged against no block at all, so an ios-only flow that never touches one (narration, or a teardown with its own `devices` scope) passes on any host; naming a `device` or `platform` the block excludes still refuses it.
 
-Combinations nothing could satisfy are rejected at parse: `runtimeKind: tv` with `platform: [chromium]`, or a `launch` step that always runs declaring no app id for a platform `requires.platform` claims. A `launch` inside a `when: { platform: … }` guard is judged against that guard's platform only; one inside any other `when:` guard may never be reached, so it is not judged at all. Setup judges launch coverage a second time across the leading chain, against the folded block, so factoring a launch into a fragment does not escape the rule: a composition no target could run **fails** (`FLOW_REQUIRES_UNSATISFIABLE`) instead of being skipped.
+Blocks nothing could satisfy are rejected at parse: `runtimeKind: tv` with `platform: [chromium]`, one admitting no platform that runs a step, and one naming a platform an always-run `launch` declares no app id for. A `launch` under `when: { platform: … }` is judged against that guard's platform only; under any other `when:` it may never be reached, so it is not judged. Setup repeats the last two checks across the leading chain against the folded block, so factoring a body into a fragment does not escape them: such a composition **fails** (`FLOW_REQUIRES_UNSATISFIABLE`) instead of skipping.
 
 ## Selectors
 
@@ -223,7 +226,7 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 
 `argent flow run <name> [--device <id>] [--platform ios|android|chromium|vega] [--update-baselines] [--output <dir>] [--json]` runs without an LLM and exits non-zero on failure.
 
-A directory argument runs every flow in it and reports the `passed/failed/skipped` counts under a `PASS`/`FAIL`/`NONE RAN` verdict. `NONE RAN` exits 2 when no flow failed and none executed a step, so a suite filtered to nothing — or one whose only "passes" had every step `when:`-skipped — cannot read as green; a failed flow keeps the verdict `FAIL` and the exit 1 even when nothing ran. `--json` prints one aggregate object whose `ok` agrees. A flow whose [`requires:`](#target-requirements) the target does not satisfy is skipped and the batch continues, but a requirement that could not be _verified_ fails that flow instead.
+A directory argument runs every flow in it and reports `passed/failed/skipped` under a `PASS`/`FAIL`/`NONE RAN` verdict. `NONE RAN` exits 2 when no flow failed and none executed a step, so a suite filtered to nothing cannot read as green; a failure keeps `FAIL` and exit 1. `--json` prints one aggregate object whose `ok` agrees.
 
 A screenshot is human evidence. A `snapshot:` is executable visual verification. A missing baseline or excessive mismatch fails. A `cropOn` size change also fails. Use snapshots for color, layout, size, spacing, typography, clipping, overflow, images, icons, or stable component appearance. Use full screen for global changes and `cropOn` for one component.
 
