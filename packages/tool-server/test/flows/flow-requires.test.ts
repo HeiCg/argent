@@ -1183,7 +1183,10 @@ describe("requirements narrow device auto-detection", () => {
     // while `isBooted` keeps it out of the candidates. Enumerated bare, it reads
     // as a Booted iOS device standing beside "no booted device satisfies".
     await writeFlow("ios-only", { requires: { platform: ["ios"] } });
-    const { registry } = mockRegistry([androidEntry(ANDROID), remoteIosEntry(IOS_REMOTE, "mobile")]);
+    const { registry } = mockRegistry([
+      androidEntry(ANDROID),
+      remoteIosEntry(IOS_REMOTE, "mobile"),
+    ]);
 
     const err = await run(registry, "ios-only").catch((e: unknown) => e);
 
@@ -1459,7 +1462,10 @@ describe("requires folded along the leading run: chain", () => {
     // composition opposite dispositions on step order alone.
     await writeFlow("ios-frag", { requires: { platform: ["ios"] } });
     await writeFlow("wait-first", {
-      steps: [{ kind: "wait", ms: 50 }, { kind: "run", flow: "ios-frag.yaml" }],
+      steps: [
+        { kind: "wait", ms: 50 },
+        { kind: "run", flow: "ios-frag.yaml" },
+      ],
     });
     const { registry } = mockRegistry([iosEntry(IOS), androidEntry(ANDROID)]);
 

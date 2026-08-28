@@ -1603,17 +1603,16 @@ async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<Lea
         ...scan.entered.map((f) => ({ ...f, steps: unfollowed(f.steps) })),
       ],
       requires,
-      [
-        ...(flow.requires ? [rootEntry.display] : []),
-        ...contributions.map((c) => c.flow),
-      ]
+      [...(flow.requires ? [rootEntry.display] : []), ...contributions.map((c) => c.flow)]
     );
   }
   return {
     launch: found === NO_EXECUTABLE_STEP ? null : found,
     requires,
     composedSteps: scan.complete
-      ? [flow.steps, ...scan.entered.map((f) => f.steps)].flat().filter((s) => !scan.followed.has(s))
+      ? [flow.steps, ...scan.entered.map((f) => f.steps)]
+          .flat()
+          .filter((s) => !scan.followed.has(s))
       : null,
   };
 }

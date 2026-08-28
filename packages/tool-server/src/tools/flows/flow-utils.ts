@@ -3062,9 +3062,7 @@ function launchCoverageFailure(
   // No one launch is at fault here, so the branch names the files holding them
   // rather than a step, the way the platform branch above names its own.
   const files = [
-    ...new Set(
-      [...scopedLaunches(scopes, candidates)].flatMap((l) => (l.flow ? [l.flow] : []))
-    ),
+    ...new Set([...scopedLaunches(scopes, candidates)].flatMap((l) => (l.flow ? [l.flow] : []))),
   ];
   return (
     `no platform that is ever "${runtimeKind}" (${candidates.join(", ")}) has an app id in ` +
@@ -3177,8 +3175,7 @@ export function assertComposedRequires(
   declaredIn: readonly string[] = []
 ): void {
   if (!requires) return;
-  const detail =
-    vacuousScopeFailure(scopes, requires) ?? launchCoverageFailure(scopes, requires);
+  const detail = vacuousScopeFailure(scopes, requires) ?? launchCoverageFailure(scopes, requires);
   if (!detail) return;
   // A root that declares nothing of its own leaves the remedy pointing at a key
   // no file the message names contains.

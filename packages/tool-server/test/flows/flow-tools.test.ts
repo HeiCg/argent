@@ -2302,7 +2302,10 @@ describe("flow-finish-recording", () => {
     vi.spyOn(fs, "readFile").mockImplementation(((p: string, ...rest: unknown[]) =>
       String(p).endsWith("fenced-frag.yaml")
         ? new Promise(() => {})
-        : (realReadFile as (...a: unknown[]) => Promise<string>)(p, ...rest)) as typeof fs.readFile);
+        : (realReadFile as (...a: unknown[]) => Promise<string>)(
+            p,
+            ...rest
+          )) as typeof fs.readFile);
 
     try {
       const result = await flowFinishRecordingTool.execute(
