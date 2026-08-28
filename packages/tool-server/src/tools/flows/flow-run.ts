@@ -1563,11 +1563,9 @@ interface LeadingScan {
   complete: boolean;
   /**
    * Files whose subtree the walk finished without finding an executable step.
-   * Reaching one again adds nothing — the fold intersects and the composed
-   * picture is only ever asked whether SOME step wants a device — so the walk
-   * declines to descend twice. Without it a B-way fan over D levels re-walks
-   * the leaves B^(D-1) times, and the walk now runs inside two tools that are
-   * not `longRunning`.
+   * Everything it collects is set-like, so reaching one again adds nothing and
+   * it declines to descend twice. Without this a B-way fan over D levels
+   * re-walks the leaves B^(D-1) times, on two tools that are not `longRunning`.
    */
   exhausted: Set<string>;
   /**
