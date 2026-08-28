@@ -1447,7 +1447,8 @@ function assertParamsMeetRequires(params: Params, requires: FlowRequires | undef
     assertPlatformMeetsRequires(
       shape,
       requires,
-      `device "${params.device}", whose id shape classifies it as ${shape}${hint}`
+      `device "${params.device}", whose id shape classifies it as ${shape}${hint}`,
+      { unconfirmed: !recognised }
     );
     return;
   }

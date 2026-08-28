@@ -34,12 +34,20 @@ export const CHROMIUM_ID_PREFIX = "chromium-cdp-";
 const VEGA_SERIAL_PREFIX = "amazon-";
 
 /**
+ * The two android serial shapes adb itself mints: a local emulator's
+ * `emulator-<port>`, and the `host:port` wireless debugging attaches under.
+ * A USB serial is `ro.serialno`, which is vendor-defined and so shaped like
+ * nothing in particular.
+ */
+const ANDROID_SERIAL_SHAPE = /^(emulator-\d+|[^\s:]+:\d+)$/;
+
+/**
  * The platform a `udid` belongs to, plus whether an id shape confirmed that
- * classification. Unconfirmed at the android fallback, which holds an id to
- * nothing — with `ro.serialno` vendor-defined, a real serial, a device name and
- * a typo all land there alike — and behind a `remote:` prefix whose tail is not
- * a UDID. A caller that reports the verdict to a user needs the second half;
- * one that just routes by platform wants {@link classifyDevice}.
+ * classification. Unconfirmed at the android fallback for a USB serial, which
+ * holds an id to nothing — a real serial, a device name and a typo all land
+ * there alike — and behind a `remote:` prefix whose tail is not a UDID. A
+ * caller that reports the verdict to a user needs the second half; one that
+ * just routes by platform wants {@link classifyDevice}.
  */
 export function classifyDeviceShape(udid: string): { platform: Platform; recognised: boolean } {
   if (udid.startsWith(REMOTE_PREFIX)) {
@@ -48,7 +56,7 @@ export function classifyDeviceShape(udid: string): { platform: Platform; recogni
   if (udid.startsWith(VEGA_SERIAL_PREFIX)) return { platform: "vega", recognised: true };
   if (udid.startsWith(CHROMIUM_ID_PREFIX)) return { platform: "chromium", recognised: true };
   if (IOS_UDID_SHAPE.test(udid)) return { platform: "ios", recognised: true };
-  return { platform: "android", recognised: false };
+  return { platform: "android", recognised: ANDROID_SERIAL_SHAPE.test(udid) };
 }
 
 export function classifyDevice(udid: string): Platform {

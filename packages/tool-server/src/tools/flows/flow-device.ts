@@ -250,20 +250,24 @@ const CONSTANT_RUNTIME_KIND: Partial<Record<Platform, FlowRuntimeKind>> = {
 export function assertPlatformMeetsRequires(
   platform: Platform,
   requires: FlowRequires | undefined,
-  subject: string
+  subject: string,
+  options?: { unconfirmed?: boolean }
 ): void {
   if (!requires) return;
+  // An unconfirmed platform was read off an id shape that holds the id to
+  // nothing, so the exclusion describes the spelling rather than the target.
+  // That earns the code a directory run FAILS on: skipping on it would let a
+  // mistyped --device filter fenced flows out of the batch and report green.
+  const refuse = options?.unconfirmed ? requirementsUnverifiableError : requirementsUnmetError;
   const declared = `${declaredRequires(requires)}, which excludes`;
   const remedy = "Run it against a matching target, or relax the requirement.";
 
   if (requires.platform && !platformMeets(platform, requires.platform)) {
-    throw requirementsUnmetError(`${declared} ${subject}. ${remedy}`);
+    throw refuse(`${declared} ${subject}. ${remedy}`);
   }
   const constant = CONSTANT_RUNTIME_KIND[platform];
   if (requires.runtimeKind && constant && constant !== requires.runtimeKind) {
-    throw requirementsUnmetError(
-      `${declared} ${subject} — ${platform} is always ${constant}. ${remedy}`
-    );
+    throw refuse(`${declared} ${subject} — ${platform} is always ${constant}. ${remedy}`);
   }
 }
 

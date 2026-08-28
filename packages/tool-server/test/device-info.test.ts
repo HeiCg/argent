@@ -34,12 +34,17 @@ describe("classifyDeviceShape", () => {
     }
   });
 
-  it("reports every android id as unrecognised, real serials included", () => {
-    // The android arm holds an id to no shape, so it confirms nothing about a
-    // real serial either.
-    for (const serial of ["emulator-5554", "HT82A0203045", "192.168.1.5:5555"]) {
-      expect(classifyDeviceShape(serial)).toEqual({ platform: "android", recognised: false });
+  it("confirms the two android serial shapes adb mints itself", () => {
+    for (const serial of ["emulator-5554", "192.168.1.5:5555"]) {
+      expect(classifyDeviceShape(serial)).toEqual({ platform: "android", recognised: true });
     }
+  });
+
+  it("reports a USB serial as unrecognised, since ro.serialno has no shape", () => {
+    expect(classifyDeviceShape("HT82A0203045")).toEqual({
+      platform: "android",
+      recognised: false,
+    });
   });
 
   it("reports a device name as the android fallback, not a shape", () => {

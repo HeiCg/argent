@@ -561,8 +561,25 @@ describe("an explicitly targeted run", () => {
     const err = await run(registry, "ios-only", { device: ANDROID }).catch((e: unknown) => e);
 
     expect((err as Error).message).toMatch(
-      /excludes device "emulator-5554", whose id shape classifies it as android \(no device listing[^)]*\)\. Run it against a matching target/
+      /excludes device "emulator-5554", whose id shape classifies it as android\. Run it against a matching target/
     );
+    // adb mints the serial, so the exclusion is a fact about the target and a
+    // directory run may skip on it.
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
+  });
+
+  it("fails rather than skips when only an unconfirmed id shape excluded the run", async () => {
+    // A mistyped --device lands in the android fallback, and skipping on it
+    // would filter every fenced flow out of a directory run under a green
+    // verdict. Nothing about the target was established, so it is unverifiable.
+    await writeFlow("ios-only", { requires: { platform: ["ios"] } });
+    const { registry } = mockRegistry();
+
+    const err = await run(registry, "ios-only", { device: "iPhone-17-Pro" }).catch(
+      (e: unknown) => e
+    );
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNVERIFIABLE);
   });
 
   it("does not call a well-formed id a non-id when its platform is excluded", async () => {
@@ -597,11 +614,13 @@ describe("an explicitly targeted run", () => {
     ["a remote sim udid", IOS_REMOTE, "ios-remote", "vega"],
     ["a chromium id", CHROMIUM, "chromium", "vega"],
     ["a vega serial", VEGA, "vega", "ios"],
+    ["an emulator serial", ANDROID, "android", "vega"],
+    ["a wireless adb serial", "192.168.1.5:5555", "android", "vega"],
   ] as const)(
     "keeps the typo hint out of a refusal aimed at %s",
     async (_label, device, shape, required) => {
       // One per shape-confirmed family: the hint belongs to an unconfirmed
-      // shape, so none of these may carry it.
+      // shape, so none of these may carry it. adb mints the last two itself.
       await writeFlow("shape-gate", { requires: { platform: [required] } });
       const { registry } = mockRegistry();
 
@@ -615,7 +634,6 @@ describe("an explicitly targeted run", () => {
   );
 
   it.each([
-    ["an emulator serial", ANDROID, "android", NAME_CLAUSE],
     ["a physical android serial", "HT82A0203045", "android", NAME_CLAUSE],
     ["a whitespace-free device name", "iPhone16Pro", "android", NAME_CLAUSE],
     [
