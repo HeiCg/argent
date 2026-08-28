@@ -153,4 +153,16 @@ describe("getRemoteSimulatorRuntimeKind", () => {
       /sim-remote simctl list devices --json returned JSON without a devices map/
     );
   });
+
+  it("wraps an array payload too, rather than reading it as a runtime map", async () => {
+    // `Object.entries` on an array yields index keys, so without the array
+    // rejection this reports a healthy simulator as one of unknown runtime kind.
+    for (const devices of [[], [[sim(UDID)]]]) {
+      __resetRemoteSimulatorRuntimeKindCacheForTesting();
+      listing = { devices };
+      await expect(getRemoteSimulatorRuntimeKind(UDID)).rejects.toThrow(
+        /sim-remote simctl list devices --json returned JSON without a devices map/
+      );
+    }
+  });
 });

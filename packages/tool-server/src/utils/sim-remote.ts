@@ -81,7 +81,9 @@ export function listedRuntimeEntries(
   listed: SimRemoteListDevicesResult
 ): Array<[string, SimRemoteDevice[]]> | undefined {
   const byRuntime = (listed as { devices?: unknown } | null)?.devices;
-  if (typeof byRuntime !== "object" || byRuntime === null) return undefined;
+  if (typeof byRuntime !== "object" || byRuntime === null || Array.isArray(byRuntime)) {
+    return undefined;
+  }
   return Object.entries(byRuntime).filter((entry): entry is [string, SimRemoteDevice[]] =>
     Array.isArray(entry[1])
   );
