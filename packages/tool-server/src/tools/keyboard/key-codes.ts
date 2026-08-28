@@ -3,6 +3,24 @@
 
 export const SHIFT_KEYCODE = 225;
 
+// Keyboard DELETE Forward (0x4C). Not in NAMED_KEYS: the `key` vocabulary maps
+// both `backspace` and `delete` to usage 42 on every platform, so this code has
+// no name a caller can ask for — it exists only for the `clear` burst, which
+// pairs it with 42 to empty a field from either side of the caret.
+export const FORWARD_DELETE_KEYCODE = 76;
+
+// `clear` sends this many (backspace, forward-delete) pairs — 200 key events —
+// to whatever holds keyboard focus. Bounded on purpose: there is no read-back,
+// so the burst has to be a fixed size, and 100 characters on each side of the
+// caret covers the fields an agent types into. A longer value keeps its
+// remainder, and the documented repair is a second `clear` call.
+//
+// Shared by the two key-injecting backends (../../utils/android-input.ts and
+// ./simulator-server-keys.ts) so the contract stated in the tool description
+// holds identically on both. Chromium clears through the DOM instead and does
+// not use it.
+export const CLEAR_KEY_PAIRS = 100;
+
 const SYMBOL_KEYCODES: Record<string, number> = {
   "\n": 40,
   "\r": 40,

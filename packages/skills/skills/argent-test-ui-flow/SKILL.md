@@ -58,11 +58,12 @@ Steps:
 ```
 1. screenshot → see login screen
 2. gesture-tap { x: 0.5, y: 0.4 }  → tap email field
-3. keyboard { text: "user@example.com" }
-4. gesture-tap { x: 0.5, y: 0.55 } → tap password field
-5. keyboard { text: "{{secret:APP_PASSWORD}}" }
-6. gesture-tap { x: 0.5, y: 0.7 }  → tap Login button
-7. screenshot → verify home screen appeared
+3. keyboard { clear: true }        → the app remembers the last email; typing would splice into it
+4. keyboard { text: "user@example.com" }
+5. gesture-tap { x: 0.5, y: 0.55 } → tap password field
+6. keyboard { text: "{{secret:APP_PASSWORD}}" }
+7. gesture-tap { x: 0.5, y: 0.7 }  → tap Login button
+8. screenshot → verify home screen appeared
 ```
 
 > **Credentials:** never type plaintext credentials — use a `{{secret:<NAME>}}` placeholder in `keyboard`, resolved server-side so the value never enters agent context. It comes from the `ARGENT_SECRET_<NAME>` environment variable or an argent secrets file (`.argent/secrets.env` in the project, `~/.argent/secrets.env`, or an `ARGENT_SECRET_`-prefixed key in the project's `.env` / `.env.local`). If the name is not defined, the failure lists the available names and every path it checked — ask the user to add it to one of those files (which applies immediately) instead of pasting the secret into the conversation. Never invent credentials or echo secret values into reports or saved files.

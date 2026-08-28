@@ -115,6 +115,37 @@ describe("run-sequence", () => {
     expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "keyboard", { text: "hi", udid: IOS });
   });
 
+  it("passes a keyboard `clear` step through as its own step, un-merged", async () => {
+    // The documented replace-a-value form. `keyboard` rejects `{ clear, text }`
+    // in one call, so the ONLY way to express it is consecutive steps — and
+    // run-sequence must forward each step's args verbatim rather than folding
+    // the pair (an "optimisation" that would recreate the rejected shape) or
+    // dropping the `clear` boolean while injecting the udid.
+    const registry = mockRegistry();
+    const tool = createRunSequenceTool(registry);
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS,
+        steps: [
+          { tool: "keyboard", args: { clear: true }, delayMs: 0 },
+          { tool: "keyboard", args: { text: "new value" }, delayMs: 0 },
+        ],
+      }
+    );
+
+    expect(result).toMatchObject({ completed: 2, total: 2 });
+    expect(registry.invokeTool).toHaveBeenNthCalledWith(1, "keyboard", {
+      clear: true,
+      udid: IOS,
+    });
+    expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "keyboard", {
+      text: "new value",
+      udid: IOS,
+    });
+  });
+
   it("stops at an unrecognized tool without invoking it", async () => {
     const registry = mockRegistry();
     const tool = createRunSequenceTool(registry);

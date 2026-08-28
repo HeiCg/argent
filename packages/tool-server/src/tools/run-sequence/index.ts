@@ -112,7 +112,7 @@ Allowed tools and their args (udid is auto-injected, do NOT include it in args):
   gesture-pinch:  { centerX: number, centerY: number, startDistance: number, endDistance: number, endCenterX?: number, endCenterY?: number, angle?: number, durationMs?: number }  [ios/android]
   gesture-rotate: { centerX: number, centerY: number, radius?: number, radiusX?: number, radiusY?: number, startAngle: number, endAngle: number, durationMs?: number }  [ios/android]
   button:         { button: "home"|"back"|"power"|"volumeUp"|"volumeDown"|"appSwitch"|"actionButton" }                  [ios/android]
-  keyboard:       { text?: string, key?: string, delayMs?: number }  (text OR key per step, never both; TV: text only)  [ios/android/chromium/vega/tv]
+  keyboard:       { text?: string, key?: string, clear?: true, delayMs?: number }  (exactly one of text/key/clear per step; TV and Vega: text only)  [ios/android/chromium/vega/tv]
                   text supports {{secret:<NAME>}} placeholders, resolved server-side from ARGENT_SECRET_<NAME> env vars or an argent secrets file — credentials never enter agent context
   paste:          { text: string }  (device clipboard + paste shortcut; only where a user would paste, e.g. an OTP — keyboard otherwise)   [ios sim/android emu]
   rotate:         { orientation: "Portrait"|"LandscapeLeft"|"LandscapeRight"|"PortraitUpsideDown" }                     [ios/android]
@@ -131,6 +131,14 @@ Example — scroll down three times (use gesture-scroll with positive deltaY on 
 Example — type text and submit (two keyboard steps; one call cannot carry both):
   { "udid": "<UDID>", "steps": [
     { "tool": "keyboard", "args": { "text": "hello world" } },
+    { "tool": "keyboard", "args": { "key": "enter" } }
+  ]}
+
+Example — replace what a field already holds (tap it first; typing into a filled field appends):
+  { "udid": "<UDID>", "steps": [
+    { "tool": "gesture-tap", "args": { "x": 0.5, "y": 0.3 } },
+    { "tool": "keyboard", "args": { "clear": true } },
+    { "tool": "keyboard", "args": { "text": "new value" } },
     { "tool": "keyboard", "args": { "key": "enter" } }
   ]}
 

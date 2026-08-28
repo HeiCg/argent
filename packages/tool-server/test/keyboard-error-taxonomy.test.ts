@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
-import { InvalidToolInputError } from "../src/utils/capability";
+import { InvalidToolInputError, UnsupportedOperationError } from "../src/utils/capability";
+import { typeTv } from "../src/tools/keyboard/platforms/tv";
+import { vegaImpl } from "../src/tools/keyboard/platforms/vega";
 import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
@@ -146,5 +148,133 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       injectAndroidNamedKey("emulator-5554", "constructor"),
       FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED
     );
+  });
+});
+
+// `clear` adds two rejection shapes of its own, and they are deliberately
+// different classes. A target that cannot clear at all is a CAPABILITY refusal
+// (`UnsupportedOperationError`, the same shape a TV `key` gets); a page with
+// nothing editable focused is a caller mistake whose repair is one `gesture-tap`
+// (`InvalidToolInputError`). Both map to HTTP 400, so only the code separates
+// them in telemetry — an agent that retried a Vega clear forever and one that
+// forgot to focus the field must not land in the same bucket.
+describe("keyboard `clear` — refusal taxonomy", () => {
+  const APPLE_TV: DeviceInfo = { id: "TV-UDID", platform: "ios", kind: "simulator" };
+  const ANDROID_TV: DeviceInfo = { id: "emulator-5554", platform: "android", kind: "emulator" };
+  const VEGA: DeviceInfo = { id: "vega-serial", platform: "vega", kind: "vvd" };
+
+  /** Assert the error is the capability refusal, carrying its telemetry code. */
+  async function expectUnsupported(p: Promise<unknown>): Promise<Error> {
+    const err = await p.then(
+      () => {
+        throw new Error("expected the call to reject, but it resolved");
+      },
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(UnsupportedOperationError);
+    expect(getFailureSignal(err)?.error_code).toBe(
+      FAILURE_CODES.TOOL_CAPABILITY_UNSUPPORTED_OPERATION
+    );
+    return err;
+  }
+
+  it.each([
+    ["Apple TV", APPLE_TV],
+    ["Android TV", ANDROID_TV],
+  ])("%s: clear → capability refusal, before the TV service is resolved", async (_l, device) => {
+    // `resolveTvApi` is NOT stubbed in this file, so a backend that fell through
+    // to the daemon would try to spawn it and fail with something else — which
+    // is itself the observation that the rejection came first.
+    const err = await expectUnsupported(
+      typeTv({} as Registry, device, { udid: device.id, clear: true })
+    );
+    // The remedy has to be TV-shaped: there is no `clear` on a TV, and the way a
+    // person empties a field there is the app's own on-screen keyboard.
+    expect(err.message).toMatch(/`clear` is not supported on a TV target/);
+    expect(err.message).toMatch(/tv-remote/);
+  });
+
+  it("vega: clear → capability refusal naming the on-screen keyboard", async () => {
+    const err = await expectUnsupported(vegaImpl.handler({}, { udid: VEGA.id, clear: true }, VEGA));
+    expect(err.message).toMatch(/`clear` is not supported on Vega/);
+  });
+
+  it("chromium: nothing editable focused → 400 + KEYBOARD_CLEAR_NO_EDITABLE_FOCUS", async () => {
+    // Its own code, not KEYBOARD_KEY_UNSUPPORTED / CHARACTER_UNSUPPORTED: this
+    // is the only keyboard rejection about the state of the PAGE rather than
+    // about the request, and the repair is a tap, not a different argument.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({ cleared: false, focus: "body" })),
+    } as never);
+    await expectInvalidInput(
+      makeChromiumImpl(registry).handler(
+        {},
+        { udid: chromiumDevice.id, clear: true },
+        chromiumDevice
+      ),
+      FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS
+    );
+  });
+
+  it("chromium: the refusal names what holds focus and how to fix it", async () => {
+    // The two halves an agent acts on. Without the focused tag it cannot tell
+    // "I never tapped the field" from "my tap landed on the label"; without the
+    // tap instruction the obvious move is to retry the same call.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({ cleared: false, focus: "button" })),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the clear to reject");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(err.message).toMatch(/<button>/);
+    expect(err.message).toMatch(/gesture-tap/);
+    // The iframe blind spot is named in the same message, because `iframe` is
+    // the one `focus` value whose repair is NOT "tap harder".
+    expect(err.message).toMatch(/iframe/);
+  });
+
+  it("chromium: a null focus reads as no focus at all, not as an element", async () => {
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({ cleared: false, focus: null })),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the clear to reject");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(err.message).toMatch(/no element has keyboard focus/);
+    expect(err.message).not.toMatch(/<null>/);
+  });
+
+  it("chromium: a renderer answer with no `cleared` is a refusal, not a success", async () => {
+    // `evaluate` resolves `undefined` when the expression throws under
+    // `returnByValue`, or when the page navigates mid-call. Reading that as a
+    // success would report `cleared: true` for a field that still holds its
+    // value — the exact failure mode the whole design refuses to have.
+    for (const answer of [undefined, null, {}, { cleared: "yes" }]) {
+      const registry = new Registry();
+      vi.spyOn(registry, "resolveService").mockResolvedValue({
+        evaluate: vi.fn(async () => answer),
+      } as never);
+      await expectInvalidInput(
+        makeChromiumImpl(registry).handler(
+          {},
+          { udid: chromiumDevice.id, clear: true },
+          chromiumDevice
+        ),
+        FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS
+      );
+    }
   });
 });

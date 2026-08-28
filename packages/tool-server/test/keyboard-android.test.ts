@@ -42,10 +42,11 @@ import {
   ANDROID_NAMED_KEYCODES,
   ANDROID_BUTTON_KEYCODES,
   assertTypeableAndroidText,
+  injectAndroidClear,
   injectAndroidText,
   injectAndroidNamedKey,
 } from "../src/utils/android-input";
-import { NAMED_KEYS } from "../src/tools/keyboard/key-codes";
+import { CLEAR_KEY_PAIRS, NAMED_KEYS } from "../src/tools/keyboard/key-codes";
 import { InvalidToolInputError } from "../src/utils/capability";
 import { makeAndroidImpl } from "../src/tools/keyboard/platforms/android";
 import { createKeyboardTool } from "../src/tools/keyboard";
@@ -240,6 +241,73 @@ describe("android-input — injection", () => {
   });
 });
 
+// The `clear` burst. It is the one injection whose exact argv IS the contract:
+// the design turns on it being plain `input keyevent` (never `keycombination`),
+// on both delete directions being present, and on the whole burst travelling in
+// ONE invocation.
+describe("android-input — the `clear` key burst", () => {
+  it("sends CLEAR_KEY_PAIRS × (KEYCODE_DEL, KEYCODE_FORWARD_DEL) in one `input keyevent`", async () => {
+    adbShell.mockClear();
+    await injectAndroidClear(SERIAL);
+
+    // ONE call. `input` boots an app-process VM per invocation (~0.2s), so a
+    // per-key loop would take a minute and — measured on a busy Flutter field —
+    // back the input queue up for 5-8s. The whole burst is one command line.
+    expect(adbShell).toHaveBeenCalledTimes(1);
+    const [serial, cmd] = adbShell.mock.calls[0]!;
+    expect(serial).toBe(SERIAL);
+    // Literal keycodes, not the constants: 67 is KEYCODE_DEL (backspace) and
+    // 112 is KEYCODE_FORWARD_DEL, and reading them back out of a map under test
+    // would be satisfied by whatever that map happens to hold.
+    const expected = `input keyevent ${Array.from({ length: CLEAR_KEY_PAIRS }, () => "67 112").join(" ")}`;
+    expect(cmd).toBe(expected);
+  });
+
+  it("interleaves the two directions rather than sending 100 of each in turn", async () => {
+    // Order is load-bearing, and a burst of 100 backspaces followed by 100
+    // forward-deletes passes a count-only assertion. With the caret in the
+    // middle of a field, the interleaved form empties it from both sides at
+    // once; the grouped form deletes everything behind the caret and only then
+    // starts ahead of it — identical for a short field, and identical again for
+    // a field short enough to fit twice over, which is every fixture. It
+    // diverges exactly at the documented boundary: a field with more than 100
+    // characters on ONE side keeps text the interleaved burst would have taken.
+    adbShell.mockClear();
+    await injectAndroidClear(SERIAL);
+    const codes = adbShell.mock.calls[0]![1].replace("input keyevent ", "").split(" ");
+    expect(codes.length).toBe(CLEAR_KEY_PAIRS * 2);
+    expect(codes.slice(0, 6)).toEqual(["67", "112", "67", "112", "67", "112"]);
+    expect(codes.filter((c) => c === "67").length).toBe(CLEAR_KEY_PAIRS);
+    expect(codes.filter((c) => c === "112").length).toBe(CLEAR_KEY_PAIRS);
+  });
+
+  it("uses no `keycombination` and holds no modifier", async () => {
+    // The whole reason this design exists. `input keycombination 113 29`
+    // (Ctrl+A) is swallowed outright by Flutter on Android — the trailing DEL
+    // then removes ONE character — is intermittently missed by React Native
+    // (#821), and carries no metaState at all on API 31/32, where
+    // `TextView.onKeyShortcut` therefore never fires. A select-all that can
+    // silently no-op is what forced the read-backs, length measurement and
+    // budgets this replaces, so its absence is pinned rather than assumed.
+    adbShell.mockClear();
+    await injectAndroidClear(SERIAL);
+    const cmd = adbShell.mock.calls[0]![1];
+    expect(cmd).not.toMatch(/keycombination/);
+    expect(cmd).toMatch(/^input keyevent [0-9 ]+$/);
+    // KEYCODE_CTRL_LEFT (113) and KEYCODE_MOVE_END (123) are the two codes the
+    // chord variants used; neither may appear.
+    const codes = cmd.replace("input keyevent ", "").split(" ");
+    expect(codes).not.toContain("113");
+    expect(codes).not.toContain("123");
+  });
+
+  it("surfaces an adb failure instead of reporting a clear that never landed", async () => {
+    adbShell.mockClear();
+    adbShell.mockRejectedValueOnce(new Error("adb: device offline"));
+    await expect(injectAndroidClear(SERIAL)).rejects.toThrow(/device offline/);
+  });
+});
+
 describe("android-input — `%` types verbatim (no `%s`→space corruption)", () => {
   // `adb input text`'s InputShellCommand.sendText rewrites `%s`→space and does NOT
   // unescape `%%`, so a single `input text` corrupts `%`-bearing input. We split so
@@ -404,6 +472,47 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
       "input text 'safe'",
     ]);
     expect(res).toEqual({ typed: "100%safe", keys: 8 });
+  });
+
+  it("returns { typed:'', keys: 200, cleared: true } for a clear, and types nothing", async () => {
+    // `typed: ""` because nothing was typed — echoing anything else would put a
+    // value in the result of a call whose whole point is that the field's
+    // contents are unknown (and may have been a secret). `keys` counts what was
+    // SENT: two key events per pair.
+    adbShell.mockClear();
+    const res = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone);
+    expect(res).toEqual({ typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true });
+    // One `input keyevent`, and no `input text` — a clear must never type.
+    expect(adbShell.mock.calls.map((c) => c[1].split(" ")[1])).toEqual(["keyevent"]);
+  });
+
+  it("clears without a `text`/`key` value present, and does not fall through to typing", async () => {
+    // The clear branch returns early. Without that early return the `typed`
+    // arithmetic below it runs on an empty request and answers
+    // `{ typed: "", keys: 0 }` — a success shape indistinguishable from the
+    // documented no-op, for a call that did send 200 keys.
+    adbShell.mockClear();
+    const res = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone);
+    expect(res.keys).toBe(CLEAR_KEY_PAIRS * 2);
+    expect(adbShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats `clear: false` as absent, injecting nothing", async () => {
+    // `clear` is a switch: `false` reads as omitted, both in the tool's guard
+    // and here. A backend branching on presence would burst 200 delete keys
+    // into the focused field for a request that explicitly asked for no clear.
+    adbShell.mockClear();
+    const res = await impl.handler({}, { udid: SERIAL, clear: false } as KeyboardParams, phone);
+    expect(res).toEqual({ typed: "", keys: 0 });
+    expect(adbShell).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an adb failure during a clear (no silent success)", async () => {
+    adbShell.mockClear();
+    adbShell.mockRejectedValueOnce(new Error("adb: device offline"));
+    await expect(
+      impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone)
+    ).rejects.toThrow(/device offline/);
   });
 
   it("presses the key it was asked for, not a hardcoded Enter", async () => {

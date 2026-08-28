@@ -80,6 +80,26 @@ describe("tool interaction messages", () => {
     expect(keyboard.completedMsg!({ params: { udid: "device-1" }, result: {} })).toBe(
       "Pressed a key"
     );
+    // `clear` is a fourth action with its own wording, and it is checked FIRST
+    // in both formatters — otherwise `{ clear: true }`, which carries no `text`,
+    // falls into the `params.text === undefined` arm and a clear is announced
+    // (and logged) as "Pressing a key" / "Pressed a key".
+    expect(keyboard.startedMsg!({ params: { udid: "device-1", clear: true } })).toBe(
+      "Clearing the field"
+    );
+    expect(keyboard.completedMsg!({ params: { udid: "device-1", clear: true }, result: {} })).toBe(
+      "Cleared the field"
+    );
+    // A combined clear+text call, which only `startedMsg` reaches (`execute`
+    // rejects it just after): still worded as the clear, not as plain typing.
+    expect(keyboard.startedMsg!({ params: { udid: "device-1", clear: true, text: "hi" } })).toBe(
+      "Clearing the field"
+    );
+    // `clear: false` means what omitting it means, here too — a formatter
+    // branching on presence would announce an ordinary typing call as a clear.
+    expect(keyboard.startedMsg!({ params: { udid: "device-1", text: "hi", clear: false } })).toBe(
+      "Entering text"
+    );
 
     expect(
       definitions.get("screenshot")!.interaction!.completedMsg!({

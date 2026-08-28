@@ -12,6 +12,7 @@
 import { FAILURE_CODES } from "@argent/registry";
 import { adbShell, shellQuote } from "./adb";
 import { InvalidToolInputError } from "./capability";
+import { CLEAR_KEY_PAIRS } from "../tools/keyboard/key-codes";
 
 // android.view.KeyEvent keycodes; must cover every key in
 // ../tools/keyboard/key-codes.ts NAMED_KEYS.
@@ -120,6 +121,37 @@ export async function injectAndroidText(serial: string, text: string): Promise<v
 /** Press a single android.view.KeyEvent keycode via `adb shell input keyevent`. */
 export async function injectAndroidKeycode(serial: string, keycode: number): Promise<void> {
   await adbShell(serial, `input keyevent ${keycode}`, { timeoutMs: ADB_INPUT_TIMEOUT_MS });
+}
+
+// KEYCODE_DEL and KEYCODE_FORWARD_DEL, the two keys the `clear` burst pairs.
+// Neither is reachable through `ANDROID_NAMED_KEYCODES`: `delete` there means
+// backspace (the shared HID vocabulary), and nothing names the forward one.
+const KEYCODE_DEL = 67;
+const KEYCODE_FORWARD_DEL = 112;
+
+/**
+ * Empty the focused text field: `CLEAR_KEY_PAIRS` backspaces interleaved with
+ * as many forward-deletes, as ONE `input keyevent` invocation.
+ *
+ * Both directions, because the caret sits wherever the focus tap left it — a
+ * backspace at a line start joins lines and a forward-delete at a line end does
+ * too, so a multi-line field empties out from the middle without a caret move.
+ * Pressing either key on an empty side is a no-op, so over-sending is harmless.
+ *
+ * Plain `input keyevent`, not `input keycombination`: a Ctrl+A select-all is
+ * swallowed outright by Flutter, intermittently missed by React Native
+ * (https://github.com/software-mansion/argent/pull/821), and carries no
+ * `metaState` at all on API 31/32 — a primitive that can silently no-op needs a
+ * read-back to be trusted, and this one cannot no-op. Multi-code `keyevent` has
+ * been accepted since API 19, so one call carries the whole burst (~0.5-1s on
+ * an emulator) instead of 200 round-trips.
+ */
+export async function injectAndroidClear(serial: string): Promise<void> {
+  const codes: number[] = [];
+  for (let i = 0; i < CLEAR_KEY_PAIRS; i++) codes.push(KEYCODE_DEL, KEYCODE_FORWARD_DEL);
+  await adbShell(serial, `input keyevent ${codes.join(" ")}`, {
+    timeoutMs: ADB_INPUT_TIMEOUT_MS,
+  });
 }
 
 /** Press a named key (keyboard tool `key` vocabulary) on Android. */

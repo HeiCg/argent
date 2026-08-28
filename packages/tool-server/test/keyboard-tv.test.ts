@@ -66,6 +66,39 @@ describe("typeTv — the TV keyboard backend", () => {
     expect(resolveTvApi).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["Apple TV", APPLE_TV],
+    ["Android TV", ANDROID_TV],
+  ])("rejects `clear` on %s, before resolving the TV service", async (_label, device) => {
+    // A TV has no hardware-keyboard focus for the delete burst to reach: text
+    // gets there through the focus daemon's own typing channel (`api.type`),
+    // which has no delete verb. Silently ignoring `clear` would answer
+    // `{ typed: "", keys: 0 }` — a success that emptied nothing — and a flow
+    // step that cleared before retyping would then append to the old value.
+    await expect(typeTv(registry, device, { udid: device.id, clear: true })).rejects.toBeInstanceOf(
+      UnsupportedOperationError
+    );
+    await expect(typeTv(registry, device, { udid: device.id, clear: true })).rejects.toThrow(
+      /`clear` is not supported on a TV target/
+    );
+    expect(resolveTvApi).not.toHaveBeenCalled();
+  });
+
+  it("treats `clear: false` as absent and still types", async () => {
+    // The switch reading, on the one backend that refuses the switch: a guard
+    // written over presence would turn `{ text, clear: false }` — a shape the
+    // tool accepts — into a TV rejection.
+    const type = vi.fn(async () => {});
+    resolveTvApi.mockResolvedValue({ type });
+    const result = await typeTv(registry, ANDROID_TV, {
+      udid: ANDROID_TV.id,
+      text: "hi",
+      clear: false,
+    });
+    expect(type).toHaveBeenCalledWith("hi");
+    expect(result).toEqual({ typed: "hi", keys: 2 });
+  });
+
   it("types text alone through the TV service (positive control)", async () => {
     // Without this the rejection tests above could pass against a backend that
     // does nothing at all.

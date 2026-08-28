@@ -33,22 +33,30 @@ app.on("window-all-closed", () => app.quit());
 JS
   # Random noise keeps the PNG large and incompressible, above the screenshot
   # size floor; the button and input sit at known positions for the gestures.
+  # #clr is the `keyboard clear` fixture: it carries a marker value and NO
+  # placeholder, so chromium `describe` reports that value as the node's label
+  # (a placeholder would take precedence and hide it) — which makes "the field
+  # is empty" observable from outside the tool. The page focuses it on load, so
+  # a reload is all the block needs to restore a focused, non-empty field.
   cat > "$dir/index.html" <<'HTML'
 <!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;height:100%;overflow:auto}
   #c{position:fixed;inset:0;z-index:0}
   #b{position:absolute;left:45%;top:46%;width:10%;height:8%;font-size:20px;z-index:1}
   #i{position:absolute;left:40%;top:60%;width:20%;z-index:1}
+  #clr{position:absolute;left:40%;top:68%;width:20%;z-index:1}
 </style></head><body>
   <canvas id="c" width="1024" height="768"></canvas>
   <button id="b" onclick="this.textContent='tapped'">Tap me</button>
   <input id="i" placeholder="type here"/>
+  <input id="clr" value="argentclearmark"/>
   <div id="scrollpad" style="height:3000px"></div>
   <script>
     const cv = document.getElementById('c'), x = cv.getContext('2d');
     const img = x.createImageData(cv.width, cv.height), d = img.data;
     for (let i = 0; i < d.length; i += 4) { d[i]=Math.random()*255; d[i+1]=Math.random()*255; d[i+2]=Math.random()*255; d[i+3]=255; }
     x.putImageData(img, 0, 0);
+    document.getElementById('clr').focus();
   </script>
 </body></html>
 HTML
@@ -116,6 +124,33 @@ run_phase() {
   assert_ok   "$P" keyboard  text     "{\"udid\":\"$DEV\",\"text\":\"hello chromium\"}"
   # Stay on the http origin: the storage cases below need a storable one.
   assert_true "$P" open-url  url      "{\"udid\":\"$DEV\",\"url\":\"http://127.0.0.1:$httpport/index.html\"}" '.opened'
+
+  # `keyboard clear`. Chromium clears through the DOM rather than key events, so
+  # the tool's own `.cleared` says only that the renderer accepted the script —
+  # the describe pair around it is what proves the field actually emptied.
+  # The reload above restored #clr as the focused, marker-bearing field.
+  local CLEAR_MARK=argentclearmark
+  assert_field "$P" describe clear-baseline "{\"udid\":\"$DEV\"}" \
+    "(.description|contains(\"$CLEAR_MARK\"))" 'true'
+  assert_field "$P" keyboard clear "{\"udid\":\"$DEV\",\"clear\":true}" '.cleared' 'true'
+  assert_field "$P" describe clear-took-effect "{\"udid\":\"$DEV\"}" \
+    "(.description|contains(\"$CLEAR_MARK\"))" 'false'
+  # One action per call, `clear` included — the same guard the android tier
+  # exercises for text+key.
+  assert_reject "$P" keyboard clear-and-text "{\"udid\":\"$DEV\",\"clear\":true,\"text\":\"x\"}"
+  # With nothing editable focused the clear must 400 rather than delete from
+  # whatever the page focuses by default. The background canvas is not
+  # focusable, so tapping it moves focus off the input.
+  run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.05,\"y\":0.05}" >/dev/null 2>&1
+  assert_reject "$P" keyboard clear-unfocused "{\"udid\":\"$DEV\",\"clear\":true}"
+  # Replace-a-value, the form the tool description prescribes: one round-trip,
+  # and the field ends up holding ONLY the new text.
+  run_tool open-url "{\"udid\":\"$DEV\",\"url\":\"http://127.0.0.1:$httpport/index.html\"}" >/dev/null 2>&1
+  assert_field "$P" run-sequence keyboard-clear-then-text \
+    "{\"udid\":\"$DEV\",\"steps\":[{\"tool\":\"keyboard\",\"args\":{\"clear\":true}},{\"tool\":\"keyboard\",\"args\":{\"text\":\"replaced\"}}]}" \
+    '.completed' '2'
+  assert_field "$P" describe clear-then-retype "{\"udid\":\"$DEV\"}" \
+    "((.description|contains(\"replaced\")) and ((.description|contains(\"$CLEAR_MARK\"))|not))" 'true'
 
   # Electron has no browser-level target creation, so `new` comes back
   # "Not supported"; tolerate that.

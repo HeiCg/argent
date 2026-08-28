@@ -1,8 +1,16 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { DeviceInfo } from "@argent/registry";
-import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
-import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import {
+  clearSimulatorServer,
+  typeSimulatorServer,
+} from "../src/tools/keyboard/simulator-server-keys";
+import {
+  CLEAR_FOCUSED_EDITABLE_SCRIPT,
+  makeChromiumImpl,
+} from "../src/tools/keyboard/platforms/chromium";
 import { vegaImpl } from "../src/tools/keyboard/platforms/vega";
+import { UnsupportedOperationError } from "../src/utils/capability";
+import { CLEAR_KEY_PAIRS, FORWARD_DELETE_KEYCODE } from "../src/tools/keyboard/key-codes";
 
 vi.mock("../src/utils/vega-input", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/vega-input")>()),
@@ -23,6 +31,10 @@ const HID_I = 12;
 const HID_ENTER = 40;
 const HID_ESCAPE = 41;
 const HID_LEFT_SHIFT = 225;
+// Keyboard DELETE/Backspace (0x2A) and Keyboard DELETE Forward (0x4C) — the two
+// keys the `clear` burst pairs, again as literals.
+const HID_BACKSPACE = 42;
+const HID_FORWARD_DELETE = 76;
 
 function registryWith(api: unknown) {
   return { resolveService: vi.fn(async () => api) } as never;
@@ -200,6 +212,63 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       ).rejects.toThrow(/Unknown key "bogus"/);
       expect(events).toEqual([]);
     });
+
+    it("clears with an exact alternating backspace / forward-delete burst", async () => {
+      const { events, api } = hidRecorder();
+
+      const result = await clearSimulatorServer(registryWith(api), IOS_SIM);
+
+      // The whole ordered stream, built independently of the code under test.
+      // Both directions have to be there and they have to alternate: a burst of
+      // backspaces alone leaves everything ahead of the caret (the field looks
+      // cleared in a screenshot taken with the caret at the end), and a grouped
+      // 100+100 burst diverges from this one exactly at the documented
+      // 100-character boundary.
+      const expected: Array<[string, number]> = [];
+      for (let i = 0; i < CLEAR_KEY_PAIRS; i++) {
+        expected.push(["Down", HID_BACKSPACE], ["Up", HID_BACKSPACE]);
+        expected.push(["Down", HID_FORWARD_DELETE], ["Up", HID_FORWARD_DELETE]);
+      }
+      expect(events).toEqual(expected);
+      expect(result).toEqual({ typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true });
+    });
+
+    it("holds no modifier anywhere in the burst", async () => {
+      // The reason the burst is delete keys and not Cmd+A: `pressKey` is
+      // fire-and-forget and this backend awaits between presses, so a held
+      // Left-GUI outlives any throw in between and latches — a later
+      // `{ text: "w" }` then becomes Cmd+W and closes the simulator window.
+      // Stated separately from the exact-stream assertion above so the reason
+      // survives a rewrite of the expectation.
+      const { events, api } = hidRecorder();
+      await clearSimulatorServer(registryWith(api), IOS_SIM);
+      expect(events.some(([, code]) => code === HID_LEFT_SHIFT)).toBe(false);
+      // Left GUI (0xE3) / Left Ctrl (0xE0) — the two select-all chords.
+      expect(events.some(([, code]) => code === 227 || code === 224)).toBe(false);
+    });
+
+    it("releases every key it presses (no stuck auto-repeat)", async () => {
+      // A Down without its Up leaves the guest repeating that key for as long
+      // as the simulator lives, which on a delete key empties whatever is
+      // focused next. The exact-stream test would catch it, but only as one
+      // diff among 400 events; this states the property.
+      const { events, api } = hidRecorder();
+      await clearSimulatorServer(registryWith(api), IOS_SIM);
+      const downs = events.filter(([d]) => d === "Down").length;
+      const ups = events.filter(([d]) => d === "Up").length;
+      expect(downs).toBe(CLEAR_KEY_PAIRS * 2);
+      expect(ups).toBe(downs);
+    });
+
+    it("pins the forward-delete usage id (0x4C) against the shared constant", () => {
+      // `FORWARD_DELETE_KEYCODE` is the only HID code in the tool with no name
+      // in `NAMED_KEYS`, so nothing else in the suite would notice it drifting
+      // to, say, 42 — which would turn the burst into backspaces alone and
+      // leave every field's tail behind while every other assertion stayed
+      // green.
+      expect(FORWARD_DELETE_KEYCODE).toBe(0x4c);
+      expect(FORWARD_DELETE_KEYCODE).not.toBe(HID_BACKSPACE);
+    });
   });
 
   describe("chromium", () => {
@@ -298,6 +367,34 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       ).rejects.toThrow(/Unknown key "bogus"/);
       expect(events).toEqual([]);
     });
+
+    it("clears through ONE renderer evaluation and no key events at all", async () => {
+      const { events, api } = cdpRecorder();
+      const evaluate = vi.fn(async (_expr: string, _opts?: unknown) => ({ cleared: true }));
+
+      const result = await makeChromiumImpl(registryWith({ ...api, evaluate })).handler(
+        {},
+        { udid: CHROMIUM.id, clear: true },
+        CHROMIUM
+      );
+
+      // No key events is the point, not an accident of the transport: a
+      // modifier-only Meta+A / Ctrl+A selects nothing in a Chromium renderer on
+      // macOS, and a 200-key delete burst would deliver 200 keydowns to a page
+      // whose own shortcut handler can cancel them. The DOM path delivers
+      // one `input` event (inputType deleteContentBackward) and no keydown.
+      expect(events).toEqual([]);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(evaluate.mock.calls[0]![0]).toBe(CLEAR_FOCUSED_EDITABLE_SCRIPT);
+      // `returnByValue` is load-bearing: without it CDP answers the script's
+      // object as a RemoteObject handle with `value` undefined, the backend
+      // reads no `cleared: true`, and every successful clear reports the
+      // "nothing editable has focus" 400.
+      expect(evaluate.mock.calls[0]![1]).toEqual({ returnByValue: true });
+      // `keys: 0` — the count reports key events sent, and this backend sends
+      // none.
+      expect(result).toEqual({ typed: "", keys: 0, cleared: true });
+    });
   });
 
   // No android section: `adb shell input` is a command line rather than an event
@@ -314,6 +411,19 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       await vegaImpl.handler({}, { udid: VEGA.id, text: "Hi" }, VEGA);
 
       expect(vi.mocked(injectVegaText).mock.calls.map((c) => c[0])).toEqual(["Hi"]);
+      expect(injectVegaNamedKey).not.toHaveBeenCalled();
+    });
+
+    it("rejects `clear` outright, injecting nothing", async () => {
+      // Vega has no measured delete transport: `inputd-cli` may be able to send
+      // KEY_BACKSPACE, but nothing has verified it on a VVD, and a clear that
+      // silently removes one character is worse than a refusal. Pinned here
+      // rather than only in the taxonomy file so the "injects nothing" half is
+      // observable on the same recorder the positive controls use.
+      await expect(
+        vegaImpl.handler({}, { udid: VEGA.id, clear: true }, VEGA)
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(injectVegaText).not.toHaveBeenCalled();
       expect(injectVegaNamedKey).not.toHaveBeenCalled();
     });
 

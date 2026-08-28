@@ -18,6 +18,20 @@ export async function typeTv(
         "(up/down/left/right/select) instead"
     );
   }
+  if (params.clear === true) {
+    // The clear burst is `backspace` + `forward-delete` HID/adb key events, and
+    // a TV target has no hardware keyboard focus to send them to: text reaches
+    // it through the focus daemon's own typing channel (`api.type`), which has
+    // no delete verb. Emptying a field on a TV goes through the on-screen
+    // keyboard, which is D-pad navigation.
+    throw new UnsupportedOperationError(
+      "keyboard",
+      device,
+      "`clear` is not supported on a TV target — empty the field with the app's " +
+        "on-screen keyboard, driven with `tv-remote` (move focus to its delete key " +
+        "and press select)"
+    );
+  }
   const text = params.text ?? "";
   if (text) {
     const api = await resolveTvApi(registry, device.id);

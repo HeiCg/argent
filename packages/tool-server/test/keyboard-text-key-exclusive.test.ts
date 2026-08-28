@@ -5,7 +5,7 @@ import { CLIENT_UNSAFE_TOP_LEVEL_KEYWORDS, advertisedSchema } from "./helpers/ca
 
 // Every backend's transport is stubbed, so "did anything reach the device" is
 // observable per platform: `pressKey` (simulator-server HID), `adbShell`
-// (`adb input`), `dispatchKeyEvent` (CDP), and the vega injectors.
+// (`adb input`), `dispatchKeyEvent` / `evaluate` (CDP), and the vega injectors.
 const { adbShell, isAndroidTv } = vi.hoisted(() => ({
   adbShell: vi.fn(async (_serial: string, _cmd: string, _opts?: unknown): Promise<string> => ""),
   isAndroidTv: vi.fn(async (_serial: string): Promise<boolean> => false),
@@ -44,11 +44,18 @@ const pressKey = vi.fn((_direction: "Down" | "Up", _keyCode: number) => {});
 // Params typed so `mock.calls[n][0]` is the event, not `never` — vitest transforms
 // tests with esbuild, so only `tsc --noEmit` catches an untyped `vi.fn()` here.
 const dispatchKeyEvent = vi.fn(async (_event: { type: string; key?: string }) => {});
+// The chromium `clear` transport: it dispatches no key events at all, so
+// `dispatchKeyEvent` alone cannot see it reach the renderer.
+const evaluate = vi.fn(async (_expression: string, _opts?: unknown) => ({ cleared: true }));
 
 /** A registry whose service resolution hands back both HID and CDP fakes. */
 function registry(): Registry {
   const r = new Registry();
-  vi.spyOn(r, "resolveService").mockResolvedValue({ pressKey, dispatchKeyEvent } as never);
+  vi.spyOn(r, "resolveService").mockResolvedValue({
+    pressKey,
+    dispatchKeyEvent,
+    evaluate,
+  } as never);
   return r;
 }
 
@@ -65,6 +72,7 @@ const BACKENDS = [
     // HID usage 42 = Keyboard DELETE/Backspace (key-codes.ts NAMED_KEYS).
     pressedBackspace: () =>
       pressKey.mock.calls.some((c) => c[0] === "Down" && c[1] === NAMED_KEYS.backspace),
+    clears: true,
   },
   {
     platform: "android",
@@ -72,12 +80,18 @@ const BACKENDS = [
     injections: () => adbShell.mock.calls.length,
     // KEYCODE_DEL = 67.
     pressedBackspace: () => adbShell.mock.calls.some((c) => c[1] === "input keyevent 67"),
+    clears: true,
   },
   {
     platform: "chromium",
     udid: "chromium-cdp-9222",
-    injections: () => dispatchKeyEvent.mock.calls.length,
+    // `evaluate` counts too: a chromium `clear` sends no key events, so a
+    // counter over `dispatchKeyEvent` alone would read zero for a clear that
+    // did reach the renderer — and every "nothing was injected" assertion below
+    // would then pass vacuously for the clear shapes.
+    injections: () => dispatchKeyEvent.mock.calls.length + evaluate.mock.calls.length,
     pressedBackspace: () => dispatchKeyEvent.mock.calls.some((c) => c[0].key === "Backspace"),
+    clears: true,
   },
   {
     platform: "vega",
@@ -86,6 +100,10 @@ const BACKENDS = [
       vi.mocked(injectVegaText).mock.calls.length + vi.mocked(injectVegaNamedKey).mock.calls.length,
     pressedBackspace: () =>
       vi.mocked(injectVegaNamedKey).mock.calls.some((c) => c[0] === "backspace"),
+    // Vega rejects `clear` outright (platforms/vega.ts), so it has no positive
+    // control to run — the rejection itself is pinned in
+    // keyboard-error-taxonomy.test.ts.
+    clears: false,
   },
 ];
 
@@ -132,13 +150,20 @@ async function combinedError(params: Record<string, unknown>): Promise<Error> {
 // tool now rejects the combination in `execute`, ahead of the platform dispatch,
 // so no backend sees the shape and the sequence is expressed as two calls —
 // batched into one `run-sequence` when the round-trip matters.
-describe("keyboard — `text` and `key` are mutually exclusive", () => {
+//
+// `clear` is under the same rule, and there the ambiguity is worse: `{ clear,
+// text }` reads as "replace the value" only if the clear runs first, and a
+// backend that ordered it the other way would delete what it had just typed.
+// Keeping it one-action-per-call is also what lets the clear be a blind burst —
+// a combined shape would need the whole request pre-validated and focus loss
+// between the two halves detected.
+describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isAndroidTv.mockResolvedValue(false);
   });
 
-  for (const { platform, udid, injections, pressedBackspace } of BACKENDS) {
+  for (const { platform, udid, injections, pressedBackspace, clears } of BACKENDS) {
     it(`${platform}: rejects a combined text+key call with nothing injected`, async () => {
       const r = registry();
       await expectCombinedRejection(
@@ -178,6 +203,33 @@ describe("keyboard — `text` and `key` are mutually exclusive", () => {
       );
       expect(pressedBackspace(), `${platform} pressed a key other than backspace`).toBe(true);
     });
+
+    // `clear` is the third arm of the same rule, and the one a backend could
+    // still honour after the guard rejected the request — every backend reads
+    // it by `=== true` in its own handler, so a guard that counted only
+    // `text`/`key` would let `{ text, clear: true }` through to a device.
+    it.each([
+      ["text", { text: "hi" }],
+      ["key", { key: "enter" }],
+    ])(`${platform}: rejects clear combined with %s, injecting nothing`, async (_l, other) => {
+      const r = registry();
+      await expectCombinedRejection(
+        createKeyboardTool(r).execute({}, { udid, clear: true, ...other, delayMs: 0 } as never)
+      );
+      expect(injections()).toBe(0);
+      expect(r.resolveService).not.toHaveBeenCalled();
+    });
+
+    if (clears) {
+      // Positive control for the two rejections above: without it they would
+      // also pass against a backend that cannot clear at all.
+      it(`${platform}: still clears when \`clear\` is the only action`, async () => {
+        await expect(
+          createKeyboardTool(registry()).execute({}, { udid, clear: true } as never)
+        ).resolves.toMatchObject({ typed: "", cleared: true });
+        expect(injections()).toBeGreaterThan(0);
+      });
+    }
   }
 
   it("rejects on the request's shape, not on what the values would do", async () => {
@@ -217,6 +269,19 @@ describe("keyboard — `text` and `key` are mutually exclusive", () => {
       )
     );
     expect(adbShell).not.toHaveBeenCalled();
+  });
+
+  it("names the clear-then-retype replacement, not only the type-then-submit one", async () => {
+    // The two combinations have DIFFERENT remedies and an agent reaching this
+    // message is holding one of them. A message that only showed the
+    // type-then-submit split would leave a `{ clear, text }` caller to infer
+    // the order — and the wrong order deletes what it just typed.
+    const err = await combinedError({ text: "hi", clear: true });
+    expect(err.message).toMatch(/{ clear: true } followed by { text: "hello" }/);
+    // ...and it says which parameters the offending request actually carried,
+    // so a caller that built the arguments programmatically can see which one
+    // to drop.
+    expect(err.message).toMatch(/carries `text` and `clear`/);
   });
 
   it("names the run-sequence replacement in the error message", async () => {
@@ -378,11 +443,23 @@ describe("keyboard — how the constraint reaches a client", () => {
     const shapes: Array<[args: Record<string, unknown>, rejected: boolean]> = [
       [{ text: "hi" }, false],
       [{ key: "enter" }, false],
-      [{}, false], // neither is required — an empty request is a documented no-op
+      [{ clear: true }, false],
+      [{}, false], // none is required — an empty request is a documented no-op
       [{ text: "" }, false], // a payload: an empty one means what omitting it means
       [{ key: "" }, true], // a name, and there is no key called ""
+      // `clear` is a switch, not a payload: `false` means what omitting it
+      // means, so it neither acts nor collides. A guard written over presence
+      // (`params.clear !== undefined`), the natural symmetry with `text`, turns
+      // these three red.
+      [{ clear: false }, false],
+      [{ text: "hi", clear: false }, false],
+      [{ key: "enter", clear: false }, false],
       [{ text: "hi", key: "enter" }, true],
+      [{ text: "hi", clear: true }, true],
+      [{ key: "enter", clear: true }, true],
+      [{ text: "hi", key: "enter", clear: true }, true],
       [{ text: "", key: "" }, true], // shape, not truthiness
+      [{ text: "", clear: true }, true], // ...and an empty payload still names `text`
     ];
 
     for (const [args, rejected] of shapes) {

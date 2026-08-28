@@ -1,7 +1,13 @@
 import { FAILURE_CODES } from "@argent/registry";
 import type { DeviceInfo, Registry } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
-import { charToKeyPress, NAMED_KEYS, SHIFT_KEYCODE } from "./key-codes";
+import {
+  charToKeyPress,
+  CLEAR_KEY_PAIRS,
+  FORWARD_DELETE_KEYCODE,
+  NAMED_KEYS,
+  SHIFT_KEYCODE,
+} from "./key-codes";
 import { InvalidToolInputError } from "../../utils/capability";
 import type { KeyboardParams, KeyboardResult } from "./types";
 
@@ -73,4 +79,51 @@ export async function typeSimulatorServer(
   }
 
   return { typed: params.text ?? params.key ?? "", keys: keysPressed };
+}
+
+// The burst's own cadence, deliberately not `delayMs`: that parameter paces
+// typing so an app's per-keystroke work (a search-as-you-type request, a
+// validation pass) keeps up, and its 50ms default would stretch 200 delete keys
+// to 10s. The simulator-server delivers a 200-key burst written with no delay at
+// all, in order and without drops; 2ms keeps that margin on a loaded host and
+// still finishes the burst in under a second.
+const CLEAR_KEY_CADENCE_MS = 2;
+
+// `pressKey` is fire-and-forget, so the burst returns before the app has drained
+// it. Without a settle the tool's auto-screenshot races the deletions and hands
+// back a picture of the field mid-clear.
+const CLEAR_SETTLE_MS = 300;
+
+/**
+ * Empty the focused text field over HID: `CLEAR_KEY_PAIRS` backspaces
+ * interleaved with as many forward-deletes.
+ *
+ * No Cmd+A first. The chord does work on iOS, but holding Left-GUI across
+ * awaits latches it if anything in between throws, and a concurrent
+ * `{ text: "w" }` from another call then becomes Cmd+W. The pair of delete keys
+ * needs no modifier at all, so nothing can latch and the two backends stay
+ * identical (utils/android-input.ts `injectAndroidClear`).
+ *
+ * Bidirectional for the same reason as there: the caret sits wherever the focus
+ * tap left it, both keys join lines at a boundary, and pressing either on an
+ * empty side is a no-op.
+ */
+export async function clearSimulatorServer(
+  registry: Registry,
+  device: DeviceInfo
+): Promise<KeyboardResult> {
+  const ref = simulatorServerRef(device);
+  const api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
+  for (let i = 0; i < CLEAR_KEY_PAIRS; i++) {
+    api.pressKey("Down", NAMED_KEYS.backspace);
+    api.pressKey("Up", NAMED_KEYS.backspace);
+    await sleep(CLEAR_KEY_CADENCE_MS);
+    api.pressKey("Down", FORWARD_DELETE_KEYCODE);
+    api.pressKey("Up", FORWARD_DELETE_KEYCODE);
+    await sleep(CLEAR_KEY_CADENCE_MS);
+  }
+  await sleep(CLEAR_SETTLE_MS);
+  // `keys` counts what was SENT — the field is never read back, so the result
+  // says nothing about what it now holds.
+  return { typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true };
 }

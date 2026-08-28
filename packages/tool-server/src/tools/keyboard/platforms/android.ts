@@ -1,7 +1,12 @@
 import type { DeviceInfo, Registry } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { isAndroidTv } from "../../../utils/adb";
-import { injectAndroidNamedKey, injectAndroidText } from "../../../utils/android-input";
+import {
+  injectAndroidClear,
+  injectAndroidNamedKey,
+  injectAndroidText,
+} from "../../../utils/android-input";
+import { CLEAR_KEY_PAIRS } from "../key-codes";
 import type { KeyboardParams, KeyboardResult } from "../types";
 import { typeTv } from "./tv";
 
@@ -13,9 +18,17 @@ async function typeAndroidPhone(
   device: DeviceInfo,
   params: KeyboardParams
 ): Promise<KeyboardResult> {
+  // `clear` empties the field with a fixed key burst rather than typing, so it
+  // returns before the `typed`/`keys` arithmetic below: there is nothing typed
+  // to count and nothing to echo. `cleared` reports that the burst was SENT —
+  // the field is never read back.
+  if (params.clear === true) {
+    await injectAndroidClear(device.id);
+    return { typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true };
+  }
   let keysPressed = 0;
-  // `text` and `key` are at-most-one (rejected in ../index.ts), so at most one
-  // branch runs and there is no ordering to get right.
+  // `text`, `key` and `clear` are at-most-one (rejected in ../index.ts), so at
+  // most one branch runs and there is no ordering to get right.
   if (params.text) {
     await injectAndroidText(device.id, params.text);
     // `injectAndroidText` rejects non-ASCII, so `.length` is the codepoint count

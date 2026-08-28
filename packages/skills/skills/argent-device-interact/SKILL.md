@@ -72,7 +72,8 @@ Common schemes: `messages://`, `settings://`, `maps://?q=<query>`, `tel://<numbe
 | Rotation          | `gesture-rotate`    | Two-finger rotation with auto-interpolation                       |
 | Custom gesture    | `gesture-custom`    | Arbitrary touch sequences, optional interpolation                 |
 | Hardware key      | `button`            | Home, back, power, volume, appSwitch, actionButton                |
-| Type text         | `keyboard`          | Every platform. Text or one named key per call, never both        |
+| Type text         | `keyboard`          | Every platform. One of text / key / clear per call, never two     |
+| Clear a field     | `keyboard`          | `{ "clear": true }`. Not on TV targets or Vega                    |
 | Paste text        | `paste`             | Only where a user would paste (OTP code, long link). Sim/emu only |
 | Rotate device     | `rotate`            | Orientation changes                                               |
 | Shake device      | `shake`             | Shake handlers (sim/emu only), Undo-typing prompt, RN dev menu    |
@@ -168,13 +169,28 @@ For long-press, drag-and-drop, and other complex sequences, see `references/gest
 
 Values: `home`, `back`, `power`, `volumeUp`, `volumeDown`, `appSwitch`, `actionButton`
 
-### keyboard — Type text or press special keys
+### keyboard — Type text, press a special key, or clear the field
 
 ```json
 { "udid": "<UDID>", "text": "search query" }
 ```
 
-One call does one action. `text` and `key` are mutually exclusive, and a call that carries both is rejected with nothing typed. To type and then submit, send two `keyboard` steps in one `run-sequence` (§ 8) — `{ "text": "search query" }`, then `{ "key": "enter" }`. Two separate calls do the same work, but cost an extra round-trip.
+One call does one action. `text`, `key` and `clear` are mutually exclusive, and a call that carries two of them is rejected with nothing typed, pressed or cleared. To type and then submit, send two `keyboard` steps in one `run-sequence` (§ 8) — `{ "text": "search query" }`, then `{ "key": "enter" }`. Two separate calls do the same work, but cost an extra round-trip.
+
+**Clearing a field.** `{ "udid": "<UDID>", "clear": true }` empties whatever holds keyboard focus, so tap the field first. Never type into a field that already holds a value: the keystrokes land at the cursor and the app receives the old value with yours spliced into it — a wrong value the app then saves, not a slow path. Clear first, then type:
+
+```json
+{
+  "udid": "<UDID>",
+  "steps": [
+    { "tool": "gesture-tap", "args": { "x": 0.5, "y": 0.3 } },
+    { "tool": "keyboard", "args": { "clear": true } },
+    { "tool": "keyboard", "args": { "text": "new value" } }
+  ]
+}
+```
+
+The clear deletes on both sides of the cursor, so it does not matter where the tap left it, and a multi-line field empties too. Bounded: it removes up to 100 characters on each side and a longer field keeps the remainder — call `clear` again. Nothing is read back, so the result reports what was sent, not what the field holds; `describe` the field (or check what the app does with it) if you need proof. On Chromium it fails when nothing editable has focus — tap the field and retry. Not supported on TV targets or Vega; there, empty the field through the app's own on-screen keyboard with `tv-remote`.
 
 Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12`. Optional: `"delayMs": 100` between keystrokes (default 50ms) — applies to the iOS simulator and Chromium; it is ignored on Android phones/tablets (typed via `adb input text`, no per-key cadence), on Vega, and on TV targets.
 
@@ -306,7 +322,7 @@ Use the sequencing when:
 
 - Knowing that some action needs multiple steps without necessarily immediate insight of screenshot
 - "scroll to bottom", "scroll to top", "scroll to do X" -> sequence scroll 3-5 times
-- form interactions, "clear and retype field" -> you may use triple-tap to select all, type new value
+- form interactions, "clear and retype field" -> tap the field, `keyboard` `{ "clear": true }`, then `keyboard` `{ "text": ... }`
 - "submit form" → fill all fields in sequence, tap submit
 - "go back to X" → defined tap sequence for the navigation
 
