@@ -198,6 +198,58 @@ describe("keyboard classifications", () => {
       FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED
     );
   });
+
+  // The two `clear` codes, pinned here alongside the two older keyboard ones so
+  // the tool's whole failure surface is classified in one place. Each needs its
+  // own `evaluate` answer, so they take a registry of their own.
+  const withEvaluate = (answers: unknown[]) => {
+    let call = 0;
+    return makeChromiumImpl({
+      resolveService: async () => ({
+        evaluate: async () => answers[Math.min(call++, answers.length - 1)],
+      }),
+    } as unknown as Registry).handler;
+  };
+
+  it("classifies nothing-editable-focused as KEYBOARD_CLEAR_NO_EDITABLE_FOCUS", async () => {
+    expectCode(
+      await captureError(
+        withEvaluate([{ cleared: false, focus: "body", reason: "not-editable" }])(
+          {},
+          { udid: device.id, clear: true },
+          device
+        )
+      ),
+      FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS
+    );
+  });
+
+  it("classifies a field that kept its value as KEYBOARD_CLEAR_UNSUPPORTED_FIELD", async () => {
+    expectCode(
+      await captureError(
+        withEvaluate([{ cleared: false, focus: "input type=date", reason: "delete-refused" }])(
+          {},
+          { udid: device.id, clear: true },
+          device
+        )
+      ),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
+    );
+  });
+
+  it("classifies a field that survived the delete as KEYBOARD_CLEAR_UNSUPPORTED_FIELD", async () => {
+    // The read-back's own refusal: the delete was accepted and the value came
+    // back anyway, which is what an editor with its own document model does.
+    expectCode(
+      await captureError(
+        withEvaluate([
+          { cleared: true, focus: "div", verifiable: true },
+          { focus: "div", remaining: 11 },
+        ])({}, { udid: device.id, clear: true }, device)
+      ),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
+    );
+  });
 });
 
 describe("chromium blueprint factory classifications", () => {

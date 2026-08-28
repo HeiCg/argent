@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { Registry, type DeviceInfo } from "@argent/registry";
+import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 
 // Capture the adb command strings instead of shelling out to a real device.
 // Keep `shellQuote` real (android-input relies on it) — only stub the transport
@@ -306,6 +306,69 @@ describe("android-input — the `clear` key burst", () => {
     adbShell.mockRejectedValueOnce(new Error("adb: device offline"));
     await expect(injectAndroidClear(SERIAL)).rejects.toThrow(/device offline/);
   });
+
+  it("says the field may be PARTIALLY emptied, under its own code", async () => {
+    // The burst is one command carrying 200 injections, and it is not atomic: a
+    // command killed partway leaves the field emptied by however many pairs got
+    // through. "adb command failed" reads as "nothing happened", after which an
+    // agent types over a field that is now half its old length.
+    adbShell.mockClear();
+    adbShell.mockRejectedValueOnce(
+      new Error("Command failed: adb ... (killed=true signal=SIGKILL)")
+    );
+    const err = await injectAndroidClear(SERIAL).then(
+      () => {
+        throw new Error("expected the clear to reject, but it resolved");
+      },
+      (e: unknown) => e as Error
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED);
+    expect(err.message).toMatch(/PARTIALLY emptied/);
+    expect(err.message).toMatch(/Read the field back/);
+  });
+
+  it("does not repeat the 200 keycodes into the caller's context", async () => {
+    // `formatSubprocessFailure` puts the whole command line in the message and
+    // node's own nested `Command failed:` puts it there again — ~1.5KB of
+    // keycodes, twice, straight into an agent transcript and the event log.
+    adbShell.mockClear();
+    const codes = Array.from({ length: CLEAR_KEY_PAIRS }, () => "67 112").join(" ");
+    adbShell.mockRejectedValueOnce(
+      new Error(`adb -s ${SERIAL} shell input keyevent ${codes} failed: Command failed: adb`)
+    );
+    const err = await injectAndroidClear(SERIAL).then(
+      () => {
+        throw new Error("expected the clear to reject, but it resolved");
+      },
+      (e: unknown) => e as Error
+    );
+    expect(err.message).not.toMatch(/67 112 67/);
+    expect(err.message.length).toBeLessThan(600);
+  });
+
+  it("gets a budget sized for 200 blocking injections, not for one", async () => {
+    // `input` injects with INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH, so the adb
+    // child blocks on the app once per event: the burst's cost is the app's
+    // per-keystroke cost times 200, not one VM start. Measured on a Pixel 7 AVD
+    // (API 36) against a debug Flutter field: 14.9s idle — already at the 15s
+    // single-injection budget — and 16.3s under light guest load, where adb was
+    // SIGKILLed with the field emptied from 300 characters to 200.
+    adbShell.mockClear();
+    await injectAndroidClear(SERIAL);
+    const opts = adbShell.mock.calls[0]![2] as { timeoutMs?: number } | undefined;
+    expect(opts?.timeoutMs).toBeGreaterThanOrEqual(60_000);
+    // ...and still bounded, so a hung adb child cannot wedge the tool-server.
+    expect(opts?.timeoutMs).toBeLessThanOrEqual(300_000);
+  });
+
+  it("sends the SAME keycode `backspace` names, so the two cannot drift apart", async () => {
+    // The burst's backward half is read from ANDROID_NAMED_KEYCODES rather than
+    // redeclared, so a change to the named key reaches the burst too.
+    adbShell.mockClear();
+    await injectAndroidClear(SERIAL);
+    const codes = adbShell.mock.calls[0]![1].replace("input keyevent ", "").split(" ");
+    expect(codes[0]).toBe(String(ANDROID_NAMED_KEYCODES.backspace));
+  });
 });
 
 describe("android-input — `%` types verbatim (no `%s`→space corruption)", () => {
@@ -440,6 +503,42 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     expect(res).toBe(sentinel);
     // Phone injection must not fire for a TV target.
     expect(adbShell).not.toHaveBeenCalled();
+  });
+
+  it("routes a CLEAR on an android TV target to typeTv, firing no keyevent burst", async () => {
+    // Correct today by composition — the phone path's clear early-return sits
+    // below the `isAndroidTv` probe — but nothing observed it as a ROUTE, so
+    // hoisting that early-return above the probe would fire 200 keyevents at a
+    // TV with the whole suite green. `typeTv` is module-mocked here, so its own
+    // refusal cannot stand in for the routing.
+    isAndroidTv.mockResolvedValue(true);
+    typeTv.mockRejectedValue(new Error("clear is not supported on a TV target"));
+    await expect(
+      impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone)
+    ).rejects.toThrow(/not supported on a TV target/);
+    expect(typeTv).toHaveBeenCalledTimes(1);
+    expect(adbShell).not.toHaveBeenCalled();
+  });
+
+  it("treats `{ clear: false }` as an omitted clear on the phone path", async () => {
+    // `clear` is a switch, not a payload: `false` means what omitting it means.
+    // A backend written over presence (`params.clear !== undefined`) — the
+    // natural symmetry with `text` — would fire the burst here.
+    const res = await impl.handler({}, { udid: SERIAL, clear: false } as KeyboardParams, phone);
+    expect(res).toEqual({ typed: "", keys: 0 });
+    expect(adbShell).not.toHaveBeenCalled();
+  });
+
+  it("reports `keys` as the literal 200 the tool description promises callers", async () => {
+    // Not `CLEAR_KEY_PAIRS * 2`: every other assertion in the suite imports the
+    // constant, so setting it to 3 leaves them all green — while "100
+    // backspaces... 100 forward-deletes" and "`keys` is 200" are caller-facing
+    // contract in the parameter description, the tool description, the
+    // run-sequence table and the docs.
+    const res = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone);
+    expect(res).toEqual({ typed: "", keys: 200, cleared: true });
+    const codes = adbShell.mock.calls[0]![1].replace("input keyevent ", "").split(" ");
+    expect(codes.length).toBe(200);
   });
 
   it("no-ops on an empty request (neither key nor text): { typed:'', keys:0 }, zero adb", async () => {

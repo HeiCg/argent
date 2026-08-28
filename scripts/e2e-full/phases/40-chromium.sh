@@ -38,9 +38,12 @@ JS
   # (a placeholder would take precedence and hide it) — which makes "the field
   # is empty" observable from outside the tool. The page focuses it on load, so
   # a reload is all the block needs to restore a focused, non-empty field.
-  # #dt is the counter-case: a date input passes every editability signal the
-  # clear script can read, yet `execCommand` leaves its structured value in
-  # place — so it must be REFUSED rather than reported as cleared.
+  # #dt, #ro and #rt are the counter-cases, one per refusal an agent must be
+  # able to tell apart: a date input passes every editability signal the clear
+  # script can read yet keeps its structured value; a readonly input is focused
+  # and unclearable, so "tap the field first" is the wrong repair; and #rt is a
+  # rich-text editor that restores the text after accepting the delete, which
+  # only the post-delete read-back catches.
   cat > "$dir/index.html" <<'HTML'
 <!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;height:100%;overflow:auto}
@@ -49,18 +52,30 @@ JS
   #i{position:absolute;left:40%;top:60%;width:20%;z-index:1}
   #clr{position:absolute;left:40%;top:68%;width:20%;z-index:1}
   #dt{position:absolute;left:40%;top:76%;width:20%;z-index:1}
+  #ro{position:absolute;left:40%;top:83%;width:20%;height:5%;z-index:1}
+  #rt{position:absolute;left:40%;top:90%;width:20%;height:5%;z-index:1;background:#fff}
 </style></head><body>
   <canvas id="c" width="1024" height="768"></canvas>
   <button id="b" onclick="this.textContent='tapped'">Tap me</button>
   <input id="i" placeholder="type here"/>
   <input id="clr" value="argentclearmark"/>
   <input id="dt" type="date" value="2020-01-02"/>
+  <input id="ro" value="argentreadonlymark" readonly/>
+  <div id="rt" contenteditable="true">argentrichmark</div>
   <div id="scrollpad" style="height:3000px"></div>
   <script>
     const cv = document.getElementById('c'), x = cv.getContext('2d');
     const img = x.createImageData(cv.width, cv.height), d = img.data;
     for (let i = 0; i < d.length; i += 4) { d[i]=Math.random()*255; d[i+1]=Math.random()*255; d[i+2]=Math.random()*255; d[i+3]=255; }
     x.putImageData(img, 0, 0);
+    // The rich-text counter-case: an editor with its own document model accepts
+    // execCommand's delete and then restores every character from that model, so
+    // a clear that trusts the delete's return value reports success on a field
+    // that never emptied. A MutationObserver is the same mechanism CKEditor 5
+    // reconciles with, minus the editor.
+    const rt = document.getElementById('rt'), rtModel = rt.textContent;
+    new MutationObserver(() => { if (rt.textContent !== rtModel) rt.textContent = rtModel; })
+      .observe(rt, {childList: true, subtree: true, characterData: true});
     document.getElementById('clr').focus();
   </script>
 </body></html>
@@ -131,32 +146,64 @@ run_phase() {
   assert_true "$P" open-url  url      "{\"udid\":\"$DEV\",\"url\":\"http://127.0.0.1:$httpport/index.html\"}" '.opened'
 
   # `keyboard clear`. Chromium clears through the DOM rather than key events, so
-  # the tool's own `.cleared` says only that the renderer accepted the script —
   # the describe pair around it is what proves the field actually emptied.
-  # The reload above restored #clr as the focused, marker-bearing field.
+  #
+  # `open-url` is `Page.navigate`, which resolves on COMMIT rather than on load,
+  # and the fixture focuses #clr only after filling a 3.1M-iteration canvas — so
+  # every step below waits for the marker to be back in the tree first. Without
+  # that wait, a loaded machine lands the clear on <body> and reds the tier on a
+  # timing artefact.
   local CLEAR_MARK=argentclearmark
+  await_ui "$DEV" "$CLEAR_MARK"
   assert_field "$P" describe clear-baseline "{\"udid\":\"$DEV\"}" \
     "(.description|contains(\"$CLEAR_MARK\"))" 'true'
   assert_field "$P" keyboard clear "{\"udid\":\"$DEV\",\"clear\":true}" '.cleared' 'true'
+  # The node must still BE there, holding nothing: asserting only that the marker
+  # is gone also passes if #clr dropped out of the tree for an unrelated reason.
   assert_field "$P" describe clear-took-effect "{\"udid\":\"$DEV\"}" \
-    "(.description|contains(\"$CLEAR_MARK\"))" 'false'
+    "((.description|contains(\"id=\\\"clr\\\"\")) and ((.description|contains(\"$CLEAR_MARK\"))|not))" 'true'
+  # A second clear on the now-empty field: Chrome answers `selectAll: false`
+  # there, and reading that instead of `delete`'s `true` would turn every clear
+  # of an already-empty field into a spurious failure.
+  assert_field "$P" keyboard clear-already-empty "{\"udid\":\"$DEV\",\"clear\":true}" '.cleared' 'true'
   # One action per call, `clear` included — the same guard the android tier
   # exercises for text+key.
   assert_reject "$P" keyboard clear-and-text "{\"udid\":\"$DEV\",\"clear\":true,\"text\":\"x\"}"
+  # The four refusals below are all InvalidToolInputErrors, so `assert_reject`
+  # alone would pass on "the call failed" for every one of them — and a tap that
+  # drifts off its field would silently degrade one into a duplicate of another.
+  # Each is matched against a phrase only its own branch produces.
+  #
   # With nothing editable focused the clear must 400 rather than delete from
   # whatever the page focuses by default. The background canvas is not
   # focusable, so tapping it moves focus off the input.
   run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.05,\"y\":0.05}" >/dev/null 2>&1
-  assert_reject "$P" keyboard clear-unfocused "{\"udid\":\"$DEV\",\"clear\":true}"
+  assert_reject_matching "$P" keyboard clear-unfocused "{\"udid\":\"$DEV\",\"clear\":true}" \
+    "nothing editable has keyboard focus"
   # A date input is editable by every signal the script can read, and
   # `execCommand` still cannot empty it. Reporting that as a success is the one
   # outcome the whole design rules out, so it must 400 — and, unlike the case
-  # above, with the field correctly focused.
+  # above, with the field correctly focused, under the OTHER code.
   run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.5,\"y\":0.77}" >/dev/null 2>&1
-  assert_reject "$P" keyboard clear-date-input "{\"udid\":\"$DEV\",\"clear\":true}"
+  assert_reject_matching "$P" keyboard clear-date-input "{\"udid\":\"$DEV\",\"clear\":true}" \
+    "date and time inputs"
+  # A focused readonly input: the same code, because the repair is again "not
+  # this field", never "tap it" — it is already focused.
+  run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.5,\"y\":0.855}" >/dev/null 2>&1
+  assert_reject_matching "$P" keyboard clear-readonly "{\"udid\":\"$DEV\",\"clear\":true}" \
+    "is \`readonly\`"
+  # A rich-text editor that restores its own model: `execCommand` accepts the
+  # delete, so only reading the field back afterwards catches it. Without that
+  # read-back this call reports success and the next typed value is APPENDED.
+  run_tool gesture-tap "{\"udid\":\"$DEV\",\"x\":0.5,\"y\":0.92}" >/dev/null 2>&1
+  assert_reject_matching "$P" keyboard clear-restored "{\"udid\":\"$DEV\",\"clear\":true}" \
+    "after the delete"
+  assert_field "$P" describe clear-restored-intact "{\"udid\":\"$DEV\"}" \
+    '(.description|contains("argentrichmark"))' 'true'
   # Replace-a-value, the form the tool description prescribes: one round-trip,
   # and the field ends up holding ONLY the new text.
   run_tool open-url "{\"udid\":\"$DEV\",\"url\":\"http://127.0.0.1:$httpport/index.html\"}" >/dev/null 2>&1
+  await_ui "$DEV" "$CLEAR_MARK"
   assert_field "$P" run-sequence keyboard-clear-then-text \
     "{\"udid\":\"$DEV\",\"steps\":[{\"tool\":\"keyboard\",\"args\":{\"clear\":true}},{\"tool\":\"keyboard\",\"args\":{\"text\":\"replaced\"}}]}" \
     '.completed' '2'

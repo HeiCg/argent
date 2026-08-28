@@ -1,10 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
-import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
+import {
+  Registry,
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  type DeviceInfo,
+} from "@argent/registry";
 import { InvalidToolInputError, UnsupportedOperationError } from "../src/utils/capability";
 import { typeTv } from "../src/tools/keyboard/platforms/tv";
 import { vegaImpl } from "../src/tools/keyboard/platforms/vega";
 import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import { createKeyboardTool } from "../src/tools/keyboard";
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
 import { injectAndroidNamedKey, injectAndroidText } from "../src/utils/android-input";
 
@@ -327,5 +334,239 @@ describe("keyboard `clear` — refusal taxonomy", () => {
         FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS
       );
     }
+  });
+});
+
+// Everything above pins the refusals at the platform-impl boundary. These pin
+// them where a caller meets them: through `createKeyboardTool(...).execute()`,
+// so the code also has to survive `dispatchByPlatform`, the capability
+// preflight and the secret-resolution step — the same level at which the
+// sibling KEYBOARD_TEXT_AND_KEY_COMBINED is already asserted.
+describe("keyboard `clear` — the refusals reach a caller through the tool", () => {
+  function toolWithChromiumEvaluate(answers: unknown[]): ReturnType<typeof createKeyboardTool> {
+    const registry = new Registry();
+    let call = 0;
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => answers[Math.min(call++, answers.length - 1)]),
+      dispatchKeyEvent: vi.fn(async () => {}),
+    } as never);
+    // No device stub: `resolveDevice` classifies by udid shape, and
+    // `chromium-cdp-<port>` is a chromium app there.
+    return createKeyboardTool(registry);
+  }
+
+  it("KEYBOARD_CLEAR_NO_EDITABLE_FOCUS survives the whole tool, not just the impl", async () => {
+    const tool = toolWithChromiumEvaluate([
+      { cleared: false, focus: "body", reason: "not-editable" },
+    ]);
+    await expectInvalidInput(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined),
+      FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS
+    );
+  });
+
+  it("KEYBOARD_CLEAR_UNSUPPORTED_FIELD survives the whole tool, not just the impl", async () => {
+    const tool = toolWithChromiumEvaluate([
+      { cleared: false, focus: "input type=date", reason: "delete-refused" },
+    ]);
+    await expectInvalidInput(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
+    );
+  });
+
+  it("a field that survives the delete is refused, not reported as cleared", async () => {
+    // The read-back, end to end: `delete` said true, and the SECOND evaluate
+    // finds the value still there — which is what an editor with its own
+    // document model produces. Without this the tool answers `cleared: true`
+    // and the caller's next `text` is appended to the old value.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "div", verifiable: true },
+      { focus: "div", remaining: 11 },
+    ]);
+    await expectInvalidInput(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
+    );
+  });
+
+  it("a read-back that finds the field empty reports the clear", async () => {
+    // The positive control for the case above: the same two evaluates, with the
+    // read-back answering 0. A read-back wired to refuse on anything but a
+    // strict `remaining === 0` would still pass that test and fail this one.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "input type=text", verifiable: true },
+      { focus: "input type=text", remaining: 0 },
+    ]);
+    await expect(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+  });
+
+  it("a read-back on a DIFFERENT element cannot contradict the delete", async () => {
+    // The page moved focus in its own `input` handler. The value read there
+    // belongs to another field, so it is no evidence about the one that was
+    // cleared — treating it as evidence would fail every app that blurs on edit.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "input type=text", verifiable: true },
+      { focus: "input type=search", remaining: 9 },
+    ]);
+    await expect(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+  });
+
+  it("an unverifiable clear is reported on the delete's word alone", async () => {
+    // A closed shadow root: the browser's editing command reaches the field, but
+    // nothing script-side can read it back. One evaluate, not two.
+    const registry = new Registry();
+    const evaluate = vi.fn(async () => ({
+      cleared: true,
+      focus: "my-field",
+      verifiable: false,
+    }));
+    vi.spyOn(registry, "resolveService").mockResolvedValue({ evaluate } as never);
+    await expect(
+      makeChromiumImpl(registry).handler(
+        {},
+        { udid: chromiumDevice.id, clear: true },
+        chromiumDevice
+      )
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("a CDP wait that runs out is KEYBOARD_CLEAR_UNCONFIRMED, not a debugger failure", async () => {
+    // The timeout does not cancel the evaluate, so the delete can still land
+    // after the caller has been told it failed. The debugger taxonomy's own
+    // advice there is "restart the app and retry once" — a retry lands a SECOND
+    // delete on a field the first may already have emptied.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => {
+        throw new FailureError("CDP request Runtime.evaluate timed out", {
+          error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
+          failure_stage: "debugger_cdp_send",
+          failure_area: "tool_server",
+          error_kind: "timeout",
+        });
+      }),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED);
+    expect(err.message).toMatch(/NOT cancelled/);
+    expect(err.message).toMatch(/read it back/);
+    // ...and NOT the advice that would make it worse.
+    expect(err.message).not.toMatch(/restart the app, then reconnect/);
+  });
+
+  it("a non-timeout evaluate failure is passed through untouched", async () => {
+    // Only the timeout carries the "it may still land" hazard. A dropped socket
+    // is an ordinary transport failure and must keep its own code, or every CDP
+    // fault would be reported as an unconfirmed clear.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => {
+        throw new FailureError("CDP not connected", {
+          error_code: FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED,
+          failure_stage: "debugger_cdp_send",
+          failure_area: "tool_server",
+          error_kind: "network",
+        });
+      }),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED);
+  });
+
+  it("the four unclearable-field reasons each get their own stage and their own repair", async () => {
+    // One code, four stages: the repair differs per reason, and an agent handed
+    // "tap the field first" for a field it has already tapped loops forever.
+    const cases: Array<[reason: string, stage: string, repair: RegExp]> = [
+      ["readonly", "keyboard_clear_chromium_readonly", /read-only field ignores every edit/],
+      ["disabled", "keyboard_clear_chromium_disabled", /until the app enables it/],
+      ["not-a-text-field", "keyboard_clear_chromium_not_a_text_field", /holds no text to clear/],
+      ["host-opaque", "keyboard_clear_chromium_host_opaque", /custom element whose internals/],
+    ];
+    for (const [reason, stage, repair] of cases) {
+      const registry = new Registry();
+      vi.spyOn(registry, "resolveService").mockResolvedValue({
+        evaluate: vi.fn(async () => ({ cleared: false, focus: "input type=text", reason })),
+      } as never);
+      const err = await makeChromiumImpl(registry)
+        .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+        .then(
+          () => {
+            throw new Error(`expected ${reason} to reject, but it resolved`);
+          },
+          (e: unknown) => e as Error
+        );
+      const signal = getFailureSignal(err);
+      expect(signal?.error_code, reason).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD);
+      expect(signal?.failure_stage, reason).toBe(stage);
+      expect(err.message, reason).toMatch(repair);
+      // None of them may send the caller back to tap a field it already holds.
+      expect(err.message, reason).not.toMatch(/Tap the field first/);
+    }
+  });
+
+  it("a page that broke the script reports the page's error, not a missing focus", async () => {
+    // `document.execCommand` replaced by an editor: the throw used to leave
+    // `result.value` undefined, which read as "no element has keyboard focus" —
+    // the wrong cause AND the wrong repair.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({
+        cleared: false,
+        reason: "script-error",
+        detail: "execCommand is not a function",
+      })),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD);
+    expect(err.message).toMatch(/execCommand is not a function/);
+    expect(err.message).not.toMatch(/keyboard focus/);
+  });
+
+  it("a document-wide editing host is refused with the focus code and its own wording", async () => {
+    // designMode / <body contenteditable>: the repair IS "tap the field", so it
+    // shares the focus code — but the reason a caller needs to read is that the
+    // clear would have emptied the entire page.
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => ({ cleared: false, focus: "body", reason: "document-editable" })),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => e as Error
+      );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS);
+    expect(err.message).toMatch(/ENTIRE page/);
+    expect(err.message).toMatch(/Tap the field first/);
   });
 });

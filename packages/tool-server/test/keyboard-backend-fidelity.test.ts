@@ -18,7 +18,18 @@ vi.mock("../src/utils/vega-input", async (importOriginal) => ({
   injectVegaNamedKey: vi.fn(async () => {}),
 }));
 
+// The ios-remote branch probes the remote runtime kind through the orchestrator's
+// device list; stub it so the routing tests below are not host-dependent.
+const { isRemoteTvOsSimulator } = vi.hoisted(() => ({
+  isRemoteTvOsSimulator: vi.fn(async (_udid: string): Promise<boolean> => false),
+}));
+vi.mock("../src/utils/sim-remote", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/sim-remote")>()),
+  isRemoteTvOsSimulator,
+}));
+
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
+import { makeIosRemoteImpl } from "../src/tools/keyboard/platforms/ios";
 
 const IOS_SIM: DeviceInfo = { id: "TEST-UDID", platform: "ios", kind: "simulator" };
 const CHROMIUM: DeviceInfo = { id: "chromium-cdp-9222", platform: "chromium", kind: "app" };
@@ -268,6 +279,146 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       // green.
       expect(FORWARD_DELETE_KEYCODE).toBe(0x4c);
       expect(FORWARD_DELETE_KEYCODE).not.toBe(HID_BACKSPACE);
+    });
+
+    it("sends the literal 200 key presses the tool description promises", async () => {
+      // Every other assertion here is written as `CLEAR_KEY_PAIRS * 2`, so
+      // setting the constant to 3 leaves them all green — while "100
+      // backspaces... 100 forward-deletes" and "`keys` is 200" are caller-facing
+      // contract in the parameter description, the tool description, the
+      // run-sequence table and the docs. This is the only place the number
+      // itself is stated.
+      expect(CLEAR_KEY_PAIRS).toBe(100);
+      const { events, api } = hidRecorder();
+      const result = await clearSimulatorServer(registryWith(api), IOS_SIM);
+      expect(result.keys).toBe(200);
+      expect(events.length).toBe(400);
+    });
+
+    it("settles after the burst, so the auto-screenshot cannot race the deletions", async () => {
+      // `pressKey` is fire-and-forget, so the burst returns before the app has
+      // drained it. Without the settle, the tool's auto-screenshot is taken
+      // mid-clear and hands back a picture of a field still emptying — and
+      // nothing else in the suite goes red when the `await sleep(...)` is
+      // deleted. Timed rather than mocked: a fake-timer version passes against
+      // a settle of zero.
+      const { api } = hidRecorder();
+      const started = Date.now();
+      await clearSimulatorServer(registryWith(api), IOS_SIM);
+      const elapsed = Date.now() - started;
+      // 200 cadence gaps (2ms each) plus the 300ms settle. Bounded below by
+      // their SUM, so dropping either one goes red: without the settle the burst
+      // finishes in ~400ms, and without the cadence in ~300ms.
+      expect(elapsed).toBeGreaterThanOrEqual(650);
+    });
+  });
+
+  // `clear` is a switch, not a payload: `false` means what omitting it means, as
+  // its own `.describe()` says. The guard in ../index.ts pins that for the
+  // REQUEST shape, but it sends every shape to one android udid — so each
+  // backend's own `params.clear === true` is unpinned, and widening any of them
+  // to `!== undefined` (the natural symmetry with `text`) makes `{ clear: false }`
+  // delete a field.
+  describe("`clear: false` is an omitted clear on every backend", () => {
+    it("chromium: dispatches nothing and evaluates nothing", async () => {
+      const { events, api } = cdpRecorder();
+      const evaluate = vi.fn(async () => ({ cleared: true }));
+      const result = await makeChromiumImpl(registryWith({ ...api, evaluate })).handler(
+        {},
+        { udid: CHROMIUM.id, clear: false },
+        CHROMIUM
+      );
+      expect(result).toEqual({ typed: "", keys: 0 });
+      expect(events).toEqual([]);
+      expect(evaluate).not.toHaveBeenCalled();
+    });
+
+    it("iOS simulator: presses no key", async () => {
+      const { events, api } = hidRecorder();
+      const result = await typeSimulatorServer(registryWith(api), IOS_SIM, {
+        udid: IOS_SIM.id,
+        clear: false,
+      });
+      expect(result).toEqual({ typed: "", keys: 0 });
+      expect(events).toEqual([]);
+    });
+
+    it("vega: injects nothing", async () => {
+      const result = await vegaImpl.handler({}, { udid: VEGA.id, clear: false }, VEGA);
+      expect(result).toEqual({ typed: "", keys: 0 });
+      expect(injectVegaText).not.toHaveBeenCalled();
+      expect(injectVegaNamedKey).not.toHaveBeenCalled();
+    });
+  });
+
+  // The ios and ios-remote impls share one `runSimulatorServer`, and the remote
+  // one is reached by no other test in the suite: reverting it to
+  // `typeSimulatorServer` — deleting the clear routing for every remote sim —
+  // breaks nothing, and `{ clear: true }` then returns `{ typed: "", keys: 0 }`
+  // with no `cleared`, having sent nothing at all.
+  describe("ios-remote", () => {
+    const IOS_REMOTE: DeviceInfo = {
+      id: "remote:REMOTE-UDID",
+      platform: "ios-remote",
+      kind: "simulator",
+    };
+
+    it("clears over the same HID transport as a local simulator", async () => {
+      const { events, api } = hidRecorder();
+      const registry = registryWith(api);
+      const result = await makeIosRemoteImpl(registry).handler(
+        {},
+        { udid: IOS_REMOTE.id, clear: true },
+        IOS_REMOTE
+      );
+      expect(result).toEqual({ typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true });
+      expect(events.length).toBe(CLEAR_KEY_PAIRS * 4);
+      expect(events.slice(0, 4)).toEqual([
+        ["Down", HID_BACKSPACE],
+        ["Up", HID_BACKSPACE],
+        ["Down", HID_FORWARD_DELETE],
+        ["Up", HID_FORWARD_DELETE],
+      ]);
+    });
+
+    it("treats `{ clear: false }` as an omitted clear, sending nothing", async () => {
+      const { events, api } = hidRecorder();
+      const result = await makeIosRemoteImpl(registryWith(api)).handler(
+        {},
+        { udid: IOS_REMOTE.id, clear: false },
+        IOS_REMOTE
+      );
+      expect(result).toEqual({ typed: "", keys: 0 });
+      expect(events).toEqual([]);
+    });
+
+    it("refuses a clear on a REMOTE tvOS simulator instead of bursting at it", async () => {
+      // A remote tvOS sim is `ios-remote` by udid shape exactly as a local one is
+      // `ios`, so without the probe a remote Apple TV took the 400-event burst —
+      // the one thing platforms/tv.ts documents as unsupported on a TV.
+      isRemoteTvOsSimulator.mockResolvedValueOnce(true);
+      const { events, api } = hidRecorder();
+      await expect(
+        makeIosRemoteImpl(registryWith(api)).handler(
+          {},
+          { udid: IOS_REMOTE.id, clear: true },
+          IOS_REMOTE
+        )
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(events).toEqual([]);
+    });
+
+    it("does not probe the TV kind for a plain typing call", async () => {
+      // The probe is a round-trip to the orchestrator's device list. `text`
+      // keeps the transport it already had, so it must not pay for it.
+      isRemoteTvOsSimulator.mockClear();
+      const { api } = hidRecorder();
+      await makeIosRemoteImpl(registryWith(api)).handler(
+        {},
+        { udid: IOS_REMOTE.id, text: "hi", delayMs: 0 },
+        IOS_REMOTE
+      );
+      expect(isRemoteTvOsSimulator).not.toHaveBeenCalled();
     });
   });
 

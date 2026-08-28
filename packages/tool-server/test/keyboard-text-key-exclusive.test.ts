@@ -429,10 +429,130 @@ describe("keyboard — how the constraint reaches a client", () => {
     // the same reason. Both texts also name the remedy, since a constraint
     // without one just moves the caller from a wrong call to a stuck one.
     const { text, key } = createKeyboardTool(registry()).zodSchema!.shape;
-    expect(text.description).toMatch(/Cannot be combined with `key`/);
+    expect(text.description).toMatch(/Cannot be combined with `key` or `clear`/);
     expect(text.description).toMatch(/run-sequence/);
-    expect(key.description).toMatch(/Cannot be combined with `text`/);
+    expect(key.description).toMatch(/Cannot be combined with `text` or `clear`/);
     expect(key.description).toMatch(/run-sequence/);
+  });
+
+  it("advertises `clear` as a parameter at all", () => {
+    // `required` above is the only other schema assertion, and it passes just
+    // as well for a tool that never advertised `clear` — a caller reading the
+    // schema would then never learn the parameter exists.
+    const schema = advertisedSchema(createKeyboardTool(registry()))!;
+    const properties = schema.properties as Record<string, unknown>;
+    expect(Object.keys(properties)).toEqual(
+      expect.arrayContaining(["udid", "text", "key", "clear", "delayMs"])
+    );
+    expect((properties.clear as { type?: string }).type).toBe("boolean");
+  });
+
+  it("states on `clear` what a caller cannot learn anywhere else", () => {
+    // `clear` is the only parameter whose behaviour DIFFERS by platform, and the
+    // only destructive one — so its prose is the whole contract for four things
+    // a caller has no other way to know. Replacing it with a one-liner leaves
+    // every other assertion in the suite green.
+    const { clear } = createKeyboardTool(registry()).zodSchema!.shape;
+    const description = clear.description!;
+    // The exclusivity rule, restated here as on the other two.
+    expect(description).toMatch(/Cannot be combined with `text` or `key`/);
+    // Focus is the precondition, and it is the caller's job.
+    expect(description).toMatch(/Tap the field first/);
+    // The mobile bound: a longer field keeps its remainder, and the repair is a
+    // second call — not "it failed".
+    expect(description).toMatch(/100 backspaces/);
+    expect(description).toMatch(/keeps the remainder/);
+    // The two backends answer `cleared` on different evidence, which decides
+    // whether a caller has to assert the field itself.
+    expect(description).toMatch(/read the field back|reads the field back/i);
+    // Where it does not work at all.
+    expect(description).toMatch(/Not supported on TV targets/);
+    expect(description).toMatch(/Vega/);
+    // `false` is legal and inert — the shape the guard admits.
+    expect(description).toMatch(/`false` means the same as omitting it/);
+  });
+
+  it("gives each combined shape a message about the fields it actually carries", async () => {
+    // The message names the combination, so a caller can see which of its two
+    // arguments to drop. Only `{ text, key }` was asserted at message level;
+    // the other two, and the three-way join, are where the wording drifts.
+    const tool = createKeyboardTool(registry());
+    const message = async (args: Record<string, unknown>): Promise<string> =>
+      tool.execute({}, { udid: "emulator-5554", ...args } as never).then(
+        () => {
+          throw new Error(`expected ${JSON.stringify(args)} to reject, but it resolved`);
+        },
+        (e: unknown) => (e as Error).message
+      );
+    expect(await message({ text: "hi", key: "enter" })).toMatch(/carries `text` and `key`/);
+    expect(await message({ text: "hi", clear: true })).toMatch(/carries `text` and `clear`/);
+    expect(await message({ key: "enter", clear: true })).toMatch(/carries `key` and `clear`/);
+    expect(await message({ text: "hi", key: "enter", clear: true })).toMatch(
+      /carries `text` and `key` and `clear`/
+    );
+  });
+
+  it("separates the three combinations by failure_stage, sharing one code", async () => {
+    // Reusing the CODE is the disclosed decision — one telemetry bucket for
+    // every misuse of the exclusivity rule. A single STAGE would make
+    // clear-misuse unmeasurable next to the older text+key case it is not.
+    const tool = createKeyboardTool(registry());
+    const stage = async (args: Record<string, unknown>): Promise<string | undefined> =>
+      tool.execute({}, { udid: "emulator-5554", ...args } as never).then(
+        () => {
+          throw new Error(`expected ${JSON.stringify(args)} to reject, but it resolved`);
+        },
+        (e: unknown) => getFailureSignal(e)?.failure_stage
+      );
+    const stages = [
+      await stage({ text: "hi", key: "enter" }),
+      await stage({ text: "hi", clear: true }),
+      await stage({ key: "enter", clear: true }),
+      await stage({ text: "hi", key: "enter", clear: true }),
+    ];
+    expect(new Set(stages).size).toBe(4);
+    expect(stages[0]).toBe("keyboard_text_and_key_combined");
+  });
+
+  it("does not send a caller after a key it never asked for", () => {
+    // `{ key: "", clear: true }` is rejected on shape, and the split the message
+    // prescribes is `{ key: "enter" }` — a key the caller never named, whose
+    // retry then fails with KEYBOARD_KEY_UNSUPPORTED. The message has to say so.
+    const tool = createKeyboardTool(registry());
+    return tool.execute({}, { udid: "emulator-5554", key: "", clear: true } as never).then(
+      () => {
+        throw new Error("expected the call to reject, but it resolved");
+      },
+      (e: unknown) => {
+        expect((e as Error).message).toMatch(/`key` is an empty string/);
+        expect((e as Error).message).toMatch(/drop `key` from the request/);
+      }
+    );
+  });
+
+  it("explains the secret hazard of the shape the request actually carries", () => {
+    // The note exists because one `run-sequence` and two bare calls are NOT
+    // equivalent once the text holds a placeholder. Hard-coded to the
+    // type-then-submit split, it explained a later Enter that a
+    // `{ clear, text }` request does not have.
+    const tool = createKeyboardTool(registry());
+    return tool
+      .execute({}, {
+        udid: "emulator-5554",
+        clear: true,
+        text: "{{secret:APP_PASSWORD}}",
+      } as never)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => {
+          const message = (e as Error).message;
+          expect(message).toMatch(/placeholder/);
+          expect(message).toMatch(/{ clear: true } call carries none either/);
+          expect(message).not.toMatch(/after the key lands/);
+        }
+      );
   });
 
   it("accepts and rejects exactly the shapes the docs describe", async () => {

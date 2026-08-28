@@ -191,10 +191,12 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
   });
 
   it("matches the input type case-insensitively", () => {
-    // `type` reflects the attribute, and HTML attributes are not case-sensitive:
-    // `<input TYPE="CHECKBOX">` reads back as "CHECKBOX" in some framework
-    // renderings. Dropping the fold would treat that checkbox as a text field
-    // and "clear" it — a click target silently receiving a delete.
+    // Not a shape the real DOM produces: `HTMLInputElement.type` reflects
+    // "limited to only known values", so a live `<input TYPE="CHECKBOX">` reads
+    // back as the lowercase "checkbox". The fold is for the OTHER readers of
+    // this script — a framework-rendered tree, a shadow-DOM shim, a test double
+    // — where `.type` is whatever the author wrote. Dropping it would treat
+    // that checkbox as a text field and "clear" it.
     expect(run(el("INPUT", { type: "CHECKBOX" })).outcome).toEqual({
       cleared: false,
       focus: "input type=checkbox",
@@ -205,7 +207,9 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
   it("only refuses the non-text input types, not every unusual one", () => {
     // Positive control for the refusal list: it is a denylist, so a type nobody
     // enumerated (`tel`, `url`, a future one) must still clear. An allowlist
-    // would silently refuse those and is the tempting rewrite.
+    // would silently refuse those and is the tempting rewrite. In a real DOM an
+    // unrecognised type reflects as "text" and would clear for that reason
+    // instead; the denylist is what makes both readings agree.
     for (const type of ["tel", "url", "search", "email"]) {
       expect(run(el("INPUT", { type })).outcome, `refused type="${type}"`).toEqual({
         cleared: true,
@@ -316,5 +320,136 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const { outcome, commands } = run(host);
     expect(outcome).toEqual({ cleared: false, focus: "input type=text", reason: "readonly" });
     expect(commands).toEqual([]);
+  });
+});
+
+// The refusals that only exist because a real browser does something a
+// classification-by-tag cannot predict. Each was measured on Chrome 151 first;
+// the mock is what keeps the branch from being deleted as dead code.
+describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — the document as its own editing host", () => {
+  /** `document.body` / `document.documentElement`, as the script compares them. */
+  function withDocumentRoots(active: unknown, extras: Record<string, unknown> = {}) {
+    return { body: active, documentElement: {}, ...extras };
+  }
+
+  it("refuses a designMode / <body contenteditable> page without selecting anything", () => {
+    // Measured on Chrome 151: with `designMode = "on"`, `document.activeElement`
+    // is <body>, `isContentEditable` is true, and `selectAll` + `delete` empties
+    // the ENTIRE page — a body of 288 characters and 7 ids down to 85 and 1.
+    // Nothing bounds an editing host, and this needs no prior interaction at
+    // all, so the refusal is by identity rather than by editability.
+    const body = el("BODY", { isContentEditable: true });
+    const { outcome, commands } = run(body, {}, withDocumentRoots(body));
+    expect(outcome).toEqual({ cleared: false, focus: "body", reason: "document-editable" });
+    expect(commands).toEqual([]);
+  });
+
+  it("still refuses <html> as the editing host, not only <body>", () => {
+    const root = el("HTML", { isContentEditable: true });
+    const { outcome } = run(root, {}, { body: {}, documentElement: root });
+    expect(outcome.reason).toBe("document-editable");
+  });
+
+  it("clears a real field on the SAME designMode page", () => {
+    // The positive control. A refusal written as "designMode is on" rather than
+    // "focus is ON the editing host" would make every field on such a page
+    // unclearable — which is the ordinary case once the caller has tapped one.
+    const body = el("BODY", { isContentEditable: true });
+    // A focused <input> inherits `isContentEditable`, and it is still an input.
+    const field = el("INPUT", { type: "text", isContentEditable: true });
+    const { outcome, commands } = run(field, {}, withDocumentRoots(body));
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
+    expect(commands).toEqual(["selectAll", "delete"]);
+  });
+});
+
+describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a host script cannot see into", () => {
+  it("tries a custom element with no reachable shadow root, and reports it unverifiable", () => {
+    // `attachShadow({mode:"closed"})` leaves `el.shadowRoot` null, so the
+    // descent stops on the host and the tag test cannot see the <input> that
+    // actually holds focus — while the browser's own editing commands DO reach
+    // it. Measured on Chrome 151: `delete` answers true and the inner field
+    // empties to "". The same opacity means it cannot be read back, so the
+    // success is marked unverifiable rather than sent through the read-back.
+    const { outcome, commands } = run(el("MY-FIELD", {}));
+    expect(outcome).toEqual({ cleared: true, focus: "my-field", verifiable: false });
+    expect(commands).toEqual(["selectAll", "delete"]);
+  });
+
+  it("takes the delete's refusal as the verdict for such a host", () => {
+    // Measured on Chrome 151 for a custom element with nothing editable inside:
+    // `delete` answers false and the rest of the page is untouched. Its own
+    // reason, because the date-input wording would send the caller to press
+    // backspace on a field that has none.
+    const { outcome } = run(el("MY-FIELD", {}), { delete: false });
+    expect(outcome).toEqual({ cleared: false, focus: "my-field", reason: "host-opaque" });
+  });
+
+  it("does not treat an ordinary unknown tag as an opaque host", () => {
+    // The heuristic is the custom-element name rule (a hyphen), not "any tag I
+    // do not recognise" — widening it would run selectAll + delete on a focused
+    // <video> or a future built-in.
+    expect(run(el("VIDEO", {})).outcome.reason).toBe("not-editable");
+    expect(run(el("SUMMARY", {})).outcome.reason).toBe("not-editable");
+  });
+
+  it("does not try a host whose OPEN shadow root simply focuses nothing", () => {
+    // `shadowRoot` is readable there, so the descent already had its chance and
+    // the host genuinely holds focus. Trying it anyway would select and delete
+    // against a page the script CAN inspect and has judged non-editable.
+    const host = el("MY-FIELD", { shadowRoot: { activeElement: null } });
+    const { outcome, commands } = run(host);
+    expect(outcome).toEqual({ cleared: false, focus: "my-field", reason: "not-editable" });
+    expect(commands).toEqual([]);
+  });
+});
+
+describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — it leaves nothing behind", () => {
+  it("drops the selection when the delete is refused", () => {
+    // `selectAll` has already run by then, and on a field Chrome then refuses it
+    // selects the WHOLE DOCUMENT — measured on Chrome 151 for a focused date
+    // input, where `document.getSelection()` came back holding the page text.
+    // Left in place, that highlight reaches the next screenshot and every
+    // screenshot-diff taken after it.
+    const { outcome, selectionsDropped } = run(el("INPUT", { type: "date" }), { delete: false });
+    expect(outcome.reason).toBe("delete-refused");
+    expect(selectionsDropped).toBe(1);
+  });
+
+  it("drops nothing on a refusal that never selected", () => {
+    // The other refusals return before `selectAll`, so there is no selection to
+    // undo — and calling `removeAllRanges` there would clear a selection the
+    // USER or a previous `gesture-drag` made.
+    expect(run(el("BUTTON", {})).selectionsDropped).toBe(0);
+    expect(run(el("INPUT", { type: "text", readOnly: true })).selectionsDropped).toBe(0);
+  });
+
+  it("leaves the selection alone on a successful clear", () => {
+    // The delete consumed it; removing the ranges again would be a no-op at
+    // best and a caret move at worst.
+    expect(run(textInput()).selectionsDropped).toBe(0);
+  });
+});
+
+describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a page that breaks the script", () => {
+  it("reports the page's own error instead of an imagined focus problem", () => {
+    // Editors and polyfills replace or delete `document.execCommand`. The throw
+    // used to leave `Runtime.evaluate`'s `result.value` undefined, which the
+    // backend read as "no element has keyboard focus" — the wrong cause, and a
+    // repair (tap the field) that cannot work.
+    const { outcome } = run(
+      textInput(),
+      {},
+      {
+        execCommand() {
+          throw new TypeError("execCommand was replaced by the editor");
+        },
+      }
+    );
+    expect(outcome.cleared).toBe(false);
+    expect(outcome.reason).toBe("script-error");
+    expect(outcome.detail).toMatch(/execCommand was replaced/);
+    // No `focus`: nothing was classified, so claiming one would be a guess.
+    expect(outcome.focus).toBeUndefined();
   });
 });
