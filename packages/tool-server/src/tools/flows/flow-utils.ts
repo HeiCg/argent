@@ -3011,7 +3011,7 @@ export function runsSteps(steps: FlowStep[], platform: WhenPlatform): boolean {
 /**
  * Which launch-coverage promise these scopes break under `requires`, or null
  * when they keep it. Split out of {@link validateRequires} so
- * {@link assertComposedLaunchCoverage} can apply the identical judgement to a
+ * {@link assertComposedRequires} can apply the identical judgement to a
  * multi-file picture instead of growing a second implementation that drifts.
  */
 function launchCoverageFailure(
@@ -3058,6 +3058,44 @@ function launchCoverageFailure(
   );
 }
 
+/**
+ * Which "the block admits no platform that runs anything" promise these scopes
+ * break, or null when they keep it. A `when: { platform: X }` guard takes its
+ * body out of scope on every other platform, so a block admitting only
+ * platforms with an empty scope certifies a picture that runs nothing on every
+ * target it allows. One that runs nothing anywhere — flow-start-recording's
+ * `steps: []` reset — is not that mistake. Split out of
+ * {@link validateRequires} beside {@link launchCoverageFailure}, and for the
+ * same reason: factoring the guarded bodies into fragments must not buy them
+ * past the check.
+ */
+function vacuousScopeFailure(
+  scopes: readonly CoverageScope[],
+  requires: FlowRequires
+): string | null {
+  const { platform, runtimeKind } = requires;
+  const runsAnywhere = (p: WhenPlatform): boolean => scopes.some((s) => runsSteps(s.steps, p));
+  const declared: readonly WhenPlatform[] = platform ?? LAUNCH_PLATFORMS;
+  const admitted = runtimeKind
+    ? declared.filter((p) => platformCanPresent(p, runtimeKind))
+    : declared;
+  if (admitted.some(runsAnywhere) || !LAUNCH_PLATFORMS.some(runsAnywhere)) return null;
+  // Which key shut the runners out picks the remedy: widening the platform
+  // list is no fix for a platform it already names and runtimeKind rejects.
+  const shutOutByKind = runtimeKind
+    ? declared.filter((p) => runsAnywhere(p) && !platformCanPresent(p, runtimeKind))
+    : [];
+  return (
+    `no platform it admits (${admitted.join(", ")}) runs any step — ` +
+    (shutOutByKind.length > 0
+      ? `the steps sit behind guards for ${shutOutByKind.join(", ")}, which ` +
+        `requires.runtimeKind: ${runtimeKind} excludes, so move the steps out of those ` +
+        `guards, or drop requires.runtimeKind`
+      : `every step sits behind a when: platform guard for another platform, so move the ` +
+        `steps out of those guards, or widen requires.platform`)
+  );
+}
+
 function unsatisfiable(detail: string): FailureError {
   return new FailureError(`This flow's requires block can never be satisfied: ${detail}`, {
     error_code: FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE,
@@ -3087,54 +3125,34 @@ function validateRequires(flow: FlowFile): void {
     );
   }
 
-  // A `when: { platform: X }` guard takes its body out of scope on every other
-  // platform, so a block admitting only platforms with an empty scope certifies a
-  // file that runs nothing on every target it allows. A file that runs nothing
-  // anywhere — flow-start-recording's `steps: []` reset — is not that mistake.
-  const declared: readonly WhenPlatform[] = platform ?? LAUNCH_PLATFORMS;
-  const admitted = runtimeKind
-    ? declared.filter((p) => platformCanPresent(p, runtimeKind))
-    : declared;
-  if (
-    !admitted.some((p) => runsSteps(flow.steps, p)) &&
-    LAUNCH_PLATFORMS.some((p) => runsSteps(flow.steps, p))
-  ) {
-    // Which key shut the runners out picks the remedy: widening the platform
-    // list is no fix for a platform it already names and runtimeKind rejects.
-    const shutOutByKind = runtimeKind
-      ? declared.filter((p) => runsSteps(flow.steps, p) && !platformCanPresent(p, runtimeKind))
-      : [];
-    throw unsatisfiable(
-      `no platform it admits (${admitted.join(", ")}) runs any step — ` +
-        (shutOutByKind.length > 0
-          ? `the steps sit behind guards for ${shutOutByKind.join(", ")}, which ` +
-            `requires.runtimeKind: ${runtimeKind} excludes, so move the steps out of those ` +
-            `guards, or drop requires.runtimeKind`
-          : `every step sits behind a when: platform guard for another platform, so move the ` +
-            `steps out of those guards, or widen requires.platform`)
-    );
-  }
-
-  const detail = launchCoverageFailure([{ steps: flow.steps }], requires);
+  const detail =
+    vacuousScopeFailure([{ steps: flow.steps }], requires) ??
+    launchCoverageFailure([{ steps: flow.steps }], requires);
   if (detail) throw unsatisfiable(detail);
 }
 
 /**
- * Re-run {@link validateRequires}'s launch-coverage judgement over a run's
- * composed picture — the root's steps plus those of every fragment its leading
- * `run:` chain enters — against the folded block. Parse-time validation sees
- * one file, so factoring either half across the boundary escapes it and the
- * same content is judged two ways depending only on how it is split. Refusing
- * here raises FLOW_REQUIRES_UNSATISFIABLE, which a directory run fails on:
- * falling through instead leaves the composition to be refused per target as
+ * Re-run {@link validateRequires}'s file-level judgements over a run's composed
+ * picture — the root's steps plus those of every fragment its leading `run:`
+ * chain enters — against the folded block. Parse-time validation sees one file,
+ * so factoring either half across the boundary escapes it and the same content
+ * is judged two ways depending only on how it is split. Refusing here raises
+ * FLOW_REQUIRES_UNSATISFIABLE, which a directory run fails on: falling through
+ * instead leaves the composition to be refused per target as
  * FLOW_REQUIREMENTS_UNMET, the code that run turns into a silent skip.
+ *
+ * The caller drops the `run:` steps it followed, whose bodies are the scopes
+ * standing beside them: left in, each would count as running steps on every
+ * platform and the vacuous-scope check would pass on any root that only
+ * composes.
  */
-export function assertComposedLaunchCoverage(
+export function assertComposedRequires(
   scopes: readonly CoverageScope[],
   requires: FlowRequires | undefined
 ): void {
   if (!requires) return;
-  const detail = launchCoverageFailure(scopes, requires);
+  const detail =
+    vacuousScopeFailure(scopes, requires) ?? launchCoverageFailure(scopes, requires);
   if (!detail) return;
   throw new FailureError(
     `This run's requires block, composed along its leading run: chain, can never be ` +

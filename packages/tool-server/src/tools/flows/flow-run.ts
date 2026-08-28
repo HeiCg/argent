@@ -20,7 +20,7 @@ import type {
 } from "@argent/registry";
 import {
   appIdForPlatform,
-  assertComposedLaunchCoverage,
+  assertComposedRequires,
   assertSafeFlowName,
   assertValidProjectRoot,
   blockSteps,
@@ -1353,7 +1353,7 @@ async function resolveRunDevice(
       // once this function returns, so a refusal after booting would strand a
       // live Electron process. The two gates ahead of it —
       // {@link assertParamsMeetRequires} on a caller-named `--platform chromium`
-      // and {@link assertComposedLaunchCoverage} on the launch map — already
+      // and {@link assertComposedRequires} on the launch map — already
       // refuse every shape that could reach here, so this call is the last
       // barrier before an irreversible boot rather than the gate that answers.
       assertPlatformMeetsRequires(
@@ -1596,8 +1596,13 @@ async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<Lea
   // earns its keep once a fragment joined — and only over a chain read end to
   // end: a broken one stays best-effort here and is reported by execRunStep.
   if (scan.complete && scan.entered.length > 0) {
-    assertComposedLaunchCoverage(
-      [{ flow: rootEntry.display, steps: flow.steps }, ...scan.entered],
+    const unfollowed = (steps: FlowStep[]): FlowStep[] =>
+      steps.filter((step) => !scan.followed.has(step));
+    assertComposedRequires(
+      [
+        { flow: rootEntry.display, steps: unfollowed(flow.steps) },
+        ...scan.entered.map((f) => ({ ...f, steps: unfollowed(f.steps) })),
+      ],
       requires
     );
   }

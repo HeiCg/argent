@@ -1736,6 +1736,33 @@ describe("requires folded along the leading run: chain", () => {
     );
   });
 
+  it("refuses a guarded body factored out of the file whose block admits nothing", async () => {
+    // The same content refused at parse when the guard sits beside the block:
+    // every step the run reaches is behind an android guard while the fold
+    // admits ios alone, so no target it allows runs anything. `runsSteps` calls
+    // a `run:` step a runner on every platform, so leaving the followed markers
+    // in the picture would let any composing root pass vacuously.
+    await writeFlow("guarded-frag", {
+      steps: [
+        {
+          kind: "when",
+          condition: { kind: "platform", platform: "android" },
+          steps: [OK_STEP],
+        },
+      ],
+    });
+    await writeFlow("vacuous-root", {
+      requires: { platform: ["ios"] },
+      steps: [{ kind: "run", flow: "guarded-frag.yaml" }],
+    });
+    const { registry } = mockRegistry([iosEntry(IOS)]);
+
+    const err = await run(registry, "vacuous-root").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
+    expect((err as Error).message).toMatch(/no platform it admits \(ios\) runs any step/);
+  });
+
   it("refuses a launch factored out of the file whose block excludes it", async () => {
     // The same content refused at parse when the launch sits beside the block:
     // moving it into a fragment must not buy the file past the check.
