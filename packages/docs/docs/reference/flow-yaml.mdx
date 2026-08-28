@@ -53,13 +53,15 @@ requires:
   runtimeKind: tv
 ```
 
-`platform` names one of `ios`, `android`, `chromium` and `vega`, or a list of them. `runtimeKind` is `tv` for a focus-driven remote environment, or `mobile` for every other target. Argent runs the flow only on a target that satisfies every key of the block. The example above allows Apple TV and Android TV. The example excludes Fire TV. A file without a `requires:` block runs on every target. The block also narrows the device detection. For a flow that requires `ios`, Argent selects the booted simulator, and not an emulator that is booted at the same time. On a target that does not satisfy the block, the outcome depends on the run:
+`platform` names one of `ios`, `android`, `chromium` and `vega`, or a list of them. `ios` also covers a remote simulator. Argent runs a flow on a remote simulator only when the command names it with `--device remote:<udid>`. The automatic detection never selects one. `runtimeKind` is `tv` for a focus-driven remote environment, or `mobile` for every other target. Argent runs the flow only on a target that satisfies every key of the block. The example above allows Apple TV and Android TV. The example excludes Fire TV. A file without a `requires:` block runs on every target. The block also narrows the device detection. For a flow that requires `ios`, Argent selects the booted simulator, and not an emulator that is booted at the same time. On a target that does not satisfy the block, the outcome depends on the run:
 
 | Run                                                | Outcome                                              |
 | -------------------------------------------------- | ---------------------------------------------------- |
 | `argent flow run <dir>`                            | Argent skips the flow and runs the rest of the batch |
 | `argent flow run <name>` or a single file          | Argent reports an error                              |
 | A `run:` step that the flow reaches during the run | Argent fails the step                                |
+
+Argent judges a block only against a device. A flow whose steps need no device selects none, so Argent runs it on every host. The same holds for a `run:` step that the flow reaches: Argent judges the block of that fragment only when the run has a device.
 
 A `run:` step before the first executable step is different. Argent adds the block of that fragment to the block of the flow before step 1. The platform lists intersect, and the two `runtimeKind` values must be equal. Argent then judges the whole run against the result, as the first two rows describe. Argent fails the run when the two blocks have no common target.
 
