@@ -1,16 +1,16 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs/promises";
-import * as path from "node:path";
 
 const execFileAsync = promisify(execFile);
 
 /**
  * Best-effort post-mortem for a dead runner: when the XCUITest process
  * crashes, xcodebuild records the crash reason (exception / Swift runtime
- * failure text) in the run's .xcresult bundle under the artifact's derived
- * data. Surfacing that line in the tool error turns "runner is not listening
- * on device port N" into an actionable diagnosis.
+ * failure text) in the session's .xcresult bundle, whose per-device path
+ * `launchRunner` pins via -resultBundlePath. Surfacing that line in the tool
+ * error turns "runner is not listening on device port N" into an actionable
+ * diagnosis.
  */
 
 /**
@@ -31,35 +31,17 @@ export function extractCrashFailureText(summary: unknown): string | null {
   return crash.split("\n")[0]!.slice(0, 400);
 }
 
-/** Newest .xcresult under `<derivedDataPath>/Logs/Test`, or null. */
-async function newestXcresult(derivedDataPath: string): Promise<string | null> {
-  const testLogsDir = path.join(derivedDataPath, "Logs", "Test");
-  const entries = await fs.readdir(testLogsDir).catch(() => [] as string[]);
-  const bundles = entries.filter((name) => name.endsWith(".xcresult"));
-  if (bundles.length === 0) return null;
-  const stats = await Promise.all(
-    bundles.map(async (name) => {
-      const full = path.join(testLogsDir, name);
-      const stat = await fs.stat(full).catch(() => null);
-      return { full, mtime: stat?.mtimeMs ?? 0 };
-    })
-  );
-  stats.sort((a, b) => b.mtime - a.mtime);
-  return stats[0]!.full;
-}
-
 /**
- * Crash reason recorded for the most recent runner session under this
- * artifact, or null when there is none / it cannot be read. Never throws:
- * this runs on an error path and must not mask the original failure.
+ * Crash reason recorded in this session's result bundle, or null when there
+ * is none / it cannot be read. Never throws: this runs on an error path and
+ * must not mask the original failure.
  */
-export async function readRunnerCrashSummary(derivedDataPath: string): Promise<string | null> {
+export async function readRunnerCrashSummary(resultBundlePath: string): Promise<string | null> {
   try {
-    const xcresult = await newestXcresult(derivedDataPath);
-    if (!xcresult) return null;
+    await fs.access(resultBundlePath);
     const { stdout } = await execFileAsync(
       "xcrun",
-      ["xcresulttool", "get", "test-results", "summary", "--path", xcresult],
+      ["xcresulttool", "get", "test-results", "summary", "--path", resultBundlePath],
       { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }
     );
     return extractCrashFailureText(JSON.parse(stdout));

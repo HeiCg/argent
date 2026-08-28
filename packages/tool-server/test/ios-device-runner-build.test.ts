@@ -13,15 +13,11 @@ import {
   isProfileMissingDeviceFailure,
   killStaleRunnersForDevice,
   launchRunner,
-  MAX_RUNNER_LOG_FILES,
-  MAX_RUNNER_RESULT_BUNDLES,
-  planRunnerStorageSweep,
   PROCESS_TABLE_ARGV,
   resolveRunnerProjectPath,
   resolveRunnerSigningConfig,
   resolveSigningHint,
   runnerBuildStaticArgs,
-  sweepRunnerStorage,
   waitForPidsToExit,
   xcodebuildFailureSummary,
   XctestrunFormatError,
@@ -213,11 +209,10 @@ describe("ensureRunnerArtifact", () => {
   });
 
   /**
-   * Run `fn` with HOME moved under a per-test dir (so cacheRoot() and the
-   * fire-and-forget sweep stay inside the fixture tree), PATH narrowed to
-   * `binDir` (empty by default, so nothing reaches the real Xcode), and the
-   * project override pointed at the fake, the env-swap fixture pattern
-   * launchRunner's tests established.
+   * Run `fn` with HOME moved under a per-test dir (so the build dir stays
+   * inside the fixture tree), PATH narrowed to `binDir` (empty by default, so
+   * nothing reaches the real Xcode), and the project override pointed at the
+   * fake, the env-swap fixture pattern launchRunner's tests established.
    */
   async function withEnsureEnv<T>(
     name: string,
@@ -300,41 +295,53 @@ describe("ensureRunnerArtifact", () => {
     });
   });
 
-  it("does not queue a different key's ensure behind an in-flight build", async () => {
-    await withEnsureEnv("cross-key", async () => {
-      const slowCounter = { builds: 0 };
-      const slowGate = deferred();
-      const slow = ensureRunnerArtifact(CONFIG, {
-        build: fakeBuild(slowCounter, slowGate.promise),
-      });
-      let slowSettled = false;
-      void slow.then(
-        () => (slowSettled = true),
-        () => (slowSettled = true)
-      );
-      await until(() => slowCounter.builds === 1);
+  it("rebuilds in place when the cache key changes: one tree, no siblings", async () => {
+    await withEnsureEnv("key-change", async () => {
+      const counter = { builds: 0 };
+      const build = fakeBuild(counter);
+      const first = await ensureRunnerArtifact(CONFIG, { build });
 
-      // A different bundle id changes the static args and thus the cache key;
-      // its ensure must complete while the first key's build still runs.
+      // A leftover of the first generation must not survive into the next:
+      // mixing products across sources/Xcode/signing generations is what the
+      // stamp-mismatch wipe exists to prevent.
+      const leftover = path.join(first.derivedDataPath, "Build", "Products", "stale-product");
+      await fsp.writeFile(leftover, "");
+
+      // A different bundle id changes the static args and thus the cache key.
       const otherConfig: RunnerSigningConfig = {
         ...CONFIG,
         appBundleId: "com.other.argent.runner",
         testBundleId: "com.other.argent.runner.uitests",
       };
-      const fastCounter = { builds: 0 };
-      const fast = await ensureRunnerArtifact(otherConfig, { build: fakeBuild(fastCounter) });
-      expect(fast.fromCache).toBe(false);
-      expect(fastCounter.builds).toBe(1);
-      expect(slowSettled).toBe(false);
+      const other = await ensureRunnerArtifact(otherConfig, { build });
+      expect(other.fromCache).toBe(false);
+      expect(other.derivedDataPath).toBe(first.derivedDataPath);
+      await expect(fsp.access(leftover)).rejects.toThrow();
 
-      slowGate.resolve();
-      expect((await slow).fromCache).toBe(false);
+      // Flipping back rebuilds again: exactly one generation lives in the dir.
+      const back = await ensureRunnerArtifact(CONFIG, { build });
+      expect(back.fromCache).toBe(false);
+      expect(counter.builds).toBe(3);
     });
   });
 
-  it("marks the derived dir as owned while xcodebuild runs and clears it after", async () => {
-    // The real build arm, driven by a stub xcodebuild: the marker is what
-    // keeps another checkout's sweep from rm -rf'ing this tree mid-build.
+  it("rebuilds when the stamp is missing even though an xctestrun exists (interrupted build)", async () => {
+    await withEnsureEnv("no-stamp", async () => {
+      const counter = { builds: 0 };
+      const build = fakeBuild(counter);
+      const first = await ensureRunnerArtifact(CONFIG, { build });
+
+      // The stamp is written only after a successful build, so its absence
+      // means the tree cannot be trusted regardless of what files exist.
+      await fsp.rm(path.join(first.derivedDataPath, ".argent-cache-key"));
+
+      const again = await ensureRunnerArtifact(CONFIG, { build });
+      expect(again.fromCache).toBe(false);
+      expect(counter.builds).toBe(2);
+    });
+  });
+
+  it("stamps the build dir with the cache key after a real-arm build", async () => {
     const stubBin = path.join(tmpRoot, "ensure-stub-bin");
     await fsp.mkdir(stubBin, { recursive: true });
     await fsp.writeFile(
@@ -344,7 +351,6 @@ describe("ensureRunnerArtifact", () => {
         // The toolchain fingerprint calls this first; it takes no derived dir.
         'if [ "$1" = "-version" ]; then echo "Xcode 99.0"; exit 0; fi',
         'for arg in "$@"; do derived="$arg"; done', // -derivedDataPath's value is last
-        'if [ -f "$derived/.argent-build-owner" ]; then : > "$derived/owner-seen"; fi',
         '/bin/mkdir -p "$derived/Build/Products"', // PATH holds only this stub
         ': > "$derived/Build/Products/ArgentRunner_iphoneos18.0-arm64.xctestrun"',
         "",
@@ -352,16 +358,13 @@ describe("ensureRunnerArtifact", () => {
       { mode: 0o755 }
     );
 
-    const artifact = await withEnsureEnv(
-      "owner-marker",
-      () => ensureRunnerArtifact(CONFIG),
-      stubBin
-    );
+    const artifact = await withEnsureEnv("stamp", () => ensureRunnerArtifact(CONFIG), stubBin);
 
-    await fsp.access(path.join(artifact.derivedDataPath, "owner-seen"));
-    await expect(
-      fsp.access(path.join(artifact.derivedDataPath, ".argent-build-owner"))
-    ).rejects.toThrow();
+    const stamp = await fsp.readFile(
+      path.join(artifact.derivedDataPath, ".argent-cache-key"),
+      "utf8"
+    );
+    expect(stamp).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 
@@ -476,195 +479,6 @@ describe("resolveSigningHint", () => {
   });
 });
 
-const EMPTY_LISTING = {
-  currentCacheDirName: "cache-aaaa111122223333",
-  cacheDirNames: [] as string[],
-  logNames: [] as string[],
-  testLogNames: [] as string[],
-};
-
-/** An xcresult bundle as Xcode names it, from a session timestamp. */
-const xcresultName = (stamp: string): string => `Test-ArgentRunner-${stamp}-+0200.xcresult`;
-
-describe("planRunnerStorageSweep", () => {
-  it("deletes every cache-* sibling except the current key's dir", () => {
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      cacheDirNames: ["cache-aaaa111122223333", "cache-0123456789abcdef", "cache-ffff000011112222"],
-    });
-
-    expect(plan.cacheDirNames.sort()).toEqual(["cache-0123456789abcdef", "cache-ffff000011112222"]);
-    expect(plan.logNames).toEqual([]);
-  });
-
-  it("spares a sibling cache dir a live build owns", () => {
-    // A second checkout fingerprints to a second key, so its in-flight
-    // build-for-testing tree looks exactly like a superseded sibling.
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      cacheDirNames: ["cache-aaaa111122223333", "cache-0123456789abcdef", "cache-ffff000011112222"],
-      busyCacheDirNames: ["cache-0123456789abcdef"],
-    });
-
-    expect(plan.cacheDirNames).toEqual(["cache-ffff000011112222"]);
-  });
-
-  it("ignores foreign names under the cache root", () => {
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      cacheDirNames: [
-        ".DS_Store",
-        "cache-README.txt",
-        "cache-",
-        "Cache-0123456789abcdef", // wrong case: not ours
-        "scratch",
-      ],
-    });
-
-    expect(plan.cacheDirNames).toEqual([]);
-  });
-
-  it("caps runner logs to the newest N by embedded timestamp, ignoring foreign files", () => {
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      logNames: [
-        "runner-00008120-100.log",
-        "runner-00008120-300.log",
-        "runner-0000aaaa-200.log",
-        "usbmux.log",
-        "runner-note.txt",
-      ],
-      maxLogFiles: 2,
-    });
-
-    expect(plan.logNames).toEqual(["runner-00008120-100.log"]);
-  });
-
-  it("defaults the log cap to the newest 20", () => {
-    const logNames = Array.from(
-      { length: MAX_RUNNER_LOG_FILES + 3 },
-      (_, i) => `runner-00008120-${1000 + i}.log`
-    );
-
-    const plan = planRunnerStorageSweep({ ...EMPTY_LISTING, logNames });
-
-    expect(plan.logNames.sort()).toEqual([
-      "runner-00008120-1000.log",
-      "runner-00008120-1001.log",
-      "runner-00008120-1002.log",
-    ]);
-  });
-
-  it("caps result bundles to the newest N by their session timestamp", () => {
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      testLogNames: [
-        xcresultName("2026.08.20_09-30-00"),
-        xcresultName("2026.08.22_08-00-00"),
-        xcresultName("2026.08.22_07-59-00"),
-        xcresultName("2026.08.21_23-59-59"),
-        "LogStoreManifest.plist", // foreign: Xcode's own index, never ours
-      ],
-      maxResultBundles: 2,
-    });
-
-    expect(plan.resultBundleNames.sort()).toEqual([
-      xcresultName("2026.08.20_09-30-00"),
-      xcresultName("2026.08.21_23-59-59"),
-    ]);
-  });
-
-  it("defaults the result-bundle cap to the newest 3, enough for the crash reader", () => {
-    const testLogNames = Array.from({ length: MAX_RUNNER_RESULT_BUNDLES + 1 }, (_, i) =>
-      xcresultName(`2026.08.2${i}_10-00-00`)
-    );
-
-    const plan = planRunnerStorageSweep({ ...EMPTY_LISTING, testLogNames });
-
-    expect(plan.resultBundleNames).toEqual([xcresultName("2026.08.20_10-00-00")]);
-  });
-});
-
-describe("sweepRunnerStorage", () => {
-  it("prunes a fake storage tree down to exactly the expected survivors", async () => {
-    const root = path.join(tmpRoot, "sweep");
-    const derived = path.join(root, "derived");
-    const current = path.join(derived, "cache-aaaa111122223333");
-    const products = path.join(current, "Build", "Products");
-    const logDir = path.join(root, "logs");
-    await fsp.mkdir(products, { recursive: true });
-    await fsp.mkdir(path.join(derived, "cache-0123456789abcdef", "Build"), { recursive: true });
-    await fsp.mkdir(path.join(derived, "foreign-dir"), { recursive: true });
-    await fsp.mkdir(logDir, { recursive: true });
-    const base = path.join(products, "ArgentRunner_iphoneos18.0-arm64.xctestrun");
-    await fsp.writeFile(base, "plist");
-    await Promise.all(
-      [100, 200, 300].map((ts) => fsp.writeFile(path.join(logDir, `runner-00008120-${ts}.log`), ""))
-    );
-    await fsp.writeFile(path.join(logDir, "keep-me.txt"), "");
-
-    await sweepRunnerStorage({
-      derivedDataPath: current,
-      logDir,
-      maxLogFiles: 2,
-    });
-
-    expect((await fsp.readdir(derived)).sort()).toEqual(["cache-aaaa111122223333", "foreign-dir"]);
-    expect(await fsp.readdir(products)).toEqual(["ArgentRunner_iphoneos18.0-arm64.xctestrun"]);
-    expect((await fsp.readdir(logDir)).sort()).toEqual([
-      "keep-me.txt",
-      "runner-00008120-200.log",
-      "runner-00008120-300.log",
-    ]);
-  });
-
-  it("keeps a sibling whose build is in flight and prunes stale result bundles", async () => {
-    const root = path.join(tmpRoot, "sweep-busy");
-    const derived = path.join(root, "derived");
-    const current = path.join(derived, "cache-aaaa111122223333");
-    const inFlight = path.join(derived, "cache-bbbb222233334444");
-    const abandoned = path.join(derived, "cache-cccc333344445555");
-    const testLogs = path.join(current, "Logs", "Test");
-    await fsp.mkdir(testLogs, { recursive: true });
-    await fsp.mkdir(inFlight, { recursive: true });
-    await fsp.mkdir(abandoned, { recursive: true });
-    // A peer checkout mid-build: its owner pid is alive (this process).
-    await fsp.writeFile(path.join(inFlight, ".argent-build-owner"), String(process.pid));
-    // A marker left behind by a killed build: no owner, nothing to protect.
-    // 999999 is past macOS's pid ceiling, so the liveness probe always ESRCHs.
-    await fsp.writeFile(path.join(abandoned, ".argent-build-owner"), "999999");
-    for (const stamp of ["2026.08.20_10-00-00", "2026.08.21_10-00-00", "2026.08.22_10-00-00"]) {
-      await fsp.mkdir(path.join(testLogs, xcresultName(stamp)));
-    }
-    await fsp.writeFile(path.join(testLogs, "LogStoreManifest.plist"), "");
-
-    await sweepRunnerStorage({
-      derivedDataPath: current,
-      logDir: path.join(root, "logs"),
-      maxResultBundles: 2,
-    });
-
-    expect((await fsp.readdir(derived)).sort()).toEqual([
-      "cache-aaaa111122223333",
-      "cache-bbbb222233334444",
-    ]);
-    expect((await fsp.readdir(testLogs)).sort()).toEqual([
-      "LogStoreManifest.plist",
-      xcresultName("2026.08.21_10-00-00"),
-      xcresultName("2026.08.22_10-00-00"),
-    ]);
-  });
-
-  it("resolves without throwing when none of the directories exist", async () => {
-    await expect(
-      sweepRunnerStorage({
-        derivedDataPath: path.join(tmpRoot, "sweep-missing", "derived", "cache-aaaa111122223333"),
-        logDir: path.join(tmpRoot, "sweep-missing", "logs"),
-      })
-    ).resolves.toBeUndefined();
-  });
-});
-
 /**
  * Run launchRunner with PATH replaced by `pathDir` (so "xcodebuild" resolves
  * to a stub, or to nothing) and HOME moved under tmpRoot (so the launch log
@@ -703,14 +517,15 @@ describe("launchRunner", () => {
     expect(((error as Error).cause as NodeJS.ErrnoException).code).toBe("ENOENT");
   });
 
-  it("resolves with the launched child and log path when the spawn succeeds", async () => {
+  it("resolves with the launched child and per-device log and bundle paths", async () => {
     const stubBin = path.join(tmpRoot, "stub-bin");
     await fsp.mkdir(stubBin, { recursive: true });
-    // The stub echoes the forwarded port variable so the log pins that the
-    // session's port actually rides the spawn env as TEST_RUNNER_<VAR>.
+    // The stub echoes the forwarded port variable and its argv so the log
+    // pins that the session's port rides the spawn env as TEST_RUNNER_<VAR>
+    // and that the crash bundle path is pinned on the command line.
     await fsp.writeFile(
       path.join(stubBin, "xcodebuild"),
-      '#!/bin/sh\necho "PORT=$TEST_RUNNER_ARGENT_RUNNER_PORT"\nexit 0\n',
+      '#!/bin/sh\necho "PORT=$TEST_RUNNER_ARGENT_RUNNER_PORT ARGS=$@"\nexit 0\n',
       { mode: 0o755 }
     );
 
@@ -720,11 +535,23 @@ describe("launchRunner", () => {
     expect(path.dirname(launched.logPath)).toBe(
       path.join(tmpRoot, ".argent", "ios-device-runner", "logs")
     );
-    expect(path.basename(launched.logPath)).toMatch(/^runner-00008120-\d+\.log$/);
+    // Fixed per-device names: the whole retention policy is overwrite-on-launch.
+    expect(path.basename(launched.logPath)).toBe("runner-00008120.log");
+    expect(launched.resultBundlePath).toBe(
+      path.join(tmpRoot, ".argent", "ios-device-runner", "results", "argent-00008120.xcresult")
+    );
     await once(launched.child, "exit");
-    expect(await fsp.readFile(launched.logPath, "utf8")).toContain("PORT=50505");
+    const log = await fsp.readFile(launched.logPath, "utf8");
+    expect(log).toContain("PORT=50505");
+    expect(log).toContain("-resultBundlePath");
     // The swallow listener that keeps a late "error" from becoming uncaught.
     expect(launched.child.listenerCount("error")).toBe(1);
+
+    // A second launch truncates the log rather than appending to it.
+    const second = await launchWithPath(stubBin);
+    await once(second.child, "exit");
+    const secondLog = await fsp.readFile(second.logPath, "utf8");
+    expect(secondLog.match(/PORT=/g)).toHaveLength(1);
   });
 });
 

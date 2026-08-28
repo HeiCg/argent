@@ -5,14 +5,15 @@
  * see that package's PROTOCOL.md for the wire contract.
  *
  * Device runners must be signed with the USER's Apple team, so artifacts are
- * built lazily on first use (never shipped prebuilt) and cached under
- * ~/.argent/ios-device-runner keyed by a fingerprint of the runner sources,
- * the Xcode/SDK version, and the static xcodebuild arguments (which carry the
- * signing settings). The cache key doubles as protocol versioning: an Argent
- * update that changes runner sources lands in a new cache directory and rebuilds,
- * so the wire protocol needs no version handshake. Superseded cache directories
- * (and launch logs and .xcresult bundles) are swept best-effort after each
- * successful artifact resolution; see `sweepRunnerStorage`.
+ * built lazily on first use (never shipped prebuilt) into the one build dir
+ * ~/.argent/ios-device-runner/derived, stamped with a fingerprint of the
+ * runner sources, the Xcode/SDK version, and the static xcodebuild arguments
+ * (which carry the signing settings). A stamp mismatch (an Argent or Xcode
+ * update, a team change) rebuilds in place, so exactly one artifact tree
+ * exists at a time and nothing accumulates. The stamp doubles as protocol
+ * versioning: an Argent update that changes runner sources rebuilds the
+ * runner, so the wire protocol needs no version handshake. Launch logs and
+ * crash bundles are one fixed path per device, overwritten each launch.
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -182,13 +183,25 @@ export interface RunnerArtifact {
   fromCache: boolean;
 }
 
-function cacheRoot(): string {
+function derivedDir(): string {
   return path.join(os.homedir(), ".argent", "ios-device-runner", "derived");
 }
 
 function logsRoot(): string {
   return path.join(os.homedir(), ".argent", "ios-device-runner", "logs");
 }
+
+function resultsRoot(): string {
+  return path.join(os.homedir(), ".argent", "ios-device-runner", "results");
+}
+
+/**
+ * Stamp naming the generation (cache key) of the artifact in the build dir,
+ * written only after a successful build. Cache hits require a matching stamp,
+ * so an interrupted build (no stamp, or the previous generation's) rebuilds
+ * instead of trusting whatever files survived.
+ */
+const CACHE_KEY_FILE = ".argent-cache-key";
 
 /**
  * Find the base device .xctestrun under a derived-data dir.
@@ -351,20 +364,20 @@ export async function rebuildRunnerArtifactForDevice(
 }
 
 /**
- * In-process build serialization, keyed by artifact cache key. The registry
- * dedups per-URN (per-device) only, so two device factories in one server
- * would otherwise race `build-for-testing` into the same derived dir, the
- * origin of torn artifacts. Same shared mutex as withFlowFileLock (flow-utils.ts).
+ * In-process build serialization: the registry dedups per-URN (per-device)
+ * only, so two device factories in one server would otherwise race
+ * `build-for-testing` into the one derived dir, the origin of torn
+ * artifacts. Same shared mutex as withFlowFileLock (flow-utils.ts).
  */
 const runnerBuildLocks = new Map<string, Promise<unknown>>();
 
-async function withRunnerBuildLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  return withKeyedLock(runnerBuildLocks, key, fn);
+async function withRunnerBuildLock<T>(fn: () => Promise<T>): Promise<T> {
+  return withKeyedLock(runnerBuildLocks, "runner-build", fn);
 }
 
 /**
- * Ensure a built device runner artifact exists for the current sources +
- * toolchain + signing config, building it if needed.
+ * Ensure the artifact in the one build dir matches the current sources +
+ * toolchain + signing config, building it if not.
  *
  * First build takes minutes. Subsequent calls are a cache hit. Setting `force`
  * skips the cache check and always rebuilds. The profile-missing-device retry
@@ -386,38 +399,35 @@ export async function ensureRunnerArtifact(
   ]);
   const staticArgs = runnerBuildStaticArgs(projectPath, config);
   const cacheKey = computeRunnerCacheKey(sourcesHash, xcodeVersion, staticArgs);
-  const derivedDataPath = path.join(cacheRoot(), `cache-${cacheKey}`);
+  const derivedDataPath = derivedDir();
   const build = opts.build ?? buildRunnerArtifact;
 
-  // Run the build making sure it isn't already cached.
-  const artifact = await withRunnerBuildLock(cacheKey, async (): Promise<RunnerArtifact> => {
-    const cached = opts.force ? null : findBaseXctestrun(derivedDataPath);
+  return withRunnerBuildLock(async (): Promise<RunnerArtifact> => {
+    const stampPath = path.join(derivedDataPath, CACHE_KEY_FILE);
+    const stamped = await fsp.readFile(stampPath, "utf8").catch(() => null);
 
-    if (cached) {
-      return {
-        xctestrunPath: cached,
-        derivedDataPath,
-        fromCache: true,
-      };
+    if (!opts.force && stamped === cacheKey) {
+      const cached = findBaseXctestrun(derivedDataPath);
+
+      if (cached) {
+        return { xctestrunPath: cached, derivedDataPath, fromCache: true };
+      }
     }
 
-    return build(derivedDataPath, staticArgs, opts.destinationUdid);
+    // No matching stamp means whatever the dir holds cannot be trusted:
+    // another generation's products (older sources, Xcode or signing), an
+    // interrupted build, or a pre-stamp layout. Start clean so generations
+    // cannot mix. A force rebuild under a MATCHING stamp keeps the tree: the
+    // device-registration retry only re-signs, and incremental is fast.
+    if (stamped !== cacheKey) {
+      await fsp.rm(derivedDataPath, { recursive: true, force: true });
+    }
+
+    const built = await build(derivedDataPath, staticArgs, opts.destinationUdid);
+    await fsp.writeFile(stampPath, cacheKey);
+    return built;
   });
-
-  // Success-only, fire-and-forget storage sweep. Only after the current
-  // artifact is known good may its superseded siblings go: on a FAILED build
-  // the previous key's directory is the only working artifact a rollback
-  // would reuse, so the failure path (the throw above) must never reach this.
-  void sweepRunnerStorage({ derivedDataPath });
-  return artifact;
 }
-
-/**
- * Marker naming the process whose build owns a derived dir, written for the
- * duration of the xcodebuild call. It is what lets the storage sweep tell an
- * in-flight build tree from a superseded one; see `buildIsInFlight`.
- */
-const BUILD_OWNER_FILE = ".argent-build-owner";
 
 /** The build arm of `ensureRunnerArtifact`: cache miss (or forced rebuild). */
 async function buildRunnerArtifact(
@@ -435,9 +445,6 @@ async function buildRunnerArtifact(
     derivedDataPath,
   ];
 
-  const ownerPath = path.join(derivedDataPath, BUILD_OWNER_FILE);
-  await fsp.writeFile(ownerPath, String(process.pid));
-
   try {
     await execFileAsync("xcodebuild", args, {
       timeout: BUILD_TIMEOUT_MS,
@@ -454,10 +461,6 @@ async function buildRunnerArtifact(
         `xcodebuild reported:\n${xcodebuildFailureSummary(output)}`,
       { cause: error }
     );
-  } finally {
-    // A marker outliving its build (SIGKILLed tool-server) is harmless: the
-    // sweep only spares a dir whose recorded pid is still alive.
-    await fsp.rm(ownerPath, { force: true }).catch(() => {});
   }
 
   const built = findBaseXctestrun(derivedDataPath);
@@ -469,179 +472,6 @@ async function buildRunnerArtifact(
   }
 
   return { xctestrunPath: built, derivedDataPath, fromCache: false };
-}
-
-/** How many runner-*.log launch logs a sweep keeps (newest first). */
-export const MAX_RUNNER_LOG_FILES = 20;
-
-/**
- * How many Test-*.xcresult bundles a sweep keeps (newest first). runner-crash
- * reads only the newest; the spares cover the session before it. A bundle
- * being written RIGHT NOW is by construction the newest of the family, so a
- * concurrent sweep can never take it.
- */
-export const MAX_RUNNER_RESULT_BUNDLES = 3;
-
-/** A cache-<key> entry under cacheRoot(), hex-keyed, ours to manage. */
-const CACHE_DIR_NAME_RE = /^cache-[0-9a-f]+$/;
-/** A launch log minted by `launchRunner`; the trailing number is Date.now(). */
-const RUNNER_LOG_NAME_RE = /^runner-.+-(\d+)\.log$/;
-/** An xcodebuild result bundle: Test-<scheme>-<date>-<utc offset>.xcresult. */
-const XCRESULT_NAME_RE = /^Test-.+-(\d{4}\.\d{2}\.\d{2}_\d{2}-\d{2}-\d{2}).*\.xcresult$/;
-
-/** What `planRunnerStorageSweep` decided to delete, as per-directory names. */
-interface RunnerStorageSweepPlan {
-  cacheDirNames: string[];
-  logNames: string[];
-  resultBundleNames: string[];
-}
-
-/**
- * Decision core of the storage sweep: pure over injected directory listings
- * (the test seam, like `waitForPidsToExit`'s process-table seams). Three
- * artifact families accumulate forever under ~/.argent/ios-device-runner
- * without this: cache-<key> derived-data dirs (hundreds of MB, a new key per
- * source/Xcode/signing change), per-launch runner-*.log files, and the
- * Test-*.xcresult bundle every session writes under the current derived dir's
- * Logs/Test (`launchRunner` passes no -resultBundlePath, and the current
- * cache dir is deliberately kept, so nothing else ever prunes those).
- *
- * The plan deletes cache dirs other than the current key's and those named in
- * `busyCacheDirNames`, and all but the newest `maxLogFiles` logs /
- * `maxResultBundles` result bundles (by the timestamp embedded in their
- * names). Names that match none of the families are never touched.
- */
-export function planRunnerStorageSweep(listing: {
-  /** Basename of the current derived-data dir (`cache-<key>`); kept. */
-  currentCacheDirName: string;
-  /** Entries under cacheRoot(). */
-  cacheDirNames: readonly string[];
-  /** Cache dirs a live build owns; kept. See `buildIsInFlight`. */
-  busyCacheDirNames?: readonly string[];
-  /** Entries under the launch-log dir. */
-  logNames: readonly string[];
-  /** Entries under the current derived dir's Logs/Test. */
-  testLogNames: readonly string[];
-  maxLogFiles?: number;
-  maxResultBundles?: number;
-}): RunnerStorageSweepPlan {
-  const cacheDirNames = listing.cacheDirNames.filter(
-    (name) =>
-      CACHE_DIR_NAME_RE.test(name) &&
-      name !== listing.currentCacheDirName &&
-      !listing.busyCacheDirNames?.includes(name)
-  );
-
-  return {
-    cacheDirNames,
-    logNames: beyondNewest(
-      listing.logNames,
-      RUNNER_LOG_NAME_RE,
-      listing.maxLogFiles ?? MAX_RUNNER_LOG_FILES
-    ),
-    resultBundleNames: beyondNewest(
-      listing.testLogNames,
-      XCRESULT_NAME_RE,
-      listing.maxResultBundles ?? MAX_RUNNER_RESULT_BUNDLES
-    ),
-  };
-}
-
-/**
- * The names beyond the newest `max` of one capped family: those matching
- * `pattern`, whose first capture group is a timestamp that sorts
- * chronologically once stripped to digits. Non-matching names are foreign and
- * never returned.
- */
-function beyondNewest(names: readonly string[], pattern: RegExp, max: number): string[] {
-  const stamp = (name: string): number =>
-    Number((pattern.exec(name)?.[1] ?? "").replace(/\D/g, ""));
-  return names
-    .filter((name) => pattern.test(name))
-    .sort((a, b) => stamp(b) - stamp(a) || a.localeCompare(b))
-    .slice(max);
-}
-
-async function rmQuiet(target: string): Promise<void> {
-  try {
-    await fsp.rm(target, { recursive: true, force: true });
-  } catch {
-    /* raced a concurrent tool-server; the next sweep retries */
-  }
-}
-
-/**
- * Sweep stale runner storage around a freshly resolved artifact. Listings are
- * snapshotted SYNCHRONOUSLY (before the `void`-ing caller's next await can
- * run), so files created after the call can never enter the plan; only the
- * deletes are async. Best-effort throughout: a concurrent tool-server may
- * race the same directories, so unreadable listings plan nothing, per-path rm
- * failures are swallowed, and the returned promise never rejects (safe to
- * fire-and-forget). Deliberately silent: this module logs nothing, and a lost
- * sweep just retries on the next start.
- *
- * Garbage collection for runner build cache.
- */
-export async function sweepRunnerStorage(opts: {
-  derivedDataPath: string;
-  /** Test seam. Defaults to the real launch-log dir. */
-  logDir?: string;
-  maxLogFiles?: number;
-  maxResultBundles?: number;
-}): Promise<void> {
-  const cacheRootDir = path.dirname(opts.derivedDataPath);
-  const testLogsDir = path.join(opts.derivedDataPath, "Logs", "Test");
-  const logDir = opts.logDir ?? logsRoot();
-  const cacheDirNames = listNamesSync(cacheRootDir);
-
-  // Figure out what we need to delete
-  const plan = planRunnerStorageSweep({
-    currentCacheDirName: path.basename(opts.derivedDataPath),
-    cacheDirNames,
-    busyCacheDirNames: cacheDirNames.filter((name) =>
-      buildIsInFlight(path.join(cacheRootDir, name))
-    ),
-    logNames: listNamesSync(logDir),
-    testLogNames: listNamesSync(testLogsDir),
-    maxLogFiles: opts.maxLogFiles,
-    maxResultBundles: opts.maxResultBundles,
-  });
-
-  return Promise.all([
-    ...plan.cacheDirNames.map((name) => rmQuiet(path.join(cacheRootDir, name))),
-    ...plan.logNames.map((name) => rmQuiet(path.join(logDir, name))),
-    ...plan.resultBundleNames.map((name) => rmQuiet(path.join(testLogsDir, name))),
-  ]).then(() => undefined);
-}
-
-function listNamesSync(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * True when a derived dir carries a build-owner marker naming a LIVE process.
- * Two checkouts on one Mac fingerprint to two cache keys, so each one's dir is
- * a plain "superseded sibling" to the other; without this probe a fast cache
- * hit here would rm -rf a peer that is minutes into a 15-minute
- * `build-for-testing`. Same ownership rule as `killStaleRunnersForDevice`: an
- * absent marker, or one whose owner is gone, protects nothing. Read
- * synchronously to keep the sweep's snapshot-before-the-caller-resumes
- * ordering.
- */
-function buildIsInFlight(cacheDirPath: string): boolean {
-  let pid: number;
-
-  try {
-    pid = Number.parseInt(fs.readFileSync(path.join(cacheDirPath, BUILD_OWNER_FILE), "utf8"), 10);
-  } catch {
-    return false;
-  }
-
-  return Number.isFinite(pid) && pidIsAlive(pid);
 }
 
 /**
@@ -680,6 +510,8 @@ export async function assertXctestrunParses(xctestrunPath: string): Promise<void
 export interface LaunchedRunner {
   child: ChildProcess;
   logPath: string;
+  /** This device's one crash bundle; overwritten on every launch. */
+  resultBundlePath: string;
 }
 
 /**
@@ -694,6 +526,12 @@ export interface LaunchedRunner {
  * on-device runner reads ARGENT_RUNNER_PORT without any per-session copy of
  * the .xctestrun. Verified on hardware against test-without-building.
  *
+ * The launch log and the crash bundle are one fixed path per device,
+ * overwritten each launch: nothing accumulates, so there is nothing to
+ * sweep. Only the latest session's postmortem survives, which is the only
+ * one the crash reader ever consumed. testmanagerd allows one session per
+ * device, so per-device paths cannot collide.
+ *
  * Resolves only once xcodebuild has actually spawned. A spawn failure (Xcode
  * moved or removed after an artifact cache hit) arrives as an async "error"
  * event that nothing else listens for, so it rejects here instead of killing
@@ -706,9 +544,17 @@ export async function launchRunner(opts: {
   port: number;
 }): Promise<LaunchedRunner> {
   const logDir = logsRoot();
-  await fsp.mkdir(logDir, { recursive: true });
-  const logPath = path.join(logDir, `runner-${opts.udid.slice(0, 8)}-${Date.now()}.log`);
-  const logFd = fs.openSync(logPath, "a");
+  const resultsDir = resultsRoot();
+  await Promise.all([
+    fsp.mkdir(logDir, { recursive: true }),
+    fsp.mkdir(resultsDir, { recursive: true }),
+  ]);
+  const deviceTag = opts.udid.slice(0, 8);
+  const logPath = path.join(logDir, `runner-${deviceTag}.log`);
+  const resultBundlePath = path.join(resultsDir, `argent-${deviceTag}.xcresult`);
+  // xcodebuild refuses to write onto an existing result bundle.
+  await fsp.rm(resultBundlePath, { recursive: true, force: true });
+  const logFd = fs.openSync(logPath, "w");
 
   const child = spawn(
     "xcodebuild",
@@ -726,6 +572,8 @@ export async function launchRunner(opts: {
       "1",
       "-destination-timeout",
       "20",
+      "-resultBundlePath",
+      resultBundlePath,
       "-xctestrun",
       opts.xctestrunPath,
       "-derivedDataPath",
@@ -759,7 +607,7 @@ export async function launchRunner(opts: {
   }
   // A late "error" event must never become an uncaught exception.
   child.on("error", () => {});
-  return { child, logPath };
+  return { child, logPath, resultBundlePath };
 }
 
 /**

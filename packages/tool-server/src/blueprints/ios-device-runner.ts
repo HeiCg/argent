@@ -77,14 +77,14 @@ function isRunnerExitedError(error: unknown): boolean {
  * hide it. Returns the error `api.run` should throw: the original when the
  * runner is not provably dead (post-send losses with a live child are the
  * client's status recovery's job), or the enriched post-mortem (crash summary
- * from the newest .xcresult, death-count escalation, log path) once the exit
- * is confirmed.
+ * from the session's result bundle, death-count escalation, log path) once
+ * the exit is confirmed.
  */
 async function explainRunnerDeath(options: {
   error: unknown;
   command: Record<string, unknown>;
   udid: string;
-  derivedDataPath: string;
+  resultBundlePath: string;
   logPath: string;
   /** Resolves once the child has exited, or after `ms`, whichever first. */
   settleExit: (ms: number) => Promise<void>;
@@ -98,7 +98,7 @@ async function explainRunnerDeath(options: {
   if (exitCode === undefined) return error;
   const bundleId = typeof command.appBundleId === "string" ? command.appBundleId : null;
   const deaths = bundleId ? recordAppCrash(udid, bundleId) : 0;
-  const crash = await readRunnerCrashSummary(options.derivedDataPath);
+  const crash = await readRunnerCrashSummary(options.resultBundlePath);
   const recovery =
     deaths >= 2 && bundleId
       ? ` Runner death #${deaths} for ${bundleId} in the last ` +
@@ -190,7 +190,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
 
     const startRunner = async (
       artifact: RunnerArtifact
-    ): Promise<{ launched: LaunchedRunner; client: RunnerClient; derivedDataPath: string }> => {
+    ): Promise<{ launched: LaunchedRunner; client: RunnerClient }> => {
       const port = await pickFreePort();
       await assertXctestrunParses(artifact.xctestrunPath);
       const launched = await launchRunner({
@@ -250,10 +250,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         // of exits, so "terminated" fires exactly once on a post-ready death.
         launched.child.removeListener("exit", onExit);
       }
-      // derivedDataPath rides along for the crash post-mortem: xcodebuild
-      // records a crashed session's failure text in the newest .xcresult
-      // under this derived data.
-      return { launched, client, derivedDataPath: artifact.derivedDataPath };
+      return { launched, client };
     };
 
     let started: Awaited<ReturnType<typeof startRunner>>;
@@ -291,7 +288,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         started = await startRunner(await rebuildRunnerArtifactForDevice(udid, signing));
       }
     }
-    const { launched, client, derivedDataPath } = started;
+    const { launched, client } = started;
 
     const events = new TypedEventEmitter<ServiceEvents>();
     let disposed = false;
@@ -336,7 +333,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
             error,
             command,
             udid,
-            derivedDataPath,
+            resultBundlePath: launched.resultBundlePath,
             logPath: launched.logPath,
             settleExit,
             getExitCode: () => exitCode,

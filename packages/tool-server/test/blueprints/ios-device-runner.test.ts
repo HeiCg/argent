@@ -72,12 +72,14 @@ vi.mock("../../src/utils/ios-device/runner-client", async (importOriginal) => {
 
 const DEVICE_UDID = "00008110-000978540290401E";
 const LOG_PATH = "/tmp/argent-test/runner.log";
+const RESULT_BUNDLE_PATH = "/tmp/argent-test/argent-00008110.xcresult";
 
 function stubLaunch() {
   const child = new EventEmitter();
   vi.mocked(launchRunner).mockResolvedValue({
     child: child as unknown as ChildProcess,
     logPath: LOG_PATH,
+    resultBundlePath: RESULT_BUNDLE_PATH,
   });
   const clientRun = vi.fn(
     async (_command: Record<string, unknown>, _opts?: unknown): Promise<unknown> => ({})
@@ -142,7 +144,7 @@ describe("ios-device-runner blueprint: mid-command runner death", () => {
     );
     expect(thrown.cause).toBe(transportError);
     expect(recoverable(thrown)).toBe(true);
-    expect(readRunnerCrashSummary).toHaveBeenCalledWith("/tmp/argent-test/derived");
+    expect(readRunnerCrashSummary).toHaveBeenCalledWith(RESULT_BUNDLE_PATH);
   });
 
   it("treats a 'timeout' shape the same way and escalates to restart-app on the second death", async () => {
@@ -213,8 +215,15 @@ describe("ios-device-runner blueprint: mid-command runner death", () => {
     expect(readRunnerCrashSummary).not.toHaveBeenCalled();
   });
 
-  it("uses the rebuilt artifact's derivedDataPath for a post-mortem after the profile-missing retry", async () => {
+  it("uses the current launch's result bundle for a post-mortem after the profile-missing retry", async () => {
     const { child, clientRun } = stubLaunch();
+    // The failed first launch reports a different bundle; the post-mortem
+    // must read the bundle of the launch that actually served commands.
+    vi.mocked(launchRunner).mockResolvedValueOnce({
+      child: child as unknown as ChildProcess,
+      logPath: LOG_PATH,
+      resultBundlePath: "/tmp/argent-test/first-launch.xcresult",
+    });
     vi.mocked(waitForRunnerReady).mockRejectedValueOnce(new Error("no runner"));
     vi.mocked(isProfileMissingDeviceFailure).mockReturnValueOnce(true);
     const { api } = await callFactory();
@@ -229,7 +238,7 @@ describe("ios-device-runner blueprint: mid-command runner death", () => {
     await rejectionOf(api.run({ command: "snapshot", appBundleId: "com.example.rebuilt" }));
     expect(launchRunner).toHaveBeenCalledTimes(2);
     expect(rebuildRunnerArtifactForDevice).toHaveBeenCalledWith(DEVICE_UDID, SIGNING_CONFIG);
-    expect(readRunnerCrashSummary).toHaveBeenCalledWith("/tmp/argent-test/rebuilt-derived");
+    expect(readRunnerCrashSummary).toHaveBeenCalledWith(RESULT_BUNDLE_PATH);
   });
 });
 

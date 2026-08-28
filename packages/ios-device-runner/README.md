@@ -35,8 +35,9 @@ The TypeScript side (build orchestration, transport, command client) lives in
 
 1. The tool-server builds this project lazily with `xcodebuild
 build-for-testing` (signed with the user's team; see the environment
-   variables below) and caches the artifact under
-   `~/.argent/ios-device-runner/derived/` keyed by sources + Xcode + signing.
+   variables below) into `~/.argent/ios-device-runner/derived`, stamped with
+   a fingerprint of sources + Xcode + signing; a stamp mismatch (an Argent or
+   Xcode update, a team change) rebuilds in place.
 2. Per session it launches `xcodebuild test-without-building` detached with
    the session's port as `TEST_RUNNER_ARGENT_RUNNER_PORT` in the environment
    (xcodebuild forwards `TEST_RUNNER_`-prefixed variables, prefix stripped,
