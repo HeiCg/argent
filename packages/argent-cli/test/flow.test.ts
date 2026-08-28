@@ -1942,7 +1942,7 @@ describe("argent flow run <dir>", () => {
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed, 0 failed, 1 skipped");
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed vacuously, 0 failed, 1 skipped");
     expect(errs.join("\n")).toContain("No step executed");
   });
 
@@ -1987,7 +1987,7 @@ describe("argent flow run <dir>", () => {
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed, 0 failed, 1 skipped");
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed vacuously, 0 failed, 1 skipped");
     expect(errs.join("\n")).toContain("No step executed");
   });
 
@@ -2066,7 +2066,7 @@ describe("argent flow run <dir>", () => {
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 2 passed, 0 failed, 0 skipped");
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 2 passed vacuously, 0 failed, 0 skipped");
     expect(errs.join("\n")).toContain("No step executed");
   });
 
@@ -2143,7 +2143,7 @@ describe("argent flow run <dir>", () => {
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed, 0 failed, 1 skipped");
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed vacuously, 0 failed, 1 skipped");
     expect(errs.join("\n")).toContain("No step executed");
   });
 
@@ -2162,7 +2162,7 @@ describe("argent flow run <dir>", () => {
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed, 0 failed, 1 skipped");
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed vacuously, 0 failed, 1 skipped");
     expect(errs.join("\n")).toContain("No step executed");
   });
 
@@ -2208,7 +2208,7 @@ describe("argent flow run <dir>", () => {
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed, 0 failed, 1 skipped");
+    expect(logs.join("\n")).toContain("NONE RAN — 2 flows: 1 passed vacuously, 0 failed, 1 skipped");
     expect(errs.join("\n")).toContain("No step executed");
   });
 
@@ -2229,6 +2229,22 @@ describe("argent flow run <dir>", () => {
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
     expect(errs.join("\n")).toContain("No step executed");
+  });
+
+  it("names every shape that can produce the verdict, not just requires and when", async () => {
+    // An empty steps: list is what flow-start-recording leaves on disk, so an
+    // abandoned recording alone in a flows directory reds the run. Pointing the
+    // reader at requires: and when: alone sends them looking at the wrong file.
+    toolsClientMock.callTool.mockResolvedValue({
+      data: report({ flow: "a-login", passed: 0, steps: [] }),
+    });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
+
+    const stderr = errs.join("\n");
+    expect(stderr).toContain("empty steps: list");
+    expect(stderr).toContain("abandoned recording");
+    expect(stderr).toContain("echo: and wait:");
   });
 
   it("keeps FAIL and exit 1 when a vacuous pass sits beside a failed flow", async () => {

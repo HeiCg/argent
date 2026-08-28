@@ -328,9 +328,11 @@ describe("flow report rendering", () => {
       "NONE RAN — 2 flows: 0 passed, 0 failed, 2 skipped"
     );
     // A flow-level pass can be vacuous (all steps when:-skipped), so the
-    // caller's zero-executed-steps verdict overrides the flow counts.
+    // caller's zero-executed-steps verdict overrides the flow counts — and the
+    // count says so, rather than reading as a contradiction of the verdict
+    // beside it and the per-flow PASS lines above.
     expect(renderBatchSummary({ total: 2, passed: 1, failed: 0, skipped: 1 }, true)).toBe(
-      "NONE RAN — 2 flows: 1 passed, 0 failed, 1 skipped"
+      "NONE RAN — 2 flows: 1 passed vacuously, 0 failed, 1 skipped"
     );
     expect(renderBatchSummary({ total: 0, passed: 0, failed: 0, skipped: 0 }, false)).toBe(
       "PASS — 0 flows: 0 passed, 0 failed, 0 skipped"

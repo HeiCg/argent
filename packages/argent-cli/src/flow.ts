@@ -341,7 +341,14 @@ export function renderBatchSummary(
   ranNothing: boolean
 ): string {
   const verdict = counts.failed > 0 ? "FAIL" : ranNothing ? "NONE RAN" : "PASS";
-  return `${verdict} — ${counts.total} flow${counts.total === 1 ? "" : "s"}: ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`;
+  // A bare "2 passed" under two per-flow PASS lines reads as a contradiction of
+  // the verdict beside it; those passes are flow-level, over steps that did no
+  // work.
+  const passed =
+    ranNothing && counts.passed > 0
+      ? `${counts.passed} passed vacuously`
+      : `${counts.passed} passed`;
+  return `${verdict} — ${counts.total} flow${counts.total === 1 ? "" : "s"}: ${passed}, ${counts.failed} failed, ${counts.skipped} skipped`;
 }
 
 /**
@@ -1206,7 +1213,9 @@ async function runFlowDirectory(
     console.error(
       `No step executed: every flow in ${dir} was skipped or passed vacuously (no step ` +
         `did work of its own). Check the requires: blocks and when: guards against the ` +
-        `target this run selected.`
+        `target this run selected, and the directory for files that could not run one: an ` +
+        `empty steps: list, which is what an abandoned recording leaves behind, or a flow ` +
+        `of nothing but echo: and wait:.`
     );
     return exitAfterFlush(2);
   }
