@@ -63,7 +63,7 @@ requires:
 
 Argent judges a block only against a device. A flow whose steps need no device selects none, so Argent runs it on every host. The same holds for a `run:` step that the flow reaches: Argent judges the block of that fragment only when the run has a device.
 
-A `run:` step before the first executable step is different. Argent adds the block of that fragment to the block of the flow before step 1. The platform lists intersect, and the two `runtimeKind` values must be equal. Argent then judges the whole run against the result, as the first two rows describe. Argent fails the run when the two blocks have no common target.
+A `run:` step before the first executable step is different. Argent adds the block of that fragment to the block of the flow before step 1. The platform lists intersect, and the two `runtimeKind` values must be equal. Argent then judges the whole run against the result, as the first two rows describe. Argent fails the run when the platform lists have no platform in common, or when the two `runtimeKind` values differ. A directory run fails such a flow. It does not skip it.
 
 Argent skips a flow only when the check answers. Argent fails the flow when it cannot verify a requirement. For example, Argent cannot always read the runtime kind of a device.
 
@@ -71,8 +71,10 @@ Argent rejects a `requires:` block that no target can satisfy:
 
 - The `platform` list names no platform that can satisfy the `runtimeKind`. `vega` is always `tv`. `chromium` is never `tv`.
 - The flow has at least one step, and every step sits behind a `when: { platform }` guard for a platform that the block excludes.
+- The block names a platform for which a `launch` step that always runs declares no app id.
+- The block declares `runtimeKind` alone, and no platform that can present that kind has an app id in every `launch` step that always runs.
 
-Argent also rejects a block that names a platform for which a `launch` step that always runs declares no app id. Argent makes this check again before the first step, over the flow and the fragments of its leading `run:` chain. Argent fails such a run instead of skipping it.
+Argent makes the last three checks again before the first step, over the flow and the fragments of its leading `run:` chain. Argent fails such a run instead of skipping it.
 
 ## Selectors
 
@@ -299,6 +301,8 @@ argent flow run .argent/flows --recursive
 The file name without `.yaml` names the report and the artifacts. It contains only letters, numbers, `_` and `-`. A directory run prints only the failing steps and a summary. An invalid file fails alone and the batch continues. Argent skips a flow when the target does not satisfy its [`requires:`](#target-requirements) block, and the batch continues. An infrastructure error stops the batch and counts the remaining flows as skipped.
 
 A directory run prints a `PASS`, `FAIL` or `NONE RAN` verdict in the summary. `NONE RAN` means that no flow failed and that no step did work of its own. Argent exits 2 on that verdict, because a run that proved nothing is not a pass. Argent prints `FAIL` and exits 1 when one flow fails.
+
+`--json` prints one object. For a directory run, `ok` is false when a flow failed, and also when the batch executed no step. Each entry under `flows` carries a `status`. A skipped or rejected entry also carries `skipReason`, and a rejected one carries `errorCode` and `errorKind`. A single-flow run that Argent refuses before any step prints `{ "ok": false, "error", "errorCode", "errorKind" }` in place of a report.
 
 Pin `--platform` and `--device` on iOS, Android and Vega. On Chromium, pass `--platform chromium` and omit `--device`. Then the runner boots the declared app path with a reproducible window size.
 

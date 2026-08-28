@@ -29,3 +29,15 @@ sidebar_custom_props:
 | `argent telemetry` | Manage telemetry: `status` / `enable` / `disable`. Add `--scope project` to write the committed project file. `false` in either scope turns telemetry off                                                                                                         |
 
 Run `argent --help` for the full set of options, and `argent --version` to print the installed version.
+
+## Exit codes
+
+`argent flow run` is the command a CI job reads an exit code from.
+
+| Code | Meaning                                                                                                |
+| ---- | ------------------------------------------------------------------------------------------------------ |
+| 0    | Every flow passed, and at least one step did work of its own                                           |
+| 1    | One flow failed                                                                                        |
+| 2    | The batch executed no step, or the command could not start (bad option, no flow found, no tool-server) |
+
+See [the flow YAML reference](/docs/reference/flow-yaml#the-argent-flow-command) for the verdicts and the `--json` shape.

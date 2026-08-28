@@ -34,6 +34,8 @@ Before touching the app, write a compact table. Restate it in the final report. 
 
 Use structural checks for semantic state, snapshots for pixels, and both for mixed requirements. One behavioral scenario becomes one `qa-<area>-<behavior>` flow.
 
+When the contract names one platform or a TV form factor, declare a [`requires:`](../argent-create-flow/references/flow-yaml.md#target-requirements) block. A directory run then skips the flow on the targets it excludes instead of failing it, which is what lets one regression suite hold flows for several platforms. A flow with no block runs on every target.
+
 Do not invent a material value or weaken ambiguity. Choose the strongest UI-verifiable reading and report it. Ask when the choice changes test meaning.
 
 Make repeated runs deterministic:
