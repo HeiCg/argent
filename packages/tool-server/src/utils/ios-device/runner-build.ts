@@ -11,8 +11,8 @@
  * signing settings). The cache key doubles as protocol versioning: an Argent
  * update that changes runner sources lands in a new cache directory and rebuilds,
  * so the wire protocol needs no version handshake. Superseded cache directories
- * (and per-session xctestrun clones, launch logs and .xcresult bundles) are swept
- * best-effort after each successful artifact resolution; see `sweepRunnerStorage`.
+ * (and launch logs and .xcresult bundles) are swept best-effort after each
+ * successful artifact resolution; see `sweepRunnerStorage`.
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -201,13 +201,7 @@ function findBaseXctestrun(derivedDataPath: string): string | null {
   }
 
   const candidates = fs.readdirSync(productsDir).filter((name) => {
-    return (
-      name.endsWith(".xctestrun") &&
-      // Env clones are named `*.env.*.xctestrun` and must never be picked as the
-      // base. They carry a previous session's port.
-      !name.includes(".env.") &&
-      name.includes("iphoneos")
-    );
+    return name.endsWith(".xctestrun") && name.includes("iphoneos");
   });
 
   if (candidates.length === 0) {
@@ -414,9 +408,6 @@ export async function ensureRunnerArtifact(
   // artifact is known good may its superseded siblings go: on a FAILED build
   // the previous key's directory is the only working artifact a rollback
   // would reuse, so the failure path (the throw above) must never reach this.
-  // The session's own env clone is safe by ordering: sweepRunnerStorage
-  // snapshots its listings synchronously, before this function resolves,
-  // and the clone is only minted later by `prepareXctestrunWithPort`.
   void sweepRunnerStorage({ derivedDataPath });
   return artifact;
 }
@@ -493,8 +484,6 @@ export const MAX_RUNNER_RESULT_BUNDLES = 3;
 
 /** A cache-<key> entry under cacheRoot(), hex-keyed, ours to manage. */
 const CACHE_DIR_NAME_RE = /^cache-[0-9a-f]+$/;
-/** A per-session port-injected clone minted by `prepareXctestrunWithPort`. */
-const ENV_CLONE_NAME_RE = /\.env\.port-\d+\.xctestrun$/;
 /** A launch log minted by `launchRunner`; the trailing number is Date.now(). */
 const RUNNER_LOG_NAME_RE = /^runner-.+-(\d+)\.log$/;
 /** An xcodebuild result bundle: Test-<scheme>-<date>-<utc offset>.xcresult. */
@@ -503,27 +492,24 @@ const XCRESULT_NAME_RE = /^Test-.+-(\d{4}\.\d{2}\.\d{2}_\d{2}-\d{2}-\d{2}).*\.xc
 /** What `planRunnerStorageSweep` decided to delete, as per-directory names. */
 interface RunnerStorageSweepPlan {
   cacheDirNames: string[];
-  cloneNames: string[];
   logNames: string[];
   resultBundleNames: string[];
 }
 
 /**
  * Decision core of the storage sweep: pure over injected directory listings
- * (the test seam, like `waitForPidsToExit`'s process-table seams). Four
+ * (the test seam, like `waitForPidsToExit`'s process-table seams). Three
  * artifact families accumulate forever under ~/.argent/ios-device-runner
  * without this: cache-<key> derived-data dirs (hundreds of MB, a new key per
- * source/Xcode/signing change), per-session .env.port-N.xctestrun clones,
- * per-launch runner-*.log files, and the Test-*.xcresult bundle every session
- * writes under the current derived dir's Logs/Test (`launchRunner` passes no
- * -resultBundlePath, and the current cache dir is deliberately kept, so
- * nothing else ever prunes those).
+ * source/Xcode/signing change), per-launch runner-*.log files, and the
+ * Test-*.xcresult bundle every session writes under the current derived dir's
+ * Logs/Test (`launchRunner` passes no -resultBundlePath, and the current
+ * cache dir is deliberately kept, so nothing else ever prunes those).
  *
  * The plan deletes cache dirs other than the current key's and those named in
- * `busyCacheDirNames`, env clones other than `keepCloneName`, and all but the
- * newest `maxLogFiles` logs / `maxResultBundles` result bundles (by the
- * timestamp embedded in their names). Names that match none of the families
- * are never touched.
+ * `busyCacheDirNames`, and all but the newest `maxLogFiles` logs /
+ * `maxResultBundles` result bundles (by the timestamp embedded in their
+ * names). Names that match none of the families are never touched.
  */
 export function planRunnerStorageSweep(listing: {
   /** Basename of the current derived-data dir (`cache-<key>`); kept. */
@@ -532,10 +518,6 @@ export function planRunnerStorageSweep(listing: {
   cacheDirNames: readonly string[];
   /** Cache dirs a live build owns; kept. See `buildIsInFlight`. */
   busyCacheDirNames?: readonly string[];
-  /** Entries under the current derived dir's Build/Products. */
-  productNames: readonly string[];
-  /** Basename of an env clone to keep (none at ensure-time). */
-  keepCloneName?: string | null;
   /** Entries under the launch-log dir. */
   logNames: readonly string[];
   /** Entries under the current derived dir's Logs/Test. */
@@ -550,13 +532,8 @@ export function planRunnerStorageSweep(listing: {
       !listing.busyCacheDirNames?.includes(name)
   );
 
-  const cloneNames = listing.productNames.filter(
-    (name) => ENV_CLONE_NAME_RE.test(name) && name !== listing.keepCloneName
-  );
-
   return {
     cacheDirNames,
-    cloneNames,
     logNames: beyondNewest(
       listing.logNames,
       RUNNER_LOG_NAME_RE,
@@ -596,25 +573,23 @@ async function rmQuiet(target: string): Promise<void> {
 /**
  * Sweep stale runner storage around a freshly resolved artifact. Listings are
  * snapshotted SYNCHRONOUSLY (before the `void`-ing caller's next await can
- * run), so files created after the call (the session's own env clone) can
- * never enter the plan; only the deletes are async. Best-effort throughout:
- * a concurrent tool-server may race the same directories, so unreadable
- * listings plan nothing, per-path rm failures are swallowed, and the returned
- * promise never rejects (safe to fire-and-forget). Deliberately silent: this
- * module logs nothing, and a lost sweep just retries on the next start.
+ * run), so files created after the call can never enter the plan; only the
+ * deletes are async. Best-effort throughout: a concurrent tool-server may
+ * race the same directories, so unreadable listings plan nothing, per-path rm
+ * failures are swallowed, and the returned promise never rejects (safe to
+ * fire-and-forget). Deliberately silent: this module logs nothing, and a lost
+ * sweep just retries on the next start.
  *
  * Garbage collection for runner build cache.
  */
 export async function sweepRunnerStorage(opts: {
   derivedDataPath: string;
-  keepClonePath?: string | null;
   /** Test seam. Defaults to the real launch-log dir. */
   logDir?: string;
   maxLogFiles?: number;
   maxResultBundles?: number;
 }): Promise<void> {
   const cacheRootDir = path.dirname(opts.derivedDataPath);
-  const productsDir = path.join(opts.derivedDataPath, "Build", "Products");
   const testLogsDir = path.join(opts.derivedDataPath, "Logs", "Test");
   const logDir = opts.logDir ?? logsRoot();
   const cacheDirNames = listNamesSync(cacheRootDir);
@@ -626,8 +601,6 @@ export async function sweepRunnerStorage(opts: {
     busyCacheDirNames: cacheDirNames.filter((name) =>
       buildIsInFlight(path.join(cacheRootDir, name))
     ),
-    productNames: listNamesSync(productsDir),
-    keepCloneName: opts.keepClonePath ? path.basename(opts.keepClonePath) : null,
     logNames: listNamesSync(logDir),
     testLogNames: listNamesSync(testLogsDir),
     maxLogFiles: opts.maxLogFiles,
@@ -636,7 +609,6 @@ export async function sweepRunnerStorage(opts: {
 
   return Promise.all([
     ...plan.cacheDirNames.map((name) => rmQuiet(path.join(cacheRootDir, name))),
-    ...plan.cloneNames.map((name) => rmQuiet(path.join(productsDir, name))),
     ...plan.logNames.map((name) => rmQuiet(path.join(logDir, name))),
     ...plan.resultBundleNames.map((name) => rmQuiet(path.join(testLogsDir, name))),
   ]).then(() => undefined);
@@ -673,16 +645,11 @@ function buildIsInFlight(cacheDirPath: string): boolean {
 }
 
 /**
- * Thrown when an .xctestrun cannot be prepared for launch: it does not parse
- * as a plist (a truncated file, the signature of a build interrupted
- * mid-write), or it parses but contains no test target this module
- * recognizes (Apple format drift). Typed so the failure surfaces at prepare
- * time with the true cause; a portless clone would instead launch a runner
- * that never binds its port, burn the whole ready timeout, and blame signing
- * or a locked screen. One class for both shapes on purpose; the blueprint's
+ * Thrown when an .xctestrun does not parse as a plist: a truncated file, the
+ * signature of a build interrupted mid-write. Typed because the blueprint's
  * cache self-heal keys on it: a first occurrence on a CACHED artifact means
  * cache poisoning (wipe the derived dir, force one rebuild), while on a
- * freshly built artifact it propagates as genuine drift.
+ * freshly built artifact it propagates as a genuine build failure.
  */
 export class XctestrunFormatError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -692,30 +659,15 @@ export class XctestrunFormatError extends Error {
 }
 
 /**
- * Clone the .xctestrun with ARGENT_RUNNER_PORT injected into every test
- * target's env dictionaries (all four maps: xctestrun format v2 nests targets
- * under TestConfigurations). The Swift runner reads the port from its
- * environment and binds it on the device's loopback, where usbmux's
- * device-side connect terminates. Throws `XctestrunFormatError` when the
- * plist cannot be parsed or no target is found.
+ * Cheap validity probe over a cached .xctestrun. `findBaseXctestrun` trusts
+ * mere existence, so a torn file (interrupted build) would otherwise ride the
+ * cache hit into xcodebuild and fail there with an unclassifiable message;
+ * caught here instead, the blueprint recognizes the poisoning and self-heals.
  */
-export async function prepareXctestrunWithPort(
-  xctestrunPath: string,
-  port: number
-): Promise<string> {
-  let plist: Record<string, unknown>;
-
+export async function assertXctestrunParses(xctestrunPath: string): Promise<void> {
   try {
-    const { stdout } = await execFileAsync(
-      "plutil",
-      ["-convert", "json", "-o", "-", xctestrunPath],
-      { maxBuffer: 32 * 1024 * 1024 }
-    );
-
-    plist = JSON.parse(stdout) as Record<string, unknown>;
+    await execFileAsync("plutil", ["-lint", xctestrunPath], { timeout: 20_000 });
   } catch (error) {
-    // A raw plutil failure here would read as an infrastructure error; typed,
-    // the blueprint recognizes a torn cached artifact and self-heals it.
     throw new XctestrunFormatError(
       `xctestrun at ${xctestrunPath} could not be parsed as a plist: ` +
         `${(error as Error).message}. Delete ~/.argent/ios-device-runner and retry to ` +
@@ -723,61 +675,6 @@ export async function prepareXctestrunWithPort(
       { cause: error }
     );
   }
-
-  const envKeys = [
-    "EnvironmentVariables",
-    "TestingEnvironmentVariables",
-    "UITestEnvironmentVariables",
-    "UITargetAppEnvironmentVariables",
-  ];
-
-  let injectedTargets = 0;
-
-  const injectIntoTarget = (target: Record<string, unknown>): void => {
-    injectedTargets += 1;
-
-    for (const key of envKeys) {
-      const env = (target[key] ?? {}) as Record<string, unknown>;
-      env["ARGENT_RUNNER_PORT"] = String(port);
-      target[key] = env;
-    }
-  };
-
-  const looksLikeTarget = (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" &&
-    value !== null &&
-    ("TestBundlePath" in (value as object) || "TestHostPath" in (value as object));
-
-  const configurations = plist["TestConfigurations"];
-
-  if (Array.isArray(configurations)) {
-    for (const config of configurations) {
-      const targets = (config as Record<string, unknown>)["TestTargets"];
-      if (Array.isArray(targets))
-        for (const t of targets) if (looksLikeTarget(t)) injectIntoTarget(t);
-    }
-  }
-
-  // Format v1: test targets are top-level keys.
-  for (const value of Object.values(plist)) if (looksLikeTarget(value)) injectIntoTarget(value);
-
-  if (injectedTargets === 0) {
-    throw new XctestrunFormatError(
-      `xctestrun format not recognized: no test target found in ${xctestrunPath}. ` +
-        `Xcode's .xctestrun format has likely drifted past what this Argent version ` +
-        `understands; update Argent.`
-    );
-  }
-
-  const jsonPath = xctestrunPath.replace(/\.xctestrun$/, `.env.port-${port}.json`);
-  const clonePath = xctestrunPath.replace(/\.xctestrun$/, `.env.port-${port}.xctestrun`);
-  await fsp.writeFile(jsonPath, JSON.stringify(plist));
-  try {
-    await execFileAsync("plutil", ["-convert", "xml1", jsonPath, "-o", clonePath]);
-  } finally {
-    await fsp.rm(jsonPath, { force: true });
-  }
-  return clonePath;
 }
 
 export interface LaunchedRunner {
@@ -791,6 +688,12 @@ export interface LaunchedRunner {
  * starts the never-ending test. The child outlives individual commands; the
  * blueprint owns its lifecycle. Log output goes to a file for postmortems.
  *
+ * The session's port travels as TEST_RUNNER_ARGENT_RUNNER_PORT on the
+ * xcodebuild process: xcodebuild forwards TEST_RUNNER_-prefixed variables,
+ * prefix stripped, into the test runner process (man xcodebuild), so the
+ * on-device runner reads ARGENT_RUNNER_PORT without any per-session copy of
+ * the .xctestrun. Verified on hardware against test-without-building.
+ *
  * Resolves only once xcodebuild has actually spawned. A spawn failure (Xcode
  * moved or removed after an artifact cache hit) arrives as an async "error"
  * event that nothing else listens for, so it rejects here instead of killing
@@ -800,6 +703,7 @@ export async function launchRunner(opts: {
   udid: string;
   xctestrunPath: string;
   derivedDataPath: string;
+  port: number;
 }): Promise<LaunchedRunner> {
   const logDir = logsRoot();
   await fsp.mkdir(logDir, { recursive: true });
@@ -832,6 +736,7 @@ export async function launchRunner(opts: {
     {
       detached: true,
       stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, TEST_RUNNER_ARGENT_RUNNER_PORT: String(opts.port) },
     }
   );
   child.unref();

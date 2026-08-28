@@ -11,12 +11,12 @@ import {
 import { pickFreePort } from "../utils/free-port";
 import { ensureDeviceReady } from "../utils/ios-device/devicectl";
 import {
+  assertXctestrunParses,
   ensureRunnerArtifact,
   isProfileMissingDeviceFailure,
   killRunnerProcess,
   killStaleRunnersForDevice,
   launchRunner,
-  prepareXctestrunWithPort,
   rebuildRunnerArtifactForDevice,
   resolveRunnerSigningConfig,
   XctestrunFormatError,
@@ -192,11 +192,12 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       artifact: RunnerArtifact
     ): Promise<{ launched: LaunchedRunner; client: RunnerClient; derivedDataPath: string }> => {
       const port = await pickFreePort();
-      const xctestrunPath = await prepareXctestrunWithPort(artifact.xctestrunPath, port);
+      await assertXctestrunParses(artifact.xctestrunPath);
       const launched = await launchRunner({
         udid,
-        xctestrunPath,
+        xctestrunPath: artifact.xctestrunPath,
         derivedDataPath: artifact.derivedDataPath,
+        port,
       });
       const sender = createUsbmuxCommandSender();
       const client = createRunnerClient({
@@ -272,13 +273,13 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       started = await startRunner(artifact);
     } catch (error) {
       if (error instanceof XctestrunFormatError && artifact.fromCache) {
-        // A CACHED artifact whose xctestrun cannot be prepared is a poisoned
-        // cache (torn by an interrupted build), not format drift, and since
-        // findBaseXctestrun keys hits on mere file existence, it would
-        // hard-fail every session until a human deleted the directory. Wipe
-        // it and rebuild once. Only the cached case heals: the same error
-        // from the FRESH artifact below is genuine drift and propagates
-        // loudly, so a deterministic failure never loops.
+        // A CACHED artifact whose xctestrun cannot be parsed is a poisoned
+        // cache (torn by an interrupted build), and since findBaseXctestrun
+        // keys hits on mere file existence, it would hard-fail every session
+        // until a human deleted the directory. Wipe it and rebuild once. Only
+        // the cached case heals: the same error from the FRESH artifact below
+        // is a genuine build failure and propagates loudly, so a
+        // deterministic failure never loops.
         await fs.rm(artifact.derivedDataPath, { recursive: true, force: true });
         started = await startRunner(await ensureRunnerArtifact(signing, { force: true }));
       } else {

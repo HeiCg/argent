@@ -37,9 +37,11 @@ The TypeScript side (build orchestration, transport, command client) lives in
 build-for-testing` (signed with the user's team; see the environment
    variables below) and caches the artifact under
    `~/.argent/ios-device-runner/derived/` keyed by sources + Xcode + signing.
-2. Per session it clones the `.xctestrun` with `ARGENT_RUNNER_PORT` injected
-   and launches `xcodebuild test-without-building` detached; testmanagerd
-   installs and starts the runner on the device.
+2. Per session it launches `xcodebuild test-without-building` detached with
+   the session's port as `TEST_RUNNER_ARGENT_RUNNER_PORT` in the environment
+   (xcodebuild forwards `TEST_RUNNER_`-prefixed variables, prefix stripped,
+   into the runner process); testmanagerd installs and starts the runner on
+   the device.
 3. Commands travel as one HTTP POST per command over usbmux (USB cable
    only). `PROTOCOL.md` documents the contract.
 

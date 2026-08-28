@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { once } from "node:events";
 import { promisify } from "node:util";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -6,6 +7,7 @@ import * as path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
+  assertXctestrunParses,
   computeRunnerCacheKey,
   ensureRunnerArtifact,
   isProfileMissingDeviceFailure,
@@ -14,7 +16,6 @@ import {
   MAX_RUNNER_LOG_FILES,
   MAX_RUNNER_RESULT_BUNDLES,
   planRunnerStorageSweep,
-  prepareXctestrunWithPort,
   PROCESS_TABLE_ARGV,
   resolveRunnerProjectPath,
   resolveRunnerSigningConfig,
@@ -52,118 +53,33 @@ async function writeXctestrun(name: string, contents: unknown): Promise<string> 
   return xctestrunPath;
 }
 
-async function readPlistAsJson(filePath: string): Promise<Record<string, unknown>> {
-  const { stdout } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", filePath]);
-  return JSON.parse(stdout) as Record<string, unknown>;
-}
-
-const ENV_KEYS = [
-  "EnvironmentVariables",
-  "TestingEnvironmentVariables",
-  "UITestEnvironmentVariables",
-  "UITargetAppEnvironmentVariables",
-];
-
-type Target = Record<string, Record<string, string>>;
-
-const expectPortInAllEnvMaps = (target: Target, port: number): void => {
-  for (const key of ENV_KEYS) {
-    expect(target[key]?.["ARGENT_RUNNER_PORT"], key).toBe(String(port));
-  }
-};
-
-// The function under test reads and rewrites the plist with plutil, so both it
-// and its fixtures are macOS-only. The unit-test job runs on Linux, where a
-// missing plutil would fail the injection cases and pass the drift cases for
-// the wrong reason.
-describe.skipIf(process.platform !== "darwin")("prepareXctestrunWithPort", () => {
-  it("injects the port into every env map of a v1 (top-level targets) xctestrun", async () => {
-    const src = await writeXctestrun("v1", {
-      __xctestrun_metadata__: { FormatVersion: 1 },
-      ArgentRunnerUITests: {
-        TestBundlePath: "__TESTHOST__/PlugIns/ArgentRunnerUITests.xctest",
-        TestHostPath: "__TESTROOT__/ArgentRunnerUITests-Runner.app",
-        EnvironmentVariables: { OS_ACTIVITY_DT_MODE: "YES" },
-        TestingEnvironmentVariables: {},
-      },
-    });
-
-    const clonePath = await prepareXctestrunWithPort(src, 50505);
-
-    expect(clonePath).toBe(src.replace(/\.xctestrun$/, ".env.port-50505.xctestrun"));
-    const clone = await readPlistAsJson(clonePath);
-    const target = clone["ArgentRunnerUITests"] as Target;
-    expectPortInAllEnvMaps(target, 50505);
-    expect(target["EnvironmentVariables"]?.["OS_ACTIVITY_DT_MODE"]).toBe("YES");
-  });
-
-  it("injects into targets nested under TestConfigurations (v2)", async () => {
-    const src = await writeXctestrun("v2", {
+// The probe shells out to plutil, so it and its fixtures are macOS-only. The
+// unit-test job runs on Linux, where a missing plutil would fail the valid
+// case and pass the torn case for the wrong reason.
+describe.skipIf(process.platform !== "darwin")("assertXctestrunParses", () => {
+  it("accepts a well-formed xctestrun", async () => {
+    const src = await writeXctestrun("valid", {
       __xctestrun_metadata__: { FormatVersion: 2 },
-      TestConfigurations: [
-        {
-          Name: "Test Scheme Action",
-          TestTargets: [
-            {
-              BlueprintName: "ArgentRunnerUITests",
-              TestBundlePath: "__TESTHOST__/PlugIns/ArgentRunnerUITests.xctest",
-              TestHostPath: "__TESTROOT__/ArgentRunnerUITests-Runner.app",
-              EnvironmentVariables: { DYLD_FRAMEWORK_PATH: "__TESTROOT__" },
-            },
-          ],
-        },
-      ],
+      TestConfigurations: [],
     });
 
-    const clonePath = await prepareXctestrunWithPort(src, 60606);
-
-    const clone = await readPlistAsJson(clonePath);
-    const configurations = clone["TestConfigurations"] as Array<{ TestTargets: Target[] }>;
-    expectPortInAllEnvMaps(configurations[0]!.TestTargets[0]!, 60606);
+    await expect(assertXctestrunParses(src)).resolves.toBeUndefined();
   });
 
-  it("throws the typed format error on a drifted xctestrun instead of writing a portless clone", async () => {
-    const src = await writeXctestrun("drifted", {
-      __xctestrun_metadata__: { FormatVersion: 3 },
-      TestConfigurations: [
-        {
-          Name: "Test Scheme Action",
-          // Neither TestBundlePath nor TestHostPath: the injection walk finds
-          // nothing, which used to succeed silently and cost a 120s
-          // ready-timeout misdiagnosed as signing/locked-screen.
-          TestTargets: [
-            { BlueprintName: "ArgentRunnerUITests", TestModulePath: "__TESTROOT__/Runner.app" },
-          ],
-        },
-      ],
-    });
-
-    const error = await prepareXctestrunWithPort(src, 50505).catch((caught: unknown) => caught);
-
-    expect(error).toBeInstanceOf(XctestrunFormatError);
-    expect((error as Error).name).toBe("XctestrunFormatError");
-    expect((error as Error).message).toContain("xctestrun format not recognized");
-    expect((error as Error).message).toContain(src);
-    // Neither the clone nor the json intermediate may be left for the launch.
-    const leftovers = (await fsp.readdir(tmpRoot)).filter((n) => n.startsWith("drifted.env."));
-    expect(leftovers).toEqual([]);
-  });
-
-  it("wraps an unparseable (truncated) xctestrun in the same typed format error", async () => {
+  it("wraps an unparseable (truncated) xctestrun in the typed format error", async () => {
     const truncatedPath = path.join(tmpRoot, "truncated.xctestrun");
-    // The head of a real plist, torn mid-write: plutil cannot parse it. Before
-    // the wrap this surfaced as a raw execFileAsync error the blueprint's
-    // self-heal could not key on.
+    // The head of a real plist, torn mid-write: plutil cannot parse it. Raw,
+    // this would surface as an execFileAsync error the blueprint's self-heal
+    // could not key on.
     await fsp.writeFile(
       truncatedPath,
       '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n<key>TestConfig'
     );
 
-    const error = await prepareXctestrunWithPort(truncatedPath, 50505).catch(
-      (caught: unknown) => caught
-    );
+    const error = await assertXctestrunParses(truncatedPath).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(XctestrunFormatError);
+    expect((error as Error).name).toBe("XctestrunFormatError");
     expect((error as Error).message).toContain("could not be parsed as a plist");
     expect((error as Error).message).toContain(truncatedPath);
     expect((error as Error).cause).toBeDefined();
@@ -563,7 +479,6 @@ describe("resolveSigningHint", () => {
 const EMPTY_LISTING = {
   currentCacheDirName: "cache-aaaa111122223333",
   cacheDirNames: [] as string[],
-  productNames: [] as string[],
   logNames: [] as string[],
   testLogNames: [] as string[],
 };
@@ -579,7 +494,6 @@ describe("planRunnerStorageSweep", () => {
     });
 
     expect(plan.cacheDirNames.sort()).toEqual(["cache-0123456789abcdef", "cache-ffff000011112222"]);
-    expect(plan.cloneNames).toEqual([]);
     expect(plan.logNames).toEqual([]);
   });
 
@@ -608,37 +522,6 @@ describe("planRunnerStorageSweep", () => {
     });
 
     expect(plan.cacheDirNames).toEqual([]);
-  });
-
-  it("deletes stale env clones but keeps the excluded one and the base xctestrun", () => {
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      productNames: [
-        "ArgentRunner_iphoneos18.0-arm64.xctestrun",
-        "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
-        "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
-        "Debug-iphoneos",
-      ],
-      keepCloneName: "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
-    });
-
-    expect(plan.cloneNames).toEqual(["ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun"]);
-  });
-
-  it("deletes ALL env clones when no exclusion is given (ensure-time: the session's clone is minted later)", () => {
-    const plan = planRunnerStorageSweep({
-      ...EMPTY_LISTING,
-      productNames: [
-        "ArgentRunner_iphoneos18.0-arm64.xctestrun",
-        "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
-        "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
-      ],
-    });
-
-    expect(plan.cloneNames.sort()).toEqual([
-      "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
-      "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
-    ]);
   });
 
   it("caps runner logs to the newest N by embedded timestamp, ignoring foreign files", () => {
@@ -714,9 +597,7 @@ describe("sweepRunnerStorage", () => {
     await fsp.mkdir(path.join(derived, "foreign-dir"), { recursive: true });
     await fsp.mkdir(logDir, { recursive: true });
     const base = path.join(products, "ArgentRunner_iphoneos18.0-arm64.xctestrun");
-    const keptClone = path.join(products, "ArgentRunner_iphoneos18.0-arm64.env.port-2.xctestrun");
-    const staleClone = path.join(products, "ArgentRunner_iphoneos18.0-arm64.env.port-1.xctestrun");
-    await Promise.all([base, keptClone, staleClone].map((p) => fsp.writeFile(p, "plist")));
+    await fsp.writeFile(base, "plist");
     await Promise.all(
       [100, 200, 300].map((ts) => fsp.writeFile(path.join(logDir, `runner-00008120-${ts}.log`), ""))
     );
@@ -724,16 +605,12 @@ describe("sweepRunnerStorage", () => {
 
     await sweepRunnerStorage({
       derivedDataPath: current,
-      keepClonePath: keptClone,
       logDir,
       maxLogFiles: 2,
     });
 
     expect((await fsp.readdir(derived)).sort()).toEqual(["cache-aaaa111122223333", "foreign-dir"]);
-    expect((await fsp.readdir(products)).sort()).toEqual([
-      "ArgentRunner_iphoneos18.0-arm64.env.port-2.xctestrun",
-      "ArgentRunner_iphoneos18.0-arm64.xctestrun",
-    ]);
+    expect(await fsp.readdir(products)).toEqual(["ArgentRunner_iphoneos18.0-arm64.xctestrun"]);
     expect((await fsp.readdir(logDir)).sort()).toEqual([
       "keep-me.txt",
       "runner-00008120-200.log",
@@ -802,6 +679,7 @@ async function launchWithPath(pathDir: string): Promise<Awaited<ReturnType<typeo
       udid: "00008120-000000000000001E",
       xctestrunPath: path.join(tmpRoot, "fake.xctestrun"),
       derivedDataPath: path.join(tmpRoot, "derived"),
+      port: 50505,
     });
   } finally {
     process.env.PATH = saved.PATH;
@@ -828,7 +706,13 @@ describe("launchRunner", () => {
   it("resolves with the launched child and log path when the spawn succeeds", async () => {
     const stubBin = path.join(tmpRoot, "stub-bin");
     await fsp.mkdir(stubBin, { recursive: true });
-    await fsp.writeFile(path.join(stubBin, "xcodebuild"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // The stub echoes the forwarded port variable so the log pins that the
+    // session's port actually rides the spawn env as TEST_RUNNER_<VAR>.
+    await fsp.writeFile(
+      path.join(stubBin, "xcodebuild"),
+      '#!/bin/sh\necho "PORT=$TEST_RUNNER_ARGENT_RUNNER_PORT"\nexit 0\n',
+      { mode: 0o755 }
+    );
 
     const launched = await launchWithPath(stubBin);
 
@@ -837,7 +721,8 @@ describe("launchRunner", () => {
       path.join(tmpRoot, ".argent", "ios-device-runner", "logs")
     );
     expect(path.basename(launched.logPath)).toMatch(/^runner-00008120-\d+\.log$/);
-    await fsp.access(launched.logPath);
+    await once(launched.child, "exit");
+    expect(await fsp.readFile(launched.logPath, "utf8")).toContain("PORT=50505");
     // The swallow listener that keeps a late "error" from becoming uncaught.
     expect(launched.child.listenerCount("error")).toBe(1);
   });
@@ -914,7 +799,7 @@ describe("waitForPidsToExit", () => {
 const STALE_UDID = "00008120-000000000000001E";
 const STALE_XCTESTRUN =
   "/Users/dev/.argent/ios-device-runner/derived/cache-aaaa111122223333/Build/Products/" +
-  "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun";
+  "ArgentRunner_iphoneos18.0-arm64.xctestrun";
 
 /**
  * One `ps -ax -o pid=,ppid=,command=` line shaped like a launched runner.

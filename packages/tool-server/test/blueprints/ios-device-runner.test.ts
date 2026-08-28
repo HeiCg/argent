@@ -13,11 +13,11 @@ import {
   RunnerCommandError,
 } from "../../src/utils/ios-device/runner-client";
 import {
+  assertXctestrunParses,
   ensureRunnerArtifact,
   isProfileMissingDeviceFailure,
   killRunnerProcess,
   launchRunner,
-  prepareXctestrunWithPort,
   rebuildRunnerArtifactForDevice,
   XctestrunFormatError,
 } from "../../src/utils/ios-device/runner-build";
@@ -41,7 +41,7 @@ vi.mock("../../src/utils/ios-device/runner-build", async (importOriginal) => {
     killRunnerProcess: vi.fn(),
     killStaleRunnersForDevice: vi.fn(async () => {}),
     launchRunner: vi.fn(),
-    prepareXctestrunWithPort: vi.fn(async (xctestrunPath: string) => xctestrunPath),
+    assertXctestrunParses: vi.fn(async () => {}),
     rebuildRunnerArtifactForDevice: vi.fn(async () => ({
       xctestrunPath: "/tmp/argent-test/rebuilt.xctestrun",
       derivedDataPath: "/tmp/argent-test/rebuilt-derived",
@@ -339,8 +339,8 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
     vi.mocked(ensureRunnerArtifact)
       .mockResolvedValueOnce(artifactIn(derived, true))
       .mockResolvedValueOnce(FRESH_ARTIFACT);
-    vi.mocked(prepareXctestrunWithPort).mockRejectedValueOnce(
-      new XctestrunFormatError("xctestrun format not recognized")
+    vi.mocked(assertXctestrunParses).mockRejectedValueOnce(
+      new XctestrunFormatError("could not be parsed as a plist")
     );
     stubLaunch();
 
@@ -353,13 +353,13 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
     expect(rebuildRunnerArtifactForDevice).not.toHaveBeenCalled();
   });
 
-  it("propagates a second format error after the heal as genuine drift, never looping", async () => {
+  it("propagates a second format error after the heal as a genuine failure, never looping", async () => {
     const derived = await makeDerivedDir();
     vi.mocked(ensureRunnerArtifact)
       .mockResolvedValueOnce(artifactIn(derived, true))
       .mockResolvedValueOnce(FRESH_ARTIFACT);
-    const drift = new XctestrunFormatError("xctestrun format not recognized");
-    vi.mocked(prepareXctestrunWithPort)
+    const drift = new XctestrunFormatError("could not be parsed as a plist");
+    vi.mocked(assertXctestrunParses)
       .mockRejectedValueOnce(new XctestrunFormatError("poisoned cache"))
       .mockRejectedValueOnce(drift);
     stubLaunch();
@@ -373,8 +373,8 @@ describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
     const derived = await makeDerivedDir();
     try {
       vi.mocked(ensureRunnerArtifact).mockResolvedValueOnce(artifactIn(derived, false));
-      const drift = new XctestrunFormatError("xctestrun format not recognized");
-      vi.mocked(prepareXctestrunWithPort).mockRejectedValueOnce(drift);
+      const drift = new XctestrunFormatError("could not be parsed as a plist");
+      vi.mocked(assertXctestrunParses).mockRejectedValueOnce(drift);
       stubLaunch();
 
       expect(await rejectionOf(callFactory())).toBe(drift);
