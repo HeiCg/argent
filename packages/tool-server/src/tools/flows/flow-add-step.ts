@@ -652,7 +652,13 @@ async function activeFlowState(
 ): Promise<{ stepCount: number; note?: string }> {
   if (session.persist === "host") {
     try {
-      session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
+      // skipRequires for the same reason every other read on the recording path
+      // takes it: a block hand-written mid-take is what the flag exists to
+      // tolerate, and refusing here would stop refreshing session.flow from
+      // disk and blind the recorder's hand-edit detection.
+      session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"), {
+        skipRequires: true,
+      });
     } catch (err) {
       return {
         stepCount: session.flow.steps.length,

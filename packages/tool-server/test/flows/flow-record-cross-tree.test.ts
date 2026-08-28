@@ -2249,6 +2249,26 @@ describe("a flow-directive name points at the tool that records it", () => {
     expect(result.stepCount).toBe(0);
   });
 
+  it("keeps refreshing from disk when the take carries a mid-edit requires block", async () => {
+    // Every other read on the recording path takes skipRequires so a block
+    // written mid-take is tolerated. Without it here the recorder tells the
+    // agent its file is broken and stops seeing the hand-edits it detects.
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+    await fs.writeFile(
+      path.join(tmpDir, ".argent", "flows", "hints.yaml"),
+      "requires:\n  platform: [vega]\n  runtimeKind: mobile\nsteps:\n  - echo: one\n  - echo: two\n",
+      "utf8"
+    );
+
+    const result = await tool.execute(
+      {},
+      { name: "hints", project_root: tmpDir, command: "echo", args: "{}" }
+    );
+
+    expect(result.message).not.toContain("could not be read");
+    expect(result.stepCount).toBe(2);
+  });
+
   it("tells the author to call flow-add-echo directly, not through the recorder", async () => {
     const result = await hint("echo");
     expect(result.message).toContain("DIRECTLY");
