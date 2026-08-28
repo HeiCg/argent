@@ -1061,6 +1061,26 @@ describe("requirements narrow device auto-detection", () => {
     );
   });
 
+  it("counts the rest once the listing outgrows the cap, keeping the diagnosis first", async () => {
+    // A directory run reprints this per skipped flow, and a machine holding a
+    // simulator library would otherwise spend thousands of characters on rows
+    // the refusal has no use for.
+    await writeFlow("ios-only", { requires: { platform: ["ios"] } });
+    const shutdownSims = Array.from({ length: 12 }, (_, i) =>
+      shutdownIosEntry(`00000000-0000-0000-0000-0000000001${i.toString().padStart(2, "0")}`)
+    );
+    const { registry } = mockRegistry([androidEntry(ANDROID), ...shutdownSims]);
+
+    const err = await run(registry, "ios-only").catch((e: unknown) => e);
+
+    const message = (err as Error).message;
+    expect(message).toContain(", and 5 more.");
+    // The shut-down simulators are what the caller acts on; the emulator that
+    // merely happened to be booted is not.
+    expect(message).toContain(`Available devices: ${shutdownSims[0].udid} (ios, Shutdown)`);
+    expect(message).not.toContain(ANDROID);
+  });
+
   it("enumerates the shut-down device on the unverifiable arm too", async () => {
     // The empty-field call into unreadKindError: the emulator's unread kind is
     // what bars the skip, but the simulator that would have satisfied the block

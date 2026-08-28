@@ -341,15 +341,32 @@ function meetsRequires(d: RawDevice, requires: FlowRequires | undefined): boolea
 }
 
 /**
- * The device enumeration a requirement refusal ends with. Shows the WHOLE
- * listing, as the no-device-found refusal does, rather than the booted and
+ * Rows a requirement refusal prints before the rest become a count. A directory
+ * run repeats this message per skipped flow, per run, so a machine holding a
+ * simulator library would otherwise spend thousands of characters a time on
+ * rows the refusal has no use for.
+ */
+const MAX_LISTED_DEVICES = 8;
+
+/**
+ * The device enumeration a requirement refusal ends with. Drawn from the WHOLE
+ * listing, as the no-device-found refusal is, rather than the booted and
  * platform-scoped candidates: when a requirement is unmet because the device
  * that would have matched is shut down, offline, or outside the run's
  * `--platform`, that row is the diagnosis, and its state says which.
  */
 function availableDevices(all: RawDevice[], requires: FlowRequires): string {
   const showKind = requires.runtimeKind !== undefined;
-  return `Available devices: ${all.map((d) => describeDevice(d, showKind)).join(", ")}.`;
+  // Under the cap the rows print in listing order; over it, the ones that would
+  // have satisfied the block lead, then the ones the run actually saw booted.
+  const rank = (d: RawDevice): number => (meetsRequires(d, requires) ? 0 : isBooted(d) ? 1 : 2);
+  const shown =
+    all.length <= MAX_LISTED_DEVICES
+      ? all
+      : [...all].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_LISTED_DEVICES);
+  const rest = all.length - shown.length;
+  const rows = shown.map((d) => describeDevice(d, showKind)).join(", ");
+  return `Available devices: ${rows}${rest > 0 ? `, and ${rest} more` : ""}.`;
 }
 
 /**
