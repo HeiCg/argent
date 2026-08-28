@@ -120,7 +120,8 @@ const remoteRuntimeKindCache = new Map<string, "mobile" | "tv">();
  * tvOS from iOS reads the real runtime off the listing's runtime-id key here.
  */
 export async function getRemoteSimulatorRuntimeKind(
-  udid: string
+  udid: string,
+  options?: { includeUnavailable?: boolean }
 ): Promise<"mobile" | "tv" | undefined> {
   const bare = stripRemotePrefix(udid);
   const cached = remoteRuntimeKindCache.get(bare);
@@ -136,12 +137,15 @@ export async function getRemoteSimulatorRuntimeKind(
     // Mirror the local classifier's runtime filter, so a watchOS / xrOS sim comes
     // back unverifiable instead of falling into the `mobile` default below.
     if (!isIosOrTvOsRuntimeId(runtimeId)) continue;
+    const row = listedRuntimeDevices(devices).find((d) => d.udid === bare);
+    if (!row) continue;
     // Mirror `listRemoteIosSimulators`' availability filter, so a simulator
-    // `list-devices` hides can't be the one that answers here.
-    if (!listedRuntimeDevices(devices).some((d) => d.udid === bare && d.isAvailable !== false))
-      continue;
+    // `list-devices` hides can't be the one that answers here. Narrowing
+    // callers opt out; their verdict is not memoized for the ones that don't.
+    const available = row.isAvailable !== false;
+    if (!available && !options?.includeUnavailable) continue;
     const kind = runtimeKindFromRuntimeId(runtimeId);
-    remoteRuntimeKindCache.set(bare, kind);
+    if (available) remoteRuntimeKindCache.set(bare, kind);
     return kind;
   }
   return undefined;
@@ -153,11 +157,12 @@ export async function getRemoteSimulatorRuntimeKind(
  * The remote analogue of `isTvOsSimulator`. Callers use it to *narrow* an
  * already-supported device, so an unanswerable lookup reads as non-TV rather
  * than throwing: a listing the orchestrator can't serve must not turn a working
- * phone simulator into an error.
+ * phone simulator into an error. Availability does not enter it: a tvOS sim
+ * the listing hides is still one these callers have to reject.
  */
 export async function isRemoteTvOsSimulator(udid: string): Promise<boolean> {
   try {
-    return (await getRemoteSimulatorRuntimeKind(udid)) === "tv";
+    return (await getRemoteSimulatorRuntimeKind(udid, { includeUnavailable: true })) === "tv";
   } catch {
     return false;
   }

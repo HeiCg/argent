@@ -30,6 +30,7 @@ vi.mock("node:child_process", async () => {
 
 import {
   getRemoteSimulatorRuntimeKind,
+  isRemoteTvOsSimulator,
   __resetRemoteSimulatorRuntimeKindCacheForTesting,
 } from "../src/utils/sim-remote";
 
@@ -120,6 +121,17 @@ describe("getRemoteSimulatorRuntimeKind", () => {
     expect(await getRemoteSimulatorRuntimeKind(UDID)).toBeUndefined();
   });
 
+  it("answers for an unavailable simulator when the caller asks to see one", async () => {
+    listing = under(TVOS_RUNTIME, sim(UDID, { isAvailable: false }));
+    expect(await getRemoteSimulatorRuntimeKind(UDID, { includeUnavailable: true })).toBe("tv");
+  });
+
+  it("does not memoize a verdict read off an unavailable row", async () => {
+    listing = under(TVOS_RUNTIME, sim(UDID, { isAvailable: false }));
+    await getRemoteSimulatorRuntimeKind(UDID, { includeUnavailable: true });
+    expect(await getRemoteSimulatorRuntimeKind(UDID)).toBeUndefined();
+  });
+
   it("propagates a sim-remote failure verbatim instead of answering undefined", async () => {
     // Undefined means "the listing doesn't know this udid" and its caller turns
     // it into a bare refusal; an unreachable sim-remote must instead surface the
@@ -164,5 +176,15 @@ describe("getRemoteSimulatorRuntimeKind", () => {
         /sim-remote simctl list devices --json returned JSON without a devices map/
       );
     }
+  });
+});
+
+describe("isRemoteTvOsSimulator", () => {
+  it("still rejects a tvOS simulator the listing marks unavailable", async () => {
+    // The guard narrows an already-supported device, so an availability filter
+    // must not hand a TV to `shake`, which would post a notification nothing
+    // listens for and report a shake that never happened.
+    listing = under(TVOS_RUNTIME, sim(UDID, { isAvailable: false }));
+    expect(await isRemoteTvOsSimulator(UDID)).toBe(true);
   });
 });
