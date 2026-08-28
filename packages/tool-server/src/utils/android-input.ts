@@ -9,7 +9,7 @@
  * of `hw.keyboard`, and a non-zero exit surfaces as a thrown error. Touch
  * injection stays on the simulator-server.
  */
-import { FAILURE_CODES } from "@argent/registry";
+import { FAILURE_CODES, FailureError, getFailureSignal } from "@argent/registry";
 import { adbShell, shellQuote } from "./adb";
 import { InvalidToolInputError } from "./capability";
 import { CLEAR_KEY_PAIRS } from "../tools/keyboard/key-codes";
@@ -129,6 +129,19 @@ export async function injectAndroidKeycode(serial: string, keycode: number): Pro
 const KEYCODE_DEL = 67;
 const KEYCODE_FORWARD_DEL = 112;
 
+// The burst's own budget, and NOT `ADB_INPUT_TIMEOUT_MS`: that one is sized for
+// a SINGLE injection, while this command carries 200 of them and `input` injects
+// with INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH — so the adb child blocks on the
+// app once per event, and the total is the app's per-keystroke cost times 200,
+// not one VM start.
+//
+// Measured on a Pixel 7 AVD (API 36): 1.9s against a native EditText, but 14.9s
+// against a debug Flutter field on an otherwise idle host — already at the 15s
+// single-injection cap, and 16.3s with four busy loops on the guest, where adb
+// was SIGKILLed with the field emptied from 300 characters to 200. 90s keeps a
+// hung adb child bounded while leaving that margin.
+const ADB_CLEAR_TIMEOUT_MS = 90_000;
+
 /**
  * Empty the focused text field: `CLEAR_KEY_PAIRS` backspaces interleaved with
  * as many forward-deletes, as ONE `input keyevent` invocation.
@@ -143,15 +156,47 @@ const KEYCODE_FORWARD_DEL = 112;
  * (https://github.com/software-mansion/argent/pull/821), and carries no
  * `metaState` at all on API 31/32 — a primitive that can silently no-op needs a
  * read-back to be trusted, and this one cannot no-op. Multi-code `keyevent` has
- * been accepted since API 19, so one call carries the whole burst (~0.5-1s on
- * an emulator) instead of 200 round-trips.
+ * been accepted since API 19, so one call carries the whole burst (2-15s on an
+ * emulator, depending on the app's per-keystroke cost) instead of 200
+ * round-trips.
  */
 export async function injectAndroidClear(serial: string): Promise<void> {
   const codes: number[] = [];
   for (let i = 0; i < CLEAR_KEY_PAIRS; i++) codes.push(KEYCODE_DEL, KEYCODE_FORWARD_DEL);
-  await adbShell(serial, `input keyevent ${codes.join(" ")}`, {
-    timeoutMs: ADB_INPUT_TIMEOUT_MS,
-  });
+  try {
+    await adbShell(serial, `input keyevent ${codes.join(" ")}`, {
+      timeoutMs: ADB_CLEAR_TIMEOUT_MS,
+    });
+  } catch (err) {
+    // Re-stated because the adb failure says nothing about a clear, and the
+    // difference matters: the burst is not atomic, so a command killed partway
+    // leaves the field emptied by however many pairs got through. An agent told
+    // only "adb command failed" reads that as "nothing happened" and types over
+    // a field that is now half its old length. The keycode list is dropped from
+    // the message too — 200 numbers, which `formatSubprocessFailure` and Node's
+    // own nested `Command failed:` each repeat into agent context.
+    throw new FailureError(
+      `the clear burst did not finish on ${serial}, and the focused field may be PARTIALLY emptied — ` +
+        "the 200 delete keys are sent as one `adb shell input keyevent`, which is not atomic. Read the " +
+        "field back (`describe`) before clearing or typing again. Underlying failure: " +
+        firstLine(err),
+      {
+        error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED,
+        failure_stage: "keyboard_clear_android_burst",
+        failure_area: "tool_server",
+        error_kind: getFailureSignal(err)?.error_kind ?? "subprocess",
+        failure_command: "adb",
+      }
+    );
+  }
+}
+
+/** The adb failure's own first line, without the 200-keycode command it quotes. */
+function firstLine(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message
+    .split("\n")[0]!
+    .replace(/input keyevent[\d ]*\d/g, "input keyevent <the delete burst>");
 }
 
 /** Press a named key (keyboard tool `key` vocabulary) on Android. */
