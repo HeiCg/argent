@@ -1587,11 +1587,10 @@ async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<Lea
     followed: new Set(),
   };
   const found = await scanLeadingLaunch(flow, [rootEntry], scan);
-  const requires = foldLeadingRequires(
-    rootEntry.display,
-    flow.requires,
-    scan.entered.flatMap((f) => (f.requires ? [{ flow: f.flow, requires: f.requires }] : []))
+  const contributions = scan.entered.flatMap((f) =>
+    f.requires ? [{ flow: f.flow, requires: f.requires }] : []
   );
+  const requires = foldLeadingRequires(rootEntry.display, flow.requires, contributions);
   // Composition is what parse-time validation cannot see, so the check only
   // earns its keep once a fragment joined — and only over a chain read end to
   // end: a broken one stays best-effort here and is reported by execRunStep.
@@ -1603,7 +1602,11 @@ async function leadingRun(flow: FlowFile, rootEntry: RunStackEntry): Promise<Lea
         { flow: rootEntry.display, steps: unfollowed(flow.steps) },
         ...scan.entered.map((f) => ({ ...f, steps: unfollowed(f.steps) })),
       ],
-      requires
+      requires,
+      [
+        ...(flow.requires ? [rootEntry.display] : []),
+        ...contributions.map((c) => c.flow),
+      ]
     );
   }
   return {

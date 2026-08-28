@@ -3052,9 +3052,17 @@ function launchCoverageFailure(
   // scope suffices.
   const candidates = LAUNCH_PLATFORMS.filter((p) => platformCanPresent(p, runtimeKind));
   if (candidates.some((p) => scopedCoverage(scopes, p) !== "unserved")) return null;
+  // No one launch is at fault here, so the branch names the files holding them
+  // rather than a step, the way the platform branch above names its own.
+  const files = [
+    ...new Set(
+      [...scopedLaunches(scopes, candidates)].flatMap((l) => (l.flow ? [l.flow] : []))
+    ),
+  ];
   return (
     `no platform that is ever "${runtimeKind}" (${candidates.join(", ")}) has an app id in ` +
-    `every launch step — add launch entries for one of them, or drop requires.runtimeKind`
+    `every launch step${files.length > 0 ? ` (in ${files.join(", ")})` : ""} — add launch ` +
+    `entries for one of them, or drop requires.runtimeKind`
   );
 }
 
@@ -3148,14 +3156,18 @@ function validateRequires(flow: FlowFile): void {
  */
 export function assertComposedRequires(
   scopes: readonly CoverageScope[],
-  requires: FlowRequires | undefined
+  requires: FlowRequires | undefined,
+  declaredIn: readonly string[] = []
 ): void {
   if (!requires) return;
   const detail =
     vacuousScopeFailure(scopes, requires) ?? launchCoverageFailure(scopes, requires);
   if (!detail) return;
+  // A root that declares nothing of its own leaves the remedy pointing at a key
+  // no file the message names contains.
+  const from = declaredIn.length > 0 ? ` (declared in ${declaredIn.join(", ")})` : "";
   throw new FailureError(
-    `This run's requires block, composed along its leading run: chain, can never be ` +
+    `This run's requires block, composed along its leading run: chain${from}, can never be ` +
       `satisfied: ${detail}`,
     {
       error_code: FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE,

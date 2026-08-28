@@ -1522,6 +1522,10 @@ describe("requires folded along the leading run: chain", () => {
 
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE);
     expect((err as Error).message).toMatch(/no platform that is ever "tv" \(ios, android, vega\)/);
+    // The root declares no block and holds no launch, so unnamed the refusal
+    // points at neither the file to edit nor the one the key lives in.
+    expect((err as Error).message).toContain("(declared in tv-frag)");
+    expect((err as Error).message).toMatch(/every launch step \(in boot-chromium\)/);
     expect((err as Error).message).not.toMatch(/Electron boot/);
     expect(invokeTool).not.toHaveBeenCalled();
   });
