@@ -43,7 +43,7 @@ describe("swipe: parse/serialize", () => {
           direction: "up" as const,
         },
         { kind: "swipe" as const, from: { x: 0.5, y: 0.8 }, by: { y: -0.4 } },
-        { kind: "swipe" as const, by: { x: 0.2, y: -0.3 }, settle: true },
+        { kind: "swipe" as const, by: { x: 0.2, y: -0.3 }, momentum: false },
         // 0.03 is the exact tap/swipe floor — must round-trip clean.
         { kind: "swipe" as const, by: { x: 0.03 } },
         // Diagonal whose per-axis components are each sub-floor (0.025) but whose
@@ -94,12 +94,9 @@ describe("swipe: parse/serialize", () => {
   });
 
   it("rejects a programmatic zero axis riding beside a real one", () => {
-    // `by` is `{ x?: number; y?: number }`, so { x: 0, y: 0.5 } is type-legal,
-    // and its magnitude of 0.5 clears the travel floor — the per-axis zero
-    // clause is the only guard that sees it. Without that clause serialize
-    // emits `x: 0` and parse then refuses the file serialize just wrote: a
-    // saved flow that can never be read back. Asserted on `.by.x` and the
-    // non-zero wording so the magnitude message cannot stand in for it.
+    // { x: 0, y: 0.5 } is type-legal and its magnitude clears the travel floor,
+    // so the per-axis zero clause is the only guard that sees it. Without it
+    // serialize emits `x: 0` and parse refuses the file serialize just wrote.
     expect(() =>
       serializeFlow({
         executionPrerequisite: "",
@@ -109,10 +106,9 @@ describe("swipe: parse/serialize", () => {
   });
 
   it("rejects a programmatic by carrying a key that is not x or y", () => {
-    // The junk key is type-illegal but reachable — FlowStep is also built
-    // programmatically, and appendStep serializes whatever it was handed.
-    // Without the junk-key clause `z` is dropped in silence and the run
-    // reports success on a flow the author did not ask for.
+    // The junk key is type-illegal but reachable - FlowStep is also built
+    // programmatically. Without the junk-key clause `z` is dropped in silence and
+    // the run reports success on a flow the author did not ask for.
     expect(() =>
       serializeFlow({
         executionPrerequisite: "",
@@ -136,8 +132,7 @@ describe("swipe: parse/serialize", () => {
     "rejects a programmatic swipe %s coordinate target carrying a key that is not x or y",
     (_description, step, message) => {
       // The same junk-key hole as swipe.by, one level down: parseTarget refuses
-      // the shape loudly, so dropping `z` in silence writes a flow that can
-      // never be read back, and the run reports success on it.
+      // the shape loudly, so dropping `z` writes a flow that cannot be read back.
       expect(() => serializeFlow({ executionPrerequisite: "", steps: [step as never] })).toThrow(
         message
       );
@@ -186,17 +181,16 @@ describe("swipe: parse/serialize", () => {
     ["zero", 0],
     ["one", 1],
     ["null", null],
-  ])("rejects a programmatic swipe settle of %s", (_description, settle) => {
-    // Both the bare-direction sugar and the body builder read `settle` for
-    // truthiness only, so an unguarded non-boolean is rewritten rather than
-    // refused: "false" would emit `settle: true` and 0 would vanish into the
-    // bare spelling. parseSwipe takes nothing but a boolean.
+  ])("rejects a programmatic swipe momentum of %s", (_description, momentum) => {
+    // Both the bare-direction sugar and the body builder test `momentum` against
+    // `false` only, so an unguarded non-boolean is dropped rather than refused:
+    // "false" and 0 would serialize to the momentum they meant to turn off.
     expect(() =>
       serializeFlow({
         executionPrerequisite: "",
-        steps: [{ kind: "swipe", direction: "left", settle } as never],
+        steps: [{ kind: "swipe", direction: "left", momentum } as never],
       })
-    ).toThrow(/cannot serialize flow swipe\.settle: must be true or false/i);
+    ).toThrow(/cannot serialize flow swipe\.momentum: must be true or false/i);
   });
 
   it.each([
@@ -283,23 +277,54 @@ describe("swipe: parse/serialize", () => {
     // Any other option forces the map form.
     const yaml = serializeFlow({
       executionPrerequisite: "",
-      steps: [{ kind: "swipe", direction: "left", settle: true }],
+      steps: [{ kind: "swipe", direction: "left", momentum: false }],
     });
     expect(yaml).toContain("direction: left");
-    expect(yaml).toContain("settle: true");
+    expect(yaml).toContain("momentum: false");
   });
 
-  it("bare-direction sugar: a programmatic settle: false still collapses to the bare string", () => {
-    // `settle: false` is the default — the options body only ever emits
-    // `settle: true` and parse normalizes the explicit false away, so a
+  it("bare-direction sugar: a programmatic momentum: true still collapses to the bare string", () => {
+    // `momentum: true` is the default — the options body only ever emits
+    // `momentum: false` and parse normalizes the explicit true away, so a
     // programmatic step carrying it must not be pushed into the verbose form.
     const yaml = serializeFlow({
       executionPrerequisite: "",
-      steps: [{ kind: "swipe", direction: "left", settle: false }],
+      steps: [{ kind: "swipe", direction: "left", momentum: true }],
     });
     expect(yaml).toContain("- swipe: left");
     expect(parseFlow(yaml).steps).toEqual([{ kind: "swipe", direction: "left" }]);
   });
+
+  it.each<[string, FlowStep, FlowStep]>([
+    [
+      "by travel",
+      { kind: "swipe", by: { x: 0.2 }, momentum: true },
+      { kind: "swipe", by: { x: 0.2 } },
+    ],
+    [
+      "an anchor",
+      { kind: "swipe", from: { x: 0.5, y: 0.8 }, direction: "up", momentum: true },
+      { kind: "swipe", from: { x: 0.5, y: 0.8 }, direction: "up" },
+    ],
+    [
+      "a duration",
+      { kind: "swipe", direction: "left", duration: 800, momentum: true },
+      { kind: "swipe", direction: "left", duration: 800 },
+    ],
+  ])(
+    "verbose body: a programmatic momentum: true with %s emits no momentum key",
+    (_description, step, normalized) => {
+      // The sugar gate's twin on the branch the sugar test above cannot reach:
+      // each of these carries a second field, so the options body builder alone
+      // decides the default's fate. Emitting `momentum: true` there writes a key
+      // parseSwipe normalizes back to absent, so serialize stops being parse's
+      // inverse while the file still reads back fine - which is why these inputs
+      // are not in the round-trip fixture above.
+      const yaml = serializeFlow({ executionPrerequisite: "", steps: [step] });
+      expect(yaml).not.toContain("momentum");
+      expect(parseFlow(yaml).steps).toEqual([normalized]);
+    }
+  );
 
   it("rejects a bare string that is not a direction", () => {
     expect(() => parseFlow("steps:\n  - swipe: Login\n")).toThrow(
@@ -333,7 +358,7 @@ describe("swipe: parse/serialize", () => {
       /swipe has unknown key `duraton` \(did you mean `duration`\?\).*allowed keys/i
     );
     expect(() => parseFlow("steps:\n  - swipe: { direction: left, foo: 1 }\n")).toThrow(
-      /swipe has unknown key `foo`.*allowed keys: from, direction, to, by, settle, duration/i
+      /swipe has unknown key `foo`.*allowed keys: from, direction, to, by, momentum, duration/i
     );
   });
 
@@ -362,9 +387,8 @@ describe("swipe: parse/serialize", () => {
 
   it("accepts a diagonal by whose per-axis components are each sub-floor but whose magnitude clears the floor", () => {
     // x=0.025 and y=0.025 are each below the 0.03 floor, yet the vector length is
-    // 0.0354 ≥ 0.03 — a real swipe. The OLD per-axis guard rejected this (each
-    // |axis| < floor); the magnitude gate accepts it, keeping the boundary
-    // monotonic in distance. This is the parse-side anti-regression proof.
+    // 0.0354 - a real swipe. The magnitude gate accepts it, keeping the boundary
+    // monotonic in distance.
     const steps = parseFlow("steps:\n  - swipe: { by: { x: 0.025, y: 0.025 } }\n").steps;
     expect(steps).toEqual([{ kind: "swipe", by: { x: 0.025, y: 0.025 } }]);
   });
@@ -386,12 +410,12 @@ describe("swipe: parse/serialize", () => {
     );
   });
 
-  it("validates direction, settle, and duration values", () => {
+  it("validates direction, momentum, and duration values", () => {
     expect(() => parseFlow("steps:\n  - swipe: { direction: diagonal }\n")).toThrow(
       /swipe.direction must be one of up, down, left, right/i
     );
-    expect(() => parseFlow('steps:\n  - swipe: { direction: left, settle: "yes" }\n')).toThrow(
-      /settle must be true or false/i
+    expect(() => parseFlow('steps:\n  - swipe: { direction: left, momentum: "yes" }\n')).toThrow(
+      /momentum must be true or false/i
     );
     expect(() => parseFlow("steps:\n  - swipe: { direction: left, duration: .inf }\n")).toThrow(
       /duration needs a positive number/i
@@ -426,9 +450,8 @@ describe("swipe: parse/serialize", () => {
     ["a literal that clears parsePositiveMs's finite check", "1e21"],
   ])("rejects a duration of %s as an unbounded held touch", (_description, value) => {
     // The floor is about delivery fidelity; this is about cost. The dispatch
-    // sleeps 16ms per frame with the finger down, so `duration` is wall clock
-    // the run and the device both spend, and 1e21 never returns at all - the
-    // loop outlives the CLI and keeps feeding the device.
+    // sleeps 16ms per frame with the finger down, and 1e21 never returns at all -
+    // the loop outlives the CLI and keeps feeding the device.
     expect(() => parseFlow(`steps:\n  - swipe: { direction: left, duration: ${value} }\n`)).toThrow(
       /swipe\.duration is \S+ms - above the maximum swipe duration of 10000ms.*holds a finger on the screen/i
     );
@@ -439,9 +462,20 @@ describe("swipe: parse/serialize", () => {
     expect(steps).toEqual([{ kind: "swipe", direction: "left", duration: 10000 }]);
   });
 
-  it("normalizes settle: false to absent (round-trip stays inverse)", () => {
-    const steps = parseFlow("steps:\n  - swipe: { direction: left, settle: false }\n").steps;
+  it("normalizes momentum: true to absent (round-trip stays inverse)", () => {
+    const steps = parseFlow("steps:\n  - swipe: { direction: left, momentum: true }\n").steps;
     expect(steps).toEqual([{ kind: "swipe", direction: "left" }]);
+  });
+
+  it("rejects the old `settle` spelling by name, pointing at the inverted replacement", () => {
+    // Never aliased: `settle: true` means `momentum: false`, so a silent key
+    // rewrite would invert the author's intent.
+    expect(() => parseFlow("steps:\n  - swipe: { direction: left, settle: true }\n")).toThrow(
+      /swipe\.settle was renamed to swipe\.momentum, with the opposite sense.*momentum: false/is
+    );
+    expect(() => parseFlow("steps:\n  - swipe: { direction: left, settle: false }\n")).toThrow(
+      /swipe\.settle was renamed to swipe\.momentum/i
+    );
   });
 
   it("from carries the usual target sugar: bare = loose, map = strict, point = point", () => {
@@ -553,9 +587,9 @@ describe("swipe: execution", () => {
       const result = await run("edge-travel");
 
       expect(result.ok).toBe(true);
-      // The preset's signed magnitude carries the anchor on to the screen edge,
-      // keeping the requested sign — clamping only shortens travel, never flips
-      // it — so a drawer handle in the last band of the axis still swipes.
+      // The preset's signed magnitude carries the anchor to the screen edge,
+      // keeping the requested sign, so a drawer handle in the last band of the
+      // axis still swipes.
       expect(result.calls[0]).toMatchObject({
         tool: "gesture-swipe",
         args: { fromX: from.x, fromY: from.y, toX: expected.toX, toY: expected.toY },
@@ -638,10 +672,9 @@ describe("swipe: execution", () => {
   });
 
   it.each([
-    // Schema-conformant frame — describeFrameSchema bounds x/y/width/height to
-    // [0, 1] independently, so x=0.85 + width 0.4 parses fine yet centres at
-    // x=1.05 — the exact shape an adapter viewport-clipping regression would
-    // emit, with only this guard left between it and the touch-down.
+    // describeFrameSchema bounds x/y/width/height to [0, 1] independently, so
+    // x=0.85 + width 0.4 parses fine yet centres at x=1.05 - the shape an adapter
+    // viewport-clipping regression emits, with only this guard behind it.
     ["off the right edge (x > 1)", { x: 0.85, y: 0.4, width: 0.4, height: 0.2 }, "up"],
     // A negative origin cannot pass the frame schema, but the guard sits
     // behind adapters and mocked trees that bypass it — pin the < 0 arms too.
@@ -673,10 +706,9 @@ describe("swipe: execution", () => {
   ] as const)(
     "rejects a selector-derived start whose centre %s is NaN",
     async (_axis, frame, direction) => {
-      // NaN fails every < / > comparison, so the range arms alone would let a
-      // buggy adapter frame dispatch a NaN touch-down — only the
-      // Number.isFinite arms catch it. A NaN ORIGIN is the reachable shape: a
-      // NaN width or height already fails isVisible and never resolves.
+      // NaN fails every < / > comparison, so only the Number.isFinite arms stop a
+      // buggy adapter frame from dispatching a NaN touch-down. A NaN ORIGIN is the
+      // reachable shape: a NaN width or height already fails isVisible.
       currentTree = () => screen([n({ label: "Card", frame })]);
       await writeFlow("nan-centre", {
         executionPrerequisite: "",
@@ -709,10 +741,9 @@ describe("swipe: execution", () => {
   });
 
   it("fails an anchored by delta whose endpoint overflows the screen", async () => {
-    // From a fixed anchor, x=0.97 + 0.2 = 1.17 (and y=0.03 - 0.2 = -0.17) both
-    // run off-screen. Clamping would truncate the magnitude and rotate the
-    // 45° diagonal, so the step must fail on the first overflowing axis (x)
-    // rather than deliver a different gesture.
+    // From a fixed anchor, x=0.97 + 0.2 and y=0.03 - 0.2 both run off-screen.
+    // Clamping would truncate the magnitude and rotate the 45° diagonal, so the
+    // step fails on the first overflowing axis instead.
     await writeFlow("overflow-anchored", {
       executionPrerequisite: "",
       steps: [{ kind: "swipe", from: { x: 0.97, y: 0.03 }, by: { x: 0.2, y: -0.2 } }],
@@ -732,10 +763,9 @@ describe("swipe: execution", () => {
   });
 
   it("dispatches a floor-magnitude by delta whose unclamped travel rounds one ulp short", async () => {
-    // 0.029 + 0.03 stays inside [0, 1] (clamp is the identity), yet the
-    // effective travel computes to 0.029999999999999995 — one ulp under
-    // SWIPE_MIN_TRAVEL — so a bare magnitude gate would fail this
-    // documented-legal boundary delta blaming clamping that never happened.
+    // 0.029 + 0.03 stays inside [0, 1], yet the effective travel computes to one
+    // ulp under SWIPE_MIN_TRAVEL - so a runtime magnitude gate would fail this
+    // legal boundary delta, blaming clamping that never happened.
     await writeFlow("boundary-by", {
       executionPrerequisite: "",
       steps: [{ kind: "swipe", from: { x: 0.029, y: 0.5 }, by: { x: 0.03 } }],
@@ -814,10 +844,9 @@ describe("swipe: execution", () => {
   });
 
   it("translates an unanchored by that overflows so it delivers the full x travel", async () => {
-    // The reviewer's headline case: by {x:0.8} from the default centre used to
-    // clamp the endpoint and silently dispatch 0.5 of travel. With no anchor to
-    // honor, the whole segment slides into [0, 1] — from x=0.2 to x=1.0 — so the
-    // authored 0.8 is delivered in full.
+    // by {x:0.8} from the default centre used to clamp the endpoint and silently
+    // dispatch 0.5 of travel. With no anchor to honor, the whole segment slides
+    // into [0, 1] - x=0.2 to x=1.0 - so the authored 0.8 arrives in full.
     await writeFlow("translate-x", {
       executionPrerequisite: "",
       steps: [{ kind: "swipe", by: { x: 0.8 } }],
@@ -882,9 +911,8 @@ describe("swipe: execution", () => {
   });
 
   it("translates a saturating unanchored diagonal without rotating the vector", async () => {
-    // Under the old per-axis clamp, by {x:0.8, y:0.4} from the centre saturated
-    // x to 1.0 while y stayed unclamped, delivering ~(0.5, 0.4) — a 45° intent
-    // bent past 76°. Translating preserves the exact vector: dx=0.8, dy=0.4.
+    // A per-axis clamp would saturate x to 1.0 while y stayed unclamped, bending
+    // a 45° intent past 76°. Translating preserves the exact vector.
     await writeFlow("translate-diagonal", {
       executionPrerequisite: "",
       steps: [{ kind: "swipe", by: { x: 0.8, y: 0.4 } }],
@@ -908,7 +936,7 @@ describe("swipe: execution", () => {
     expect(d.toY - d.fromY).toBeCloseTo(0.4, 10);
   });
 
-  it("to resolves a target endpoint; settle and duration ride the gesture", async () => {
+  it("to resolves a target endpoint; momentum and duration ride the gesture", async () => {
     currentTree = () =>
       screen([n({ label: "Archive", frame: { x: 0.0, y: 0.9, width: 0.2, height: 0.1 } })]);
     await writeFlow("to-target", {
@@ -918,7 +946,7 @@ describe("swipe: execution", () => {
           kind: "swipe",
           from: { x: 0.5, y: 0.5 },
           to: { selector: { text: "Archive", loose: true } },
-          settle: true,
+          momentum: false,
           duration: 800,
         },
       ],
@@ -934,17 +962,16 @@ describe("swipe: execution", () => {
         fromY: 0.5,
         toX: 0.1,
         toY: expect.closeTo(0.95, 10),
-        settle: true,
+        momentum: false,
         durationMs: 800,
       },
     });
   });
 
   it("resolves the anchor from the tree the endpoint appeared in, so a moved anchor stays fresh", async () => {
-    // The endpoint appears only on later polls, and the anchor moves while
-    // that auto-wait runs. The finger must go down on the anchor's current
-    // centre (0.7, 0.3) — resolving it before the endpoint wait would dispatch
-    // from the stale pre-wait centre (0.2, 0.3) onto empty background.
+    // The endpoint appears only on later polls, and the anchor moves while that
+    // auto-wait runs. Resolving the anchor before the endpoint wait would dispatch
+    // from its stale pre-wait centre (0.2, 0.3) onto empty background.
     let fetches = 0;
     currentTree = () => {
       fetches += 1;
@@ -981,10 +1008,9 @@ describe("swipe: execution", () => {
   });
 
   it("resolves the endpoint from the tree the late anchor appeared in, so it cannot go stale", async () => {
-    // The mirror: here the ANCHOR renders late and the ENDPOINT moves during
-    // that wait. Resolving `to` first would lift the finger on the endpoint's
-    // pre-jump centre (0.2, 0.3) instead of (0.7, 0.3) — half a screen of error
-    // on a step that still reports pass.
+    // The mirror: the ANCHOR renders late and the ENDPOINT moves during that
+    // wait. Resolving `to` first would lift on its pre-jump centre (0.2, 0.3) -
+    // half a screen of error on a step that still reports pass.
     let fetches = 0;
     currentTree = () => {
       fetches += 1;
@@ -1119,11 +1145,9 @@ describe("swipe: execution", () => {
   });
 
   it("dispatches a diagonal to whose per-axis deltas are each sub-floor but whose magnitude clears it", async () => {
-    // The reviewer's monotonicity case: from (0.5, 0.5) to (0.529, 0.529) — each
-    // axis delta is 0.029 (< 0.03), yet the straight-line distance is 0.041 ≥
-    // 0.03, a real swipe. The OLD per-axis AND-guard (both |delta| < floor)
-    // rejected this longer diagonal while accepting a shorter straight swipe; the
-    // magnitude gate dispatches it. Execution-side anti-regression proof.
+    // Each axis delta is 0.029, under the floor, yet the straight-line distance is
+    // 0.041 - a real swipe. A per-axis guard would reject this longer diagonal
+    // while accepting a shorter straight swipe; the magnitude gate dispatches it.
     await writeFlow("to-diagonal", {
       executionPrerequisite: "",
       steps: [{ kind: "swipe", from: { x: 0.5, y: 0.5 }, to: { x: 0.529, y: 0.529 } }],
@@ -1139,13 +1163,10 @@ describe("swipe: execution", () => {
   });
 
   it.each([
-    // Same schema-conformant shape the start guard pins, on the lift instead of
-    // the touch-down: describeFrameSchema bounds x/y/width/height to [0, 1]
-    // independently, so x=0.85 + width 0.4 parses fine yet centres at x=1.05.
-    // `to` is the only travel spelling that can carry a resolved endpoint
-    // off-screen, and every one of these clears the travel floor from the
-    // default (0.5, 0.5) start — without the bounds check the step would
-    // dispatch a swipe whose finger lifts outside the screen.
+    // The start guard's shape on the lift instead of the touch-down. `to` is the
+    // only travel spelling that can carry a resolved endpoint off-screen, and each
+    // of these clears the travel floor from the default (0.5, 0.5) start, so
+    // without the bounds check the finger lifts outside the screen.
     ["off the right edge (x > 1)", { x: 0.85, y: 0.4, width: 0.4, height: 0.2 }],
     ["off the bottom edge (y > 1)", { x: 0.4, y: 0.85, width: 0.2, height: 0.4 }],
     // A negative origin cannot pass the frame schema, but the guard sits behind
@@ -1177,11 +1198,9 @@ describe("swipe: execution", () => {
     ["x", { x: Number.NaN, y: 0.4, width: 0.4, height: 0.2 }],
     ["y", { x: 0.4, y: Number.NaN, width: 0.4, height: 0.2 }],
   ] as const)("rejects a selector-derived to whose centre %s is NaN", async (_axis, frame) => {
-    // NaN fails every < / > comparison — and makes the travel hypot NaN, so the
-    // minimum-travel gate below waves it through as well. Only the
-    // Number.isFinite arms stop a buggy adapter frame from dispatching a NaN
-    // lift. A NaN ORIGIN is the reachable shape: a NaN width or height already
-    // fails isVisible and never resolves.
+    // NaN fails every < / > comparison and makes the travel hypot NaN, so the
+    // minimum-travel gate waves it through too. Only the Number.isFinite arms stop
+    // a buggy adapter frame from dispatching a NaN lift.
     currentTree = () => screen([n({ label: "Card", frame })]);
     await writeFlow("to-nan-centre", {
       executionPrerequisite: "",
@@ -1200,14 +1219,10 @@ describe("swipe: execution", () => {
   });
 
   it("reports an off-screen to that also sits inside the travel floor as off-screen", async () => {
-    // Pins the ORDER of the two `to` guards, not either guard alone: the bounds
-    // check must run BEFORE the travel gate. Both frames parse — each field is
-    // inside [0, 1] and describeFrameSchema never constrains y + height — yet
-    // the anchor centres at (0.5, 0.99) and the endpoint at (0.5, 1.01), which
-    // is at once off the screen and only 0.02 away, under the 0.03 floor. Run
-    // the gates the other way round and the step blames the target's placement
-    // — aim it farther from the start — for what is the adapter clipping the
-    // endpoint out of the viewport, sending the author to fix the wrong end.
+    // Pins the ORDER of the two `to` guards: the bounds check must run BEFORE the
+    // travel gate. The endpoint centres at (0.5, 1.01), at once off the screen and
+    // only 0.02 from the anchor. The other way round, the step blames the target's
+    // placement for what is the adapter clipping it out of the viewport.
     currentTree = () =>
       screen([
         n({ label: "Anchor", frame: { x: 0.4, y: 0.97, width: 0.2, height: 0.04 } }),
@@ -1339,10 +1354,10 @@ describe("swipe: execution", () => {
     expect(result.calls).toEqual([]);
   });
 
-  it("maps to a mouse drag on chromium with settle forwarded (web fling reads pointer release velocity)", async () => {
+  it("maps to a mouse drag on chromium with momentum forwarded (web fling reads pointer release velocity)", async () => {
     await writeFlow("desktop", {
       executionPrerequisite: "",
-      steps: [{ kind: "swipe", direction: "left", settle: true, duration: 500 }],
+      steps: [{ kind: "swipe", direction: "left", momentum: false, duration: 500 }],
     });
 
     const result = await run("desktop", "chromium-cdp-9222");
@@ -1358,7 +1373,7 @@ describe("swipe: execution", () => {
           toX: 0.1,
           toY: 0.5,
           durationMs: 500,
-          settle: true,
+          momentum: false,
         },
       },
     ]);
@@ -1366,10 +1381,9 @@ describe("swipe: execution", () => {
 });
 
 // The shared harness records tool calls but not tree reads, and never threads an
-// AbortSignal, so the two blocks below run the flow tool directly (mirroring
-// flow-abort.test.ts) with ONE ordered log interleaving the gesture dispatch and
-// every tree read — the ordering is the contract, not merely that a read
-// happened.
+// AbortSignal, so the blocks below run the flow tool directly with ONE ordered log
+// interleaving the gesture dispatch and every tree read - the ordering is the
+// contract, not merely that a read happened.
 async function runLoggedSwipe(
   step: FlowStep,
   hooks: {
@@ -1466,21 +1480,19 @@ describe("swipe: post-dispatch settle", () => {
 
     expect(result.ok).toBe(true);
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["swipe:pass"]);
-    // Neither end is a selector, so every read here is a settle: the pair the
-    // gesture waits for, then the pair AFTER it. Without the trailing pair a
-    // following point-target step would touch down mid-deceleration and be
-    // swallowed while still reporting pass.
+    // Neither end is a selector, so every read here is a settle: the pair before
+    // the gesture, then the pair after it. Without the trailing pair a following
+    // point-target step touches down mid-deceleration and still reports pass.
     expect(events).toEqual(["tree", "tree", "gesture-swipe", "tree", "tree"]);
   });
 
-  it("waits out the animation after a settle: true swipe too", async () => {
-    // `settle` zeroes the finger's release velocity — it says nothing about the
-    // app's own animations (a dismissed card, a paging carousel), so the wait is
-    // not conditional on it.
+  it("waits out the animation after a momentum: false swipe too", async () => {
+    // `momentum: false` zeroes the finger's release velocity, not the app's own
+    // animations, so the wait is not conditional on it.
     const { result, events } = await runLoggedSwipe({
       kind: "swipe",
       by: { y: -0.5 },
-      settle: true,
+      momentum: false,
     });
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["swipe:pass"]);
@@ -1534,9 +1546,9 @@ describe("swipe: pre-dispatch settle", () => {
     const { result, events } = await runLoggedSwipe({ kind: "swipe", direction: "left" });
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["swipe:pass"]);
-    // Nothing waits out motion a `launch:` or a raw `tool: gesture-swipe` left
-    // running, so without these two reads the touch-down lands mid-fling, is
-    // consumed arresting it, and the step still passes.
+    // Nothing waits out motion a `launch:` or a raw `tool:` step left running, so
+    // without these two reads the touch-down lands mid-fling, is consumed arresting
+    // it, and the step still passes.
     expect(events.slice(0, events.indexOf("gesture-swipe"))).toEqual(["tree", "tree"]);
   });
 
