@@ -8,7 +8,7 @@
  * transform, and the only existing signal — a stderr line — is written once per
  * process and never reaches whoever asked.
  */
-export type DroppedGeometry = "rotation" | "scale";
+type DroppedGeometry = "rotation" | "scale";
 
 /** Reserved result key hoisted into the response envelope's `note` by http.ts. */
 export const RESULT_NOTE_KEY = "__argentNote";
