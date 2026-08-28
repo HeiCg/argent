@@ -23,12 +23,12 @@ const currentAppByUdid = new Map<string, string>();
  * launching; they are always running). launch-app accepts them as launch
  * targets and just registers the automation session, which lets
  * describe/gestures drive their UI through the runner's XCUIApplication
- * attach: SpringBoard owns the home screen, App Library, and many system
- * alerts; Spotlight owns the pull-down search overlay (a separate process,
+ * attach. SpringBoard owns the home screen, App Library, and many system
+ * alerts. Spotlight owns the pull-down search overlay (a separate process,
  * invisible to a SpringBoard-scoped snapshot). The runner's foreground gate
  * even gives `activate()` a useful meaning here: activating SpringBoard
  * dismisses the foreground app to the home screen. restart-app and
- * reinstall-app reject these ids up front; there is no process to restart
+ * reinstall-app reject these ids up front. There is no process to restart
  * and no bundle to reinstall.
  */
 const SESSION_ONLY_SYSTEM_UI_BUNDLE_IDS = new Set(["com.apple.springboard", "com.apple.Spotlight"]);
@@ -51,11 +51,8 @@ export function clearCurrentIosDeviceApp(udid: string, bundleId?: string): void 
 
 export function requireCurrentIosDeviceApp(udid: string): string {
   const bundleId = currentAppByUdid.get(udid);
+
   if (!bundleId) {
-    // Signal shape mirrors native-target-app.ts's no-target analog; the code
-    // follows the branch's precondition-rejection precedent (device-info.ts's
-    // flag gate): the call is rejected up front with a do-this-then-retry
-    // recovery, and the stage names this site for telemetry.
     throw withFailureSignal(
       new Error(
         "No app is under automation on this device. Launch the target app first with " +
@@ -70,5 +67,6 @@ export function requireCurrentIosDeviceApp(udid: string): string {
       }
     );
   }
+
   return bundleId;
 }

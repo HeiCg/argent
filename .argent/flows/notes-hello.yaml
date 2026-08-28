@@ -1,0 +1,4 @@
+steps:
+  - launch: com.apple.mobilenotes
+  - tap: New note
+  - type: { into: Note, text: Hello Argent }

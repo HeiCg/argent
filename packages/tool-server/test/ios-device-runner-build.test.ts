@@ -450,43 +450,25 @@ describe("ensureRunnerArtifact", () => {
 });
 
 describe("resolveRunnerProjectPath", () => {
-  it("probes the checkout walk-up first, then the packaged sibling of the bundle", () => {
-    const saved = process.env.ARGENT_IOS_RUNNER_PROJECT;
-    delete process.env.ARGENT_IOS_RUNNER_PROJECT;
-    try {
-      const probed: string[] = [];
-      const resolved = resolveRunnerProjectPath((candidate) => {
-        probed.push(candidate);
-        return probed.length === 2;
-      });
-
-      expect(probed).toHaveLength(2);
-      for (const candidate of probed) {
-        expect(candidate).toMatch(/ios-device-runner\/ArgentRunner\/ArgentRunner\.xcodeproj$/);
-      }
-      expect(probed[1]).not.toBe(probed[0]);
-      expect(resolved).toBe(probed[1]);
-    } finally {
-      if (saved === undefined) delete process.env.ARGENT_IOS_RUNNER_PROJECT;
-      else process.env.ARGENT_IOS_RUNNER_PROJECT = saved;
-    }
-  });
-
   it("stamps the project-not-found error with a failure signal", () => {
     const saved = process.env.ARGENT_IOS_RUNNER_PROJECT;
     delete process.env.ARGENT_IOS_RUNNER_PROJECT;
     try {
       let caught: unknown;
       try {
-        // Both candidates exist in real layouts, so the not-found arm is
-        // reached through the exists seam.
-        resolveRunnerProjectPath(() => false);
+        // Under vitest __dirname is the source tree, where no copy of the
+        // project sits next to the module, so the not-found arm is the
+        // natural outcome.
+        resolveRunnerProjectPath();
       } catch (error) {
         caught = error;
       }
 
       expect((caught as Error).message).toContain(
         "Could not locate the ios-device-runner Xcode project"
+      );
+      expect((caught as Error).message).toMatch(
+        /ios-device-runner\/ArgentRunner\/ArgentRunner\.xcodeproj/
       );
       // Telemetry classification (T44): the broken-install story must not
       // fall into the registry's unclassified bucket.

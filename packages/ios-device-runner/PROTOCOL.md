@@ -3,9 +3,18 @@
 One HTTP POST per command. The request body is a JSON object; the reply is a
 JSON **envelope**. Connections close after each exchange (`Connection:
 close`). The server listens on loopback on the port given by the
-`ARGENT_RUNNER_PORT` environment variable (injected into the `.xctestrun`),
-reachable through usbmux (USB cable only); the forwarded stream terminates
-on the device's loopback, so a loopback bind covers the whole transport.
+`ARGENT_RUNNER_PORT` environment variable (injected into the `.xctestrun`;
+absent or `0`, the system assigns a port, which is how a session run straight
+from Xcode comes up), reachable through usbmux (USB cable only); the
+forwarded stream terminates on the device's loopback, so a loopback bind
+covers the whole transport.
+
+The envelope is authoritative; the HTTP status is informational (200 for ok
+envelopes, 500 for error envelopes). Two rejections come from the framing
+layer, before command dispatch, still shaped as `INVALID_REQUEST` envelopes:
+400 when a finished header block lacks a usable Content-Length, and 413 when
+the declared or received body exceeds 2 MB (`maxRequestBytes`,
+RunnerHTTPServer.swift).
 
 There is no version handshake: the tool-server's artifact cache key includes
 the runner sources, so a protocol change always ships with a rebuilt runner.
@@ -103,7 +112,12 @@ errorHint?}`. `responseJson` is the completed command's full envelope,
   CommandJournal.swift). Past either gate the journal still records the fate
   and error fields, so recovery can find a command `completed` with no
   `responseJson`: the effect happened, but the response was too large to
-  retain.
+  retain. The journal keeps the 64 most recently touched ids (`maxEntries`);
+  an id evicted by newer traffic answers `notAccepted` even though the
+  command ran, which the recovery rule below reads as "surface the transport
+  error". `status` is answered on the transport queue, outside the serial
+  execution queue, so health checks and recovery work exactly when a command
+  is stuck.
 - `button` → `{message}`: presses the hardware button named by the `button`
   field (`XCUIDevice.press(_:)`). `hasHardwareButton` is checked first, so a
   button this device does not have (a non-Pro iPhone has no Action button)
@@ -137,14 +151,18 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
 ```
 
 - `type`: XCUIElement type name (`Button`, `StaticText`, `Cell`, …).
-- `rect`: viewport points. Non-finite or integer-overflowing coordinates
-  encode as `0`: the conversion is total by contract, because a geometry-less
-  AX element must degrade to a zeroed rect, never kill the runner mid-snapshot
-  (`keyCoordinate` in `ArgentRunnerSession+Snapshot.swift`).
+- `rect`: viewport points. Non-finite coordinates encode as `0` on the wire
+  (`finite` in `ArgentRunnerSession+Snapshot.swift`): a geometry-less AX
+  element reports `CGRect.null` and must degrade to a zeroed rect, never fail
+  the reply. The dedup key's integer conversion clamps overflowing values for
+  the same reason (`keyCoordinate`): every conversion in the walk is total by
+  contract, because a trap here killed the whole runner mid-snapshot.
 - Included nodes: interactive types, scroll containers, and anything with a
   label/identifier/value; visible in the viewport; deduped by
   type+texts+geometry. Hard cap 1500 nodes (`quality.state` becomes
-  `degraded`, `reasonCode: "node_cap"`).
+  `degraded`, `reasonCode: "node_cap"`). Depth is also capped: the raw walk
+  stops at depth 100 and emission at depth 60; unlike the node cap,
+  depth-dropped content does not mark the snapshot `degraded`.
 - `quality`: `{state: healthy|degraded, backend: "xctest", reason?,
 reasonCode?}`.
 
@@ -175,8 +193,10 @@ numbers.
 
 The invariant: every client window MUST strictly exceed the matching runner
 budget, so the client outlasts the runner's verdict. A command that blows
-its budget is abandoned on-device and answered with `COMMAND_TIMED_OUT`
-(then `RUNNER_BUSY`/`RUNNER_WEDGED` on the commands that follow); a client
+its budget is abandoned on-device and answered with `COMMAND_TIMED_OUT`; the
+commands that follow answer `RUNNER_BUSY` while the abandoned work drains,
+then `RUNNER_WEDGED` once it has been stuck past 120s (`wedgeThreshold`,
+MainThreadGate.swift), the signal to recycle the session. A client
 window at or below the budget would swallow that verdict as a raw transport
 timeout and force journal recovery for an answer the runner was already
 delivering. The client window is one whole-transport deadline per send

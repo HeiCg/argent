@@ -84,9 +84,17 @@ export class RunnerCommandError extends Error {
   constructor(message: string, options: { code?: string; hint?: string } = {}) {
     super(appendHintToMessage(message, options.hint));
     this.name = "RunnerCommandError";
-    if (options.code !== undefined) this.code = options.code;
-    if (options.hint !== undefined) this.hint = options.hint;
+
+    if (options.code !== undefined) {
+      this.code = options.code;
+    }
+
+    if (options.hint !== undefined) {
+      this.hint = options.hint;
+    }
+
     this.retryable = options.code === RUNNER_BUSY_ERROR_CODE;
+
     // Telemetry stamp so a runner-reported failure classifies instead of
     // landing in the registry's unclassified fallback. The physical-iOS code
     // family has no runner-command constant, so this reuses its one
@@ -119,6 +127,7 @@ function transportFailureSignal(kind: IosDeviceTransportErrorKind): FailureSigna
     failure_stage: "ios_device_runner_transport",
     failure_area: "tool_server",
   } as const;
+
   switch (kind) {
     case "device-unattached":
       return { ...base, error_kind: "not_found" };
@@ -162,25 +171,37 @@ export function createRunnerClient(options: {
     const readOnly = runOptions.readOnly === true;
     const stamped = withCommandId(command);
     const commandId = typeof stamped.commandId === "string" ? stamped.commandId : undefined;
+
     try {
       const response = await options.send(options.udid, options.port, stamped, {
         timeoutMs,
         readOnly,
       });
+
       return unwrapEnvelope(response);
     } catch (error) {
-      if (!isIosDeviceTransportError(error)) throw error;
+      if (!isIosDeviceTransportError(error)) {
+        throw error;
+      }
+
       // Stamp once at catch-entry: every path below (the direct rethrows and
       // recovery's `throw transportError`) surfaces this same object, and the
       // in-place stamp preserves error identity for callers that compare it.
       withFailureSignal(error, transportFailureSignal(error.kind));
+
       // Read-only commands are idempotent: the send layer already retried
       // them, and there is nothing to recover. Status commands must never
       // recurse into recovery.
-      if (readOnly || command.command === "status" || !commandId) throw error;
+      if (readOnly || command.command === "status" || !commandId) {
+        throw error;
+      }
+
       // Pre-send kinds: the usbmux connection never opened, so the command
       // cannot have executed and a status probe would ride the same dead route.
-      if (error.kind === "device-unattached" || error.kind === "runner-not-listening") throw error;
+      if (error.kind === "device-unattached" || error.kind === "runner-not-listening") {
+        throw error;
+      }
+
       return await recoverAfterLostResponse(stamped, commandId, error);
     }
   };
@@ -195,6 +216,7 @@ export function createRunnerClient(options: {
     transportError: IosDeviceTransportError
   ): Promise<unknown> => {
     let status: Record<string, unknown>;
+
     try {
       const response = await options.send(
         options.udid,
@@ -202,6 +224,7 @@ export function createRunnerClient(options: {
         { command: "status", statusCommandId: commandId },
         { timeoutMs: RUNNER_STATUS_RECOVERY_TIMEOUT_MS, readOnly: true }
       );
+
       const data = unwrapEnvelope(response);
       status = typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
     } catch {
@@ -209,17 +232,24 @@ export function createRunnerClient(options: {
       // transport error remains the most truthful report.
       throw transportError;
     }
+
     const state = typeof status.state === "string" ? status.state : "";
+
     if (state === "completed") {
       const retained = parseRetainedResponse(status.responseJson);
+
       // The retained JSON is the response the transport lost, envelope and
       // all: an ok:false in it surfaces as the command's real outcome.
-      if (retained && asEnvelope(retained)) return unwrapEnvelope(retained);
+      if (retained && asEnvelope(retained)) {
+        return unwrapEnvelope(retained);
+      }
+
       // Completed but nothing (usable) retained: the effect happened, the
       // result is gone. Do not pretend to have data; surface the transport
       // error.
       throw transportError;
     }
+
     if (state === "failed") {
       throw new RunnerCommandError(
         typeof status.errorMessage === "string"
@@ -231,6 +261,7 @@ export function createRunnerClient(options: {
         }
       );
     }
+
     throw transportError;
   };
 
@@ -253,8 +284,10 @@ export async function waitForRunnerReady(
 ): Promise<void> {
   const expiresAt = Date.now() + options.timeoutMs;
   let lastError: unknown;
+
   for (;;) {
     const remainingMs = expiresAt - Date.now();
+
     if (remainingMs <= 0) {
       throw withFailureSignal(
         new IosDeviceTransportError(
@@ -265,16 +298,19 @@ export async function waitForRunnerReady(
         transportFailureSignal("timeout")
       );
     }
+
     try {
       await client.run(
         { command: "status" },
         { readOnly: true, timeoutMs: Math.min(remainingMs, RUNNER_READY_PROBE_TIMEOUT_MS) }
       );
+
       return;
     } catch (error) {
       if (error instanceof RunnerCommandError && error.code !== INVALID_RUNNER_RESPONSE_CODE) {
         return;
       }
+
       lastError = error;
     }
     await sleep(RUNNER_READY_POLL_INTERVAL_MS);
@@ -287,18 +323,26 @@ export async function waitForRunnerReady(
  * (retry orchestration above this layer may re-issue with a known id).
  */
 function withCommandId(command: Record<string, unknown>): Record<string, unknown> {
-  if (command.command === "status" || typeof command.commandId === "string") return command;
+  if (command.command === "status" || typeof command.commandId === "string") {
+    return command;
+  }
+
   return { ...command, commandId: `argent-${randomUUID()}` };
 }
 
 function unwrapEnvelope(response: unknown): unknown {
   const envelope = asEnvelope(response);
+
   if (!envelope) {
     throw new RunnerCommandError("Runner returned an unrecognized response shape", {
       code: INVALID_RUNNER_RESPONSE_CODE,
     });
   }
-  if (envelope.ok) return withEnvelopeMarkers(envelope);
+
+  if (envelope.ok) {
+    return withEnvelopeMarkers(envelope);
+  }
+
   throw new RunnerCommandError(envelope.error?.message ?? "Runner command failed", {
     code: envelope.error?.code,
     hint: envelope.error?.hint,
@@ -319,9 +363,17 @@ function unwrapEnvelope(response: unknown): unknown {
 function withEnvelopeMarkers(envelope: RunnerResponseEnvelope): unknown {
   const reactivated = envelope.reactivated === true;
   const warning = typeof envelope.warning === "string" ? envelope.warning : undefined;
-  if (!reactivated && warning === undefined) return envelope.data;
+
+  if (!reactivated && warning === undefined) {
+    return envelope.data;
+  }
+
   const data = envelope.data;
-  if (typeof data !== "object" || data === null || Array.isArray(data)) return data;
+
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return data;
+  }
+
   return {
     ...data,
     ...(reactivated ? { reactivated: true } : {}),
@@ -330,14 +382,24 @@ function withEnvelopeMarkers(envelope: RunnerResponseEnvelope): unknown {
 }
 
 function asEnvelope(response: unknown): RunnerResponseEnvelope | null {
-  if (typeof response !== "object" || response === null) return null;
+  if (typeof response !== "object" || response === null) {
+    return null;
+  }
+
   const candidate = response as { ok?: unknown };
-  if (typeof candidate.ok !== "boolean") return null;
+
+  if (typeof candidate.ok !== "boolean") {
+    return null;
+  }
+
   return response as RunnerResponseEnvelope;
 }
 
 function parseRetainedResponse(value: unknown): unknown | null {
-  if (typeof value !== "string" || value.trim().length === 0) return null;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+
   try {
     return JSON.parse(value) as unknown;
   } catch {

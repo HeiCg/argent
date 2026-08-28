@@ -60,12 +60,13 @@ and only placeholder bundle ids; the tool-server injects the real values on
 the `xcodebuild` command line. On first install, iOS asks to trust the
 developer on the phone: Settings > General > VPN & Device Management.
 
-The Xcode project itself needs no locating either: a checkout finds it by
-walking up from the tool-server sources, and an npm install of
-`@swmansion/argent` ships these Swift sources inside the package (the pack
-step copies `ArgentRunner/` next to the bundled tool-server), so the build
-works out of the box in both layouts. `ARGENT_IOS_RUNNER_PROJECT` remains as
-an override for unusual layouts only.
+The Xcode project itself needs no locating either: it always sits next to the
+bundled tool-server. An npm install of `@swmansion/argent` ships these Swift
+sources there (the pack step copies `ArgentRunner/` next to the bundle), and
+in the argent repo `npm run build` in `packages/argent` produces the same
+layout.
+`ARGENT_IOS_RUNNER_PROJECT` overrides the location for tool-server runs
+outside the bundle (ts-node, tests) or unusual layouts.
 
 ## Reliability model
 
