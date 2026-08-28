@@ -16,6 +16,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // `input` fires for `<input>`, `<textarea>` and a contenteditable alike;
 // `beforeinput` does NOT, so a page cannot pre-empt the delete either.)
 //
+// That last property is also why `delete`'s return value alone cannot be
+// trusted. `beforeinput` is the hook an editor with its own document model
+// reconciles on, so Lexical and CKEditor 5 answer `true` and then restore every
+// character from that model — Lexical before the DOM ever changes, CKEditor on
+// the next microtask. `clearChromium` therefore reads the field back in a SECOND
+// evaluate, which runs in a later renderer task, after those microtasks, and
+// refuses when the value survived.
+//
 // Reading the focus first is what the key backends cannot do: the DOM says
 // outright whether anything editable holds focus, so a clear aimed at nothing
 // fails loudly instead of deleting from whatever the page focuses by default.
@@ -43,21 +51,52 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
       el.isContentEditable === true);
   if (!editable) return { cleared: false, focus: focus, reason: "not-editable" };
   document.execCommand("selectAll");
-  // The return value is the only honest read of what happened, and it is exact.
-  // Measured on Chrome 151: \`delete\` answers true for every element that ends
-  // up empty — including one that was ALREADY empty, where \`selectAll\` answers
-  // false — and false for exactly the five date/time input types, which hold a
-  // structured value execCommand cannot touch while classifying as editable by
-  // every other signal (they are not in the denylist above, and nothing else
-  // distinguishes them). Discarding it reports a cleared field that still holds
-  // its date, which is the one outcome this tool must never produce.
+  // The cheap half of the check, and it is exact for the fields it does answer
+  // for. Measured on Chrome 151: \`delete\` answers true for every element that
+  // ends up empty — including one that was ALREADY empty, where \`selectAll\`
+  // answers false — and false for exactly the five date/time input types, which
+  // hold a structured value execCommand cannot touch while classifying as
+  // editable by every other signal (they are not in the denylist above, and
+  // nothing else distinguishes them). What it does NOT answer for is an editor
+  // that restores the value afterwards, which is what the read-back below is for.
   if (!document.execCommand("delete")) {
     return { cleared: false, focus: focus, reason: "delete-refused" };
   }
-  return { cleared: true };
+  return { cleared: true, focus: focus };
 })()`;
 
-// The renderer answers the script above. Nothing else in the tool depends on
+// Run as a SECOND evaluate, so the microtask checkpoint that ends the clear
+// script has passed and an editor that restores its model from a
+// MutationObserver has already put the characters back. (Measured on Chrome 151
+// against CKEditor's shape: a read-back inside the clear script itself sees the
+// emptied field and is fooled; this one sees the restored value.)
+//
+// Re-derives the focused element rather than holding a reference: `evaluate`
+// returns by value, so nothing survives between the two calls — and re-deriving
+// is also what detects a page that moved focus in its own `input` handler.
+const CLEAR_READBACK_SCRIPT = `(() => {
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  const tag = el ? String(el.tagName).toLowerCase() : null;
+  const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
+  const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
+  if (tag === "input" || tag === "textarea") {
+    return { focus: focus, remaining: String(el.value == null ? "" : el.value).length };
+  }
+  if (el && el.isContentEditable === true) {
+    // A cleared contenteditable keeps a placeholder <br> or an empty <p>, and an
+    // editor may seed a zero-width space — none of which is a surviving value.
+    // Trimmed at the ends only: interior whitespace is part of the text, and the
+    // count is quoted back to the caller.
+    const text = String(el.textContent == null ? "" : el.textContent).replace(/[\\u200b\\ufeff]/g, "").trim();
+    return { focus: focus, remaining: text.length };
+  }
+  // Nothing readable holds focus any more. The delete already reported success,
+  // so there is nothing here to contradict it.
+  return { focus: focus, remaining: null };
+})()`;
+
+// The renderer answers the scripts above. Nothing else in the tool depends on
 // the shape, so a missing field reads as a refusal rather than a crash.
 interface ClearOutcome {
   cleared?: boolean;
@@ -65,12 +104,17 @@ interface ClearOutcome {
   reason?: string;
 }
 
+interface ReadbackOutcome {
+  focus?: string | null;
+  remaining?: number | null;
+}
+
 async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   const outcome = (await api.evaluate(CLEAR_FOCUSED_EDITABLE_SCRIPT, {
     returnByValue: true,
   })) as ClearOutcome | null;
+  const focus = outcome?.focus;
   if (outcome?.cleared !== true) {
-    const focus = outcome?.focus;
     // Two different refusals, two different repairs, so two codes. This one is
     // about the KIND of field, not about focus: the element is editable by
     // every signal the script can read, and the delete still did not land.
@@ -106,8 +150,32 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
       }
     );
   }
-  // No key events are dispatched at all, hence `keys: 0`. `cleared` reports what
-  // was sent, not what the field now holds — the value is never read back.
+  const readback = (await api.evaluate(CLEAR_READBACK_SCRIPT, {
+    returnByValue: true,
+  })) as ReadbackOutcome | null;
+  // Only a field that is still the focused one, and still readable, can
+  // contradict the delete. `remaining: null` means focus moved to something with
+  // no value to read, which is not evidence of anything.
+  const remaining = readback?.remaining;
+  if (typeof remaining === "number" && remaining > 0 && readback?.focus === focus) {
+    // The KIND of field again, not focus: a retry of this same call reaches the
+    // same editor and is restored the same way.
+    throw new InvalidToolInputError(
+      `the focused <${focus ?? "element"}> still holds ${remaining} character${remaining === 1 ? "" : "s"} ` +
+        "after the delete — nothing was cleared. A rich-text editor that keeps its own document model " +
+        "(Lexical, CKEditor) accepts the delete and then restores the text from that model, and a page can " +
+        "do the same from an `input` listener. Typing now would APPEND to the value the field still holds: " +
+        "empty it through the app's own control, or select the text with `gesture-drag` and type over the " +
+        "selection instead.",
+      {
+        error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
+        failure_stage: "keyboard_clear_chromium_restored",
+        error_kind: "unsupported",
+      }
+    );
+  }
+  // No key events are dispatched at all, hence `keys: 0`. `cleared` reports a
+  // field read back empty — on this backend alone, not merely what was sent.
   return { typed: "", keys: 0, cleared: true };
 }
 

@@ -75,17 +75,20 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
   // and the order also records that neither is a keyboard event — the script
   // delivers no keydown, so a page shortcut bound to "a" cannot cancel it.
   it.each([
-    ["a text input", () => el("INPUT", { type: "text" })],
-    ["an input with no explicit type", () => el("INPUT", {})],
-    ["a password input", () => el("INPUT", { type: "password" })],
-    ["a number input", () => el("INPUT", { type: "number" })],
-    ["a search input", () => el("INPUT", { type: "search" })],
-    ["an email input", () => el("INPUT", { type: "email" })],
-    ["a textarea", () => el("TEXTAREA", {})],
-    ["a contenteditable element", () => el("DIV", { isContentEditable: true })],
-  ])("clears %s with selectAll + delete", (_label, make) => {
+    ["a text input", () => el("INPUT", { type: "text" }), "input type=text"],
+    ["an input with no explicit type", () => el("INPUT", {}), "input type=text"],
+    ["a password input", () => el("INPUT", { type: "password" }), "input type=password"],
+    ["a number input", () => el("INPUT", { type: "number" }), "input type=number"],
+    ["a search input", () => el("INPUT", { type: "search" }), "input type=search"],
+    ["an email input", () => el("INPUT", { type: "email" }), "input type=email"],
+    ["a textarea", () => el("TEXTAREA", {}), "textarea"],
+    ["a contenteditable element", () => el("DIV", { isContentEditable: true }), "div"],
+  ])("clears %s with selectAll + delete", (_label, make, focus) => {
     const { outcome, commands } = run(make());
-    expect(outcome).toEqual({ cleared: true });
+    // `focus` rides along on the success too: the backend compares it with the
+    // read-back's own focus, and only a read of the SAME element can contradict
+    // the delete.
+    expect(outcome).toEqual({ cleared: true, focus });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
@@ -142,6 +145,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
     for (const type of ["tel", "url", "search", "email"]) {
       expect(run(el("INPUT", { type })).outcome, `refused type="${type}"`).toEqual({
         cleared: true,
+        focus: `input type=${type}`,
       });
     }
   });
@@ -198,7 +202,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     // would turn every clear of an empty field into a spurious failure — and an
     // empty field is the ordinary state of a field a flow just cleared.
     const { outcome, commands } = run(textInput(), { selectAll: false });
-    expect(outcome).toEqual({ cleared: true });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 });
@@ -212,7 +216,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = textInput();
     const host = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const { outcome, commands } = run(host);
-    expect(outcome).toEqual({ cleared: true });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
@@ -223,7 +227,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = el("TEXTAREA", {});
     const mid = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const host = el("MY-ROW", { shadowRoot: { activeElement: mid } });
-    expect(run(host).outcome).toEqual({ cleared: true });
+    expect(run(host).outcome).toEqual({ cleared: true, focus: "textarea" });
   });
 
   it("stops at a host whose shadow root focuses nothing, and refuses it by its own tag", () => {

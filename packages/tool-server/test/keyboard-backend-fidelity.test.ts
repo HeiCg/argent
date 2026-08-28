@@ -368,9 +368,13 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       expect(events).toEqual([]);
     });
 
-    it("clears through ONE renderer evaluation and no key events at all", async () => {
+    it("clears through TWO renderer evaluations and no key events at all", async () => {
       const { events, api } = cdpRecorder();
-      const evaluate = vi.fn(async (_expr: string, _opts?: unknown) => ({ cleared: true }));
+      const evaluate = vi.fn(async (_expr: string, _opts?: unknown) =>
+        _expr === CLEAR_FOCUSED_EDITABLE_SCRIPT
+          ? { cleared: true, focus: "input type=text" }
+          : { focus: "input type=text", remaining: 0 }
+      );
 
       const result = await makeChromiumImpl(registryWith({ ...api, evaluate })).handler(
         {},
@@ -384,13 +388,19 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       // whose own shortcut handler can cancel them. The DOM path delivers
       // one `input` event (inputType deleteContentBackward) and no keydown.
       expect(events).toEqual([]);
-      expect(evaluate).toHaveBeenCalledTimes(1);
+      // Two, and they must be two SEPARATE evaluates: an editor that restores
+      // its model does so at the microtask checkpoint that ends the first one,
+      // so a read-back folded into the clear script sees the emptied field and
+      // reports a clear that did not survive.
+      expect(evaluate).toHaveBeenCalledTimes(2);
       expect(evaluate.mock.calls[0]![0]).toBe(CLEAR_FOCUSED_EDITABLE_SCRIPT);
-      // `returnByValue` is load-bearing: without it CDP answers the script's
-      // object as a RemoteObject handle with `value` undefined, the backend
-      // reads no `cleared: true`, and every successful clear reports the
+      expect(evaluate.mock.calls[1]![0]).not.toBe(CLEAR_FOCUSED_EDITABLE_SCRIPT);
+      // `returnByValue` is load-bearing on both: without it CDP answers the
+      // script's object as a RemoteObject handle with `value` undefined, the
+      // backend reads no `cleared: true`, and every successful clear reports the
       // "nothing editable has focus" 400.
       expect(evaluate.mock.calls[0]![1]).toEqual({ returnByValue: true });
+      expect(evaluate.mock.calls[1]![1]).toEqual({ returnByValue: true });
       // `keys: 0` — the count reports key events sent, and this backend sends
       // none.
       expect(result).toEqual({ typed: "", keys: 0, cleared: true });
