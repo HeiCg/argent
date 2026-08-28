@@ -1,4 +1,4 @@
-import { FAILURE_CODES, type Registry } from "@argent/registry";
+import { FAILURE_CODES, FailureError, getFailureSignal, type Registry } from "@argent/registry";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../../blueprints/chromium-cdp";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { InvalidToolInputError } from "../../../utils/capability";
@@ -118,10 +118,56 @@ interface ReadbackOutcome {
   remaining?: number | null;
 }
 
+/**
+ * Run one of the two clear scripts, re-stating a CDP wait that ran out.
+ *
+ * `clear` is the only `keyboard` operation that waits on the renderer main
+ * thread: `text` and `key` go through `Input.dispatchKeyEvent`, which the
+ * BROWSER process acknowledges in about 50ms whatever the renderer is doing. So
+ * `clear` is the only one that meets the CDP client's 10s wait, and what happens
+ * there is specific: the pending entry is dropped locally, but the request is
+ * never cancelled on the renderer, so the delete still runs the moment the
+ * renderer is free.
+ *
+ * The debugger taxonomy's own message for that ("restart the app, then reconnect
+ * and retry once") is therefore the wrong move twice over — the app is fine, and
+ * a retry lands a SECOND delete on a field the first one may already have
+ * emptied. Re-stated as `KEYBOARD_CLEAR_UNCONFIRMED`, whose whole content is
+ * "read the field back before doing anything else".
+ */
+async function evaluateClearStep(
+  api: ChromiumCdpApi,
+  script: string,
+  stage: string
+): Promise<unknown> {
+  try {
+    return await api.evaluate(script, { returnByValue: true });
+  } catch (err) {
+    if (getFailureSignal(err)?.error_kind !== "timeout") throw err;
+    throw new FailureError(
+      "the renderer did not answer the clear in time, so whether the field was emptied is unknown — " +
+        "the delete is NOT cancelled by the timeout and can still land once the renderer is free. Do " +
+        "not retry blind and do not type into the field: read it back first (`describe`), then clear " +
+        "or type according to what it actually holds. A renderer this busy is ordinary during QA; it " +
+        "is not a reason to restart the app.",
+      {
+        error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED,
+        failure_stage: stage,
+        failure_area: "tool_server",
+        error_kind: "timeout",
+        failure_command: "cdp",
+      },
+      { cause: err instanceof Error ? err : undefined }
+    );
+  }
+}
+
 async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
-  const outcome = (await api.evaluate(CLEAR_FOCUSED_EDITABLE_SCRIPT, {
-    returnByValue: true,
-  })) as ClearOutcome | null;
+  const outcome = (await evaluateClearStep(
+    api,
+    CLEAR_FOCUSED_EDITABLE_SCRIPT,
+    "keyboard_clear_chromium_timeout"
+  )) as ClearOutcome | null;
   const focus = outcome?.focus;
   if (outcome?.cleared !== true) {
     // Two different refusals, two different repairs, so two codes. This one is
@@ -165,9 +211,13 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
       }
     );
   }
-  const readback = (await api.evaluate(CLEAR_READBACK_SCRIPT, {
-    returnByValue: true,
-  })) as ReadbackOutcome | null;
+  const readback = (await evaluateClearStep(
+    api,
+    CLEAR_READBACK_SCRIPT,
+    // Its own stage: here the delete has ALREADY been accepted, so the unknown
+    // is what the field holds now, not whether anything happened.
+    "keyboard_clear_chromium_readback_timeout"
+  )) as ReadbackOutcome | null;
   // Only a field that is still the focused one, and still readable, can
   // contradict the delete. `remaining: null` means focus moved to something with
   // no value to read, which is not evidence of anything.
