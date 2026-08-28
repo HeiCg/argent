@@ -961,6 +961,22 @@ function writeJsonStreamError(err: unknown): void {
 }
 
 /**
+ * The `--json` answer for a run that produced no report at all. `--json-stream`
+ * and the directory form both emit something machine-readable there, so a
+ * refused single-flow run gave a `jq` pipeline zero bytes and exit 1, which
+ * reads as a crash rather than a verdict. Keys match the directory form's
+ * per-flow entry.
+ */
+function jsonFailure(message: string, err: unknown): Record<string, unknown> {
+  return {
+    ok: false,
+    error: message,
+    ...(err instanceof ToolInvocationError && err.errorCode ? { errorCode: err.errorCode } : {}),
+    ...(err instanceof ToolInvocationError && err.errorKind ? { errorKind: err.errorKind } : {}),
+  };
+}
+
+/**
  * Durable diff output: copy failed-snapshot images out of the tool-server's
  * cache before any renderer prints paths, so every output mode shows the
  * durable location. The only artifact bytes the CLI ever fetches; baseUrl is
@@ -989,9 +1005,10 @@ interface BatchFlowResult {
   /** Why a skipped flow was skipped — its unmet `requires`, or the batch stop. */
   skipReason?: string;
   /**
-   * The rejection's classification, on a flow the tool-server threw on — what
-   * separates an unverifiable `requires:` probe from an invalid file. A flow
-   * that ran and failed carries neither.
+   * The classification of what the tool-server threw, on a flow it rejected or
+   * skipped — what separates a `requires:` skip from the batch stop, and an
+   * unverifiable probe from an invalid file. A flow that ran and failed carries
+   * neither.
    */
   errorCode?: string;
   errorKind?: string;
@@ -1109,7 +1126,13 @@ async function runFlowDirectory(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (err instanceof ToolInvocationError && err.errorCode === REQUIREMENTS_UNMET_CODE) {
-        results.push({ path: rel, status: "skip", skipReason: message });
+        results.push({
+          path: rel,
+          status: "skip",
+          skipReason: message,
+          errorCode: err.errorCode,
+          ...(err.errorKind ? { errorKind: err.errorKind } : {}),
+        });
         if (!args.json) console.log(`  ${STATUS_GLYPH.skip} skipped — ${message}`);
         continue;
       }
@@ -1232,8 +1255,12 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     printHelp(jsonStream);
     return;
   }
+  // Scanned the same way, and for the same reason: a --json consumer pipes
+  // stdout into jq, and a run that produces no report must still answer there.
+  const json = rest.some((tok) => tok === "--json" || tok.startsWith("--json="));
   const fail = (message: string, code: number, err: unknown = message): Promise<never> => {
     if (jsonStream) writeJsonStreamError(err);
+    else if (json) console.log(JSON.stringify(jsonFailure(message, err), null, 2));
     console.error(message);
     return exitAfterFlush(code);
   };

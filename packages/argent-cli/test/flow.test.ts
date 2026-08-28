@@ -1844,15 +1844,47 @@ describe("argent flow run <dir>", () => {
     const parsed = JSON.parse(logs.join("\n")) as {
       ok: boolean;
       skipped: number;
-      flows: { status: string; skipReason?: string }[];
+      flows: { status: string; skipReason?: string; errorCode?: string; errorKind?: string }[];
     };
     expect(parsed.ok).toBe(false);
     expect(parsed.skipped).toBe(2);
     expect(parsed.flows.every((f) => f.status === "skip")).toBe(true);
     expect(parsed.flows[0]?.skipReason).toBe("requires unmet");
+    // Both skip reasons are `status: "skip"`, so without the code a consumer
+    // separates an unmet requirement from the batch stop by matching prose.
+    expect(parsed.flows[0]?.errorCode).toBe("FLOW_REQUIREMENTS_UNMET");
+    expect(parsed.flows[0]?.errorKind).toBe("validation");
     // The explanation still reaches stderr with --json: a CI leg that archives
     // stdout and surfaces stderr must not get an exit-2 build with an empty log.
     expect(errs.join("\n")).toContain("No step executed");
+  });
+
+  it("answers on stdout when a single-flow --json run is refused", async () => {
+    // The per-platform CI matrix the docs recommend pipes exactly this form
+    // into jq; zero bytes and exit 1 read as a crash rather than a verdict.
+    toolsClientMock.callTool.mockRejectedValue(
+      new ToolInvocationError("requires unmet", {
+        errorCode: "FLOW_REQUIREMENTS_UNMET",
+        errorKind: "validation",
+      })
+    );
+
+    await expect(
+      flow(["run", path.join(flowsDir, "a-login.yaml"), "--json"], opts)
+    ).rejects.toThrow("process.exit:1");
+
+    const parsed = JSON.parse(logs.join("\n")) as {
+      ok: boolean;
+      error: string;
+      errorCode?: string;
+      errorKind?: string;
+    };
+    expect(parsed).toMatchObject({
+      ok: false,
+      error: "requires unmet",
+      errorCode: "FLOW_REQUIREMENTS_UNMET",
+      errorKind: "validation",
+    });
   });
 
   // The pre-`requires:` idiom for platform-specific flows: every step behind a
