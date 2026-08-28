@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { FileInputSpec, ToolDefinition } from "@argent/registry";
 import {
+  assertRequiresSatisfiable,
   countStepsOnDisk,
   describeRequires,
   getFlowPath,
@@ -181,8 +182,13 @@ costs the finish the cross-tree verdicts anchored to them.`,
           ...(carried ? { requires: carried } : {}),
           steps: [],
         };
-        // skipRequires: the carried block is preserved verbatim, not judged -
-        // flow-finish-recording and the run path are the gates.
+        // skipRequires: the carried block's two step-dependent checks wait for
+        // flow-finish-recording and the run path, since recording is what can
+        // settle them. The third is decidable from the block alone and never
+        // will be, so a take is refused rather than driven live and failed at
+        // the finish. Ahead of the truncating write, so the file keeps the
+        // block for the author to fix.
+        assertRequiresSatisfiable(carried);
         validateFlow(flow, { skipRequires: true });
         const flowFile = serializeFlow(flow);
 

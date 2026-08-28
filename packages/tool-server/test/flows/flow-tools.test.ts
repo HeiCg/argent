@@ -368,11 +368,12 @@ describe("flow-start-recording edge cases", () => {
     expect(parseFlow(await readFlowFile("fenced-live")).requires).toEqual(requires);
   });
 
-  it("carries a block no target can satisfy, so the re-record that repairs it can start", async () => {
-    // The block parses, so it comes back from the disk read intact and lands on
-    // the reset flow. Judging it here would throw at the START of the recording,
-    // leaving a hand-edit as the only repair for the file the author came here
-    // to replace.
+  it("refuses a start carrying a block no target can satisfy", async () => {
+    // The two step-dependent checks wait for the finish, since recording is
+    // what settles them. This one never becomes satisfiable, so letting the
+    // take start means driving a whole session live against a device only to
+    // fail at the end. Re-recording is no repair either: the block is carried
+    // forward verbatim, so a hand-edit is the fix from here as well.
     await flowStartRecordingTool.execute(
       {},
       { name: "unsatisfiable", project_root: tmpDir, executionPrerequisite: PREREQ }
@@ -381,20 +382,16 @@ describe("flow-start-recording edge cases", () => {
     expect(() => parseFlow(impossible)).toThrow(/can never be satisfied/);
     await fs.writeFile(path.join(flowsDirFor(tmpDir), "unsatisfiable.yaml"), impossible, "utf8");
 
-    const result = await flowStartRecordingTool.execute(
-      {},
-      { name: "unsatisfiable", project_root: tmpDir, executionPrerequisite: PREREQ }
-    );
+    await expect(
+      flowStartRecordingTool.execute(
+        {},
+        { name: "unsatisfiable", project_root: tmpDir, executionPrerequisite: PREREQ }
+      )
+    ).rejects.toThrow(/no platform it names \(chromium\) is ever "tv"/);
 
-    const requires = { platform: ["chromium" as const], runtimeKind: "tv" as const };
-    expect(result.restarted).toBe(true);
-    expect(result.message).toContain(
-      "Kept the existing requires block (platform: [chromium], runtimeKind: tv)"
-    );
-    expect(parseFlow(result.flowFile, { skipRequires: true }).requires).toEqual(requires);
-    expect(parseFlow(await readFlowFile("unsatisfiable"), { skipRequires: true }).requires).toEqual(
-      requires
-    );
+    // Refused ahead of the truncating write, so the block is still on disk for
+    // the author to edit.
+    expect(await readFlowFile("unsatisfiable")).toBe(impossible);
   });
 
   it("carries the take's requires block when the flow file was deleted between two starts", async () => {

@@ -3104,6 +3104,23 @@ function vacuousScopeFailure(
   );
 }
 
+/**
+ * The one {@link validateRequires} check decidable from the block alone: a
+ * platform list and a runtimeKind naming no common target. Recording more steps
+ * can never settle it, unlike the two that judge the steps, so the recording
+ * path refuses it at the start rather than after a whole take.
+ */
+export function assertRequiresSatisfiable(requires: FlowRequires | undefined): void {
+  if (!requires) return;
+  const { platform, runtimeKind } = requires;
+  if (platform && runtimeKind && !platform.some((p) => platformCanPresent(p, runtimeKind))) {
+    throw unsatisfiable(
+      `no platform it names (${platform.join(", ")}) is ever "${runtimeKind}" — ` +
+        `vega is always tv and chromium never is`
+    );
+  }
+}
+
 function unsatisfiable(detail: string): FailureError {
   return new FailureError(`This flow's requires block can never be satisfied: ${detail}`, {
     error_code: FAILURE_CODES.FLOW_REQUIRES_UNSATISFIABLE,
@@ -3124,14 +3141,7 @@ function unsatisfiable(detail: string): FailureError {
 function validateRequires(flow: FlowFile): void {
   const requires = flow.requires;
   if (!requires) return;
-  const { platform, runtimeKind } = requires;
-
-  if (platform && runtimeKind && !platform.some((p) => platformCanPresent(p, runtimeKind))) {
-    throw unsatisfiable(
-      `no platform it names (${platform.join(", ")}) is ever "${runtimeKind}" — ` +
-        `vega is always tv and chromium never is`
-    );
-  }
+  assertRequiresSatisfiable(requires);
 
   const detail =
     vacuousScopeFailure([{ steps: flow.steps }], requires) ??
