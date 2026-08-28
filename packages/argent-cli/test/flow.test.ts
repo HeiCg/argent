@@ -1995,9 +1995,11 @@ describe("argent flow run <dir>", () => {
     expect(errs.join("\n")).not.toContain("No step executed");
   });
 
-  // The `tool:` spelling of the same composition, hand-authored: one step
-  // reporting work performed entirely inside another flow.
-  const wrapperPass = (): Record<string, unknown> =>
+  // The `tool:` spelling of the same composition, hand-authored and what
+  // `flow-add-step` keeps for every target of a remote recording: one step
+  // reporting a run performed entirely inside another flow, whose own report
+  // is the only place that run's steps appear.
+  const wrapperPass = (nested: Record<string, unknown>[]): Record<string, unknown> =>
     report({
       flow: "b-checkout",
       ok: true,
@@ -2005,15 +2007,30 @@ describe("argent flow run <dir>", () => {
       failed: 0,
       errored: 0,
       skipped: 0,
-      steps: [{ index: 0, kind: "tool", tool: "flow-execute", status: "pass" }],
+      steps: [
+        {
+          index: 0,
+          kind: "tool",
+          tool: "flow-execute",
+          status: "pass",
+          result: report({ flow: "inner", steps: nested }),
+        },
+      ],
     });
 
-  it("exits 2 when the only executing step was a tool: flow-execute wrapper", async () => {
+  const WRAPPED_WORK: Record<string, unknown>[] = [
+    { index: 0, kind: "tool", tool: "screenshot", status: "pass" },
+  ];
+  const WRAPPED_NOTHING: Record<string, unknown>[] = [
+    { index: 0, kind: "tool", tool: "screenshot", status: "skip" },
+  ];
+
+  it("exits 2 when a tool: flow-execute wrapper's own run did nothing", async () => {
     // Every authored step under the wrapper skipped, so adding one file that
     // only delegates must not flip the batch from NONE RAN to green.
     toolsClientMock.callTool
       .mockResolvedValueOnce({ data: vacuousPass() })
-      .mockResolvedValueOnce({ data: wrapperPass() });
+      .mockResolvedValueOnce({ data: wrapperPass(WRAPPED_NOTHING) });
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
 
@@ -2021,8 +2038,37 @@ describe("argent flow run <dir>", () => {
     expect(errs.join("\n")).toContain("No step executed");
   });
 
+  it("stays PASS when a tool: flow-execute wrapper's own run executed a step", async () => {
+    // The direction that matters: a `run:` marker's fragment expands into this
+    // same flat list and is counted there, but a wrapper's sub-run never enters
+    // it, so discounting the wrapper counts that work nowhere and a directory
+    // of wrapper flows is permanently red.
+    toolsClientMock.callTool
+      .mockResolvedValueOnce({ data: vacuousPass() })
+      .mockResolvedValueOnce({ data: wrapperPass(WRAPPED_WORK) });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:0");
+
+    expect(logs.join("\n")).toContain("PASS — 2 flows: 2 passed, 0 failed, 0 skipped");
+    expect(errs.join("\n")).not.toContain("No step executed");
+  });
+
+  it("counts a wrapper that reported no run of its own as the one step it is", async () => {
+    // Nothing to look into, so the honest reading is that the step ran.
+    toolsClientMock.callTool.mockResolvedValueOnce({
+      data: report({
+        flow: "a-login",
+        steps: [{ index: 0, kind: "tool", tool: "flow-execute", status: "pass" }],
+      }),
+    });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:0");
+
+    expect(errs.join("\n")).not.toContain("No step executed");
+  });
+
   it("stays PASS when a tool step other than the wrapper executed", async () => {
-    // Only `flow-execute` is discounted — every other `tool:` step is work.
+    // Only `flow-execute` is looked into — every other `tool:` step is work.
     toolsClientMock.callTool
       .mockResolvedValueOnce({
         data: report({
@@ -2030,7 +2076,7 @@ describe("argent flow run <dir>", () => {
           steps: [{ index: 0, kind: "tool", tool: "screenshot", status: "pass" }],
         }),
       })
-      .mockResolvedValueOnce({ data: wrapperPass() });
+      .mockResolvedValueOnce({ data: wrapperPass(WRAPPED_NOTHING) });
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:0");
 

@@ -40,6 +40,11 @@ export interface StepReport {
   /** Baseline key stem, on artifact-bearing snapshot steps. */
   snapshotKey?: string;
   /**
+   * A `tool:` step's raw tool result. Read only off a nested `flow-execute`,
+   * whose own run report is the one place that run's steps appear.
+   */
+  result?: unknown;
+  /**
    * Snapshot-step artifacts keyed by role (baseline/current/diff). Arrives as
    * artifact handles; by render time each is a string — a durable local copy
    * for the failed snapshots `--output` exports, otherwise the handle's
@@ -1008,18 +1013,39 @@ const REQUIREMENTS_UNMET_CODE: string = FAILURE_CODES.FLOW_REQUIREMENTS_UNMET;
  * own summary omits too. Hand-mirrored, not imported: the CLI takes no
  * tool-server dependency and types `kind` as a bare string, so a marker kind
  * added there has to be added here as well or this guard silently reopens.
- * NESTED_FLOW_TOOL is the fourth such shape, kept beside the set because its
- * kind is `tool`, not a marker kind of its own.
  */
 const NON_EXECUTING_STEP_KINDS: ReadonlySet<string> = new Set(["when", "run", "echo"]);
 
 /**
- * The `tool:` spelling of a composition — hand-authored only, since the
- * recorder captures a recorded flow-execute as `run:`. Its report is one step
- * for work performed entirely inside another flow, so it proves no more than
- * the `run:` marker does.
+ * The `tool:` spelling of a composition — hand-authored, and what
+ * `flow-add-step` keeps for every target of a remote recording. Unlike a `run:`
+ * marker, whose fragment's steps are expanded into this same flat list, its
+ * sub-run's steps live only in its own report, so its work is counted there.
  */
 const NESTED_FLOW_TOOL = "flow-execute";
+
+/**
+ * Steps that did work of their own, over a report and the reports nested in it.
+ * A `flow-execute` wrapper is one line standing for a whole run performed
+ * elsewhere: discounting it counts that run nowhere, so a directory of wrapper
+ * flows reported every flow PASS and then exited 2 under NONE RAN. A wrapper
+ * that produced no report of its own is counted as the one step it is.
+ */
+function countExecutedSteps(steps: StepReport[]): number {
+  let executed = 0;
+  for (const step of steps) {
+    if (NON_EXECUTING_STEP_KINDS.has(step.kind) || step.status === "skip") continue;
+    const nested = step.tool === NESTED_FLOW_TOOL ? nestedRunSteps(step) : undefined;
+    executed += nested ? countExecutedSteps(nested) : 1;
+  }
+  return executed;
+}
+
+/** A nested run's step reports, off the report a `flow-execute` step carries. */
+function nestedRunSteps(step: StepReport): StepReport[] | undefined {
+  const steps = (step.result as { steps?: unknown } | undefined)?.steps;
+  return Array.isArray(steps) ? (steps as StepReport[]) : undefined;
+}
 
 /**
  * Run every discovered flow in `dir` sequentially. Reports failures only (no
@@ -1140,17 +1166,7 @@ async function runFlowDirectory(
   // step each contribute a passing marker to that count, so one guarded or
   // composed flow would satisfy the guard on its own while every authored step
   // under it was skipped.
-  const executedSteps = results.reduce(
-    (n, r) =>
-      n +
-      (r.report?.steps ?? []).filter(
-        (s) =>
-          !NON_EXECUTING_STEP_KINDS.has(s.kind) &&
-          s.tool !== NESTED_FLOW_TOOL &&
-          s.status !== "skip"
-      ).length,
-    0
-  );
+  const executedSteps = results.reduce((n, r) => n + countExecutedSteps(r.report?.steps ?? []), 0);
   const ranNothing = counts.failed === 0 && counts.total > 0 && executedSteps === 0;
   if (args.json) {
     console.log(
