@@ -2180,6 +2180,25 @@ describe("argent flow run <dir>", () => {
     expect(errs.join("\n")).toContain("No step executed");
   });
 
+  it("exits 2 when the only flow-level pass waited and did nothing else", async () => {
+    // A `wait:` acts on no device and proves strictly less about the scenario
+    // than an `echo:` does, so it cannot be the step that greens a batch an
+    // echo-only flow reds.
+    toolsClientMock.callTool
+      .mockResolvedValueOnce({
+        data: report({
+          flow: "a-login",
+          passed: 1,
+          steps: [{ index: 0, kind: "wait", status: "pass" }],
+        }),
+      })
+      .mockRejectedValueOnce(requiresUnmet());
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:2");
+
+    expect(errs.join("\n")).toContain("No step executed");
+  });
+
   it("keeps FAIL and exit 1 when a vacuous pass sits beside a failed flow", async () => {
     toolsClientMock.callTool.mockResolvedValueOnce({ data: vacuousPass() }).mockResolvedValueOnce({
       data: report({

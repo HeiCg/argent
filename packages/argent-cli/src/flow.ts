@@ -1010,11 +1010,12 @@ const REQUIREMENTS_UNMET_CODE: string = FAILURE_CODES.FLOW_REQUIREMENTS_UNMET;
  * Step kinds that prove no work of their own: the `when:` and `run:` markers,
  * whose guarded and composed steps are expanded into the same flat step list
  * and counted there instead, plus `echo:` narration, which the tool-server's
- * own summary omits too. Hand-mirrored, not imported: the CLI takes no
- * tool-server dependency and types `kind` as a bare string, so a marker kind
+ * own summary omits too, and `wait:`, which acts on no device and so proves
+ * strictly less than an echo does. Hand-mirrored, not imported: the CLI takes
+ * no tool-server dependency and types `kind` as a bare string, so a marker kind
  * added there has to be added here as well or this guard silently reopens.
  */
-const NON_EXECUTING_STEP_KINDS: ReadonlySet<string> = new Set(["when", "run", "echo"]);
+const NON_EXECUTING_STEP_KINDS: ReadonlySet<string> = new Set(["when", "run", "echo", "wait"]);
 
 /**
  * The `tool:` spelling of a composition — hand-authored, and what
