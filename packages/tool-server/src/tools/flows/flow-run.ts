@@ -1343,7 +1343,8 @@ async function resolveRunDevice(
   viaUpload: boolean
 ): Promise<{ device: DeviceInfo | null; booted: BootedChromium | null }> {
   if (!params.device) {
-    const spec = leading.launch && chromiumBootSpec(leading.launch.app, params.platform);
+    const spec =
+      leading.launch && chromiumBootSpec(leading.launch.app, params.platform, leading.requires);
     if (spec) {
       // The hoist commits the run to chromium, so its requirements are
       // decidable here — judged against the leading chain's folded requires,
@@ -1695,23 +1696,30 @@ async function scanLeadingLaunch(
  */
 function chromiumBootSpec(
   app: Launch,
-  platform: string | undefined
+  platform: string | undefined,
+  requires: FlowRequires | undefined
 ): { path: string; args?: string[] } | null {
-  if (launchTargetPlatform(app, platform) !== "chromium") return null;
+  if (launchTargetPlatform(app, platform, requires) !== "chromium") return null;
   return chromiumLaunchSpec(app);
 }
 
 /**
  * The platform a leading launch targets: an explicit `platform`, else the sole
- * key of a single-key launch map. Null when ambiguous (bare string, or several
- * keys) — the caller then auto-detects a booted device.
+ * key of a single-key launch map, else the sole platform the run's `requires`
+ * admits — all three name one platform and nothing else. Null when nothing
+ * does; the caller then auto-detects a booted device.
  */
-function launchTargetPlatform(launch: Launch, platform: string | undefined): string | null {
+function launchTargetPlatform(
+  launch: Launch,
+  platform: string | undefined,
+  requires: FlowRequires | undefined
+): string | null {
   if (platform) return platform;
   if (typeof launch === "object") {
     const keys = Object.keys(launch);
     if (keys.length === 1) return keys[0]!;
   }
+  if (requires?.platform?.length === 1) return requires.platform[0]!;
   return null;
 }
 

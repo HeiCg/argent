@@ -280,6 +280,26 @@ describe("flow-execute chromium boot", () => {
     ]);
   });
 
+  it("boots when a one-platform requires block is the launch's only chromium hint", async () => {
+    // A bare-string launch names no platform, so without reading the block the
+    // hoist stands down and the run falls through to device auto-detection,
+    // which refuses a fence no booted device satisfies.
+    const flowFile = await writeFlow(
+      "requires:\n  platform: [chromium]\nsteps:\n  - launch: ./app\n"
+    );
+    const registry = makeRegistry();
+
+    const result = await runFlow(registry, {
+      name: "fenced",
+      project_root: PROJECT_ROOT,
+      flow_file: flowFile,
+    });
+
+    expect(bootElectronApp).toHaveBeenCalledTimes(1);
+    expect(result.device).toBe("chromium-cdp-12345");
+    expect(result.ok).toBe(true);
+  });
+
   it("takes an absolute launch path as-is", async () => {
     const flowFile = await writeFlow("steps:\n  - launch: { chromium: /abs/app }\n");
     const registry = makeRegistry();
