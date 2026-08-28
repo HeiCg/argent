@@ -114,18 +114,22 @@ const chromiumEntry = (id: string): ListedDevice => ({
   state: "Running",
   id,
 });
+// Both carry a runtimeKind, as the real payload does: listDeviceSetSimulators
+// reads one off the runtime id of every iOS row it emits, and
+// IosRemoteDevice.runtimeKind is not optional. Only an android row can lack it.
 /** A row auto-detection never considers, but a refusal must still enumerate. */
-const shutdownIosEntry = (udid: string): ListedDevice => ({
+const shutdownIosEntry = (udid: string, runtimeKind: "mobile" | "tv" = "mobile"): ListedDevice => ({
   platform: "ios",
   state: "Shutdown",
   udid,
+  runtimeKind,
 });
 /** The other such row: a remote sim, whose id `list-devices` reports in `udid`. */
-const remoteIosEntry = (udid: string, runtimeKind?: "mobile" | "tv"): ListedDevice => ({
+const remoteIosEntry = (udid: string, runtimeKind: "mobile" | "tv" = "mobile"): ListedDevice => ({
   platform: "ios-remote",
   state: "Booted",
   udid,
-  ...(runtimeKind ? { runtimeKind } : {}),
+  runtimeKind,
 });
 
 /** A single step that needs a device and always succeeds. */
@@ -1115,7 +1119,7 @@ describe("requirements narrow device auto-detection", () => {
     const err = await run(registry, "tv-only").catch((e: unknown) => e);
 
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNVERIFIABLE);
-    expect((err as Error).message).toMatch(new RegExp(`${IOS} \\(ios, Shutdown, kind unknown\\)`));
+    expect((err as Error).message).toMatch(new RegExp(`${IOS} \\(ios, Shutdown, mobile\\)`));
   });
 
   it("enumerates only what --device can name on the barred-survivor arm", async () => {
@@ -1147,7 +1151,7 @@ describe("requirements narrow device auto-detection", () => {
     const err = await run(registry, "tv-only").catch((e: unknown) => e);
 
     expect((err as Error).message).toMatch(
-      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, kind unknown, needs --device\\)`)
+      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, mobile, needs --device\\)`)
     );
     expect((err as Error).message).not.toMatch(/\? \(ios-remote/);
   });
