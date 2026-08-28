@@ -21,6 +21,11 @@ on:
     paths:
       - "packages/tool-server/src/tools/tv-remote/**"
       - "packages/tool-server/src/tools/keyboard/index.ts"
+      # The Vega backend and the shared TV refusal both live under
+      # platforms/, so a change that only edits one of those — the
+      # follow-up that gives Vega a real `clear`, for one — must still
+      # run the job that asserts today's refusal.
+      - "packages/tool-server/src/tools/keyboard/platforms/**"
       - "packages/tool-server/src/tools/screenshot/index.ts"
       - "packages/tool-server/src/tools/describe/platforms/vega/**"
       - "packages/tool-server/src/tools/describe/platforms/vega.ts"

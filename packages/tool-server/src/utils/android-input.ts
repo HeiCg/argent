@@ -123,10 +123,12 @@ export async function injectAndroidKeycode(serial: string, keycode: number): Pro
   await adbShell(serial, `input keyevent ${keycode}`, { timeoutMs: ADB_INPUT_TIMEOUT_MS });
 }
 
-// KEYCODE_DEL and KEYCODE_FORWARD_DEL, the two keys the `clear` burst pairs.
-// Neither is reachable through `ANDROID_NAMED_KEYCODES`: `delete` there means
-// backspace (the shared HID vocabulary), and nothing names the forward one.
-const KEYCODE_DEL = 67;
+// KEYCODE_FORWARD_DEL, the forward half of the pair the `clear` burst sends.
+// Nothing in `ANDROID_NAMED_KEYCODES` names it: `delete` there is KEYCODE_DEL,
+// backspace, following the shared HID vocabulary in
+// ../tools/keyboard/key-codes.ts. The backward half is that same
+// `ANDROID_NAMED_KEYCODES.backspace`, read from the table rather than repeated,
+// so a change to the named key cannot silently disagree with the burst.
 const KEYCODE_FORWARD_DEL = 112;
 
 // The burst's own budget, and NOT `ADB_INPUT_TIMEOUT_MS`: that one is sized for
@@ -162,7 +164,8 @@ const ADB_CLEAR_TIMEOUT_MS = 90_000;
  */
 export async function injectAndroidClear(serial: string): Promise<void> {
   const codes: number[] = [];
-  for (let i = 0; i < CLEAR_KEY_PAIRS; i++) codes.push(KEYCODE_DEL, KEYCODE_FORWARD_DEL);
+  const backspace = ANDROID_NAMED_KEYCODES.backspace!;
+  for (let i = 0; i < CLEAR_KEY_PAIRS; i++) codes.push(backspace, KEYCODE_FORWARD_DEL);
   try {
     await adbShell(serial, `input keyevent ${codes.join(" ")}`, {
       timeoutMs: ADB_CLEAR_TIMEOUT_MS,

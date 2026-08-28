@@ -31,6 +31,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Exported for test/keyboard-clear-chromium-script.test.ts, which evals it
 // against a mock document to lock in the editable/refusal classification.
 export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
+  try {
   let el = document.activeElement;
   // A custom element hands focus down into its shadow root, where the real
   // <input> lives; document.activeElement only ever names the host.
@@ -41,6 +42,12 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // as "text", so a bare <input> is a text field here as it is in the page.
   const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
   const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
+  // Every refusal below carries its own \`reason\`, because the two repairs are
+  // opposites and an agent given the wrong one loops: "tap the field" is the fix
+  // ONLY where focus is on the wrong element. Where the focused element is the
+  // right one and simply cannot be cleared — readonly, disabled, a non-text
+  // input — tapping it again changes nothing.
+  //
   // \`document.designMode = "on"\` and <body contenteditable> make the DOCUMENT
   // its own editing host, and document.activeElement defaults to <body> — so a
   // clear that has been aimed at nothing passes every editability test below and
@@ -50,15 +57,24 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   if (el && (el === document.body || el === document.documentElement) && el.isContentEditable === true) {
     return { cleared: false, focus: focus, reason: "document-editable" };
   }
-  const editable =
-    !!el &&
-    !el.disabled &&
-    !el.readOnly &&
-    ((tag === "input" &&
-      !/^(button|checkbox|radio|file|submit|reset|image|range|color)$/.test(type)) ||
-      tag === "textarea" ||
-      el.isContentEditable === true);
-  if (!editable) return { cleared: false, focus: focus, reason: "not-editable" };
+  // Checked before \`disabled\`/\`readOnly\`, so a \`<input type=checkbox readonly>\`
+  // is reported by the thing that actually makes it unclearable.
+  if (tag === "select" ||
+      (tag === "input" && /^(button|checkbox|radio|file|submit|reset|image|range|color)$/.test(type))) {
+    return { cleared: false, focus: focus, reason: "not-a-text-field" };
+  }
+  if (el && el.disabled === true) return { cleared: false, focus: focus, reason: "disabled" };
+  if (el && el.readOnly === true) return { cleared: false, focus: focus, reason: "readonly" };
+  const editable = !!el && (tag === "input" || tag === "textarea" || el.isContentEditable === true);
+  // A CLOSED shadow root is opaque to script: \`el.shadowRoot\` is null, so the
+  // descent above stopped on the host and the tag test cannot see the <input>
+  // that actually holds focus. The browser's own editing commands DO reach it,
+  // so the host is tried rather than refused. Measured on Chrome 151: \`delete\`
+  // answers true and empties the inner field, and false for a host with nothing
+  // editable inside, leaving the rest of the page untouched either way. The same
+  // opacity means the value cannot be read back, hence \`verifiable: false\`.
+  const opaqueHost = !editable && !!el && !el.shadowRoot && tag !== null && tag.indexOf("-") !== -1;
+  if (!editable && !opaqueHost) return { cleared: false, focus: focus, reason: "not-editable" };
   document.execCommand("selectAll");
   // The cheap half of the check, and it is exact for the fields it does answer
   // for. Measured on Chrome 151: \`delete\` answers true for every element that
@@ -69,9 +85,20 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // nothing else distinguishes them). What it does NOT answer for is an editor
   // that restores the value afterwards, which is what the read-back below is for.
   if (!document.execCommand("delete")) {
-    return { cleared: false, focus: focus, reason: "delete-refused" };
+    // \`selectAll\` has already run, and on a field it then refuses it selects the
+    // WHOLE DOCUMENT (measured on Chrome 151 for a focused date input). Left
+    // behind, that highlight reaches the next screenshot and every screenshot-diff.
+    const sel = document.getSelection();
+    if (sel) sel.removeAllRanges();
+    return { cleared: false, focus: focus, reason: opaqueHost ? "host-opaque" : "delete-refused" };
   }
-  return { cleared: true, focus: focus };
+  return { cleared: true, focus: focus, verifiable: !opaqueHost };
+  } catch (err) {
+    // A page can replace or delete \`document.execCommand\` — editors and
+    // polyfills do. Without this the throw leaves \`result.value\` undefined,
+    // which reads as a refusal: the wrong cause, with the wrong repair.
+    return { cleared: false, reason: "script-error", detail: String((err && err.message) || err) };
+  }
 })()`;
 
 // Run as a SECOND evaluate, so the microtask checkpoint that ends the clear
@@ -111,12 +138,41 @@ interface ClearOutcome {
   cleared?: boolean;
   focus?: string | null;
   reason?: string;
+  detail?: string;
+  verifiable?: boolean;
 }
 
 interface ReadbackOutcome {
   focus?: string | null;
   remaining?: number | null;
 }
+
+/**
+ * The refusals whose repair is NOT "tap the field": the focused element is
+ * already the one the caller meant, and it still cannot be cleared. They get
+ * `KEYBOARD_CLEAR_UNSUPPORTED_FIELD` rather than `..._NO_EDITABLE_FOCUS`,
+ * because an agent told to tap a field it has already tapped loops forever.
+ *
+ * Each entry completes the sentence `the focused <X> …`.
+ */
+const UNCLEARABLE_FIELD_MESSAGES: Record<string, string> = {
+  "readonly":
+    "is `readonly` — nothing was cleared, and nothing can be: a read-only field ignores every edit, " +
+    "including this one. It already has keyboard focus, so tapping it again will not help. Change it " +
+    "through the app's own control, or clear a different field.",
+  "disabled":
+    "is `disabled` — nothing was cleared, and nothing can be until the app enables it. It already has " +
+    "keyboard focus, so tapping it again will not help.",
+  "not-a-text-field":
+    "holds no text to clear — nothing was cleared. It already has keyboard focus, so tapping it again " +
+    "will not help; set it through the app's own control (`gesture-tap` an option, `gesture-drag` a " +
+    "slider), or clear a different field.",
+  "host-opaque":
+    "is a custom element whose internals this clear cannot see — it exposes no open shadow root — and " +
+    "it refused the delete, so nothing was cleared and nothing inside it can be read to say why. Tap " +
+    "the field inside it (`gesture-tap`) if it exposes one, or select the text with `gesture-drag` and " +
+    "type over the selection instead.",
+};
 
 /**
  * Run one of the two clear scripts, re-stating a CDP wait that ran out.
@@ -162,6 +218,14 @@ async function evaluateClearStep(
   }
 }
 
+function unclearableField(message: string, stage: string): InvalidToolInputError {
+  return new InvalidToolInputError(message, {
+    error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
+    failure_stage: stage,
+    error_kind: "unsupported",
+  });
+}
+
 async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   const outcome = (await evaluateClearStep(
     api,
@@ -170,21 +234,39 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   )) as ClearOutcome | null;
   const focus = outcome?.focus;
   if (outcome?.cleared !== true) {
+    const reason = outcome?.reason;
+    // Nothing was classified and nothing was sent: the page broke the script.
+    // Bucketed with the field kinds because a retry of the same call on the same
+    // page fails identically — it is not a focus problem.
+    if (reason === "script-error") {
+      throw unclearableField(
+        "the page raised an error while clearing, so nothing was cleared: " +
+          (outcome?.detail ?? "no detail") +
+          ". A page that replaces or removes `document.execCommand` cannot be cleared this way — " +
+          "select the text with `gesture-drag` and type over the selection instead.",
+        "keyboard_clear_chromium_script_error"
+      );
+    }
     // Two different refusals, two different repairs, so two codes. This one is
     // about the KIND of field, not about focus: the element is editable by
     // every signal the script can read, and the delete still did not land.
-    if (outcome?.reason === "delete-refused") {
-      throw new InvalidToolInputError(
+    if (reason === "delete-refused") {
+      throw unclearableField(
         `the focused <${focus ?? "input"}> kept its value — nothing was cleared. Chromium's ` +
           "date and time inputs (date, datetime-local, month, week, time) hold a structured " +
           "value that a select-and-delete cannot remove. Clear that one with `keyboard` " +
           '`{ key: "backspace" }` while it has focus — one press empties it — or set it ' +
           "through the app's own control.",
-        {
-          error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
-          failure_stage: "keyboard_clear_chromium_refused",
-          error_kind: "unsupported",
-        }
+        "keyboard_clear_chromium_refused"
+      );
+    }
+    const unclearable = reason === undefined ? undefined : UNCLEARABLE_FIELD_MESSAGES[reason];
+    if (reason !== undefined && unclearable !== undefined) {
+      throw unclearableField(
+        `the focused <${focus ?? "element"}> ${unclearable}`,
+        // One stage per reason, so the four are separable in telemetry — they
+        // are four different app-side causes with four different repairs.
+        `keyboard_clear_chromium_${reason.replace(/-/g, "_")}`
       );
     }
     // Caller input error → 400: the fix is a `gesture-tap` on the field, not a
@@ -193,7 +275,7 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     // Same code and same repair for a document-wide editing host, which is a
     // clear that has not been aimed at a field yet.
     throw new InvalidToolInputError(
-      (outcome?.reason === "document-editable"
+      (reason === "document-editable"
         ? "the whole document is editable here (`designMode` is on, or <body> carries " +
           "`contenteditable`) and keyboard focus is still on it rather than on a field, so " +
           "clearing would have emptied the ENTIRE page"
@@ -211,6 +293,10 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
       }
     );
   }
+  // A closed shadow root answered the delete but cannot be read back through it
+  // either. `delete` returning true is the whole evidence there is — and it is
+  // the same evidence the browser itself acted on.
+  if (outcome.verifiable === false) return { typed: "", keys: 0, cleared: true };
   const readback = (await evaluateClearStep(
     api,
     CLEAR_READBACK_SCRIPT,

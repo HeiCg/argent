@@ -62,23 +62,28 @@ describe("tool interaction messages", () => {
     // The empty request, on this formatter too. `completedMsg` appears in no
     // other test file, `startedMsg` only in this file's secret-leak check (which
     // every branch string satisfies), so neither empty-request branch is pinned
-    // anywhere else. Narrowing BOTH to `params.text === undefined &&
-    // params.key !== undefined` — so `keyboard {}` falls through to "Entering
-    // text" / "Entered text" — stays green across the whole suite once this
-    // assertion and its `completedMsg` twin below are removed. Both are
-    // load-bearing.
-    expect(keyboard.startedMsg!({ params: { udid: "device-1" } })).toBe("Pressing a key");
+    // anywhere else — both assertions here are load-bearing.
+    //
+    // It gets its OWN wording rather than falling into a typing or key-press
+    // arm, because `{}` and `{ clear: false }` are the same documented no-op and
+    // announcing either as a key press logs a press that never happened.
+    expect(keyboard.startedMsg!({ params: { udid: "device-1" } })).toBe("Using the keyboard");
     expect(keyboard.completedMsg!({ params: { udid: "device-1", text: "hi" }, result: {} })).toBe(
       "Entered text"
     );
     expect(keyboard.completedMsg!({ params: { udid: "device-1", key: "enter" }, result: {} })).toBe(
       "Pressed a key"
     );
-    // The third shape. "Pressed a key" for a call that pressed nothing is
-    // inherited, not introduced here — pinned so the wording and the no-op
-    // contract can only diverge deliberately.
     expect(keyboard.completedMsg!({ params: { udid: "device-1" }, result: {} })).toBe(
-      "Pressed a key"
+      "Used the keyboard"
+    );
+    // `{ clear: false }` means what omitting `clear` means, so it reaches the
+    // same no-op wording — not the clear wording, and not a key press.
+    expect(keyboard.startedMsg!({ params: { udid: "device-1", clear: false } })).toBe(
+      "Using the keyboard"
+    );
+    expect(keyboard.completedMsg!({ params: { udid: "device-1", clear: false }, result: {} })).toBe(
+      "Used the keyboard"
     );
     // `clear` is a fourth action with its own wording, and it is checked FIRST
     // in both formatters — otherwise `{ clear: true }`, which carries no `text`,

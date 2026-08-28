@@ -20,6 +20,8 @@ interface Outcome {
   cleared?: boolean;
   focus?: string | null;
   reason?: string;
+  detail?: string;
+  verifiable?: boolean;
 }
 
 // Chrome's own answers, measured on 151.0.7922.174 by evaluating `selectAll`
@@ -46,9 +48,17 @@ const textInput = () => el("INPUT", { type: "text" });
 function run(
   active: unknown,
   /** What the renderer's `execCommand` answers, per command name. */
-  answers: Record<string, boolean> = {}
-): { outcome: Outcome; commands: string[] } {
+  answers: Record<string, boolean> = {},
+  /**
+   * Extra `document` members. `body` / `documentElement` let a test point
+   * `activeElement` AT the document's own editing host (designMode /
+   * <body contenteditable>), which is the one refusal decided by identity.
+   * `execCommand` may also be replaced with a thrower.
+   */
+  documentExtras: Record<string, unknown> = {}
+): { outcome: Outcome; commands: string[]; selectionsDropped: number } {
   const commands: string[] = [];
+  const dropped = { count: 0 };
   const g = globalThis as Record<string, unknown>;
   const had = Object.hasOwn(g, "document");
   const saved = g.document;
@@ -58,10 +68,19 @@ function run(
       commands.push(name);
       return answers[name] ?? true;
     },
+    // A refusal reached AFTER `selectAll` has to undo it: on a field Chrome then
+    // refuses, `selectAll` selects the whole document, and that highlight would
+    // otherwise reach the next screenshot.
+    getSelection: () => ({
+      removeAllRanges() {
+        dropped.count++;
+      },
+    }),
+    ...documentExtras,
   };
   try {
     const outcome = (0, eval)(CLEAR_FOCUSED_EDITABLE_SCRIPT) as Outcome;
-    return { outcome, commands };
+    return { outcome, commands, selectionsDropped: dropped.count };
   } finally {
     if (had) g.document = saved;
     else delete g.document;
@@ -88,32 +107,77 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
     // `focus` rides along on the success too: the backend compares it with the
     // read-back's own focus, and only a read of the SAME element can contradict
     // the delete.
-    expect(outcome).toEqual({ cleared: true, focus });
+    expect(outcome).toEqual({ cleared: true, focus, verifiable: true });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
   // The refusals. Each one must ALSO leave the page untouched: the script
   // returns before it selects anything, so a refused clear cannot leave a
   // page-wide selection behind for the user to find.
+  //
+  // `reason` is per-case rather than one constant, because the backend picks the
+  // ERROR CODE and the repair from it, and the two repairs are opposites.
+  // "not-editable" means focus is on the wrong element, so tapping the field is
+  // the fix; every other reason here means the focused element is the right one
+  // and cannot be cleared, where tapping it again loops an agent forever.
   it.each([
-    ["a readonly input", () => el("INPUT", { type: "text", readOnly: true }), "input type=text"],
-    ["a disabled input", () => el("INPUT", { type: "text", disabled: true }), "input type=text"],
-    ["a disabled textarea", () => el("TEXTAREA", { disabled: true }), "textarea"],
-    ["a readonly textarea", () => el("TEXTAREA", { readOnly: true }), "textarea"],
-    ["a checkbox", () => el("INPUT", { type: "checkbox" }), "input type=checkbox"],
-    ["a radio", () => el("INPUT", { type: "radio" }), "input type=radio"],
-    ["a file input", () => el("INPUT", { type: "file" }), "input type=file"],
-    ["a submit button", () => el("INPUT", { type: "submit" }), "input type=submit"],
-    ["a range slider", () => el("INPUT", { type: "range" }), "input type=range"],
-    ["a colour picker", () => el("INPUT", { type: "color" }), "input type=color"],
-    ["a plain button", () => el("BUTTON", {}), "button"],
-    ["a plain div", () => el("DIV", { isContentEditable: false }), "div"],
-    ["the body (nothing focused)", () => el("BODY", {}), "body"],
-    ["an iframe", () => el("IFRAME", {}), "iframe"],
-  ])("refuses %s, naming what holds focus, and deletes nothing", (_label, make, focus) => {
+    [
+      "a readonly input",
+      () => el("INPUT", { type: "text", readOnly: true }),
+      "input type=text",
+      "readonly",
+    ],
+    [
+      "a disabled input",
+      () => el("INPUT", { type: "text", disabled: true }),
+      "input type=text",
+      "disabled",
+    ],
+    ["a disabled textarea", () => el("TEXTAREA", { disabled: true }), "textarea", "disabled"],
+    ["a readonly textarea", () => el("TEXTAREA", { readOnly: true }), "textarea", "readonly"],
+    [
+      "a checkbox",
+      () => el("INPUT", { type: "checkbox" }),
+      "input type=checkbox",
+      "not-a-text-field",
+    ],
+    ["a radio", () => el("INPUT", { type: "radio" }), "input type=radio", "not-a-text-field"],
+    ["a file input", () => el("INPUT", { type: "file" }), "input type=file", "not-a-text-field"],
+    [
+      "a submit button",
+      () => el("INPUT", { type: "submit" }),
+      "input type=submit",
+      "not-a-text-field",
+    ],
+    [
+      "a range slider",
+      () => el("INPUT", { type: "range" }),
+      "input type=range",
+      "not-a-text-field",
+    ],
+    [
+      "a colour picker",
+      () => el("INPUT", { type: "color" }),
+      "input type=color",
+      "not-a-text-field",
+    ],
+    ["a select", () => el("SELECT", {}), "select", "not-a-text-field"],
+    ["a plain button", () => el("BUTTON", {}), "button", "not-editable"],
+    ["a plain div", () => el("DIV", { isContentEditable: false }), "div", "not-editable"],
+    ["the body (nothing focused)", () => el("BODY", {}), "body", "not-editable"],
+    ["an iframe", () => el("IFRAME", {}), "iframe", "not-editable"],
+  ])("refuses %s, naming what holds focus, and deletes nothing", (_label, make, focus, reason) => {
     const { outcome, commands } = run(make());
-    expect(outcome).toEqual({ cleared: false, focus, reason: "not-editable" });
+    expect(outcome).toEqual({ cleared: false, focus, reason });
     expect(commands).toEqual([]);
+  });
+
+  it("blames the field kind before readonly, so a readonly checkbox is not a readonly field", () => {
+    // `readonly` has no effect on a checkbox at all; reporting it would send the
+    // caller after a state the app cannot change into a clearable one.
+    expect(run(el("INPUT", { type: "checkbox", readOnly: true })).outcome.reason).toBe(
+      "not-a-text-field"
+    );
   });
 
   it("reports a null activeElement as no focus at all, not as an element", () => {
@@ -134,7 +198,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
     expect(run(el("INPUT", { type: "CHECKBOX" })).outcome).toEqual({
       cleared: false,
       focus: "input type=checkbox",
-      reason: "not-editable",
+      reason: "not-a-text-field",
     });
   });
 
@@ -146,6 +210,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
       expect(run(el("INPUT", { type })).outcome, `refused type="${type}"`).toEqual({
         cleared: true,
         focus: `input type=${type}`,
+        verifiable: true,
       });
     }
   });
@@ -202,7 +267,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     // would turn every clear of an empty field into a spurious failure — and an
     // empty field is the ordinary state of a field a flow just cleared.
     const { outcome, commands } = run(textInput(), { selectAll: false });
-    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 });
@@ -216,7 +281,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = textInput();
     const host = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const { outcome, commands } = run(host);
-    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
@@ -227,7 +292,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = el("TEXTAREA", {});
     const mid = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const host = el("MY-ROW", { shadowRoot: { activeElement: mid } });
-    expect(run(host).outcome).toEqual({ cleared: true, focus: "textarea" });
+    expect(run(host).outcome).toEqual({ cleared: true, focus: "textarea", verifiable: true });
   });
 
   it("stops at a host whose shadow root focuses nothing, and refuses it by its own tag", () => {
@@ -249,7 +314,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = el("INPUT", { type: "text", readOnly: true });
     const host = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const { outcome, commands } = run(host);
-    expect(outcome).toEqual({ cleared: false, focus: "input type=text", reason: "not-editable" });
+    expect(outcome).toEqual({ cleared: false, focus: "input type=text", reason: "readonly" });
     expect(commands).toEqual([]);
   });
 });

@@ -19,11 +19,17 @@ export async function typeTv(
     );
   }
   if (params.clear === true) {
-    // The clear burst is `backspace` + `forward-delete` HID/adb key events, and
-    // a TV target has no hardware keyboard focus to send them to: text reaches
-    // it through the focus daemon's own typing channel (`api.type`), which has
-    // no delete verb. Emptying a field on a TV goes through the on-screen
-    // keyboard, which is D-pad navigation.
+    // Text reaches a TV through the focus daemon's typing channel (`api.type`),
+    // and `TvControlApi` exposes no delete verb at all — so there is nothing
+    // here to send a clear through, on either backend.
+    //
+    // That is a gap in the API, not a property of the transport, and the two
+    // backends differ underneath: on Android TV `api.type` IS `adb shell input`
+    // (../../../blueprints/android-tv-control.ts), the same channel and the same
+    // view `injectAndroidClear`'s burst would ride, so a clear there is
+    // implementable; on Apple TV the channel is the injected tvOS daemon.
+    // Neither is measured on a TV, and a clear that half-empties a field is
+    // worse than a refusal, so both are refused until one is.
     throw new UnsupportedOperationError(
       "keyboard",
       device,

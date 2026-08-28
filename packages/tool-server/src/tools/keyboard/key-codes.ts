@@ -3,10 +3,19 @@
 
 export const SHIFT_KEYCODE = 225;
 
-// Keyboard DELETE Forward (0x4C). Not in NAMED_KEYS: the `key` vocabulary maps
-// both `backspace` and `delete` to usage 42 on every platform, so this code has
-// no name a caller can ask for — it exists only for the `clear` burst, which
-// pairs it with 42 to empty a field from either side of the caret.
+// Keyboard DELETE Forward (0x4C). Not in NAMED_KEYS: this table's own `delete`
+// is usage 42, backspace, so nothing here can reach 76 — it exists only for the
+// `clear` burst, which pairs it with 42 to empty a field from either side of
+// the caret.
+//
+// The `key` vocabulary is NOT uniform on this point across backends, and adding
+// a name for 76 would have to be decided for all of them at once: `delete` is
+// backspace on iOS (above) and on Android (../../utils/android-input.ts, KEYCODE_DEL
+// 67), but the FORWARD delete on chromium (../chromium-keys.ts, VK 46) and on
+// Vega (../../utils/vega-input.ts, KEY_DELETE). With the caret between `b` and
+// `c` in `abc`, `key: "delete"` therefore leaves `ac` on the first two and `ab`
+// on the last two. That divergence predates the clear burst and is unchanged by
+// it; it is recorded here because this is where the next name would be added.
 export const FORWARD_DELETE_KEYCODE = 76;
 
 // `clear` sends this many (backspace, forward-delete) pairs — 200 key events —
