@@ -75,6 +75,16 @@ const BASH_REASON_ENV = "ARGENT_REASON";
  * first-use sweep below recognises as the executor's own.
  */
 const EXCHANGE_DIR_PREFIX = "argent-flow-script-";
+
+/**
+ * How long past its own time limit a step's exchange directory is still its
+ * own. The owner removes it in a `finally` at about `timeout` plus the settle,
+ * stop and force graces; the minute after that is room for a stall in the tool
+ * server's event loop of the kind `CHILD_DEADLINE_MARGIN_MS` exists for.
+ * Nothing waits on it but the collection of a directory whose server died.
+ */
+const EXCHANGE_LIFE_MARGIN_MS =
+  SETTLE_TIMEOUT_MS + CHILD_DEADLINE_MARGIN_MS + STOP_GRACE_MS + FORCE_GRACE_MS + 60_000;
 const EXCHANGE_OUTPUT_FILE = "output.json";
 const EXCHANGE_REASON_FILE = "reason.txt";
 
@@ -550,7 +560,7 @@ export class FlowScriptExecutor {
       }
       interpreterPath = found.path;
       try {
-        exchange = createExchange(outputJson, bounds.maxTimeoutMs);
+        exchange = createExchange(outputJson, timeoutMs, bounds.maxTimeoutMs);
       } catch (err) {
         return emptyResult(
           {
@@ -1179,10 +1189,22 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
  * what makes the merge rule in a later PR identical for both languages, and
  * what lets a script that wants to ADD one key read what it was given first.
  * `reason.txt` is created empty so a script can append to it without a test.
+ *
+ * The directory carries the moment it stops being this step's own, in its own
+ * name: `$TMPDIR` is shared by every argent install on the host, and the sweep
+ * below is the only reader that has to tell a live directory from an abandoned
+ * one. A name is the one place a sweeping process can read the OWNER's bound
+ * rather than apply its own — the mtime cannot say it, since it never advances
+ * after creation.
  */
-function createExchange(outputJson: string, maxTimeoutMs: number): ExchangeFiles {
+function createExchange(
+  outputJson: string,
+  timeoutMs: number,
+  maxTimeoutMs: number
+): ExchangeFiles {
   sweepStaleExchanges(maxTimeoutMs);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), EXCHANGE_DIR_PREFIX));
+  const ownUntil = Date.now() + timeoutMs + EXCHANGE_LIFE_MARGIN_MS;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${EXCHANGE_DIR_PREFIX}${ownUntil}-`));
   const outputFile = path.join(dir, EXCHANGE_OUTPUT_FILE);
   const reasonFile = path.join(dir, EXCHANGE_REASON_FILE);
   fs.writeFileSync(outputFile, outputJson, "utf8");
@@ -1208,14 +1230,24 @@ let sweptStaleExchanges = false;
  * lifeline kills the runner and nobody reaches the directory — and the document
  * in it may hold values derived from a secret. So the first bash step of a
  * process sweeps the executor's own prefix, the way the test helper sweeps its
- * fixture root. The age bound is the widest a live step can be: the host's
- * maximum time limit plus every margin the stop path spends after it.
+ * fixture root.
+ *
+ * Each directory names the moment it stops being its own step's, and that is
+ * what decides. The bound has to come from the OWNER: `$TMPDIR` is shared by
+ * every argent install on the host, `scripts.maxTimeoutMs` is a per-install
+ * value, and applying this process's own to another's directory takes a live
+ * step's exchange out from under it — which fails a correct script, and blames
+ * the script for a file the host removed.
+ *
+ * A directory whose name carries no such moment was written by an older
+ * version, so its age is all there is to read; the bound there is the widest a
+ * live step of THIS install can be.
  */
 function sweepStaleExchanges(maxTimeoutMs: number): void {
   if (sweptStaleExchanges) return;
   sweptStaleExchanges = true;
-  const cutoff =
-    Date.now() - (maxTimeoutMs + CHILD_DEADLINE_MARGIN_MS + STOP_GRACE_MS + FORCE_GRACE_MS);
+  const now = Date.now();
+  const cutoff = now - (maxTimeoutMs + CHILD_DEADLINE_MARGIN_MS + STOP_GRACE_MS + FORCE_GRACE_MS);
   const root = os.tmpdir();
   let entries: string[];
   try {
@@ -1226,13 +1258,24 @@ function sweepStaleExchanges(maxTimeoutMs: number): void {
   for (const entry of entries) {
     if (!entry.startsWith(EXCHANGE_DIR_PREFIX)) continue;
     const candidate = path.join(root, entry);
+    const ownUntil = exchangeOwnedUntil(entry);
     try {
-      if (fs.statSync(candidate).mtimeMs > cutoff) continue;
+      if (ownUntil === undefined ? fs.statSync(candidate).mtimeMs > cutoff : ownUntil > now) {
+        continue;
+      }
       fs.rmSync(candidate, { recursive: true, force: true });
     } catch {
       // Raced with the step that owns it, or with another server's own sweep.
     }
   }
+}
+
+/** The moment in a directory's own name, or `undefined` for an older layout. */
+function exchangeOwnedUntil(entry: string): number | undefined {
+  const stamped = /^(\d+)-/.exec(entry.slice(EXCHANGE_DIR_PREFIX.length));
+  if (!stamped) return undefined;
+  const moment = Number(stamped[1]);
+  return Number.isSafeInteger(moment) ? moment : undefined;
 }
 
 /** Exported for the test that pins the sweep against a directory it planted. */

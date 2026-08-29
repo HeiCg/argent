@@ -30,15 +30,31 @@ beforeEach((ctx) => {
 });
 
 describe("the first bash step of a process", () => {
-  it("sweeps an abandoned exchange directory and leaves a live one alone", async () => {
+  // One test, because the sweep is spent on the first bash step of the process:
+  // every directory it has to judge has to be planted before that step runs.
+  it("judges each exchange directory by the bound its own step wrote", async () => {
     const ws = createScriptWorkspace("bash-sweep");
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+    // An older layout, which carries no bound of its own: its age is all the
+    // sweep can read, and this one is older than the widest a live step of
+    // THIS install can be.
     const abandoned = fs.mkdtempSync(path.join(os.tmpdir(), exchangeDirPrefix()));
     fs.writeFileSync(path.join(abandoned, "output.json"), '{"token":"derived-from-a-secret"}');
-    // Older than the widest a live step can be: the host's maximum time limit
-    // plus every margin the stop path spends after it.
-    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
     fs.utimesSync(abandoned, longAgo, longAgo);
-    const live = fs.mkdtempSync(path.join(os.tmpdir(), exchangeDirPrefix()));
+    const liveOldLayout = fs.mkdtempSync(path.join(os.tmpdir(), exchangeDirPrefix()));
+
+    // A step of another install, still running, whose own time limit is longer
+    // than anything this install would allow. A directory's mtime never
+    // advances after creation, so age alone would read this as abandoned and
+    // take the exchange out from under a correct script.
+    const stamped = (owned: number): string =>
+      fs.mkdtempSync(path.join(os.tmpdir(), `${exchangeDirPrefix()}${Date.now() + owned}-`));
+    const liveElsewhere = stamped(60 * 60 * 1000);
+    fs.utimesSync(liveElsewhere, longAgo, longAgo);
+    // And one whose own bound has passed, which is abandoned however new the
+    // directory is.
+    const finishedElsewhere = stamped(-1_000);
 
     try {
       const script = ws.write("sweep.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
@@ -49,12 +65,15 @@ describe("the first bash step of a process", () => {
 
       expect(result.ok).toBe(true);
       expect(fs.existsSync(abandoned)).toBe(false);
+      expect(fs.existsSync(finishedElsewhere)).toBe(false);
       // A directory a concurrent step still owns is younger than the bound, so
       // the sweep cannot take it out from under that step.
-      expect(fs.existsSync(live)).toBe(true);
+      expect(fs.existsSync(liveOldLayout)).toBe(true);
+      expect(fs.existsSync(liveElsewhere)).toBe(true);
     } finally {
-      fs.rmSync(abandoned, { recursive: true, force: true });
-      fs.rmSync(live, { recursive: true, force: true });
+      for (const dir of [abandoned, liveOldLayout, liveElsewhere, finishedElsewhere]) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
       ws.cleanup();
     }
   }, 30_000);
