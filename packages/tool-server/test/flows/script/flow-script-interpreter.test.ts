@@ -1,6 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 /**
+ * The POSIX fixed locations, taken away. Both exist on an ordinary POSIX host,
+ * so the "no bash anywhere" message can be reached no other way — and
+ * `vi.spyOn` cannot reach an ESM namespace, which is why this is a module mock
+ * rather than a spy.
+ */
+let hideFixedLocations = false;
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const statSync = ((target: fs.PathLike, options?: unknown) => {
+    if (hideFixedLocations && (target === "/bin/bash" || target === "/usr/bin/bash")) {
+      throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+    }
+    return (actual.statSync as (t: fs.PathLike, o?: unknown) => fs.Stats)(target, options);
+  }) as typeof actual.statSync;
+  return { ...actual, statSync, default: { ...actual, statSync } };
+});
+
+/**
  * Finding bash, on every host. The `where` / `command -v` call is injected the
  * way `command-on-path.test.ts` injects it, so the Windows rules — the WSL
  * launcher under `%SystemRoot%`, the Git-derived fallback — are exercised on
@@ -99,6 +117,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  hideFixedLocations = false;
   for (const [name, value] of Object.entries(realHome)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -173,6 +192,24 @@ describe("scripts.bash, read against the flow's own project", () => {
     expect((found as { problem: string }).problem).toContain(
       path.join(root, ".argent", "config.json")
     );
+  });
+
+  // The other half of `configuredIn`. `getConfigValue` merges the two scopes, so
+  // a stale GLOBAL value refuses every `.sh` step in every project on the
+  // machine — and a message naming a project file the value is not in sends the
+  // author to the wrong file.
+  it("names the global file when the value came from there", async () => {
+    const root = projectWith(undefined);
+    fs.mkdirSync(path.join(home, ".argent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".argent", "config.json"),
+      JSON.stringify({ scripts: { bash: path.join(home, "no-such-global-bash") } })
+    );
+
+    const found = await resolveBashInterpreter(root);
+    const problem = (found as { problem: string }).problem;
+    expect(problem).toContain(path.join(home, ".argent", "config.json"));
+    expect(problem).not.toContain(path.join(root, ".argent", "config.json"));
   });
 
   it("refuses a configured path that does not exist", async () => {
@@ -321,6 +358,52 @@ describe("bash on PATH", () => {
     } finally {
       if (realProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = realProfile;
+    }
+  });
+
+  // Three of the four Windows rungs are environment names rather than a
+  // derivation, and each one is a whole install layout: the 64-bit installer,
+  // the 32-bit one, and the per-user one that needs no administrator.
+  it.each([
+    ["ProgramFiles", "C:\\Program Files", "C:\\Program Files\\Git\\bin\\bash.exe"],
+    ["ProgramFiles(x86)", "C:\\Program Files (x86)", "C:\\Program Files (x86)\\Git\\bin\\bash.exe"],
+    [
+      "LOCALAPPDATA",
+      "C:\\Users\\dev\\AppData\\Local",
+      "C:\\Users\\dev\\AppData\\Local\\Programs\\Git\\bin\\bash.exe",
+    ],
+  ])("offers the Git for Windows under %s", async (name, value, expected) => {
+    setPlatform("win32");
+    const real = { ...process.env };
+    for (const key of [
+      "ProgramFiles",
+      "ProgramFiles(x86)",
+      "LOCALAPPDATA",
+      "SCOOP",
+      "SCOOP_GLOBAL",
+      "ProgramData",
+      "USERPROFILE",
+    ]) {
+      delete process.env[key];
+    }
+    process.env[name] = value;
+    execFileMock.mockReturnValue(new Error("not found"));
+
+    try {
+      expect(await bashSearchPath()).toEqual([expected]);
+    } finally {
+      for (const key of [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "LOCALAPPDATA",
+        "SCOOP",
+        "SCOOP_GLOBAL",
+        "ProgramData",
+        "USERPROFILE",
+      ]) {
+        if (real[key] === undefined) delete process.env[key];
+        else process.env[key] = real[key];
+      }
     }
   });
 
@@ -479,6 +562,22 @@ describe("a candidate that will not answer", () => {
 });
 
 describe("no bash anywhere", () => {
+  // The POSIX arm of the same message. Both fixed locations exist on an
+  // ordinary POSIX host, so the only way to reach it is to take them away.
+  it.skipIf(realPlatform === "win32")(
+    "names PATH and both fixed locations, and says to install bash",
+    async () => {
+      const root = projectWith(undefined);
+      execFileMock.mockReturnValue(new Error("command -v found nothing"));
+      hideFixedLocations = true;
+
+      const problem = (await resolveBashInterpreter(root)) as { problem: string };
+      expect(problem.problem).toContain("PATH, /bin/bash and /usr/bin/bash");
+      expect(problem.problem).toContain("Install bash");
+      expect(problem.problem).not.toContain("Git for Windows");
+    }
+  );
+
   it("reports a spawn refusal naming what it looked at and each remedy", async () => {
     setPlatform("win32");
     const root = projectWith(undefined);

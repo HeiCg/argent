@@ -6,8 +6,8 @@ import {
   exchangeDirPrefix,
   FlowScriptExecutor,
 } from "../../../src/tools/flows/script/flow-script-executor";
-import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
 import { createScriptWorkspace } from "../../helpers/flow-script-workspace";
+import { resolveHostBash } from "../../helpers/host-bash";
 
 /**
  * The sweep of abandoned exchange directories, which a process runs on a bash
@@ -26,7 +26,7 @@ import { createScriptWorkspace } from "../../helpers/flow-script-workspace";
 let noBash: string | undefined;
 
 beforeAll(async () => {
-  const found = await resolveBashInterpreter(undefined);
+  const found = await resolveHostBash();
   if (!("path" in found)) noBash = found.problem;
 });
 

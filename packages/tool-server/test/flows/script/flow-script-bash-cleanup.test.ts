@@ -42,13 +42,13 @@ import {
   exchangeDirPrefix,
   FlowScriptExecutor,
 } from "../../../src/tools/flows/script/flow-script-executor";
-import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
 import { createScriptWorkspace } from "../../helpers/flow-script-workspace";
+import { resolveHostBash } from "../../helpers/host-bash";
 
 let noBash: string | undefined;
 
 beforeAll(async () => {
-  const found = await resolveBashInterpreter(undefined);
+  const found = await resolveHostBash();
   if (!("path" in found)) noBash = found.problem;
 });
 

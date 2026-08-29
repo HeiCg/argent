@@ -61,6 +61,10 @@ on:
       - "packages/tool-server/test/flows/script/flow-script-interpreter.test.ts"
       - "packages/tool-server/test/flows/script/flow-script-bash.test.ts"
       - "packages/tool-server/test/flows/script/flow-script-bash-sweep.test.ts"
+      # The helpers those three import: editing one changes what this job runs
+      # without touching any file listed above it.
+      - "packages/tool-server/test/helpers/host-bash.ts"
+      - "packages/tool-server/test/helpers/flow-script-workspace.ts"
       - "packages/native-devtools-ios/src/index.ts"
       - "packages/native-devtools-ios/test/index.test.ts"
       - "packages/argent/scripts/bundle-tools.cjs"

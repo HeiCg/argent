@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,22 +10,24 @@ import {
   type FlowScriptRequest,
   type FlowScriptResult,
 } from "../../../src/tools/flows/script/flow-script-executor";
-import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
 import { SCRIPT_MAX_OUTPUT_BYTES } from "../../../src/tools/flows/script/flow-script-protocol";
 import {
   createScriptWorkspace,
   SOURCE_RUNNER_DIR,
   type ScriptWorkspace,
 } from "../../helpers/flow-script-workspace";
+import { resolveHostBash } from "../../helpers/host-bash";
 
 /**
- * Every case below runs a real bash. The resolver itself is unit-tested on
- * every host in `flow-script-interpreter.test.ts`, so a host with no bash skips
- * these with the reason rather than failing on it. Resolved in `beforeAll` and
- * applied per test, because the resolver is async and `describe.skipIf` is
- * decided while the file is collected.
+ * Every case below runs a real bash. Resolved in `beforeAll` and applied per
+ * test, because the resolver is async and `describe.skipIf` is decided while
+ * the file is collected. See {@link hostBashProblem} for what a missing bash
+ * means here, and what it means on CI.
  */
 let noBash: string | undefined;
+
+/** The interpreter the steps below run under, for the one case that spawns the runner itself. */
+let hostBash: string;
 
 /**
  * Where this file's steps make their exchange directories. `os.tmpdir()` holds
@@ -37,8 +39,9 @@ let exchangeRoot: string;
 
 beforeAll(async () => {
   exchangeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-bash-exchange-"));
-  const found = await resolveBashInterpreter(undefined);
-  if (!("path" in found)) noBash = found.problem;
+  const found = await resolveHostBash();
+  if ("path" in found) hostBash = found.path;
+  else noBash = found.problem;
 });
 
 afterAll(() => fs.rmSync(exchangeRoot, { recursive: true, force: true }));
@@ -130,7 +133,11 @@ async function waitForExit(pid: number, timeoutMs = 10_000): Promise<boolean> {
   return false;
 }
 
-async function readPidFile(file: string, timeoutMs = 20_000): Promise<number> {
+async function readPidFile(
+  file: string,
+  timeoutMs = 20_000,
+  driverStderr?: () => string
+): Promise<number> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -141,7 +148,10 @@ async function readPidFile(file: string, timeoutMs = 20_000): Promise<number> {
     }
     await delay(50);
   }
-  throw new Error(`No pid appeared in ${file}`);
+  // What the driver said, where there is a driver: a crash of it reads as
+  // "no pid appeared" otherwise, which names the symptom and not the cause.
+  const said = driverStderr?.() ?? "";
+  throw new Error(`No pid appeared in ${file}${said ? `; the driver said: ${said}` : ""}`);
 }
 
 function exchangeDirs(): string[] {
@@ -254,12 +264,14 @@ describe("the document a bash step returns", () => {
     expect(result.failure?.message).toContain("mv");
   }, 30_000);
 
-  it("refuses a document that is not a JSON object", async () => {
+  // The kind alone is the same for all three, so each one's own message is what
+  // separates "it parsed and was the wrong shape" from "it did not parse".
+  it("refuses a document that is not a JSON object, saying which it was", async () => {
     const ws = workspace();
-    for (const [name, written] of [
-      ["array", "[1,2]"],
-      ["string", '"done"'],
-      ["garbage", "not json"],
+    for (const [name, written, says] of [
+      ["array", "[1,2]", "was not an object"],
+      ["string", '"done"', "was not an object"],
+      ["garbage", "not json", "did not parse"],
     ] as const) {
       const result = await runBash(
         ws,
@@ -267,8 +279,29 @@ describe("the document a bash step returns", () => {
         `printf '%s' ${JSON.stringify(written)} > "$ARGENT_OUTPUT"`
       );
       expect(result.failure?.kind, written).toBe("output");
+      expect(result.failure?.message, written).toContain(says);
     }
   }, 60_000);
+
+  // The other half of "cannot be read", beside the kind checks above: a file
+  // that is regular and that the runner is refused by the filesystem.
+  onPosix(
+    "refuses a document the runner may not read, naming why",
+    async () => {
+      const ws = workspace();
+      const result = await runBash(
+        ws,
+        "unreadable",
+        `printf '{"real":true}' > "$ARGENT_OUTPUT"
+       chmod 000 "$ARGENT_OUTPUT"`
+      );
+
+      expect(result.failure?.kind).toBe("output");
+      expect(result.failure?.message).toContain("$ARGENT_OUTPUT could not be read");
+      expect(result.failure?.message).toContain("EACCES");
+    },
+    30_000
+  );
 
   it("refuses an own __proto__ key, as it does from a .mjs", async () => {
     const ws = workspace();
@@ -1034,6 +1067,29 @@ describe("the private exchange directory", () => {
     expect(exchangeDirs()).toEqual([]);
   }, 60_000);
 
+  // Windows hands every step a `%TEMP%` under `C:\\Users\\First Last\\…`, so a
+  // quoting mistake anywhere in the exchange path is a Windows-only failure
+  // that POSIX CI would never see. The whole contract holds here instead.
+  it("works from an exchange root whose path holds a space", async () => {
+    const ws = workspace();
+    const spaced = path.join(ws.dir, "dir with space");
+    fs.mkdirSync(spaced, { recursive: true });
+    const result = await runBash(
+      ws,
+      "spaced",
+      `test -f "$ARGENT_OUTPUT"
+       test -f "$ARGENT_REASON"
+       printf '{"where":"%s"}' "$(dirname "$ARGENT_OUTPUT")" > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`,
+      {},
+      { exchangeRoot: spaced }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(String((result.output as { where?: string }).where)).toContain("dir with space");
+    expect(fs.readdirSync(spaced)).toEqual([]);
+  }, 30_000);
+
   // Both files carry the document, and the document may hold values derived
   // from a secret. The 0700 directory `mkdtemp` makes already holds on its own;
   // these modes are the second barrier, and a bare write leaves them to the
@@ -1164,16 +1220,88 @@ describe("the published layout", () => {
 });
 
 describe("a tool server that dies mid-step", () => {
+  // The other way a runner learns its parent is gone: the IPC channel closes
+  // while the process that held it stays alive. The lifeline never fires there,
+  // so nothing else in this file reaches the bash branch of
+  // `exitOnParentDisconnect` — the orphan case below fires the lifeline too,
+  // and the lifeline kills the group on its own.
+  //
+  // The runner is forked here rather than driven through the executor, because
+  // the executor disconnects only once the step is already over.
+  onPosix(
+    "takes bash and its descendants when only the channel closes",
+    async () => {
+      const ws = workspace();
+      const exchange = fs.mkdtempSync(path.join(exchangeRoot, "disconnect-"));
+      const outputFile = path.join(exchange, "output.json");
+      const reasonFile = path.join(exchange, "reason.txt");
+      fs.writeFileSync(outputFile, "{}");
+      fs.writeFileSync(reasonFile, "");
+      const bashFile = ws.resolve("bash.pid");
+      const childFile = ws.resolve("bash-child.pid");
+      const script = ws.write(
+        "disconnect.sh",
+        `sleep 300 &
+       echo $! > ${JSON.stringify(childFile)}
+       echo $$ > ${JSON.stringify(bashFile)}
+       while true; do sleep 1; done`
+      );
+
+      const runner = fork(path.join(SOURCE_RUNNER_DIR, "flow-script-runner.mjs"), [], {
+        cwd: ws.dir,
+        env: { ...process.env, ARGENT_FLOW_SCRIPT_RUNNER: "1" },
+        execArgv: [],
+        stdio: ["ignore", "pipe", "pipe", "ignore", "pipe", "ipc"],
+        detached: true,
+      });
+      runner.stdout?.resume();
+      runner.stderr?.resume();
+      const runnerExited = new Promise<void>((resolve) => runner.once("exit", () => resolve()));
+      try {
+        runner.send({
+          type: "execute",
+          interpreter: "bash",
+          interpreterPath: hostBash,
+          scriptPath: script,
+          outputFile,
+          outputJson: "{}",
+          reasonFile,
+          deadlineMs: 120_000,
+          maxOutputBytes: SCRIPT_MAX_OUTPUT_BYTES,
+        });
+
+        const bashPid = await readPidFile(bashFile, 40_000);
+        const grandchild = await readPidFile(childFile, 40_000);
+        strays.push(bashPid, grandchild);
+        expect(isAlive(bashPid)).toBe(true);
+
+        // The channel alone: the lifeline the parent holds stays open, so what
+        // reaps the tree here is the runner's own `disconnect` handler.
+        runner.disconnect();
+
+        expect(await waitForExit(bashPid, 20_000)).toBe(true);
+        expect(await waitForExit(grandchild, 20_000)).toBe(true);
+        await runnerExited;
+      } finally {
+        runner.kill("SIGKILL");
+        fs.rmSync(exchange, { recursive: true, force: true });
+      }
+    },
+    90_000
+  );
+
   onPosix(
     "takes bash and its descendants with the runner",
     async () => {
       const ws = workspace();
       const bashFile = ws.resolve("bash.pid");
       const childFile = ws.resolve("bash-child.pid");
+      const runnerFile = ws.resolve("runner.pid");
       const script = ws.write(
         "orphan.sh",
         `sleep 300 &
        echo $! > ${JSON.stringify(childFile)}
+       echo $PPID > ${JSON.stringify(runnerFile)}
        echo $$ > ${JSON.stringify(bashFile)}
        while true; do sleep 1; done`
       );
@@ -1193,19 +1321,31 @@ describe("a tool server that dies mid-step", () => {
         ],
         { cwd: path.resolve(__dirname, "../../.."), stdio: ["ignore", "ignore", "pipe"] }
       );
+      // Drained, so a driver that writes past the pipe buffer cannot block on
+      // it — and so a crash of the driver reads as itself rather than as "no
+      // pid appeared".
+      let driverStderr = "";
+      parent.stderr?.setEncoding("utf8");
+      parent.stderr?.on("data", (chunk: string) => {
+        driverStderr += chunk;
+      });
       try {
-        const bashPid = await readPidFile(bashFile, 40_000);
-        const grandchild = await readPidFile(childFile, 40_000);
-        strays.push(bashPid, grandchild);
+        const bashPid = await readPidFile(bashFile, 40_000, () => driverStderr);
+        const grandchild = await readPidFile(childFile, 40_000, () => driverStderr);
+        const runnerPid = await readPidFile(runnerFile, 40_000, () => driverStderr);
+        strays.push(bashPid, grandchild, runnerPid);
         expect(isAlive(bashPid)).toBe(true);
         expect(isAlive(grandchild)).toBe(true);
 
         parent.kill("SIGKILL");
         expect(await waitForExit(bashPid, 20_000)).toBe(true);
         expect(await waitForExit(grandchild, 20_000)).toBe(true);
+        // The runner itself, which the `.mjs` analog also asserts: a fix that
+        // reaped the subtree and left the runner behind would pass without it.
+        expect(await waitForExit(runnerPid, 20_000)).toBe(true);
       } finally {
         parent.kill("SIGKILL");
-        for (const file of [bashFile, childFile]) {
+        for (const file of [bashFile, childFile, runnerFile]) {
           try {
             const written = Number(fs.readFileSync(file, "utf8").trim());
             if (Number.isInteger(written)) strays.push(written);

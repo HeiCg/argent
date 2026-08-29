@@ -222,8 +222,31 @@ describe("the second language reads exactly like the first", () => {
       expect(SCRIPT_FILE_NAME_PATTERN.test(name), name).toBe(true);
       expect(scriptInterpreter(`scripts/${name}`), name).toBe(interpreter);
     }
-    // Nothing else the pattern would accept: the alternation is these two.
-    expect(SCRIPT_FILE_NAME_PATTERN.source).toContain("(mjs|sh)");
+    // Nothing else the pattern would accept, asked of the extensions rather
+    // than of the source: an alternation added OUTSIDE the group would leave
+    // the source reading `(mjs|sh)` while handing a `.bash` file to node.
+    for (const extension of [
+      "mjs",
+      "sh",
+      "js",
+      "cjs",
+      "mts",
+      "bash",
+      "zsh",
+      "ksh",
+      "fish",
+      "py",
+      "SH",
+      "MJS",
+      "Sh",
+    ]) {
+      const name = `seed.${extension}`;
+      const accepted = SCRIPT_FILE_NAME_PATTERN.test(name);
+      expect(accepted, name).toBe(extension === "mjs" || extension === "sh");
+      if (accepted) {
+        expect(scriptInterpreter(name), name).toBe(extension === "sh" ? "bash" : "node");
+      }
+    }
   });
 
   it("reads the interpreter off the path, not off the file", () => {
