@@ -43,6 +43,17 @@ const GROUP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
 
 const heldSignals = new Set();
 
+/**
+ * How long bash's death by a signal waits for the SAME signal to arrive here,
+ * before it is read as one from outside the group. `kill 0` reaches every
+ * member of the group at one syscall, so the signal is already pending on this
+ * process when bash's exit is seen; what varies is when libuv's own signal
+ * watcher next gets a turn. Measured at up to 17 ms on a loaded machine, and
+ * held under the parent's own stop grace so a runner that is waiting still
+ * answers before the parent's SIGKILL lands on the group.
+ */
+const GROUP_SIGNAL_SETTLE_MS = 1_000;
+
 const ENTRY_SETTLE_PROBE_MS = 1_000;
 
 /**
@@ -287,9 +298,8 @@ function runBash(request) {
     if (code === null && signal === null) return;
     // A signal that reached bash reached this process in the same instant when
     // it was aimed at the group, and `heldSignals` is what the report names it
-    // by. One turn of the loop, so the handler holding it runs first — the
-    // signal is read off libuv's own pipe, ahead of the child's exit.
-    if (signal) setImmediate(() => finish(bashOutcome(request, code, signal)));
+    // by — so the answer waits for it to arrive.
+    if (signal) whenGroupSignalHeld(signal, () => finish(bashOutcome(request, code, signal)));
     else finish(bashOutcome(request, code, signal));
   });
   return never();
@@ -317,6 +327,44 @@ function holdGroupSignals() {
     } catch {
       // A platform that does not know the name; the default stands for it.
     }
+  }
+}
+
+/**
+ * Run `report` once `signal` is one this process holds, or once the window
+ * above has passed without it.
+ *
+ * One turn of the loop was not enough. The signal and the child's exit both
+ * arrive through libuv's signal pipe and the exit routinely wins, so a
+ * `setImmediate` — a callback in the SAME iteration — read `heldSignals` before
+ * the holding handler had run. `trap 'kill 0' EXIT` is the idiom the split
+ * exists for, and it landed on either side of the fail/error line from run to
+ * run: about one run in thirty on an idle machine, more under load.
+ *
+ * A listener rather than a poll, so the wait ends the instant the signal lands.
+ * The holding listener was registered first and so runs first, which is what
+ * leaves `heldSignals` correct for the report this hands off to.
+ */
+function whenGroupSignalHeld(signal, report) {
+  // Nothing to wait for: already held, or a signal this process never holds —
+  // a SIGKILL from the host or from either watchdog.
+  if (heldSignals.has(signal) || !GROUP_SIGNALS.includes(signal)) {
+    report();
+    return;
+  }
+  let waited = false;
+  const settle = () => {
+    if (waited) return;
+    waited = true;
+    clearTimeout(timer);
+    process.off(signal, settle);
+    report();
+  };
+  const timer = setTimeout(settle, GROUP_SIGNAL_SETTLE_MS);
+  try {
+    process.on(signal, settle);
+  } catch {
+    // A platform that does not know the name; the timer is the whole wait.
   }
 }
 

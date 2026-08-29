@@ -494,6 +494,68 @@ describe("what a failing bash step says", () => {
     30_000
   );
 
+  // The same idiom, repeatedly, because the answer above used to be decided one
+  // `setImmediate` after bash's exit — a callback in the SAME loop iteration as
+  // the exit it was waiting behind. The signal and the exit both arrive through
+  // libuv's signal pipe with no order between them, so the unchanged script
+  // landed on the `signal` side about once in thirty runs on an idle machine
+  // and about once in twelve under load. One run cannot see that; these can.
+  onPosix(
+    "reads a group-wide kill the same way on every run",
+    async () => {
+      const ws = workspace();
+      const script = ws.write(
+        "kill-group-repeat.sh",
+        `trap 'kill 0' EXIT
+       sleep 30 &
+       printf '{"seeded":true}' > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`
+      );
+      const width = 8;
+      const runs = executor({ concurrency: width });
+      const kinds = new Set<string | undefined>();
+      // In waves of the executor's own width, so that what these count is the
+      // verdict and not the queue: everything past the waiting cap is refused
+      // before it is run.
+      for (let wave = 0; wave < 15; wave += 1) {
+        const verdicts = await Promise.all(
+          Array.from({ length: width }, async () => {
+            const result = await runs.execute({
+              scriptPath: script,
+              interpreter: "bash",
+              projectRoot: ws.dir,
+            });
+            return result.failure?.kind;
+          })
+        );
+        for (const kind of verdicts) kinds.add(kind);
+      }
+
+      expect(kinds).toEqual(new Set(["exit"]));
+    },
+    180_000
+  );
+
+  // The other side of the same decision, and the one that is deterministic:
+  // `kill -TERM $$` names bash alone, so this signal never reaches the runner
+  // and never can. The runner may only call it a signal from outside the group
+  // once it has WAITED for its own copy — which is what the elapsed time here
+  // pins. Deciding in one turn of the loop, as this once did, costs no time and
+  // is what makes the case above flaky.
+  onPosix(
+    "waits for its own copy of the signal before blaming something outside the group",
+    async () => {
+      const ws = workspace();
+      const startedAt = Date.now();
+      const result = await runBash(ws, "self-signalled-wait", `kill -TERM $$; sleep 30`);
+      const elapsed = Date.now() - startedAt;
+
+      expect(result.failure?.kind).toBe("signal");
+      expect(elapsed).toBeGreaterThanOrEqual(500);
+    },
+    30_000
+  );
+
   // The resolver checks its candidate by running it, so what it accepted can
   // still be gone by the time the runner spawns it. That lands on the runner's
   // own `error` handler, and `spawn` is the one kind that tells the author
