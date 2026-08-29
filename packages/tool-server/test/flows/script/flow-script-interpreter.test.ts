@@ -56,13 +56,28 @@ function projectWith(config: Record<string, unknown> | undefined): string {
   return root;
 }
 
-/** An executable file that is not bash — the resolver never runs a candidate. */
-function fakeBash(dir: string, name = "bash"): string {
+/** An executable file that is not bash: it runs, and answers with no version. */
+function notBash(dir: string, name = "bash"): string {
   const file = path.join(dir, name);
   fs.writeFileSync(file, "#!/bin/sh\nexit 0\n");
   fs.chmodSync(file, 0o755);
   return file;
 }
+
+/**
+ * A real bash, found without the resolver under test. The resolver runs each
+ * candidate once and refuses one that prints no `$BASH_VERSION`, so a written
+ * stand-in would be refused for a reason the tests below are not about.
+ */
+function hostBash(): string | undefined {
+  const candidates =
+    realPlatform === "win32"
+      ? ["C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files (x86)\\Git\\bin\\bash.exe"]
+      : ["/bin/bash", "/usr/bin/bash"];
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
+const withBash = it.skipIf(hostBash() === undefined);
 
 beforeEach(() => execFileMock.mockReset());
 
@@ -73,13 +88,9 @@ afterEach(() => {
 });
 
 describe("scripts.bash, read against the flow's own project", () => {
-  it("honours a configured path and never looks at PATH", async () => {
-    const root = projectWith(undefined);
-    const configured = fakeBash(root);
-    fs.writeFileSync(
-      path.join(root, ".argent", "config.json"),
-      JSON.stringify({ scripts: { bash: configured } })
-    );
+  withBash("honours a configured path and never looks at PATH", async () => {
+    const configured = hostBash()!;
+    const root = projectWith({ scripts: { bash: configured } });
 
     expect(await resolveBashInterpreter(root)).toEqual({ path: configured });
     expect(execFileMock).not.toHaveBeenCalled();
@@ -88,13 +99,9 @@ describe("scripts.bash, read against the flow's own project", () => {
   // `getConfigValue` resolves the project scope from the cwd it is given, and
   // the tool server's own cwd is whatever the editor that spawned it chose —
   // so the bare call would read another project's file, or none.
-  it("reads the flow's project, not the tool server's working directory", async () => {
-    const flowProject = projectWith(undefined);
-    const configured = fakeBash(flowProject);
-    fs.writeFileSync(
-      path.join(flowProject, ".argent", "config.json"),
-      JSON.stringify({ scripts: { bash: configured } })
-    );
+  withBash("reads the flow's project, not the tool server's working directory", async () => {
+    const configured = hostBash()!;
+    const flowProject = projectWith({ scripts: { bash: configured } });
     const serverCwd = projectWith({ scripts: { bash: "/nowhere/else/bash" } });
     const realCwd = process.cwd();
     vi.spyOn(process, "cwd").mockReturnValue(serverCwd);
@@ -145,6 +152,25 @@ describe("scripts.bash, read against the flow's own project", () => {
     }
   );
 
+  // Every static check passes for an executable file that is not a shell, and
+  // the three properties after them hide it: the parent seeds $ARGENT_OUTPUT,
+  // the child's output is discarded, and an exit code of 0 is a pass. So a
+  // wrapper that forgets to forward its arguments would report every `.sh` step
+  // green while running none of them.
+  it("refuses a configured interpreter that answers with no $BASH_VERSION", async () => {
+    const root = projectWith(undefined);
+    const stub = notBash(root);
+    fs.writeFileSync(
+      path.join(root, ".argent", "config.json"),
+      JSON.stringify({ scripts: { bash: stub } })
+    );
+
+    const found = await resolveBashInterpreter(root);
+    expect("path" in found).toBe(false);
+    expect((found as { problem: string }).problem).toContain("is not a bash");
+    expect((found as { problem: string }).problem).toContain(stub);
+  });
+
   it("refuses a configured System32 bash, naming WSL", async () => {
     setPlatform("win32");
     const root = projectWith({
@@ -162,11 +188,15 @@ describe("bash on PATH", () => {
   // fixture: a `C:\…` path is not posix-absolute, and there is no /bin/bash
   // behind it to fall through to. The Windows rules below run everywhere.
   const onPosix = it.skipIf(realPlatform === "win32");
+  const onPosixWithBash = it.skipIf(realPlatform === "win32" || hostBash() === undefined);
 
-  onPosix("takes the first absolute answer on POSIX", async () => {
+  onPosixWithBash("takes the first absolute answer on POSIX", async () => {
     setPlatform(realPlatform);
     const root = projectWith(undefined);
-    const onPath = fakeBash(root);
+    // A path of its own that is really a bash, so the answer is distinguishable
+    // from the fixed location the resolver would otherwise fall through to.
+    const onPath = path.join(root, "bash");
+    fs.symlinkSync(hostBash()!, onPath);
     execFileMock.mockReturnValue({ stdout: `${onPath}\n`, stderr: "" });
 
     expect(await resolveBashInterpreter(root)).toEqual({ path: onPath });
@@ -222,7 +252,7 @@ describe("bash on PATH", () => {
   onPosix("takes the first candidate that exists, not the first that was listed", async () => {
     setPlatform(realPlatform);
     const root = projectWith(undefined);
-    const real = fakeBash(root);
+    const real = notBash(root);
     execFileMock.mockReturnValue({ stdout: `${path.join(root, "gone")}\n`, stderr: "" });
 
     // With PATH naming a file that is not there, the fixed locations decide —

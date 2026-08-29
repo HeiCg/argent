@@ -3,10 +3,12 @@
  *
  * Not memoized, for the reason the executor's bounds are not: `scripts.bash` is
  * configuration, and editing it takes effect on the next request. The lookup
- * shells out once through `commandOnPath` and costs a few milliseconds against
+ * shells out twice — once through `commandOnPath` for the PATH answer, once to
+ * ask the candidate for its own version — and costs a few milliseconds against
  * a step that already starts a process.
  */
 
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { win32 as pathWin32 } from "node:path";
@@ -18,6 +20,21 @@ import {
 import { commandOnPath } from "../../../utils/command-on-path";
 
 const BASH_CONFIG_KEY = "scripts.bash";
+
+/**
+ * What the probe below asks a candidate to print. `BASH_VERSION` is set by bash
+ * and by nothing else, so a shell that is not bash answers with the marker and
+ * an empty version — which the pattern refuses. The leading newline keeps a
+ * candidate that greets on stdout from running into the marker's own line.
+ */
+const BASH_PROBE_COMMAND = 'printf \'\\n%s%s\\n\' "argent-bash-version:" "${BASH_VERSION}"';
+
+const BASH_PROBE_MARKER = /^argent-bash-version:\S/m;
+
+const BASH_PROBE_TIMEOUT_MS = 5_000;
+
+/** Enough for the marker line; a candidate that streams is cut off, not kept. */
+const BASH_PROBE_MAX_CHARS = 4 * 1024;
 
 /** POSIX hosts that answer with a short login PATH still have one of these. */
 const POSIX_FIXED_LOCATIONS = ["/bin/bash", "/usr/bin/bash"];
@@ -59,7 +76,7 @@ export async function resolveBashInterpreter(
 ): Promise<{ path: string } | { problem: string }> {
   const configured = projectAnchoredConfigValue<string>(BASH_CONFIG_KEY, anchor);
   if (configured !== undefined) {
-    const problem = interpreterProblem(configured);
+    const problem = interpreterProblem(configured) ?? (await notBashProblem(configured));
     return problem
       ? {
           problem:
@@ -71,10 +88,81 @@ export async function resolveBashInterpreter(
   }
 
   for (const candidate of await bashSearchPath()) {
-    if (!interpreterProblem(candidate)) return { path: candidate };
+    if (interpreterProblem(candidate)) continue;
+    if (await notBashProblem(candidate)) continue;
+    return { path: candidate };
   }
 
   return { problem: notFoundMessage() };
+}
+
+/**
+ * Whether the candidate is really a bash, asked by running it. The static
+ * checks above pass any executable file, and the three properties that follow
+ * make a wrong one invisible rather than red: `$ARGENT_OUTPUT` already holds
+ * the document the parent seeded, so a program that never reads the script
+ * leaves a file the parent accepts; the child's stdout and stderr are drained
+ * and discarded, so the wrong program's own words go nowhere; and an exit code
+ * of 0 is a pass. A wrapper that pins a bash version and forgets to forward its
+ * arguments is the realistic shape — bash with no file to run reads stdin, gets
+ * end of file, and exits 0 — and it would report every `.sh` step green while
+ * running none of them.
+ *
+ * `BASH_VERSION` rather than the exit status, because that is what separates
+ * bash from the shells that would run the file with different word-splitting
+ * and array semantics: zsh, ksh and dash answer this with an empty version.
+ */
+async function notBashProblem(candidate: string): Promise<string | null> {
+  const answer = await askForBashVersion(candidate);
+  if (BASH_PROBE_MARKER.test(answer.stdout)) return null;
+  if (answer.signal) {
+    return (
+      `answered nothing when it was asked for its version, and was stopped by ${answer.signal} ` +
+      `(the check waits ${BASH_PROBE_TIMEOUT_MS / 1_000} seconds)`
+    );
+  }
+  return (
+    "is not a bash: running it printed no $BASH_VERSION, so a `.sh` step would report the " +
+    "document it was seeded with rather than the one the script writes" +
+    (answer.failure ? ` (${answer.failure})` : "")
+  );
+}
+
+/**
+ * One run of the candidate, bounded on both axes. Its standard input is the
+ * null device, the same end of file the step gives the script — without it the
+ * wrapper this check exists for reads an open pipe until the timeout, and
+ * answers in five seconds what it can answer at once. Its standard output is
+ * kept only up to the marker's own length, so a candidate that streams costs
+ * the timeout rather than the heap.
+ */
+function askForBashVersion(
+  candidate: string
+): Promise<{ stdout: string; signal: NodeJS.Signals | null; failure?: string }> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(candidate, ["-c", BASH_PROBE_COMMAND], {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: BASH_PROBE_TIMEOUT_MS,
+        windowsHide: true,
+      });
+    } catch (err) {
+      resolve({ stdout: "", signal: null, failure: firstLine(err) });
+      return;
+    }
+    let stdout = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      if (stdout.length < BASH_PROBE_MAX_CHARS) stdout += chunk;
+    });
+    child.on("error", (err) => resolve({ stdout, signal: null, failure: firstLine(err) }));
+    child.on("close", (_code, signal) => resolve({ stdout, signal }));
+  });
+}
+
+function firstLine(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
 }
 
 /**

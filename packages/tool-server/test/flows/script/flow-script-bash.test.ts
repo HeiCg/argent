@@ -369,24 +369,26 @@ describe("what a failing bash step says", () => {
     30_000
   );
 
-  // The resolver only proves a candidate is an absolute, existing, executable
-  // file — never that it is bash, and never that the kernel will exec it. What
-  // is left lands on the runner's own `error` handler, and `spawn` is the one
-  // kind that tells the author nothing ran.
+  // The resolver checks its candidate by running it, so what it accepted can
+  // still be gone by the time the runner spawns it. That lands on the runner's
+  // own `error` handler, and `spawn` is the one kind that tells the author
+  // nothing ran. The interpreter here answers the resolver's version question
+  // and then removes itself, which is that race made deterministic.
   onPosix(
-    "reports an interpreter the kernel refuses as a spawn error",
+    "reports an interpreter that disappeared after the check as a spawn error",
     async () => {
       const ws = workspace();
       const project = fs.mkdtempSync(path.join(os.tmpdir(), "argent-bad-bash-"));
       fs.mkdirSync(path.join(project, ".argent"), { recursive: true });
-      const notAnExecutable = path.join(project, "bash");
-      // Executable, but not a program: no shebang and not a binary, so `execvp`
-      // answers ENOEXEC and Node reports it as a spawn `error`.
-      fs.writeFileSync(notAnExecutable, "this is not a program\n");
-      fs.chmodSync(notAnExecutable, 0o755);
+      const vanishing = path.join(project, "bash");
+      fs.writeFileSync(
+        vanishing,
+        "#!/bin/sh\nprintf '\\nargent-bash-version:5.2.0-stub\\n'\nrm -f \"$0\"\n"
+      );
+      fs.chmodSync(vanishing, 0o755);
       fs.writeFileSync(
         path.join(project, ".argent", "config.json"),
-        JSON.stringify({ scripts: { bash: notAnExecutable } })
+        JSON.stringify({ scripts: { bash: vanishing } })
       );
       const script = ws.write("never-runs.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
 
@@ -398,7 +400,7 @@ describe("what a failing bash step says", () => {
         });
 
         expect(result.failure?.kind).toBe("spawn");
-        expect(result.failure?.message).toContain(notAnExecutable);
+        expect(result.failure?.message).toContain(vanishing);
         expect(result.failure?.message).toContain("could not be started");
       } finally {
         fs.rmSync(project, { recursive: true, force: true });
