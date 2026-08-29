@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   FlowScriptExecutor,
   type FlowScriptExecutorOptions,
   type FlowScriptSecret,
 } from "../../../src/tools/flows/script/flow-script-executor";
 import { SCRIPT_MAX_FAILURE_MESSAGE_CHARS } from "../../../src/tools/flows/script/flow-script-protocol";
+import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 const workspaces: ScriptWorkspace[] = [];
@@ -22,6 +23,67 @@ afterEach(() => {
 function executor(options: FlowScriptExecutorOptions = {}) {
   return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000, ...options });
 }
+
+/**
+ * A bash step reaches redaction through a different channel from a `.mjs` one:
+ * its failure text is a file the script wrote, read by the runner and appended
+ * to the exit line, and its document is a file rather than a value the runner
+ * encoded. Neither had a case here.
+ */
+describe("flow script executor — redaction of a bash step", () => {
+  const SECRET: FlowScriptSecret = { name: "API_KEY", value: "s3cr3t-token-value" };
+
+  let noBash: string | undefined;
+
+  beforeAll(async () => {
+    const found = await resolveBashInterpreter(undefined);
+    if (!("path" in found)) noBash = found.problem;
+  });
+
+  beforeEach((ctx) => {
+    if (noBash) ctx.skip(`this host has no bash to run a .sh step with: ${noBash}`);
+  });
+
+  it("replaces a secret the script wrote to $ARGENT_REASON", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "reason.sh",
+      `printf 'the call to %s failed' "$API_KEY" > "$ARGENT_REASON"
+       exit 4`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).not.toContain(SECRET.value);
+    expect(result.failure?.message).toContain("API_KEY");
+  }, 30_000);
+
+  it("replaces a secret the script wrote into its output document", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "document.sh",
+      `printf '{"auth":"Bearer %s"}' "$API_KEY" > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(result.output)).not.toContain(SECRET.value);
+    expect(JSON.stringify(result.output)).toContain("API_KEY");
+  }, 30_000);
+});
 
 describe("flow script executor — the heap verdict", () => {
   it("recognises a heap banner split across two pipe chunks", async () => {

@@ -79,9 +79,31 @@ function hostBash(): string | undefined {
 
 const withBash = it.skipIf(hostBash() === undefined);
 
-beforeEach(() => execFileMock.mockReset());
+/**
+ * A home directory of the test's own. The resolver reads `scripts.bash` from
+ * BOTH scopes, and `test/setup/clear-argent-env.ts` strips `ARGENT_*` variables
+ * and not `~/.argent/config.json` — so on a machine that took this PR's own
+ * advice and pinned a bash globally, the fixtures below were read past and two
+ * of these tests failed. The global scope lives under the home directory, which
+ * is the one place a test can move it.
+ */
+let home: string;
+let realHome: { HOME?: string; USERPROFILE?: string };
+
+beforeEach(() => {
+  execFileMock.mockReset();
+  home = fs.mkdtempSync(path.join(os.tmpdir(), "argent-bash-home-"));
+  realHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+});
 
 afterEach(() => {
+  for (const [name, value] of Object.entries(realHome)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  fs.rmSync(home, { recursive: true, force: true });
   setPlatform(realPlatform);
   vi.restoreAllMocks();
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
@@ -217,8 +239,9 @@ describe("scripts.bash, read against the flow's own project", () => {
 describe("bash on PATH", () => {
   // The three cases that fake a POSIX platform need a POSIX host to hold the
   // fixture: a `C:\…` path is not posix-absolute, and there is no /bin/bash
-  // behind it to fall through to. The Windows rules below run everywhere.
-  const onPosix = it.skipIf(realPlatform === "win32");
+  // behind it to fall through to. They also need a real bash, because the
+  // resolver runs each candidate before it takes it. The Windows rules below
+  // run everywhere.
   const onPosixWithBash = it.skipIf(realPlatform === "win32" || hostBash() === undefined);
 
   onPosixWithBash("takes the first absolute answer on POSIX", async () => {
@@ -291,30 +314,27 @@ describe("bash on PATH", () => {
     expect(candidates[0]).toBe("D:\\Tools\\Git\\bin\\bash.exe");
   });
 
-  onPosix("never offers a relative candidate, whatever the source", async () => {
+  onPosixWithBash("never offers a relative candidate, whatever the source", async () => {
     setPlatform(realPlatform);
     const root = projectWith(undefined);
     // A relative PATH entry gives `command -v` a relative answer, which `spawn`
     // would resolve against the runner's own working directory.
     execFileMock.mockReturnValue({ stdout: "bin/bash\n", stderr: "" });
 
-    const found = await resolveBashInterpreter(root);
-    if ("path" in found) expect(path.isAbsolute(found.path)).toBe(true);
+    // The fixed locations decide instead, and they are absolute.
+    expect(await resolveBashInterpreter(root)).toEqual({ path: hostBash() });
   });
 
-  onPosix("takes the first candidate that exists, not the first that was listed", async () => {
-    setPlatform(realPlatform);
-    const root = projectWith(undefined);
-    const real = notBash(root);
-    execFileMock.mockReturnValue({ stdout: `${path.join(root, "gone")}\n`, stderr: "" });
+  onPosixWithBash(
+    "takes the first candidate that exists, not the first that was listed",
+    async () => {
+      setPlatform(realPlatform);
+      const root = projectWith(undefined);
+      execFileMock.mockReturnValue({ stdout: `${path.join(root, "gone")}\n`, stderr: "" });
 
-    // With PATH naming a file that is not there, the fixed locations decide —
-    // and on a host with neither, the refusal below is what an author reads.
-    const found = await resolveBashInterpreter(root);
-    if ("path" in found) expect(found.path).not.toBe(path.join(root, "gone"));
-    else expect(found.problem).toContain("No bash was found");
-    expect(fs.existsSync(real)).toBe(true);
-  });
+      expect(await resolveBashInterpreter(root)).toEqual({ path: hostBash() });
+    }
+  );
 });
 
 describe("no bash anywhere", () => {

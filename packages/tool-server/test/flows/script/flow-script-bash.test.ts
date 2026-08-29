@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   exchangeDirPrefix,
   FlowScriptExecutor,
@@ -11,6 +11,7 @@ import {
   type FlowScriptResult,
 } from "../../../src/tools/flows/script/flow-script-executor";
 import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
+import { SCRIPT_MAX_OUTPUT_BYTES } from "../../../src/tools/flows/script/flow-script-protocol";
 import {
   createScriptWorkspace,
   SOURCE_RUNNER_DIR,
@@ -26,10 +27,21 @@ import {
  */
 let noBash: string | undefined;
 
+/**
+ * Where this file's steps make their exchange directories. `os.tmpdir()` holds
+ * every other argent install's too — a second checkout on the machine creates
+ * and removes them while these tests run — so what is counted there is not a
+ * fact about this file.
+ */
+let exchangeRoot: string;
+
 beforeAll(async () => {
+  exchangeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-bash-exchange-"));
   const found = await resolveBashInterpreter(undefined);
   if (!("path" in found)) noBash = found.problem;
 });
+
+afterAll(() => fs.rmSync(exchangeRoot, { recursive: true, force: true }));
 
 beforeEach((ctx) => {
   if (noBash) ctx.skip(`this host has no bash to run a .sh step with: ${noBash}`);
@@ -57,7 +69,12 @@ afterEach(() => {
 });
 
 function executor(options: FlowScriptExecutorOptions = {}): FlowScriptExecutor {
-  return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000, ...options });
+  return new FlowScriptExecutor({
+    concurrency: 4,
+    maxTimeoutMs: 60_000,
+    exchangeRoot,
+    ...options,
+  });
 }
 
 /**
@@ -127,9 +144,8 @@ async function readPidFile(file: string, timeoutMs = 20_000): Promise<number> {
   throw new Error(`No pid appeared in ${file}`);
 }
 
-function exchangeDirCount(): number {
-  return fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith(exchangeDirPrefix()))
-    .length;
+function exchangeDirs(): string[] {
+  return fs.readdirSync(exchangeRoot).filter((entry) => entry.startsWith(exchangeDirPrefix()));
 }
 
 /** `${BASH_SOURCE[0]}` written so the TypeScript template does not eat it. */
@@ -179,19 +195,45 @@ describe("a bash step that passes", () => {
     expect(result.output).toEqual({ given: 41 });
   }, 30_000);
 
+  // The claim is that the ONE slot is shared across the two languages, so each
+  // script has to say when it ran: two trivially fast scripts read after both
+  // resolved say nothing an executor ignoring `concurrency` would not also say.
+  // Each records its own window, and the windows must not overlap.
   it("takes one queue slot per step, whichever language runs", async () => {
     const ws = workspace();
     const shared = executor({ concurrency: 1 });
-    const sh = ws.write("slot.sh", `printf '{"sh":true}' > "$ARGENT_OUTPUT"`);
-    const mjs = ws.write("slot.mjs", `output.mjs = true;`);
+    // One log both steps append to, and no clock: each brackets a second of
+    // work, so an interleaved pair of lines is two steps holding one slot.
+    const log = ws.resolve("slot.log");
+    const sh = ws.write(
+      "slot.sh",
+      `printf 'sh-in\\n' >> ${JSON.stringify(log)}
+       sleep 1
+       printf 'sh-out\\n' >> ${JSON.stringify(log)}
+       printf '{"sh":true}' > "$ARGENT_OUTPUT"`
+    );
+    const mjs = ws.write(
+      "slot.mjs",
+      `import fs from "node:fs";\n` +
+        `fs.appendFileSync(${JSON.stringify(log)}, "mjs-in\\n");\n` +
+        `await new Promise((r) => setTimeout(r, 1000));\n` +
+        `fs.appendFileSync(${JSON.stringify(log)}, "mjs-out\\n");\n` +
+        `output.mjs = true;`
+    );
     const [first, second] = await Promise.all([
       shared.execute({ scriptPath: sh, interpreter: "bash", projectRoot: ws.dir }),
       shared.execute({ scriptPath: mjs, projectRoot: ws.dir }),
     ]);
+
     expect(first.output).toEqual({ sh: true });
     expect(second.output).toEqual({ mjs: true });
+    const order = fs.readFileSync(log, "utf8").trim().split(/\n+/);
+    expect([
+      ["sh-in", "sh-out", "mjs-in", "mjs-out"],
+      ["mjs-in", "mjs-out", "sh-in", "sh-out"],
+    ]).toContainEqual(order);
     expect(shared.activeCount).toBe(0);
-  }, 30_000);
+  }, 60_000);
 });
 
 describe("the document a bash step returns", () => {
@@ -237,18 +279,25 @@ describe("the document a bash step returns", () => {
 
   // The read is bounded rather than `stat`-ed first: a `stat` would describe a
   // file a descendant is still growing, and leave the read itself unbounded.
-  it("refuses a document one byte over the limit", async () => {
+  // Both sides of the boundary, at the exact byte: the runner reads
+  // `maxOutputBytes + 1` and the parent measures the text it was sent, so a
+  // document 200 KB over proves neither of them agrees on where the edge is.
+  it("takes a document of exactly the limit and refuses one byte more", async () => {
     const ws = workspace();
-    const result = await runBash(
-      ws,
-      "huge",
+    const padding = (bytes: number) =>
       `set -euo pipefail
-       printf '{"big":"' > "$ARGENT_OUTPUT"
-       head -c 1200000 /dev/zero | tr '\\0' 'z' >> "$ARGENT_OUTPUT"
-       printf '"}' >> "$ARGENT_OUTPUT"`
-    );
-    expect(result.failure?.kind).toBe("output");
-    expect(result.failure?.message).toContain("limit");
+       printf '{"big":"' > "$ARGENT_OUTPUT.t"
+       head -c ${bytes} /dev/zero | tr '\\0' 'z' >> "$ARGENT_OUTPUT.t"
+       printf '"}' >> "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`;
+    // `{"big":"` and `"}` are the 10 bytes around the padding.
+    const exact = await runBash(ws, "at-limit", padding(SCRIPT_MAX_OUTPUT_BYTES - 10));
+    const over = await runBash(ws, "over-limit", padding(SCRIPT_MAX_OUTPUT_BYTES - 9));
+
+    expect(exact.failure).toBeUndefined();
+    expect((exact.output?.big as string).length).toBe(SCRIPT_MAX_OUTPUT_BYTES - 10);
+    expect(over.failure?.kind).toBe("output");
+    expect(over.failure?.message).toContain("limit");
   }, 60_000);
 
   it("does not read the document of a non-zero exit", async () => {
@@ -319,6 +368,30 @@ describe("what a failing bash step says", () => {
     expect(result.failure!.message.length).toBeLessThanOrEqual(8 * 1024);
     expect(result.failure?.message).toContain("$ARGENT_REASON holds 40000 bytes");
     expect(result.failure?.message).toMatch(/keeps the first \d+ characters]$/);
+  }, 30_000);
+
+  // Octal escapes rather than `\u`, which bash 3.2 does not know: the point is
+  // that the bytes really are multi-byte. The read is bounded in BYTES and the
+  // ceiling counts CHARACTERS, so a cut that ignored continuation bytes would
+  // put a replacement character where a euro sign was.
+  it("clamps a multi-byte reason without breaking a character", async () => {
+    const ws = workspace();
+    const result = await runBash(
+      ws,
+      "wide-reason",
+      `set -euo pipefail
+       i=0
+       while [ $i -lt 4000 ]; do
+         printf '\\342\\202\\254ab\\342\\202\\254ab\\342\\202\\254ab\\342\\202\\254ab'
+         i=$((i + 1))
+       done >> "$ARGENT_REASON"
+       exit 2`
+    );
+
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("\u20AC");
+    expect(result.failure?.message).not.toContain("\uFFFD");
+    expect(result.failure?.message).toContain("$ARGENT_REASON holds 80000 bytes");
   }, 30_000);
 
   it("hints at the two exit codes that are bash's own, not the script's", async () => {
@@ -467,23 +540,32 @@ describe("the runner's own channels in bash mode", () => {
   // parsed by Node inside its own read callback in the parent, and a forged
   // verdict is exactly what the three null devices exist to prevent. 3 is the
   // parent's sink and 4 is the lifeline.
-  it("gives bash null devices where its own channels are, so no write can forge a verdict", async () => {
-    const ws = workspace();
-    const forged = '{"type":"result","outputJson":"{\\"forged\\":true}"}';
-    const result = await runBash(
-      ws,
-      "forger",
-      `set +e
-       echo '${forged}' >&3
-       echo '${forged}' >&4
-       echo '${forged}' >&5
-       printf '{"real":true}' > "$ARGENT_OUTPUT"
+  // Each write has to SUCCEED and reach nothing. A closed descriptor gives the
+  // same `ok` and the same document under `set +e`, so asserting only those
+  // does not tell three null devices apart from Node's close-on-exec having
+  // closed them — which is the very distinction the runner refuses to rest on.
+  onPosix(
+    "gives bash writable null devices where its own channels are, so no write can forge a verdict",
+    async () => {
+      const ws = workspace();
+      const forged = '{"type":"result","outputJson":"{\\"forged\\":true}"}';
+      const result = await runBash(
+        ws,
+        "forger",
+        `set +e
+       wrote=""
+       for fd in 3 4 5; do
+         if echo '${forged}' >&$fd 2>/dev/null; then wrote="$wrote$fd"; fi
+       done
+       printf '{"real":true,"wrote":"%s"}' "$wrote" > "$ARGENT_OUTPUT"
        exit 0`
-    );
+      );
 
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ real: true });
-  }, 30_000);
+      expect(result.ok).toBe(true);
+      expect(result.output).toEqual({ real: true, wrote: "345" });
+    },
+    30_000
+  );
 
   it("gives the script an empty stdin, so a read gets end of file", async () => {
     const ws = workspace();
@@ -712,6 +794,33 @@ describe("limits and stopping", () => {
     expect(result.failure?.kind).toBe("timeout");
   }, 60_000);
 
+  // The `.mjs` side has this at flow-script-lifecycle.test.ts; every bash
+  // background fixture loops forever, so only the timeout and cancel paths were
+  // covered. A job still running when the script exits 0 must not hold the
+  // document back, and must not outlive the step.
+  onPosix(
+    "returns the document of a script that exits 0 with a job still running",
+    async () => {
+      const ws = workspace();
+      const pidFile = ws.resolve("backgrounded.pid");
+      const result = await runBash(
+        ws,
+        "background-then-pass",
+        `set -euo pipefail
+       sleep 30 &
+       echo $! > ${JSON.stringify(pidFile)}
+       printf '{"ok":true}' > "$ARGENT_OUTPUT"`
+      );
+      const job = await readPidFile(pidFile, 10_000);
+      strays.push(job);
+
+      expect(result.failure).toBeUndefined();
+      expect(result.output).toEqual({ ok: true });
+      expect(await waitForExit(job, 10_000)).toBe(true);
+    },
+    30_000
+  );
+
   it("clamps a time limit above the host maximum and says so, as it does for a .mjs", async () => {
     const ws = workspace();
     const result = await runBash(
@@ -729,7 +838,6 @@ describe("limits and stopping", () => {
 describe("the private exchange directory", () => {
   it("is gone after a pass, a fail, a timeout and a cancellation", async () => {
     const ws = workspace();
-    const before = exchangeDirCount();
 
     await runBash(ws, "pass", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
     await runBash(ws, "fail", `exit 1`);
@@ -748,8 +856,52 @@ describe("the private exchange directory", () => {
     controller.abort();
     await pending;
 
-    expect(exchangeDirCount()).toBe(before);
+    expect(exchangeDirs()).toEqual([]);
   }, 60_000);
+});
+
+describe("what a step reports before anything is forked", () => {
+  // `beforeFork` is what tells a caller the script left nothing behind. Both
+  // paths below return a full result without ever starting a process, and the
+  // flag is the only thing separating them from a cancellation that stopped a
+  // running one.
+  it("marks an unusable scripts.bash as a failure from before the fork", async () => {
+    const ws = workspace();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "argent-nobash-"));
+    fs.mkdirSync(path.join(project, ".argent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".argent", "config.json"),
+      JSON.stringify({ scripts: { bash: path.join(project, "no-such-bash") } })
+    );
+    const script = ws.write("never-runs.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
+
+    try {
+      const result = await executor().execute({
+        scriptPath: script,
+        interpreter: "bash",
+        projectRoot: project,
+      });
+
+      expect(result.failure?.kind).toBe("spawn");
+      expect(result.failure?.beforeFork).toBe(true);
+      expect(result.failure?.message).toContain("does not exist");
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("reports an exchange directory it could not create, and forks nothing", async () => {
+    const ws = workspace();
+    const script = ws.write("never-runs-either.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
+
+    const result = await executor({
+      exchangeRoot: path.join(ws.dir, "no", "such", "root"),
+    }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
+
+    expect(result.failure?.kind).toBe("spawn");
+    expect(result.failure?.beforeFork).toBe(true);
+    expect(result.failure?.message).toContain("private exchange directory could not be created");
+  }, 30_000);
 });
 
 describe("the published layout", () => {
@@ -807,6 +959,7 @@ describe("a tool server that dies mid-step", () => {
           script,
           ws.dir,
           "bash",
+          ws.dir,
         ],
         { cwd: path.resolve(__dirname, "../../.."), stdio: ["ignore", "ignore", "pipe"] }
       );

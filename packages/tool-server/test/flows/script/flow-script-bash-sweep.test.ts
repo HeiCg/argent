@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   exchangeDirPrefix,
   FlowScriptExecutor,
@@ -17,6 +17,10 @@ import { createScriptWorkspace } from "../../helpers/flow-script-workspace";
  * It exists for the orphan case: when the tool server dies mid-step the
  * lifeline kills the runner and nobody reaches the exchange directory, and the
  * document in it may hold values derived from a secret.
+ *
+ * The root is this file's own rather than `os.tmpdir()`: that one holds the
+ * exchange directories of every other argent install on the machine, so what a
+ * sweep does there is not a fact about these fixtures.
  */
 let noBash: string | undefined;
 
@@ -29,6 +33,14 @@ beforeEach((ctx) => {
   if (noBash) ctx.skip(`this host has no bash to run a .sh step with: ${noBash}`);
 });
 
+let exchangeRoot: string;
+
+beforeAll(() => {
+  exchangeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-sweep-root-"));
+});
+
+afterAll(() => fs.rmSync(exchangeRoot, { recursive: true, force: true }));
+
 describe("the first bash step of a process", () => {
   // One test, because the sweep is spent on the first bash step of the process:
   // every directory it has to judge has to be planted before that step runs.
@@ -39,17 +51,17 @@ describe("the first bash step of a process", () => {
     // An older layout, which carries no bound of its own: its age is all the
     // sweep can read, and this one is older than the widest a live step of
     // THIS install can be.
-    const abandoned = fs.mkdtempSync(path.join(os.tmpdir(), exchangeDirPrefix()));
+    const abandoned = fs.mkdtempSync(path.join(exchangeRoot, exchangeDirPrefix()));
     fs.writeFileSync(path.join(abandoned, "output.json"), '{"token":"derived-from-a-secret"}');
     fs.utimesSync(abandoned, longAgo, longAgo);
-    const liveOldLayout = fs.mkdtempSync(path.join(os.tmpdir(), exchangeDirPrefix()));
+    const liveOldLayout = fs.mkdtempSync(path.join(exchangeRoot, exchangeDirPrefix()));
 
     // A step of another install, still running, whose own time limit is longer
     // than anything this install would allow. A directory's mtime never
     // advances after creation, so age alone would read this as abandoned and
     // take the exchange out from under a correct script.
     const stamped = (owned: number): string =>
-      fs.mkdtempSync(path.join(os.tmpdir(), `${exchangeDirPrefix()}${Date.now() + owned}-`));
+      fs.mkdtempSync(path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() + owned}-`));
     const liveElsewhere = stamped(60 * 60 * 1000);
     fs.utimesSync(liveElsewhere, longAgo, longAgo);
     // And one whose own bound has passed, which is abandoned however new the
@@ -61,6 +73,7 @@ describe("the first bash step of a process", () => {
       const result = await new FlowScriptExecutor({
         concurrency: 2,
         maxTimeoutMs: 60_000,
+        exchangeRoot,
       }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
 
       expect(result.ok).toBe(true);

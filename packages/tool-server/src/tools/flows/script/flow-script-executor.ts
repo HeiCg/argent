@@ -287,6 +287,15 @@ export interface FlowScriptExecutorOptions {
   maxTimeoutMs?: number;
   heapLimitMb?: number;
   queueWaitMs?: number;
+  /**
+   * Where a step's private exchange directory is made, and the root the
+   * first-use sweep reads. `os.tmpdir()` unless a caller says otherwise — one
+   * directory shared with every other argent on the machine, which is why the
+   * sweep has to read each directory's own bound rather than apply its own.
+   * A test passes a root of its own so that what it counts there is its own
+   * steps and not the machine's.
+   */
+  exchangeRoot?: string;
 }
 
 interface ResolvedBounds {
@@ -560,7 +569,12 @@ export class FlowScriptExecutor {
       }
       interpreterPath = found.path;
       try {
-        exchange = createExchange(outputJson, timeoutMs, bounds.maxTimeoutMs);
+        exchange = createExchange(
+          this.options.exchangeRoot ?? os.tmpdir(),
+          outputJson,
+          timeoutMs,
+          bounds.maxTimeoutMs
+        );
       } catch (err) {
         return emptyResult(
           {
@@ -1198,13 +1212,14 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
  * after creation.
  */
 function createExchange(
+  root: string,
   outputJson: string,
   timeoutMs: number,
   maxTimeoutMs: number
 ): ExchangeFiles {
-  sweepStaleExchanges(maxTimeoutMs);
+  sweepStaleExchanges(root, maxTimeoutMs);
   const ownUntil = Date.now() + timeoutMs + EXCHANGE_LIFE_MARGIN_MS;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${EXCHANGE_DIR_PREFIX}${ownUntil}-`));
+  const dir = fs.mkdtempSync(path.join(root, `${EXCHANGE_DIR_PREFIX}${ownUntil}-`));
   const outputFile = path.join(dir, EXCHANGE_OUTPUT_FILE);
   const reasonFile = path.join(dir, EXCHANGE_REASON_FILE);
   fs.writeFileSync(outputFile, outputJson, "utf8");
@@ -1243,12 +1258,11 @@ let sweptStaleExchanges = false;
  * version, so its age is all there is to read; the bound there is the widest a
  * live step of THIS install can be.
  */
-function sweepStaleExchanges(maxTimeoutMs: number): void {
+function sweepStaleExchanges(root: string, maxTimeoutMs: number): void {
   if (sweptStaleExchanges) return;
   sweptStaleExchanges = true;
   const now = Date.now();
   const cutoff = now - (maxTimeoutMs + CHILD_DEADLINE_MARGIN_MS + STOP_GRACE_MS + FORCE_GRACE_MS);
-  const root = os.tmpdir();
   let entries: string[];
   try {
     entries = fs.readdirSync(root);
