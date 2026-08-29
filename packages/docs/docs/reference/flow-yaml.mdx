@@ -256,9 +256,9 @@ The extension selects the interpreter. There is no `language` key.
 | `.mjs`    | Node.js, the one that runs the tool-server |
 | `.sh`     | bash. See [Bash scripts](#bash-scripts)    |
 
-`.sh` support is newer than `.mjs` support. A flow that names a `.sh` does not parse on an Argent that predates it. The error names the extension. Run `argent --version` on the host that reports the error.
+Argent added both extensions in one release, so an Argent that runs a `.mjs` step runs a `.sh` step. An Argent that predates the `script` step refuses the whole step. Run `argent --version` on the host that reports the error.
 
-The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
+The value is always a map. Parsing rejects a bare path, such as `script: scripts/seed-order.sh`.
 
 | Key       | Required | Description                                                                                                                                 |
 | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -285,6 +285,8 @@ A failed step stops the flow. The verdict names the side that caused the failure
 | Failed  | The script | A missing file, a load error, a thrown error, a non-zero exit code, or an output document that is not a JSON object        |
 | Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
 
+The two causes read the same for a `.sh` file. A `curl` that answers 503 is Failed. An `exit 1` is Failed. A host with no bash is Errored. A `sleep 60` under `timeout: 2000` is Errored.
+
 Parsing rejects a `timeout` below 100 milliseconds. The step starts a process before the script runs, and that start alone costs tens of milliseconds. A smaller limit ends the step at the time limit, or makes the result depend on the load of the host.
 
 `scripts.maxTimeoutMs` caps the `timeout` of each step. `scripts.heapLimitMb` sets the heap of each Node process a step starts. A bash script has no memory limit. See [Available keys](/docs/reference/configuration#available-keys).
@@ -304,7 +306,7 @@ mv "$ARGENT_OUTPUT.new" "$ARGENT_OUTPUT"
 
 The script reads the URL from a file because Argent gives it an allowlist of environment names, not your shell environment. There is no `env` key.
 
-A `.sh` file is a trusted script, the same as an `.mjs` file. Argent does not sandbox it. It has the reach of the account that runs the tool-server.
+A `.sh` file is a trusted script, the same as an `.mjs` file. Argent does not sandbox it. The script has the reach of the account that runs the tool-server.
 
 The contract of a bash script:
 
@@ -323,7 +325,7 @@ Write the output document to a sibling file, then move the file into place. A re
 
 `$ARGENT_REASON` starts empty, so `>>` is safe there. Argent reads about 7000 characters of it. A larger file is cut, and the report says how many bytes the file holds.
 
-A failed step that writes no reason shows only the exit code. Two exit codes have a meaning of bash: 127 means "command not found", and 126 means "found, but Argent could not run it". Code 126 has two causes: bash cannot read the file, or a command in the file is not executable.
+A failed step that writes no reason shows only the exit code. Two exit codes come from bash itself. Code 127 is the "command not found" of bash. Code 126 is the "found, but could not be run" of bash. Code 126 has two causes: bash cannot read the script file, or a command in the file is not executable.
 
 #### The bash that Argent runs
 
@@ -333,24 +335,29 @@ Argent looks for bash in this order, and takes the first result:
 2. `bash` on the PATH of the tool-server
 3. `/bin/bash`, then `/usr/bin/bash`. On Windows, the `bash.exe` of Git for Windows, in the locations its installer and Scoop use
 
-Argent runs each candidate once and asks it for its `$BASH_VERSION`. bash sets that name and no other shell does. A candidate that answers without one is not a bash, and Argent does not run a `.sh` step under it: the step would report the document Argent seeded rather than the one the script writes. A candidate on the PATH that fails this check is passed over. A `scripts.bash` that fails it errors the step, and the message names the file the value came from.
+Argent runs each candidate once and asks it for its `$BASH_VERSION`. Only bash sets that name. A candidate that answers without one is not a bash, and Argent does not run a `.sh` step under it: the step would report the document Argent seeded rather than the one the script writes. A candidate on the PATH that fails this check is passed over. A `scripts.bash` that fails it errors the step, and the message names the file the value came from.
 
 On Windows, Argent skips the `bash.exe` under `%SystemRoot%`. That file is the WSL launcher. It runs the script inside a Linux distribution, where the project path, the environment and `$ARGENT_OUTPUT` do not exist.
 
-macOS ships bash 3.2 at `/bin/bash`. Homebrew installs bash 5 earlier on the PATH. Associative arrays, `${var,,}` and `mapfile` need bash 4 or later. Set `scripts.bash` to pin one version. The report names the interpreter path when the script exits with a code, when a signal kills bash, and when bash cannot start. A time limit, a bad document and a missing file name no path.
+macOS ships bash 3.2 at `/bin/bash`. Homebrew installs bash 5 earlier on the PATH. Associative arrays, `${var,,}` and `mapfile` need bash 4 or later. Set `scripts.bash` to pin one version.
+
+Three reports name the interpreter path: a script that exits with a code, a signal that kills bash, and a bash that cannot start. Three reports name no path: a time limit, a bad document, and a missing file.
 
 #### What a bash author must know
 
 - **The PATH of the tool-server is a snapshot from when it started.** `curl`, `jq`, `adb` and `gh` resolve against that snapshot. An editor can start the tool-server with a short login PATH. The symptom is exit code 127. Restart the tool-server after you change the PATH
 - **A variable your shell exports does not reach the script.** `DATABASE_URL` and `NODE_ENV` are absent even when your shell sets them. Read a secret or a URL from a file
-- **Use LF line endings.** A `.sh` file with CRLF line endings puts the carriage return in the last word of each line. What follows depends on the word. A command name gives `$'\r': command not found` and exit code 127. A redirection target gives a file one carriage return past the one you named: Argent sees that name in the private directory of the step and fails the step for it. Add `*.sh text eol=lf` to `.gitattributes`
+- **Use LF line endings.** A `.sh` file with CRLF line endings puts the carriage return in the last word of each line. What follows depends on the word. A command name gives `$'\r': command not found` and exit code 127. A redirection target gives a file one carriage return past the one you named. Argent finds that file in the private directory of the step, and fails the step for it. Add `*.sh text eol=lf` to `.gitattributes`
 - **On Windows, Argent runs the bash of Git for Windows.** `$PWD` is a `/c/...` path there, and `$0` and `$ARGENT_OUTPUT` are `C:/...` paths. Both forms work as an argument and in a redirection. Write for bash, not for `cmd.exe`
+- **On Windows, the PATH of the script is not the PATH of the tool-server.** The `bash.exe` of Git for Windows is a wrapper. The wrapper puts its own `mingw64\bin` and `usr\bin` directories, and your `%HOME%\bin` directory, in front of the rest. `curl`, `sed` and `git` resolve to the copies of Git for Windows there
 - **A background job ends with the step.** Argent stops the process group of the step after the script exits. A job survives only after `setsid`. A background job that holds the standard output open costs the step a wait of 500 milliseconds
 - **The exchange files are read when bash exits.** A background job that writes `$ARGENT_OUTPUT` later writes to a file that nobody reads
-- **A `TERM` trap gets 1.5 seconds.** Argent then sends `KILL` to the group. bash also holds a trap until the foreground command returns
-- **Do not write `kill 0`.** `trap 'kill 0' EXIT` is a usual way to reap background jobs, but `kill 0` signals the whole process group of the step. It kills bash itself, so the step fails and the document is lost. Argent stops a background job for you. Signal the pid of the job if you must do it yourself
+- **A `TERM` trap gets 1.5 seconds.** Argent then sends `KILL` to the group. A trap runs only after the foreground command of the script returns
+- **Do not write `kill 0`.** `trap 'kill 0' EXIT` is a usual way to reap background jobs. The `kill 0` command signals the whole process group of the step. It kills bash itself, so the step fails and the document is lost. Argent stops a background job for you. Signal the pid of the job if you must do it yourself
 
-Argent writes `$ARGENT_OUTPUT` and `$ARGENT_REASON` into a private directory of the step. The directory is readable by your user only. Argent removes the directory when the step ends. A tool-server that dies during the step leaves the directory behind; the next bash step on a new tool-server then removes it. The report never carries the document.
+Argent writes `$ARGENT_OUTPUT` and `$ARGENT_REASON` into a private directory of the step. On macOS and on Linux, your user is the only reader of the directory and of the two files. On Windows, the directory takes the permissions of the temporary directory of the host.
+
+Argent removes the directory when the step ends. A tool-server that dies during the step leaves the directory behind. A later bash step removes it, after the time limit of the dead step has passed. The report never carries the document.
 
 ## The `argent flow` command
 

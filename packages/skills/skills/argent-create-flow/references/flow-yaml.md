@@ -222,7 +222,7 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
 Argent runs the script from the project root, not from the directory of the script file. Thus `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. In a `.sh`, `"$(dirname "${BASH_SOURCE[0]}")"` is the directory of the script file.
 
-Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file. A `.sh` resolves `curl`, `jq`, `adb` and `gh` against the PATH the tool-server started with, which an editor may have set to a short login PATH; the symptom is exit code 127.
+Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file. A `.sh` resolves `curl`, `jq`, `adb` and `gh` against the PATH the tool-server started with, which an editor may have set to a short login PATH; the symptom is exit code 127. On Windows that PATH is not the whole story: Git for Windows' `bash.exe` is a wrapper that puts its own `mingw64\bin`, `usr\bin` and `%HOME%\bin` in front, so those tools resolve to Git's own copies.
 
 The failure verdict names the side at fault: **failed** names the script, and **errored** names the host that ran it.
 

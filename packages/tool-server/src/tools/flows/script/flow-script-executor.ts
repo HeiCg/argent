@@ -1307,7 +1307,8 @@ function removeExchange(exchange: ExchangeFiles, notes: string[]): void {
   } catch (err) {
     notes.push(
       `The script's private directory ${exchange.dir} could not be removed ` +
-        `(${errorMessage(err)}); the next tool server's first bash step removes it.`
+        `(${errorMessage(err)}); a later bash step sweeps it, once this step's ` +
+        `own time limit has passed.`
     );
   }
 }

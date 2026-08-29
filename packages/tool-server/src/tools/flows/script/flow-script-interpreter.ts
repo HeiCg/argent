@@ -83,9 +83,11 @@ function projectAnchoredConfigValue<T>(key: string, anchor: string | undefined):
  *    but unusable REFUSES the step rather than falling through — a wrong path
  *    papered over by a fallback that happens to exist on this machine is a flow
  *    that breaks in CI with nothing in the configuration to show why.
- * 2. `bash` on the tool server's PATH — the same PATH the script receives, so
- *    "the bash your terminal would run", which on a Mac with Homebrew is 5.x
- *    and on a bare one is Apple's 3.2.
+ * 2. `bash` on the tool server's PATH — "the bash your terminal would run",
+ *    which on a Mac with Homebrew is 5.x and on a bare one is Apple's 3.2. The
+ *    script resolves its own tools against that same PATH on POSIX; on Windows
+ *    it does not, because Git for Windows' `bash.exe` is a wrapper that
+ *    prepends its own `mingw64\bin`, `usr\bin` and `%HOME%\bin` first.
  * 3. Fixed locations, for an editor-spawned server with a short login PATH.
  *
  * On Windows every candidate under `%SystemRoot%` is dropped at each of the
