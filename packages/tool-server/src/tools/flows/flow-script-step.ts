@@ -88,9 +88,13 @@ export async function runFlowScriptStep(
 
   const result = await flowScriptExecutor().execute({
     scriptPath: canonical,
-    // Decided here, from the path the parser accepted, and passed explicitly:
-    // the executor runs what it is told and never inspects an extension.
-    interpreter: scriptInterpreter(target),
+    // Decided here from the CANONICAL path — the file the executor really runs —
+    // and passed explicitly: the executor runs what it is told and never
+    // inspects an extension. The spelling is not the same fact: a step written
+    // as `aliased.sh` can be a symlink to a `.mjs`, and reading the extension
+    // off the link would run JavaScript under bash and report exit code 127
+    // with a hint about a missing tool.
+    interpreter: scriptInterpreter(canonical),
     output: {},
     ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}),
     projectRoot: request.projectRoot,

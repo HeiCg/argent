@@ -261,6 +261,21 @@ describe("a bash step in a run", () => {
     expect(readMark("mixed-sh")).toBe("ran");
   });
 
+  // The extension picks the interpreter and the executor runs the RESOLVED
+  // path, so the two have to be read off the same file: a `.sh` spelling over a
+  // `.mjs` target used to hand JavaScript to bash and report exit code 127 with
+  // a hint about a tool missing from the PATH snapshot.
+  it("picks the interpreter from the file a symlink resolves to", async () => {
+    await markingScript("scripts/real.mjs", "aliased");
+    fsSync.symlinkSync("real.mjs", path.join(root, "scripts", "aliased.sh"));
+    await flow("aliased", "steps:\n  - script: { path: ../../scripts/aliased.sh }\n");
+
+    const { result } = await runFlow("aliased");
+
+    expect(result.steps[0]).toMatchObject({ status: "pass" });
+    expect(readMark("aliased")).toBe("aliased");
+  });
+
   it("reports a looping .sh stopped at its time limit as an error", async (ctx) => {
     skipWithoutBash(ctx);
     await write("scripts/slow.sh", `while true; do sleep 1; done\n`);

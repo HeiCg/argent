@@ -304,7 +304,10 @@ describe("what a failing bash step says", () => {
     expect(JSON.stringify(result)).not.toContain("not a failure");
   }, 30_000);
 
-  it("clamps a reason at the ceiling and marks what it cut", async () => {
+  // The marker states the size of the FILE. A bounded read cannot count what it
+  // did not read, and the count of the string that was read is wrong by orders
+  // of magnitude — 40000 characters were once reported as 24671 omitted.
+  it("clamps a reason at the ceiling and says how much the file holds", async () => {
     const ws = workspace();
     const result = await runBash(
       ws,
@@ -314,7 +317,8 @@ describe("what a failing bash step says", () => {
     );
     expect(result.failure?.kind).toBe("exit");
     expect(result.failure!.message.length).toBeLessThanOrEqual(8 * 1024);
-    expect(result.failure?.message).toMatch(/more characters omitted]$/);
+    expect(result.failure?.message).toContain("$ARGENT_REASON holds 40000 bytes");
+    expect(result.failure?.message).toMatch(/keeps the first \d+ characters]$/);
   }, 30_000);
 
   it("hints at the two exit codes that are bash's own, not the script's", async () => {
@@ -333,8 +337,31 @@ describe("what a failing bash step says", () => {
        exit $?`
     );
     expect(notExecutable.failure?.message).toContain("code 126");
+    // Both causes: an unreadable script file exits 126 too, and `chmod +x` is
+    // the wrong remedy for that one.
+    expect(notExecutable.failure?.message).toContain("could not be run");
+    expect(notExecutable.failure?.message).toContain("may not READ");
     expect(notExecutable.failure?.message).toContain("not executable");
   }, 60_000);
+
+  // A `.sh` checked out with CRLF carries the carriage return into the last
+  // word of every line, so `> "$ARGENT_OUTPUT"` writes a file one carriage
+  // return past the one the parent reads — and the parent's own seeded document
+  // is what an exit code of 0 then returns. The one CRLF symptom that is green.
+  it("refuses an exit 0 whose redirection landed one carriage return away", async () => {
+    const ws = workspace();
+    const script = ws.write("crlf.sh", `printf '%s' '{"seeded":true}' > "$ARGENT_OUTPUT"\r\n`);
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("CRLF");
+    expect(result.failure?.message).toContain("$ARGENT_OUTPUT");
+  }, 30_000);
 
   // 128+N is bash reporting a FOREGROUND command killed by signal N. The script
   // chose to run that command and could have handled its status, so the step

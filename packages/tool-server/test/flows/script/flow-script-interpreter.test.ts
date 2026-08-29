@@ -122,6 +122,37 @@ describe("scripts.bash, read against the flow's own project", () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
+  // `readScopeValue` hands back `undefined` for a value its `parse` rejected,
+  // which is indistinguishable from an absent key — so a value the schema threw
+  // away would fall through to PATH and run the step under a bash that happens
+  // to exist on this machine, which is the outcome `scripts.bash` exists to
+  // prevent.
+  it("refuses an empty value rather than reading it as an absent key", async () => {
+    const root = projectWith({ scripts: { bash: "   " } });
+    const found = await resolveBashInterpreter(root);
+
+    expect("path" in found).toBe(false);
+    expect((found as { problem: string }).problem).toContain("is empty");
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a value that is not a string, naming what it found", async () => {
+    const root = projectWith({ scripts: { bash: 123 } });
+    const found = await resolveBashInterpreter(root);
+
+    expect((found as { problem: string }).problem).toContain("scripts.bash = 123");
+    expect((found as { problem: string }).problem).toContain("not an absolute path");
+  });
+
+  it("names the file the value came from, not the project it ran in", async () => {
+    const root = projectWith({ scripts: { bash: "bin/bash" } });
+    const found = await resolveBashInterpreter(root);
+
+    expect((found as { problem: string }).problem).toContain(
+      path.join(root, ".argent", "config.json")
+    );
+  });
+
   it("refuses a configured path that does not exist", async () => {
     const root = projectWith(undefined);
     const missing = path.join(root, "no-such-bash");
@@ -222,6 +253,28 @@ describe("bash on PATH", () => {
     const candidates = await bashSearchPath();
     expect(candidates[0]).toBe("C:\\Program Files\\Git\\bin\\bash.exe");
     expect(candidates.some((entry) => /system32/i.test(entry))).toBe(false);
+  });
+
+  // `git.exe` on PATH is a SHIM under Scoop and Chocolatey, and two levels above
+  // a shim there is no `bin\\bash.exe`. Chocolatey installs Git for Windows
+  // itself, so `ProgramFiles` covers it; Scoop keeps its own tree.
+  it("offers Scoop's own Git bash, which no shim derivation reaches", async () => {
+    setPlatform("win32");
+    const realProfile = process.env.USERPROFILE;
+    process.env.USERPROFILE = "C:\\Users\\dev";
+    execFileMock.mockImplementation((_cmd: string, args?: readonly string[]) =>
+      args?.[0] === "git"
+        ? { stdout: "C:\\Users\\dev\\scoop\\shims\\git.exe\r\n", stderr: "" }
+        : new Error("not found")
+    );
+
+    try {
+      const candidates = await bashSearchPath();
+      expect(candidates).toContain("C:\\Users\\dev\\scoop\\apps\\git\\current\\bin\\bash.exe");
+    } finally {
+      if (realProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = realProfile;
+    }
   });
 
   it("derives Git for Windows' bash from git.exe when PATH has only the WSL launcher", async () => {

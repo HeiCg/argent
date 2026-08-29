@@ -48,6 +48,19 @@ export function asString(raw: unknown): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
+/**
+ * Any value that is present, as text. Only for a key whose own reader checks
+ * the value and reports what it found: a rejected value is invisible to that
+ * reader, and a wrong one that is silently ignored fails somewhere else.
+ */
+function asPresentText(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string") return raw.trim();
+  // A config file is JSON, so everything that reaches here has a JSON text
+  // form; `??` covers a caller that passed a live value which has none.
+  return JSON.stringify(raw) ?? "(a value with no JSON form)";
+}
+
 /** Accept a finite JSON number. */
 export function asNumber(raw: unknown): number | undefined {
   return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
@@ -202,13 +215,15 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
       "`.sh` files were written for is the project's own fact, and it raises no ceiling on " +
       "the host.",
     scopes: ["global", "project"],
-    // Deliberately as permissive as `asString`: `readScopeValue` hands back
-    // `undefined` for a value its `parse` rejected, which is indistinguishable
-    // from an absent key — so a schema that refused a relative path would make a
-    // hand-edited config file fall through to PATH and hide the mistake behind a
-    // bash that happens to exist on this machine. The resolver checks the value
-    // and refuses the step, naming the key.
-    parse: asString,
+    // Deliberately permissive: `readScopeValue` hands back `undefined` for a
+    // value its `parse` rejected, which is indistinguishable from an absent key
+    // — so a schema that refused a relative path, an empty string or a number
+    // would make a hand-edited config file fall through to PATH and hide the
+    // mistake behind a bash that happens to exist on this machine. Everything
+    // PRESENT is kept, as the text the refusal names it by; the resolver checks
+    // the value and refuses the step, naming the key. `asString` was not that:
+    // it maps an empty, whitespace-only or non-string value to `undefined`.
+    parse: asPresentText,
     expected: "an absolute path to a bash executable",
     merge: "prioritize-local",
     example: "/opt/homebrew/bin/bash",

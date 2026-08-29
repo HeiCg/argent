@@ -13,8 +13,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { win32 as pathWin32 } from "node:path";
 import {
+  configFilePath,
   getConfigDefinition,
   getConfigValue,
+  getConfigValueAtScope,
   type ConfigDefinition,
 } from "@argent/configuration-core";
 import { commandOnPath } from "../../../utils/command-on-path";
@@ -80,9 +82,9 @@ export async function resolveBashInterpreter(
     return problem
       ? {
           problem:
-            `The configured bash for this project (${BASH_CONFIG_KEY} = ${configured}) ` +
-            `${problem}. Point ${BASH_CONFIG_KEY} at a bash executable, or unset it to use ` +
-            `the one on this host's PATH.`,
+            `The configured bash (${BASH_CONFIG_KEY} = ${configured}, from ` +
+            `${configuredIn(configured, anchor)}) ${problem}. Point ${BASH_CONFIG_KEY} at a bash ` +
+            `executable, or unset it to use the one on this host's PATH.`,
         }
       : { path: configured };
   }
@@ -166,6 +168,19 @@ function firstLine(err: unknown): string {
 }
 
 /**
+ * Which file to edit. `getConfigValue` merges the two scopes, so a stale GLOBAL
+ * value makes every `.sh` step in every project on the machine refuse with a
+ * message about a file the project does not contain.
+ */
+function configuredIn(configured: string, anchor: string | undefined): string {
+  const options = anchor ? { cwd: anchor } : {};
+  const project = getConfigValueAtScope(BASH_CONFIG_KEY, "project", options);
+  return project === configured
+    ? configFilePath("project", options)
+    : configFilePath("global", options);
+}
+
+/**
  * The ordered candidates the resolver tries when `scripts.bash` is unset, before
  * any of them is checked against the filesystem. Exported so the Windows rules —
  * the `%SystemRoot%` skip and the Git-derived path — can be pinned on a POSIX
@@ -178,12 +193,15 @@ export async function bashSearchPath(): Promise<string[]> {
 
 /**
  * Every reason a candidate cannot be the interpreter, in the words the refusal
- * uses. Absolute because a relative PATH entry gives `command -v` a relative
- * answer that `spawn` would resolve against the runner's own cwd; executable
- * because a readable file is not a runnable one — except on Windows, where
- * `X_OK` succeeds for any file and existence is the whole check.
+ * uses. Empty because the schema keeps every value that is PRESENT, so that a
+ * blank one is refused here rather than read as an absent key; absolute because
+ * a relative PATH entry gives `command -v` a relative answer that `spawn` would
+ * resolve against the runner's own cwd; executable because a readable file is
+ * not a runnable one — except on Windows, where `X_OK` succeeds for any file
+ * and existence is the whole check.
  */
 function interpreterProblem(candidate: string): string | null {
+  if (candidate === "") return "is empty";
   if (!platformPath().isAbsolute(candidate)) {
     return "is not an absolute path (a relative path would resolve against the tool server's own working directory)";
   }
@@ -233,6 +251,13 @@ function underSystemRoot(candidate: string): boolean {
  * the most reliable of them because it survives a per-user install into a
  * directory none of the environment names below point at: `<Git>\cmd\git.exe`
  * sits two levels above `<Git>\bin\bash.exe`.
+ *
+ * That derivation is the official installer's layout, and a package manager
+ * puts a SHIM on PATH instead — `~\scoop\shims\git.exe`,
+ * `C:\ProgramData\chocolatey\bin\git.exe` — two levels above which there is
+ * no `bin\bash.exe`. Chocolatey installs Git for Windows itself, so
+ * `ProgramFiles` below covers it; Scoop keeps its own tree, so its two roots
+ * are named here.
  */
 async function fixedLocations(): Promise<string[]> {
   if (process.platform !== "win32") return POSIX_FIXED_LOCATIONS;
@@ -249,6 +274,14 @@ async function fixedLocations(): Promise<string[]> {
   ]) {
     if (base) candidates.push(pathWin32.join(base, "Git", "bin", "bash.exe"));
   }
+  for (const root of [
+    process.env.SCOOP,
+    process.env.USERPROFILE && pathWin32.join(process.env.USERPROFILE, "scoop"),
+    process.env.SCOOP_GLOBAL,
+    process.env.ProgramData && pathWin32.join(process.env.ProgramData, "scoop"),
+  ]) {
+    if (root) candidates.push(pathWin32.join(root, "apps", "git", "current", "bin", "bash.exe"));
+  }
   return candidates;
 }
 
@@ -260,7 +293,7 @@ async function fixedLocations(): Promise<string[]> {
 function notFoundMessage(): string {
   const looked =
     process.platform === "win32"
-      ? "PATH (skipping the WSL launcher under %SystemRoot%) and Git for Windows' usual install locations"
+      ? "PATH (skipping the WSL launcher under %SystemRoot%) and Git for Windows' usual install locations, Scoop's included"
       : `PATH, ${POSIX_FIXED_LOCATIONS.join(" and ")}`;
   const install =
     process.platform === "win32" ? "Install Git for Windows, which ships bash.exe" : "Install bash";

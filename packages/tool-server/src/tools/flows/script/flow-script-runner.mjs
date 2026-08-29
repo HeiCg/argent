@@ -54,6 +54,12 @@ const MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
 const MAX_FAILURE_STACK_CHARS = 16 * 1024;
 
 /**
+ * What a bash step's `$ARGENT_REASON` may take of the message it rides in, with
+ * the rest left for the exit line, the exit-code hint and the marker itself.
+ */
+const MAX_REASON_CHARS = MAX_FAILURE_MESSAGE_CHARS - 1024;
+
+/**
  * Taken while this preload is the only code that has run: `process.send` is a
  * property a script may replace or delete, and reading it back later hands the
  * verdict to whatever stub took its place.
@@ -366,10 +372,36 @@ function bashOutcome(request, code, signal) {
         (reason ? ` ${reason}` : ""),
     };
   }
+  const strayed = carriageReturnProblem(request);
+  if (strayed) return { type: "failure", failureType: "output", message: strayed };
   const read = readOutputFile(request.outputFile, request.maxOutputBytes);
   return read.error
     ? { type: "failure", failureType: "output", message: read.error }
     : { type: "result", outputJson: read.json };
+}
+
+/**
+ * The one CRLF symptom that is silent. A `.sh` checked out with CRLF line
+ * endings carries the carriage return into the last word of every line, so
+ * `> "$ARGENT_OUTPUT"` writes `output.json\r` and the file the parent reads is
+ * still the one it seeded: exit code 0, and a document nothing wrote. The name
+ * is the proof — the parent created these two files and nobody else may name
+ * one with a carriage return after it.
+ */
+function carriageReturnProblem(request) {
+  for (const [name, file] of [
+    ["$ARGENT_OUTPUT", request.outputFile],
+    ["$ARGENT_REASON", request.reasonFile],
+  ]) {
+    if (!fs.existsSync(`${file}\r`)) continue;
+    return (
+      `the script wrote to a file one carriage return past the one ${name} names, so the ` +
+      "document Argent read is the one it seeded: the script has CRLF line endings, and the " +
+      "carriage return ends every line inside the word before it. Convert the file to LF " +
+      "(`*.sh text eol=lf` in .gitattributes)"
+    );
+  }
+  return null;
 }
 
 /**
@@ -384,7 +416,13 @@ function exitCodeHint(status) {
       "snapshot, or a script checked out with CRLF line endings."
     );
   }
-  if (status === 126) return ' Code 126 is bash\'s own "found, but not executable".';
+  if (status === 126) {
+    return (
+      ' Code 126 is bash\'s own "found, but could not be run": a file bash may not READ ' +
+      "(`chmod +r` on the script), or a command in it that is found and not executable " +
+      "(`chmod +x` on that command)."
+    );
+  }
   return "";
 }
 
@@ -435,12 +473,16 @@ function readOutputFile(file, maxOutputBytes) {
 }
 
 /**
- * The failure text, read only on a non-zero exit. `MAX_FAILURE_MESSAGE_CHARS`
- * counts characters, so four bytes per character is the widest the ceiling can
- * be — plus room to see that more followed, and a cut on a UTF-8 boundary so a
- * character split by the bound does not arrive as a replacement. `finish`
- * clamps the whole message afterwards, and the marker's count is of what was
- * read rather than of the file.
+ * The failure text, read only on a non-zero exit. Four bytes per character is
+ * the widest the ceiling can be, and the cut lands on a UTF-8 boundary so a
+ * character split by the bound does not arrive as a replacement.
+ *
+ * The reason is clamped HERE, below the ceiling `finish` applies to the whole
+ * message, so that the exit line in front of it is not what pays for a long
+ * one — and so that `clampText` never fires on this path. Its marker counts the
+ * characters of the string it was handed, and a bounded read is not the file:
+ * a script writing five million characters was told 24,671 had been omitted.
+ * The size of the file is knowable, so that is what the marker says.
  */
 function readReasonFile(file) {
   let fd;
@@ -452,17 +494,28 @@ function readReasonFile(file) {
     return "";
   }
   try {
-    const keep = MAX_FAILURE_MESSAGE_CHARS * 4;
+    const keep = MAX_REASON_CHARS * 4;
     const buffer = Buffer.alloc(keep + 4);
     const read = readInto(fd, buffer, buffer.length);
-    return buffer
+    const text = buffer
       .subarray(0, utf8SafeCut(buffer, Math.min(read, keep)))
       .toString("utf8")
       .trim();
+    if (text.length <= MAX_REASON_CHARS && read <= keep) return text;
+    return `${text.slice(0, MAX_REASON_CHARS)}… [${reasonSize(fd)}; this report keeps the first ${MAX_REASON_CHARS} characters]`;
   } catch {
     return "";
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+/** What the whole file holds, for a report that carries part of it. */
+function reasonSize(fd) {
+  try {
+    return `$ARGENT_REASON holds ${fs.fstatSync(fd).size} bytes`;
+  } catch {
+    return "$ARGENT_REASON holds more";
   }
 }
 
