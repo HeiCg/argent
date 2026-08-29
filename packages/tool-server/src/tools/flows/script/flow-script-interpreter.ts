@@ -246,7 +246,24 @@ function configuredIn(configured: string, anchor: string | undefined): string {
  */
 export async function bashSearchPath(): Promise<string[]> {
   const onPath = await commandOnPath("bash", isUsableCandidate);
-  return [...(onPath ? [onPath] : []), ...(await fixedLocations())];
+  return withoutRepeats([...(onPath ? [onPath] : []), ...(await fixedLocations())]);
+}
+
+/**
+ * One entry per file. In the default Windows layout the derivation below and
+ * the `%ProgramFiles%` rung name the same `bash.exe`, and every candidate costs
+ * a run of it — so the duplicate was a five second probe paid twice on the
+ * machine where everything is where the installer put it. Windows spells a path
+ * case-insensitively, so that is how the two are compared there.
+ */
+function withoutRepeats(candidates: string[]): string[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -262,6 +279,12 @@ function interpreterProblem(candidate: string): string | null {
   if (candidate === "") return "is empty";
   if (!platformPath().isAbsolute(candidate)) {
     return "is not an absolute path (a relative path would resolve against the tool server's own working directory)";
+  }
+  if (process.platform === "win32" && !WINDOWS_ROOTED_RE.test(stripExtendedPrefix(candidate))) {
+    return (
+      "names no drive (a path that begins with a backslash is rooted on whatever drive the " +
+      "process is on, and the tool server and the script's own process are not on the same one)"
+    );
   }
   if (underSystemRoot(candidate)) {
     return (
@@ -300,8 +323,39 @@ function platformPath(): typeof pathWin32 {
 function underSystemRoot(candidate: string): boolean {
   if (process.platform !== "win32") return false;
   const root = pathWin32.resolve(process.env.SystemRoot ?? "C:\\Windows").toLowerCase();
-  const resolved = pathWin32.resolve(candidate).toLowerCase();
-  return resolved === root || resolved.startsWith(`${root}\\`);
+  return spellingsOf(candidate).some((spelling) => {
+    const resolved = pathWin32.resolve(spelling).toLowerCase();
+    return resolved === root || resolved.startsWith(`${root}\\`);
+  });
+}
+
+/**
+ * Every name the same file answers to, because the test above is a comparison
+ * of strings and Windows gives one file several. `\\?\` is the extended-length
+ * prefix, which `path.resolve` keeps and so never matches the plain root; and
+ * `C:\WINDOW~1\System32\bash.exe` is the 8.3 short name, which no lexical rule
+ * can expand — only the filesystem knows it, and it answers through
+ * `realpath.native`. A name that resolves to nothing is left as written: the
+ * existence check below is what reports it.
+ */
+function spellingsOf(candidate: string): string[] {
+  const stripped = stripExtendedPrefix(candidate);
+  const spellings = [candidate, stripped];
+  try {
+    spellings.push(stripExtendedPrefix(fs.realpathSync.native(stripped)));
+  } catch {
+    // Not there, or a name the filesystem will not resolve.
+  }
+  return spellings;
+}
+
+/** A drive letter, or a UNC share. Not a bare leading separator. */
+const WINDOWS_ROOTED_RE = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
+
+function stripExtendedPrefix(candidate: string): string {
+  if (/^\\\\[?.]\\UNC\\/.test(candidate)) return `\\\\${candidate.slice(8)}`;
+  if (/^\\\\[?.]\\/.test(candidate)) return candidate.slice(4);
+  return candidate;
 }
 
 /**
@@ -322,8 +376,14 @@ async function fixedLocations(): Promise<string[]> {
   const candidates: string[] = [];
   const git = await commandOnPath("git");
   if (git && pathWin32.isAbsolute(git)) {
-    // `<Git>\cmd\git.exe` sits two levels above `<Git>\bin\bash.exe`.
-    candidates.push(pathWin32.join(pathWin32.dirname(pathWin32.dirname(git)), "bin", "bash.exe"));
+    // `<Git>\cmd\git.exe` and `<Git>\bin\git.exe` both sit two levels above
+    // `<Git>\bin\bash.exe`. `<Git>\mingw64\bin\git.exe` sits three, and that
+    // is what `where git` answers when the tool server was started from a Git
+    // Bash terminal, or from an editor whose default shell is one — so both
+    // depths are offered and the one that exists is taken.
+    const above = pathWin32.dirname(pathWin32.dirname(git));
+    candidates.push(pathWin32.join(above, "bin", "bash.exe"));
+    candidates.push(pathWin32.join(pathWin32.dirname(above), "bin", "bash.exe"));
   }
   for (const base of [
     process.env.ProgramFiles,

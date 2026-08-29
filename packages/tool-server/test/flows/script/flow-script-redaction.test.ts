@@ -83,6 +83,48 @@ describe("flow script executor — redaction of a bash step", () => {
     expect(JSON.stringify(result.output)).not.toContain(SECRET.value);
     expect(JSON.stringify(result.output)).toContain("API_KEY");
   }, 30_000);
+
+  // A secret cut in half by a truncation is not a secret any scrub can find:
+  // what is left is a PREFIX of one, which matches nothing. The parent drops
+  // that tail wherever a truncation marker ends the text, and the runner's
+  // reason marker is a second shape of one — it counts what it kept rather than
+  // what it dropped, because a bounded read cannot know the file's length. This
+  // runs a real script through both sides, so a wording that drifted apart
+  // fails here rather than leaking there.
+  it("drops the half of a secret the $ARGENT_REASON cut left behind", async () => {
+    const ws = workspace();
+    // The reason ceiling, in step with `MAX_REASON_CHARS` in
+    // `flow-script-runner.mjs`: the whole message ceiling less the room the exit
+    // line, the exit-code hint and the marker ride in. The padding stops ten
+    // characters short of it, so the cut lands INSIDE the secret and what
+    // survives is a prefix of one — which no scrub can match.
+    const reasonCeiling = SCRIPT_MAX_FAILURE_MESSAGE_CHARS - 1024;
+    const pad = reasonCeiling - 10;
+    const script = ws.write(
+      "long-reason.sh",
+      `printf '%${pad}s' '' | tr ' ' 'x' > "$ARGENT_REASON"
+       printf '%s' "$API_KEY" >> "$ARGENT_REASON"
+       printf '%${reasonCeiling}s' '' | tr ' ' 'y' >> "$ARGENT_REASON"
+       exit 5`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    const message = result.failure?.message ?? "";
+    expect(result.failure?.kind).toBe("exit");
+    // Every prefix of the value, down to the shortest that is still the
+    // secret's own: none of them may survive the cut.
+    for (let n = SECRET.value.length; n > 3; n -= 1) {
+      expect(message).not.toContain(SECRET.value.slice(0, n));
+    }
+    // And the marker still says how much of the reason the report carries.
+    expect(message).toMatch(/this report keeps the first \d+ characters]$/);
+  }, 30_000);
 });
 
 describe("flow script executor — the heap verdict", () => {

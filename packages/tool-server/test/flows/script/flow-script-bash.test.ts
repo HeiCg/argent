@@ -300,6 +300,48 @@ describe("the document a bash step returns", () => {
     expect(over.failure?.message).toContain("limit");
   }, 60_000);
 
+  // `open` on a named pipe with no writer blocks on the runner's own thread,
+  // inside the exit handler, where the runner holds SIGTERM — so the parent's
+  // graceful stop could not reach it either and the whole stop grace was spent
+  // before the SIGKILL. A script that failed in ten milliseconds was reported
+  // as having spent its entire time limit.
+  it.each([
+    ["a named pipe", `mkfifo "$ARGENT_OUTPUT"`],
+    ["a directory", `mkdir "$ARGENT_OUTPUT"`],
+  ])(
+    "refuses %s in the place of the document, at once",
+    async (kind, make) => {
+      const ws = workspace();
+      const startedAt = Date.now();
+      const result = await runBash(ws, "irregular", `rm -f "$ARGENT_OUTPUT"\n       ${make}`, {
+        timeoutMs: 3_000,
+      });
+
+      expect(result.failure?.kind).toBe("output");
+      expect(result.failure?.message).toContain(`${kind} rather than a regular file`);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    },
+    30_000
+  );
+
+  // Same block, on the other file: the reason is read on every non-zero exit.
+  it("reports the exit code when $ARGENT_REASON is a named pipe, at once", async () => {
+    const ws = workspace();
+    const startedAt = Date.now();
+    const result = await runBash(
+      ws,
+      "reason-pipe",
+      `rm -f "$ARGENT_REASON"
+       mkfifo "$ARGENT_REASON"
+       exit 3`,
+      { timeoutMs: 3_000 }
+    );
+
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("code 3");
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+  }, 30_000);
+
   it("does not read the document of a non-zero exit", async () => {
     const ws = workspace();
     const result = await runBash(
@@ -436,6 +478,42 @@ describe("what a failing bash step says", () => {
     expect(result.failure?.message).toContain("$ARGENT_OUTPUT");
   }, 30_000);
 
+  // Windows is the one platform a CRLF checkout happens on, and there bash is
+  // msys2 — a Cygwin fork, which cannot put an ASCII control character in a
+  // file name and transposes it into the private-use block. So the stray file
+  // is named with U+F00D there and U+000D everywhere else, and a check for one
+  // of them alone misses on the very platform it exists for.
+  it("refuses the same redirection under the name msys2 gives it", async () => {
+    const ws = workspace();
+    const result = await runBash(
+      ws,
+      "crlf-msys",
+      `printf '%s' '{"seeded":true}' > "$ARGENT_OUTPUT"$'\uf00d'`
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("CRLF");
+  }, 30_000);
+
+  // The check explains a document that is the one Argent seeded, and nothing
+  // else. A script that writes `$ARGENT_OUTPUT` correctly and also happens to
+  // leave a sibling one carriage return away is not a CRLF script, and its
+  // document is not the runner's to throw away.
+  it("keeps the document of a script that also left a stray sibling", async () => {
+    const ws = workspace();
+    const result = await runBash(
+      ws,
+      "stray-sibling",
+      `printf '{"real":true}' > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"
+       : > "$ARGENT_OUTPUT"$'\r'`
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ real: true });
+  }, 30_000);
+
   // 128+N is bash reporting a FOREGROUND command killed by signal N. The script
   // chose to run that command and could have handled its status, so the step
   // reads it as an exit code — a `fail`, not the `signal` error that a death of
@@ -532,6 +610,41 @@ describe("what a failing bash step says", () => {
       }
 
       expect(kinds).toEqual(new Set(["exit"]));
+    },
+    180_000
+  );
+
+  // `started` used to be sent from the child's `spawn` EVENT, a turn of the
+  // loop after libuv had already forked and exec'd bash — so a script whose
+  // first line ends the runner could beat it, and the parent then reported a
+  // script that had already run as one that never started. About one run in a
+  // hundred, and the body ran on every one of them.
+  onPosix(
+    "never says a script did not start when the script ended the runner",
+    async () => {
+      const ws = workspace();
+      const markers = path.join(ws.dir, "ran");
+      fs.mkdirSync(markers, { recursive: true });
+      const script = ws.write("kill-runner.sh", `touch "${markers}/$$"\n       kill -9 $PPID`);
+      const width = 8;
+      const runs = executor({ concurrency: width });
+      const kinds = new Set<string | undefined>();
+      for (let wave = 0; wave < 20; wave += 1) {
+        const verdicts = await Promise.all(
+          Array.from({ length: width }, async () => {
+            const result = await runs.execute({
+              scriptPath: script,
+              interpreter: "bash",
+              projectRoot: ws.dir,
+            });
+            return result.failure?.kind;
+          })
+        );
+        for (const kind of verdicts) kinds.add(kind);
+      }
+
+      expect(fs.readdirSync(markers).length).toBe(width * 20);
+      expect(kinds).toEqual(new Set(["signal"]));
     },
     180_000
   );
@@ -920,9 +1033,64 @@ describe("the private exchange directory", () => {
 
     expect(exchangeDirs()).toEqual([]);
   }, 60_000);
+
+  // Both files carry the document, and the document may hold values derived
+  // from a secret. The 0700 directory `mkdtemp` makes already holds on its own;
+  // these modes are the second barrier, and a bare write leaves them to the
+  // umask, which on an ordinary host is 0644. Read from inside the step,
+  // because the directory is gone by the time it returns.
+  onPosix(
+    "gives both exchange files the owner's account and nothing else",
+    async () => {
+      const ws = workspace();
+      const result = await runBash(
+        ws,
+        "modes",
+        `mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+       printf '{"output":"%s","reason":"%s","dir":"%s"}' \
+         "$(mode "$ARGENT_OUTPUT")" "$(mode "$ARGENT_REASON")" \
+         "$(mode "$(dirname "$ARGENT_OUTPUT")")" > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`
+      );
+
+      expect(result.output).toEqual({ output: "600", reason: "600", dir: "700" });
+    },
+    30_000
+  );
 });
 
 describe("what a step reports before anything is forked", () => {
+  // A `.sh` step suspends where a `.mjs` step does not: resolving bash is two
+  // spawns of its own, and a cancellation raised across them used to find the
+  // next check only AFTER the fork — so the script's first lines had already
+  // run, for a run the caller had already given up on.
+  it("runs nothing when the cancellation lands while bash is being resolved", async () => {
+    const ws = workspace();
+    const markers = path.join(ws.dir, "markers");
+    fs.mkdirSync(markers, { recursive: true });
+    const script = ws.write("side-effect.sh", `touch "${markers}/$$"\n       sleep 5`);
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const controller = new AbortController();
+      const pending = executor().execute({
+        scriptPath: script,
+        interpreter: "bash",
+        projectRoot: ws.dir,
+        timeoutMs: 20_000,
+        signal: controller.signal,
+      });
+      // After `execute` has started, so the abort lands inside the lookup
+      // rather than at the gate in front of it.
+      setTimeout(() => controller.abort(), 0);
+      const result = await pending;
+
+      expect(result.failure?.kind).toBe("cancelled");
+      expect(result.failure?.beforeFork).toBe(true);
+    }
+
+    expect(fs.readdirSync(markers)).toEqual([]);
+  }, 60_000);
+
   // `beforeFork` is what tells a caller the script left nothing behind. Both
   // paths below return a full result without ever starting a process, and the
   // flag is the only thing separating them from a cancellation that stopped a

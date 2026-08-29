@@ -2,15 +2,16 @@ import { rmSync } from "node:fs";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Windows answers `EBUSY` while a surviving descendant still holds a file in
- * the exchange directory, and `execute` owes its caller a verdict — so the
- * removal must report itself as a note rather than throw over a step that
- * already produced one. A real EBUSY is not reachable on a POSIX host, so the
- * one call is refused here; everything else passes straight through.
+ * The two ways the filesystem can refuse the exchange directory, neither of
+ * which a POSIX host reaches on its own: `EBUSY` on the removal, which Windows
+ * answers while a surviving descendant still holds a file in it, and a write
+ * that fails after the directory has been made (`ENOSPC`, `EROFS`, `EDQUOT`).
+ * Only the named call is refused here; everything else passes straight through.
  *
  * Its own file, because the mock is module-wide.
  */
 let refuseRemoval: ((target: string) => boolean) | undefined;
+let refuseWrite: ((target: string) => boolean) | undefined;
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -20,9 +21,23 @@ vi.mock("node:fs", async () => {
     }
     return actual.rmSync(target, options);
   };
-  return { ...actual, rmSync, default: { ...actual, rmSync } };
+  const writeFileSync: typeof actual.writeFileSync = (target, data, options) => {
+    if (refuseWrite?.(String(target))) {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    }
+    return actual.writeFileSync(target, data, options);
+  };
+  return {
+    ...actual,
+    rmSync,
+    writeFileSync,
+    default: { ...actual, rmSync, writeFileSync },
+  };
 });
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   exchangeDirPrefix,
   FlowScriptExecutor,
@@ -43,6 +58,7 @@ beforeEach((ctx) => {
 
 afterEach(() => {
   refuseRemoval = undefined;
+  refuseWrite = undefined;
 });
 
 describe("an exchange directory that will not go", () => {
@@ -73,6 +89,35 @@ describe("an exchange directory that will not go", () => {
       rmSync(left!, { recursive: true, force: true });
     } finally {
       refuseRemoval = undefined;
+      ws.cleanup();
+    }
+  }, 30_000);
+});
+
+describe("an exchange directory that could not be filled", () => {
+  // `mkdtemp` succeeds and then a write does not. The caller is handed a throw
+  // with no exchange in it, so the `finally` that owns the directory's life has
+  // nothing to remove — and the directory is left under the shared temporary
+  // root holding the document it was seeded with.
+  it("is removed by the call that made it, not left behind", async () => {
+    const ws = createScriptWorkspace("bash-nospace");
+    const exchangeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-nospace-root-"));
+    const script = ws.write("never-runs.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
+    refuseWrite = (target) => target.endsWith("reason.txt");
+    try {
+      const result = await new FlowScriptExecutor({ concurrency: 2, exchangeRoot }).execute({
+        scriptPath: script,
+        interpreter: "bash",
+        projectRoot: ws.dir,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.failure?.kind).toBe("spawn");
+      expect(result.failure?.message).toContain("ENOSPC");
+      expect(fs.readdirSync(exchangeRoot)).toEqual([]);
+    } finally {
+      refuseWrite = undefined;
+      fs.rmSync(exchangeRoot, { recursive: true, force: true });
       ws.cleanup();
     }
   }, 30_000);

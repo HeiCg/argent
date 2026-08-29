@@ -224,6 +224,30 @@ describe("scripts.bash, read against the flow's own project", () => {
     expect((found as { problem: string }).problem).toContain(stub);
   });
 
+  // The guard is a comparison of strings, and Windows gives one file several
+  // names. `\\?\` is the extended-length prefix, which `path.resolve` keeps —
+  // so the resolved path never matched the plain `%SystemRoot%`.
+  it("refuses the extended-length spelling of the same WSL launcher", async () => {
+    setPlatform("win32");
+    const root = projectWith({
+      scripts: { bash: "\\\\?\\C:\\Windows\\System32\\bash.exe" },
+    });
+    const found = await resolveBashInterpreter(root);
+
+    expect((found as { problem: string }).problem).toContain("WSL");
+  });
+
+  // `path.win32.isAbsolute` accepts a path with no drive, and the two processes
+  // that read it are not on the same one: the tool server stats it against its
+  // own working directory, and the runner spawns it against project_root.
+  it("refuses a path that names no drive", async () => {
+    setPlatform("win32");
+    const root = projectWith({ scripts: { bash: "\\Windows\\System32\\bash.exe" } });
+    const found = await resolveBashInterpreter(root);
+
+    expect((found as { problem: string }).problem).toContain("names no drive");
+  });
+
   it("refuses a configured System32 bash, naming WSL", async () => {
     setPlatform("win32");
     const root = projectWith({
@@ -312,6 +336,47 @@ describe("bash on PATH", () => {
 
     const candidates = await bashSearchPath();
     expect(candidates[0]).toBe("D:\\Tools\\Git\\bin\\bash.exe");
+  });
+
+  // `where git` answers `<Git>\mingw64\bin\git.exe` when the tool server was
+  // started from a Git Bash terminal, or from an editor whose default shell is
+  // one. That sits THREE levels above `bin\bash.exe`, not two, so the two-level
+  // derivation named a `mingw64\bin\bash.exe` that does not exist — masked
+  // wherever Git is at the default location, and not for a portable install or
+  // one on another drive.
+  it("derives Git's bash from a git.exe under mingw64 as well as under cmd", async () => {
+    setPlatform("win32");
+    execFileMock.mockImplementation((_cmd: string, args?: readonly string[]) =>
+      args?.[0] === "git"
+        ? { stdout: "D:\\Portable\\Git\\mingw64\\bin\\git.exe\r\n", stderr: "" }
+        : new Error("not found")
+    );
+
+    expect(await bashSearchPath()).toContain("D:\\Portable\\Git\\bin\\bash.exe");
+  });
+
+  // Each candidate costs a run of it, and in the default layout the git-derived
+  // path and the `%ProgramFiles%` rung are the same file.
+  it("offers each candidate once, however many rungs name it", async () => {
+    setPlatform("win32");
+    const realProgramFiles = process.env.ProgramFiles;
+    process.env.ProgramFiles = "C:\\Program Files";
+    execFileMock.mockImplementation((_cmd: string, args?: readonly string[]) =>
+      args?.[0] === "git"
+        ? { stdout: "C:\\Program Files\\Git\\cmd\\git.exe\r\n", stderr: "" }
+        : new Error("not found")
+    );
+
+    try {
+      const candidates = await bashSearchPath();
+      const derived = candidates.filter(
+        (entry) => entry.toLowerCase() === "c:\\program files\\git\\bin\\bash.exe"
+      );
+      expect(derived).toHaveLength(1);
+    } finally {
+      if (realProgramFiles === undefined) delete process.env.ProgramFiles;
+      else process.env.ProgramFiles = realProgramFiles;
+    }
   });
 
   onPosixWithBash("never offers a relative candidate, whatever the source", async () => {

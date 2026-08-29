@@ -44,6 +44,25 @@ const GROUP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
 const heldSignals = new Set();
 
 /**
+ * What a stray carriage return is named on disk. Windows is the one platform
+ * where a CRLF checkout happens, and there bash is msys2 — a Cygwin fork, which
+ * cannot put an ASCII control character in a file name and transposes it into
+ * the private-use block instead. So the file the shell created is
+ * `output.json` + U+F00D there and `output.json` + U+000D everywhere else, and
+ * a check for only one of them misses on the very platform it is for.
+ */
+const STRAY_SUFFIXES = ["\r", "\uF00D"];
+
+/**
+ * How both exchange files are opened. `O_NONBLOCK` closes the window the check
+ * above leaves: a named pipe put there between the `stat` and the `open`
+ * answers at once instead of parking this thread on a writer that never comes.
+ * It is a no-op on a regular file, and absent on a platform that has no such
+ * flag.
+ */
+const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
+
+/**
  * How long bash's death by a signal waits for the SAME signal to arrive here,
  * before it is read as one from outside the group. `kill 0` reaches every
  * member of the group at one syscall, so the signal is already pending on this
@@ -246,6 +265,19 @@ function runBash(request) {
   const nulls = [];
   try {
     for (let slot = 0; slot < 3; slot++) nulls.push(fs.openSync(os.devNull, "r+"));
+    // Before the spawn, and written straight to the channel rather than queued
+    // behind a turn of the loop. `spawn` forks and execs, so the script's first
+    // line runs while this process is still returning from the call — and a
+    // script that kills the runner there ("`kill -9 $PPID`", or a group kill)
+    // beat every later placement about one run in fifty, leaving the parent to
+    // report a script that had already run as one that never started.
+    //
+    // Claiming it early costs nothing: a spawn that then fails sends a terminal
+    // `spawn` failure, which the parent prefers over this, and a runner that
+    // dies between the two is reported as the signal it was — the answer that
+    // tells the caller its script may have left work behind, which is the
+    // conservative one.
+    announceStarted();
     child = spawn(request.interpreterPath, [request.scriptPath], {
       // The parent chose it, and it built this process's environment: the
       // allowlist, minus the activation flag this file deleted before anything
@@ -286,7 +318,6 @@ function runBash(request) {
 
   // The only thing that lets the parent tell "the runner never began the
   // script" apart from "the script stopped its own process".
-  child.on("spawn", () => sendToParent({ type: "started" }));
   child.on("error", (err) => finish(spawnFailure(request, err)));
   child.on("exit", (code, signal) => {
     // One of the two is always non-null for a process that really ran, so both
@@ -368,6 +399,20 @@ function whenGroupSignalHeld(signal, report) {
   }
 }
 
+/**
+ * `started`, on the channel before this call returns. `process.send` only
+ * queues, and the window between the queueing and the write is exactly what a
+ * script's first line can end this process inside of.
+ */
+function announceStarted() {
+  if (sendSynchronously({ type: "started" })) return;
+  try {
+    sendToParent({ type: "started" });
+  } catch {
+    // The channel is gone; the parent's own exit verdict is what is left.
+  }
+}
+
 function spawnFailure(request, err) {
   return {
     type: "failure",
@@ -420,9 +465,15 @@ function bashOutcome(request, code, signal) {
         (reason ? ` ${reason}` : ""),
     };
   }
-  const strayed = carriageReturnProblem(request);
-  if (strayed) return { type: "failure", failureType: "output", message: strayed };
   const read = readOutputFile(request.outputFile, request.maxOutputBytes);
+  // Only where there is something to explain: the document Argent read is the
+  // one it seeded, or there is no document at all. A script that writes
+  // `$ARGENT_OUTPUT` correctly and also happens to leave a `\r` sibling behind
+  // is not a CRLF script, and its document is not the parent's to throw away.
+  if (read.error || read.json === request.outputJson) {
+    const strayed = carriageReturnProblem(request);
+    if (strayed) return { type: "failure", failureType: "output", message: strayed };
+  }
   return read.error
     ? { type: "failure", failureType: "output", message: read.error }
     : { type: "result", outputJson: read.json };
@@ -435,13 +486,18 @@ function bashOutcome(request, code, signal) {
  * still the one it seeded: exit code 0, and a document nothing wrote. The name
  * is the proof — the parent created these two files and nobody else may name
  * one with a carriage return after it.
+ *
+ * Asked only where the document is missing or unchanged, because this explains
+ * THAT and nothing else. A stray sibling beside a document the script really
+ * wrote is not this, and a mixed-ending script is the only kind that ever gets
+ * here: a fully CRLF one dies at `set -euo pipefail\r` with exit 2.
  */
 function carriageReturnProblem(request) {
   for (const [name, file] of [
     ["$ARGENT_OUTPUT", request.outputFile],
     ["$ARGENT_REASON", request.reasonFile],
   ]) {
-    if (!fs.existsSync(`${file}\r`)) continue;
+    if (!STRAY_SUFFIXES.some((suffix) => fs.existsSync(`${file}${suffix}`))) continue;
     return (
       `the script wrote to a file one carriage return past the one ${name} names, so the ` +
       "document Argent read is the one it seeded: the script has CRLF line endings, and the " +
@@ -483,9 +539,18 @@ function exitCodeHint(status) {
  * one.
  */
 function readOutputFile(file, maxOutputBytes) {
+  const irregular = irregularFileKind(file);
+  if (irregular) {
+    return {
+      error:
+        irregular === "missing"
+          ? "the file named by $ARGENT_OUTPUT is gone, so the script returned no output document"
+          : `the file named by $ARGENT_OUTPUT is ${irregular} rather than a regular file, so there is no document to read`,
+    };
+  }
   let fd;
   try {
-    fd = fs.openSync(file, "r");
+    fd = fs.openSync(file, READ_FLAGS);
   } catch (err) {
     return {
       error:
@@ -533,9 +598,10 @@ function readOutputFile(file, maxOutputBytes) {
  * The size of the file is knowable, so that is what the marker says.
  */
 function readReasonFile(file) {
+  if (irregularFileKind(file)) return "";
   let fd;
   try {
-    fd = fs.openSync(file, "r");
+    fd = fs.openSync(file, READ_FLAGS);
   } catch {
     // Never written, or the script removed it. A failed step that wrote no
     // reason says only its exit code.
@@ -565,6 +631,31 @@ function reasonSize(fd) {
   } catch {
     return "$ARGENT_REASON holds more";
   }
+}
+
+/**
+ * What is at `file`, when it is not the regular file the parent created there.
+ * Asked BEFORE the open, because `open` on a named pipe with no writer blocks
+ * on this thread — inside the exit handler, where the runner holds SIGTERM, so
+ * the parent's graceful stop cannot reach it either. A script that failed in
+ * ten milliseconds was reported as having spent its whole time limit.
+ *
+ * The link is followed: the parent's own file is a regular one, so a symlink
+ * here is the script's, and one pointing at a regular file is a document like
+ * any other. `stat` never blocks, whatever it lands on.
+ */
+function irregularFileKind(file) {
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch (err) {
+    return err && err.code === "ENOENT" ? "missing" : null;
+  }
+  if (stat.isFile()) return null;
+  if (stat.isDirectory()) return "a directory";
+  if (stat.isFIFO()) return "a named pipe";
+  if (stat.isSocket()) return "a socket";
+  return "a device";
 }
 
 /** Reads until the buffer is full or the file ends; a short read is not an end. */
@@ -817,6 +908,7 @@ function parseRequest(raw) {
   if (typeof raw.interpreterPath !== "string" || raw.interpreterPath === "") return null;
   if (typeof raw.scriptPath !== "string" || raw.scriptPath === "") return null;
   if (typeof raw.outputFile !== "string" || raw.outputFile === "") return null;
+  if (typeof raw.outputJson !== "string") return null;
   if (typeof raw.reasonFile !== "string" || raw.reasonFile === "") return null;
   return raw;
 }

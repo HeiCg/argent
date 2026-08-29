@@ -89,6 +89,22 @@ const EXCHANGE_OUTPUT_FILE = "output.json";
 const EXCHANGE_REASON_FILE = "reason.txt";
 
 /**
+ * The owner's account and nothing else, matching the 0700 `mkdtemp` directory
+ * around them. Ignored on Windows, where the directory inherits the ACL of
+ * `%TEMP%` — private per user in the ordinary case, and not under a tool server
+ * running as a service.
+ */
+const EXCHANGE_FILE_MODE = 0o600;
+
+/**
+ * How often a process re-reads the exchange root for directories nobody owns
+ * any more. Once per process was not enough: a directory abandoned by a crashed
+ * server carries a stamp in the FUTURE, so the next server's first bash step
+ * reads it as live and, with a latch, never looked again.
+ */
+const EXCHANGE_SWEEP_INTERVAL_MS = 60_000;
+
+/**
  * An allowlist rather than a denylist because what it must keep out — the
  * bearer token, the port, every `ARGENT_SECRET_*` value — is exactly the set
  * that grows without this file being touched. Leak hygiene, not containment: a
@@ -296,6 +312,13 @@ export interface FlowScriptExecutorOptions {
    * steps and not the machine's.
    */
   exchangeRoot?: string;
+  /**
+   * How long a process waits before it re-reads {@link exchangeRoot} for
+   * directories nobody owns any more. Defaults to
+   * {@link EXCHANGE_SWEEP_INTERVAL_MS}; a test shortens it so a second step can
+   * collect what the first one still had to leave alone.
+   */
+  exchangeSweepIntervalMs?: number;
 }
 
 interface ResolvedBounds {
@@ -573,7 +596,7 @@ export class FlowScriptExecutor {
           this.options.exchangeRoot ?? os.tmpdir(),
           outputJson,
           timeoutMs,
-          bounds.maxTimeoutMs
+          positive(this.options.exchangeSweepIntervalMs) ?? EXCHANGE_SWEEP_INTERVAL_MS
         );
       } catch (err) {
         return emptyResult(
@@ -600,6 +623,17 @@ export class FlowScriptExecutor {
       heapWatch,
     };
     try {
+      // The signal again, because the bash block above is the only place this
+      // path suspends: the interpreter lookup is two spawns of its own, and a
+      // cancellation raised across them found the next check only AFTER the
+      // fork — so the script's first lines had already run. A `.mjs` step has
+      // no such gap, and this closes the one bash mode opened.
+      if (request.signal?.aborted) {
+        return emptyResult(
+          { kind: "cancelled", message: "The run was cancelled before the script started." },
+          { notes, durationMs: Date.now() - startedAt }
+        );
+      }
       return await this.runChild(
         interpreterPath && exchange
           ? { ...common, interpreter: "bash", interpreterPath, exchange }
@@ -732,7 +766,7 @@ export class FlowScriptExecutor {
 
     child.on("message", (raw) => {
       if (terminal) return;
-      const message = parseScriptResponse(raw);
+      const message = parseScriptResponse(raw, run.interpreter);
       if (!message) {
         protocolProblem ??= `The script runner sent a message the executor does not recognise: ${describeUnknown(raw)}`;
         void stop();
@@ -758,12 +792,22 @@ export class FlowScriptExecutor {
             type: "execute",
             interpreter: "bash",
             interpreterPath: run.interpreterPath,
-            // Forward slashes on every platform: Git Bash takes `C:/…` both as
-            // an argument and in a redirection, while a `C:\…` inside double
-            // quotes is a string of backslash escapes waiting to happen. `$0`
-            // then has a separator `dirname "${BASH_SOURCE[0]}"` can split on.
+            // Forward slashes on every platform. Git Bash takes `C:/…` both
+            // as an argument and in a redirection, and this is what gives `$0`
+            // a separator `dirname "${BASH_SOURCE[0]}"` can split on — a
+            // backslash is an ordinary character to `dirname`, which would
+            // answer `.` for every path. It is not about escaping: bash does no
+            // escape processing on the RESULT of a parameter expansion.
+            //
+            // These three strings, and no others. The environment the step
+            // forwards reaches bash as the host wrote it — `JAVA_HOME`,
+            // `LOCALAPPDATA`, `USERPROFILE` and the rest are `C:\…` there, and
+            // only `PATH`, `HOME`, `TMP`, `TEMP` and `TMPDIR` are converted, by
+            // the msys runtime rather than by anything here. `cwd` is left
+            // alone too: it goes to `CreateProcessW`, not to bash.
             scriptPath: toForwardSlashes(scriptPath),
             outputFile: toForwardSlashes(run.exchange.outputFile),
+            outputJson: run.outputJson,
             reasonFile: toForwardSlashes(run.exchange.reasonFile),
             deadlineMs: timeoutMs + CHILD_DEADLINE_MARGIN_MS,
             maxOutputBytes: SCRIPT_MAX_OUTPUT_BYTES,
@@ -1061,15 +1105,32 @@ function memberPath(key: string): string {
 function redactTruncated(text: string, secrets: readonly FlowScriptSecret[]): string {
   const scrubbed = scrubSecretValues(text, secrets);
   const omission = OMISSION_RE.exec(scrubbed);
-  if (!omission) return scrubbed;
-  const head = scrubbed.slice(0, omission.index);
+  const kept = omission ? null : REASON_KEPT_RE.exec(scrubbed);
+  const marker = omission ?? kept;
+  if (!marker) return scrubbed;
+  const head = scrubbed.slice(0, marker.index);
   const partial = partialSecretTail(head, secrets);
   if (partial === 0) return scrubbed;
-  const omitted = Number(omission[1]) + partial;
-  return `${head.slice(0, head.length - partial)}${omissionMarker(omitted)}`;
+  const shortened = head.slice(0, head.length - partial);
+  if (omission) return `${shortened}${omissionMarker(Number(omission[1]) + partial)}`;
+  return `${shortened}${kept![1]}${Number(kept![2]) - partial}${kept![3]}`;
 }
 
 const OMISSION_RE = /… \[(\d+) more characters omitted]$/;
+
+/**
+ * The runner's own marker, for a `$ARGENT_REASON` it read only the head of. It
+ * counts what it KEPT rather than what it dropped: a bounded read cannot know
+ * how many characters the whole file holds, and the file's size is what it says
+ * instead. So the count moves the other way when a half of a secret is taken
+ * off the end above.
+ *
+ * In step with `readReasonFile` in `flow-script-runner.mjs`, which this file
+ * cannot import. A wording that drifts apart stops matching and the tail is
+ * left in place, which is why a real bash step is what pins the pair.
+ */
+const REASON_KEPT_RE =
+  /(… \[\$ARGENT_REASON holds [^\]]*; this report keeps the first )(\d+)( characters])$/;
 
 function omissionMarker(omitted: number): string {
   return `… [${omitted} more characters omitted]`;
@@ -1204,27 +1265,40 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
  * what lets a script that wants to ADD one key read what it was given first.
  * `reason.txt` is created empty so a script can append to it without a test.
  *
+ * Both files carry the document, and the document may hold values derived from
+ * a secret, so both are written 0600 rather than left to the umask. The 0700
+ * directory around them already holds on its own; two barriers is the point.
+ *
  * The directory carries the moment it stops being this step's own, in its own
  * name: `$TMPDIR` is shared by every argent install on the host, and the sweep
  * below is the only reader that has to tell a live directory from an abandoned
  * one. A name is the one place a sweeping process can read the OWNER's bound
- * rather than apply its own — the mtime cannot say it, since it never advances
- * after creation.
+ * rather than apply its own — an mtime can carry an age, and no age can express
+ * the bound another install's step was given.
+ *
+ * A directory that was made and could not be filled is removed here. The
+ * `finally` that owns the rest of its life is only reached with an exchange to
+ * remove, and a throw from either write leaves the caller without one.
  */
 function createExchange(
   root: string,
   outputJson: string,
   timeoutMs: number,
-  maxTimeoutMs: number
+  sweepIntervalMs: number
 ): ExchangeFiles {
-  sweepStaleExchanges(root, maxTimeoutMs);
+  sweepStaleExchanges(root, sweepIntervalMs);
   const ownUntil = Date.now() + timeoutMs + EXCHANGE_LIFE_MARGIN_MS;
   const dir = fs.mkdtempSync(path.join(root, `${EXCHANGE_DIR_PREFIX}${ownUntil}-`));
-  const outputFile = path.join(dir, EXCHANGE_OUTPUT_FILE);
-  const reasonFile = path.join(dir, EXCHANGE_REASON_FILE);
-  fs.writeFileSync(outputFile, outputJson, "utf8");
-  fs.writeFileSync(reasonFile, "");
-  return { dir, outputFile, reasonFile };
+  try {
+    const outputFile = path.join(dir, EXCHANGE_OUTPUT_FILE);
+    const reasonFile = path.join(dir, EXCHANGE_REASON_FILE);
+    fs.writeFileSync(outputFile, outputJson, { encoding: "utf8", mode: EXCHANGE_FILE_MODE });
+    fs.writeFileSync(reasonFile, "", { mode: EXCHANGE_FILE_MODE });
+    return { dir, outputFile, reasonFile };
+  } catch (err) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 function removeExchange(exchange: ExchangeFiles, notes: string[]): void {
@@ -1238,31 +1312,37 @@ function removeExchange(exchange: ExchangeFiles, notes: string[]): void {
   }
 }
 
-let sweptStaleExchanges = false;
+let sweptStaleExchangesAt = 0;
 
 /**
  * The orphan case has an owner too. When the tool server dies mid-step the
  * lifeline kills the runner and nobody reaches the directory — and the document
- * in it may hold values derived from a secret. So the first bash step of a
- * process sweeps the executor's own prefix, the way the test helper sweeps its
- * fixture root.
+ * in it may hold values derived from a secret. So a bash step sweeps the
+ * executor's own prefix, the way the test helper sweeps its fixture root.
+ *
+ * Throttled rather than done once. An abandoned directory is stamped with a
+ * moment in the FUTURE — its dead owner's whole time limit still ahead of it —
+ * so the first step of the next server reads it as live and passes over it. A
+ * process that then never looked again left that directory for good, which is
+ * not what a reader of this is promised. The interval is what keeps the cost a
+ * single `readdir` a minute rather than one per step.
  *
  * Each directory names the moment it stops being its own step's, and that is
  * what decides. The bound has to come from the OWNER: `$TMPDIR` is shared by
  * every argent install on the host, `scripts.maxTimeoutMs` is a per-install
  * value, and applying this process's own to another's directory takes a live
  * step's exchange out from under it — which fails a correct script, and blames
- * the script for a file the host removed.
+ * the script for a file the host removed. So a name that carries no moment is
+ * left alone: nothing this executor has ever written looks like that, and an
+ * age is not a bound.
  *
- * A directory whose name carries no such moment was written by an older
- * version, so its age is all there is to read; the bound there is the widest a
- * live step of THIS install can be.
+ * The stamp is taken before the read, so a root this process cannot read costs
+ * one failed `readdir` a minute and not one per bash step.
  */
-function sweepStaleExchanges(root: string, maxTimeoutMs: number): void {
-  if (sweptStaleExchanges) return;
-  sweptStaleExchanges = true;
+function sweepStaleExchanges(root: string, sweepIntervalMs: number): void {
   const now = Date.now();
-  const cutoff = now - (maxTimeoutMs + CHILD_DEADLINE_MARGIN_MS + STOP_GRACE_MS + FORCE_GRACE_MS);
+  if (now - sweptStaleExchangesAt < sweepIntervalMs) return;
+  sweptStaleExchangesAt = now;
   let entries: string[];
   try {
     entries = fs.readdirSync(root);
@@ -1271,20 +1351,17 @@ function sweepStaleExchanges(root: string, maxTimeoutMs: number): void {
   }
   for (const entry of entries) {
     if (!entry.startsWith(EXCHANGE_DIR_PREFIX)) continue;
-    const candidate = path.join(root, entry);
     const ownUntil = exchangeOwnedUntil(entry);
+    if (ownUntil === undefined || ownUntil > now) continue;
     try {
-      if (ownUntil === undefined ? fs.statSync(candidate).mtimeMs > cutoff : ownUntil > now) {
-        continue;
-      }
-      fs.rmSync(candidate, { recursive: true, force: true });
+      fs.rmSync(path.join(root, entry), { recursive: true, force: true });
     } catch {
       // Raced with the step that owns it, or with another server's own sweep.
     }
   }
 }
 
-/** The moment in a directory's own name, or `undefined` for an older layout. */
+/** The moment in a directory's own name, or `undefined` for a name Argent never wrote. */
 function exchangeOwnedUntil(entry: string): number | undefined {
   const stamped = /^(\d+)-/.exec(entry.slice(EXCHANGE_DIR_PREFIX.length));
   if (!stamped) return undefined;

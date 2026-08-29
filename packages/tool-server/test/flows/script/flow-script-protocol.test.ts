@@ -64,14 +64,16 @@ async function withFakeRunner(source: string, extra: Partial<FlowScriptRequest> 
 
 describe("script response parsing", () => {
   it("accepts the three valid shapes", () => {
-    const started: ScriptResponse | null = parseScriptResponse({ type: "started" });
+    const started: ScriptResponse | null = parseScriptResponse({ type: "started" }, "node");
     expect(started).toEqual({ type: "started" });
-    expect(parseScriptResponse({ type: "result", outputJson: "{}" })).toEqual({
+    expect(parseScriptResponse({ type: "result", outputJson: "{}" }, "node")).toEqual({
       type: "result",
       outputJson: "{}",
     });
     const runtime: ScriptFailureType = "runtime";
-    expect(parseScriptResponse({ type: "failure", failureType: runtime, message: "x" })).toEqual({
+    expect(
+      parseScriptResponse({ type: "failure", failureType: runtime, message: "x" }, "node")
+    ).toEqual({
       type: "failure",
       failureType: runtime,
       message: "x",
@@ -80,22 +82,41 @@ describe("script response parsing", () => {
 
   it("carries a stack when there is one, and drops one that is not a string", () => {
     expect(
-      parseScriptResponse({ type: "failure", failureType: "runtime", message: "x", stack: "at y" })
+      parseScriptResponse(
+        { type: "failure", failureType: "runtime", message: "x", stack: "at y" },
+        "node"
+      )
     ).toEqual({ type: "failure", failureType: "runtime", message: "x", stack: "at y" });
     expect(
-      parseScriptResponse({ type: "failure", failureType: "runtime", message: "x", stack: 7 })
+      parseScriptResponse(
+        { type: "failure", failureType: "runtime", message: "x", stack: 7 },
+        "node"
+      )
     ).toEqual({ type: "failure", failureType: "runtime", message: "x" });
   });
 
   // Both arise only in bash mode, where the runner spawns its own child and so
   // is the side that learns bash could not start or was killed.
   it.each(["spawn", "signal"] as const)("accepts the bash-mode failure type %s", (failureType) => {
-    expect(parseScriptResponse({ type: "failure", failureType, message: "x" })).toEqual({
+    expect(parseScriptResponse({ type: "failure", failureType, message: "x" }, "bash")).toEqual({
       type: "failure",
       failureType,
       message: "x",
     });
   });
+
+  // In node mode the script runs inside the runner with the protocol descriptor
+  // open, and a `spawn` failure is the one the step reports as "nothing ran, so
+  // there is nothing to clean up". A script that has already done its work must
+  // not be able to write that answer for itself.
+  it.each(["spawn", "signal"] as const)(
+    "refuses the bash-mode failure type %s in node mode",
+    (failureType) => {
+      expect(
+        parseScriptResponse({ type: "failure", failureType, message: "x" }, "node")
+      ).toBeNull();
+    }
+  );
 
   it.each([
     ["a non-object", "started"],
@@ -109,7 +130,8 @@ describe("script response parsing", () => {
       { type: "failure", failureType: "weird", message: "x" },
     ],
   ])("rejects %s", (_label, raw) => {
-    expect(parseScriptResponse(raw)).toBeNull();
+    expect(parseScriptResponse(raw, "node")).toBeNull();
+    expect(parseScriptResponse(raw, "bash")).toBeNull();
   });
 });
 

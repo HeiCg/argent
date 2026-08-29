@@ -132,6 +132,10 @@ export class ConfigManagedElsewhereError extends Error {
  * pre-parsed JSON value (the CLI coerces its string argument first). Returns the
  * normalized value written, so callers can report what landed on disk rather
  * than the raw input.
+ *
+ * `validateWrite` where an entry has one: a key whose `parse` deliberately
+ * keeps a wrong value — so its own reader can name it rather than read it as an
+ * absent key — still refuses one being typed in here.
  */
 export function setConfigValue(
   key: string,
@@ -143,7 +147,7 @@ export function setConfigValue(
   const def = requireDefinition(key, registry);
   if (def.manageCommand) throw new ConfigManagedElsewhereError(key, def.manageCommand);
   if (!def.scopes.includes(scope)) throw new ConfigScopeError(key, scope, def.scopes);
-  const parsed = def.parse(rawValue);
+  const parsed = (def.validateWrite ?? def.parse)(rawValue);
   if (parsed === undefined)
     throw new ConfigValidationError(def.key, describeExpectedValue(def), def.example);
   updateConfig((config) => setAtPath(config, key, parsed), scope, options);

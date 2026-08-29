@@ -2,6 +2,7 @@
 // two scopes merge. `argent config`, the merged reader (config-access.ts) and
 // validation all read this registry.
 
+import * as path from "node:path";
 import type { FlagScope } from "./flags.js";
 import type { MergePolicy } from "./merge.js";
 
@@ -15,6 +16,14 @@ export interface ConfigDefinition<T = unknown> {
   readonly scopes: readonly FlagScope[];
   /** Validate + normalize a raw JSON value; `undefined` means absent/invalid. */
   readonly parse: (raw: unknown) => T | undefined;
+  /**
+   * The check `argent config set` applies instead of {@link parse}, for a key
+   * whose `parse` is deliberately permissive. A reader cannot tell a value
+   * `parse` threw away from an absent key, so a key whose own reader reports
+   * what it found has to KEEP a wrong value — which is no reason to accept one
+   * being typed in. Absent ⇒ `parse` is the write check too.
+   */
+  readonly validateWrite?: (raw: unknown) => T | undefined;
   /** How the project and global values combine into the effective value. */
   readonly merge: MergePolicy<T>;
   /** Effective value when no scope contributes one. */
@@ -59,6 +68,16 @@ function asPresentText(raw: unknown): string | undefined {
   // A config file is JSON, so everything that reaches here has a JSON text
   // form; `??` covers a caller that passed a live value which has none.
   return JSON.stringify(raw) ?? "(a value with no JSON form)";
+}
+
+/**
+ * Accept a non-blank string that names an absolute path on THIS host. The
+ * running platform's rules, because the path is for a program this host has to
+ * start: `C:\\…` is not a path a POSIX tool server can spawn.
+ */
+function asAbsolutePath(raw: unknown): string | undefined {
+  const text = asString(raw);
+  return text !== undefined && path.isAbsolute(text) ? text : undefined;
 }
 
 /** Accept a finite JSON number. */
@@ -226,6 +245,10 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     // the value and refuses the step, naming the key. `asString` was not that:
     // it maps an empty, whitespace-only or non-string value to `undefined`.
     parse: asPresentText,
+    // What `argent config set scripts.bash` accepts, which is not what the
+    // reader keeps: `parse` above holds on to a wrong value so the resolver can
+    // name it, and there is no reason to let one be typed in.
+    validateWrite: asAbsolutePath,
     expected: "an absolute path to a bash executable",
     merge: "prioritize-local",
     example: "/opt/homebrew/bin/bash",

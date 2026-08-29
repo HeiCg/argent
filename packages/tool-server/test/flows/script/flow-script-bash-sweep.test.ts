@@ -10,9 +10,10 @@ import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-scr
 import { createScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 /**
- * The first-use sweep, which runs once per process — so it needs a test file of
- * its own, where no earlier bash step has already spent it. vitest isolates the
- * module registry per file, which is what makes that hold.
+ * The sweep of abandoned exchange directories, which a process runs on a bash
+ * step and then not again until its interval has passed — so it needs a test
+ * file of its own, where no earlier bash step has already taken a turn. vitest
+ * isolates the module registry per file, which is what makes that hold.
  *
  * It exists for the orphan case: when the tool server dies mid-step the
  * lifeline kills the runner and nobody reaches the exchange directory, and the
@@ -41,25 +42,24 @@ beforeAll(() => {
 
 afterAll(() => fs.rmSync(exchangeRoot, { recursive: true, force: true }));
 
-describe("the first bash step of a process", () => {
-  // One test, because the sweep is spent on the first bash step of the process:
-  // every directory it has to judge has to be planted before that step runs.
+describe("a bash step's sweep of the exchange root", () => {
+  // One test for the judging, because the first bash step of the process is
+  // where every directory planted before it is judged.
   it("judges each exchange directory by the bound its own step wrote", async () => {
     const ws = createScriptWorkspace("bash-sweep");
     const longAgo = new Date(Date.now() - 60 * 60 * 1000);
 
-    // An older layout, which carries no bound of its own: its age is all the
-    // sweep can read, and this one is older than the widest a live step of
-    // THIS install can be.
-    const abandoned = fs.mkdtempSync(path.join(exchangeRoot, exchangeDirPrefix()));
-    fs.writeFileSync(path.join(abandoned, "output.json"), '{"token":"derived-from-a-secret"}');
-    fs.utimesSync(abandoned, longAgo, longAgo);
-    const liveOldLayout = fs.mkdtempSync(path.join(exchangeRoot, exchangeDirPrefix()));
+    // A name this executor never wrote, carrying no bound of its own. Its age
+    // is all there is to read, and an age cannot say what time limit the step
+    // that made it was given — so it is left alone rather than judged by this
+    // install's own bound.
+    const unstamped = fs.mkdtempSync(path.join(exchangeRoot, exchangeDirPrefix()));
+    fs.utimesSync(unstamped, longAgo, longAgo);
 
     // A step of another install, still running, whose own time limit is longer
-    // than anything this install would allow. A directory's mtime never
-    // advances after creation, so age alone would read this as abandoned and
-    // take the exchange out from under a correct script.
+    // than anything this install would allow. A directory's mtime does advance
+    // when a file is created inside it, but it can never carry the OWNER's
+    // bound, which is the whole reason the name does.
     const stamped = (owned: number): string =>
       fs.mkdtempSync(path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() + owned}-`));
     const liveElsewhere = stamped(60 * 60 * 1000);
@@ -67,6 +67,10 @@ describe("the first bash step of a process", () => {
     // And one whose own bound has passed, which is abandoned however new the
     // directory is.
     const finishedElsewhere = stamped(-1_000);
+    fs.writeFileSync(
+      path.join(finishedElsewhere, "output.json"),
+      '{"token":"derived-from-a-secret"}'
+    );
 
     try {
       const script = ws.write("sweep.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
@@ -77,16 +81,51 @@ describe("the first bash step of a process", () => {
       }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
 
       expect(result.ok).toBe(true);
-      expect(fs.existsSync(abandoned)).toBe(false);
       expect(fs.existsSync(finishedElsewhere)).toBe(false);
-      // A directory a concurrent step still owns is younger than the bound, so
-      // the sweep cannot take it out from under that step.
-      expect(fs.existsSync(liveOldLayout)).toBe(true);
+      // A directory a concurrent step still owns, and one whose owner cannot be
+      // read: the sweep may take neither out from under a correct script.
+      expect(fs.existsSync(unstamped)).toBe(true);
       expect(fs.existsSync(liveElsewhere)).toBe(true);
     } finally {
-      for (const dir of [abandoned, liveOldLayout, liveElsewhere, finishedElsewhere]) {
+      for (const dir of [unstamped, liveElsewhere, finishedElsewhere]) {
         fs.rmSync(dir, { recursive: true, force: true });
       }
+      ws.cleanup();
+    }
+  }, 30_000);
+
+  // The orphan a crashed tool server leaves is stamped with a moment in the
+  // FUTURE — its dead owner's whole time limit still ahead of it — so the next
+  // server's first bash step reads it as live and passes over it. A process
+  // that swept exactly once then left it for good, which is neither what the
+  // reference promises nor what the document in it deserves.
+  it("comes back for a directory whose owner died with its bound still ahead", async () => {
+    const ws = createScriptWorkspace("bash-resweep");
+    const orphan = fs.mkdtempSync(
+      path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() + 800}-`)
+    );
+    fs.writeFileSync(path.join(orphan, "output.json"), '{"token":"derived-from-a-secret"}');
+
+    try {
+      const script = ws.write("resweep.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
+      const runs = new FlowScriptExecutor({
+        concurrency: 2,
+        maxTimeoutMs: 60_000,
+        exchangeRoot,
+        exchangeSweepIntervalMs: 50,
+      });
+      const step = (): Promise<{ ok: boolean }> =>
+        runs.execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
+
+      expect((await step()).ok).toBe(true);
+      expect(fs.existsSync(orphan)).toBe(true);
+
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+      expect((await step()).ok).toBe(true);
+      expect(fs.existsSync(orphan)).toBe(false);
+    } finally {
+      fs.rmSync(orphan, { recursive: true, force: true });
       ws.cleanup();
     }
   }, 30_000);
