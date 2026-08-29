@@ -156,6 +156,7 @@ export const ALLOWED: ValidatorMap = {
       "already_installed",
       "install_local",
       "set_prefix",
+      "unrecoverable",
     ] as const),
   },
   "installation:update_decision": {

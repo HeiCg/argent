@@ -17,7 +17,11 @@ import type { PackageManager } from "./package-manager.js";
 // Argument vector that makes each manager print a directory its global installs
 // live under. Only npm's and pnpm's name the node_modules itself; yarn classic
 // prints its parent and bun the bin directory it links shims into — near enough
-// to answer "can this user write there", which is all the probe asks.
+// to answer "can this user write there", which is all the probe asks. The cost
+// of that near-enough: for yarn/bun, walking up from <queried>/@swmansion/argent
+// probes an ancestor of the real module directory rather than the directory
+// itself, so a module dir made root-owned by an earlier `sudo yarn global add`
+// or `sudo bun add -g` is not caught.
 const GLOBAL_DIR_QUERY: Record<PackageManager, readonly string[]> = {
   npm: ["root", "-g"],
   pnpm: ["root", "-g"],
@@ -51,9 +55,11 @@ function queryGlobalInstallDir(pm: PackageManager): string | null {
 }
 
 /**
- * True when `target` is inside the Nix store. Honors NIX_STORE_DIR, which
- * rootless / relocated installs (nix-portable, `--store`) set to something
- * other than the /nix/store default.
+ * True when `target` is inside the Nix store. Honors NIX_STORE_DIR, which only
+ * a relocated Nix (a custom build or an admin-exported override) sets to
+ * something other than the /nix/store default — nix-portable virtualizes
+ * /nix/store but keeps those paths, and nix's own --store is a per-invocation
+ * flag that exports nothing.
  */
 export function isNixStorePath(target: string): boolean {
   const storeDir = path.resolve(process.env.NIX_STORE_DIR || "/nix/store");
@@ -141,15 +147,17 @@ export function suggestedNpmPrefix(): string {
 }
 
 /**
- * Drop the prefix npm exports into everything it spawns. `npx @swmansion/argent
- * init` inherits the OLD prefix that way, and an environment variable outranks
- * the `~/.npmrc` that `npm config set prefix` writes — so without this, the
- * install that follows a prefix move lands right back in the directory that
- * could not be written.
+ * Drop every prefix npm honors from the environment. `npx @swmansion/argent
+ * init` inherits the old prefix through `npm_config_prefix` (npm exports it
+ * into everything it spawns), and a shell may export plain `PREFIX` or
+ * `NPM_CONFIG_PREFIX` — each outranks the `~/.npmrc` that `npm config set
+ * prefix` writes, so any one left set sends the install that follows a prefix
+ * move right back to the directory that could not be written.
  */
 export function forgetInheritedNpmPrefix(): void {
   delete process.env.npm_config_prefix;
   delete process.env.NPM_CONFIG_PREFIX;
+  delete process.env.PREFIX;
 }
 
 /**

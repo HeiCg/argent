@@ -49,9 +49,17 @@ export interface InstallationGlobalInstallDecisionProps {
   /**
    * The developer-only `--from <tarball>` path is not reported.
    * `install_local` and `set_prefix` are the recoveries offered when the
-   * package manager's global directory cannot be written.
+   * package manager's global directory cannot be written; `unrecoverable` is
+   * the end of a global choice on a manager whose directory argent cannot
+   * relocate.
    */
-  decision: "install" | "cancel" | "already_installed" | "install_local" | "set_prefix";
+  decision:
+    | "install"
+    | "cancel"
+    | "already_installed"
+    | "install_local"
+    | "set_prefix"
+    | "unrecoverable";
 }
 
 export interface InstallationUpdateDecisionProps {

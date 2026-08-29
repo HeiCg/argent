@@ -73,6 +73,7 @@ describe("sanitize", () => {
         "already_installed",
         "install_local",
         "set_prefix",
+        "unrecoverable",
       ] as const) {
         expect(sanitize("installation:global_install_decision", { decision })).toEqual({
           decision,

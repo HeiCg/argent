@@ -262,8 +262,6 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
   await tel.trackPackageAction("fresh_install", startedAt, true, undefined, attemptTelemetry());
 }
 
-// ── Global (PATH binary) ──────────────────────────────────────────────────────
-
 /**
  * Offer the two ways out of a global directory that cannot be written, and
  * carry out the chosen one: install into the project instead, or move npm's
@@ -314,8 +312,12 @@ async function recoverBlockedGlobalInstall(opts: {
 
   if (acknowledged) {
     // Chosen knowing the block, but for a manager whose directory argent
-    // cannot relocate — there is nothing left to carry out.
-    if (!canMovePrefix) return failWithAdvice(target);
+    // cannot relocate — there is nothing left to carry out. The choice still
+    // happened, so the funnel hears where it ended.
+    if (!canMovePrefix) {
+      track("installation:global_install_decision", { decision: "unrecoverable" });
+      return failWithAdvice(target);
+    }
   } else {
     p.log.warn(blockedGlobalTargetCause(target, pm, "install"));
 
@@ -363,6 +365,12 @@ async function recoverBlockedGlobalInstall(opts: {
     await failWith(`${err}\n\n${localInstallRemedy()}`);
   }
   spinner.stop(`npm prefix set to ${prefix}.`);
+  // The write outlives this run whether or not the install ahead succeeds.
+  p.log.info(
+    pc.dim(
+      `Recorded in ~/.npmrc — future global installs land there too. Undo later with ${pc.cyan("npm config delete prefix")}.`
+    )
+  );
   forgetInheritedNpmPrefix();
 
   // Confirm rather than assume: a prefix npm accepted but still cannot write to
@@ -406,8 +414,8 @@ async function runGlobal(opts: {
 
   if (!globallyInstalled) {
     // Nowhere to install to: the manager's global directory cannot be written
-    // (a Nix-managed toolchain puts it in the immutable store). Both ways out
-    // are things init can carry out, so ask rather than stop here.
+    // (a Nix-managed toolchain puts it in the immutable store). Where a way
+    // out can be carried out, ask rather than stop here.
     const pm = detectPackageManager();
     const preflightStartedAt = performance.now();
     if (globalTarget?.blocked) {
@@ -427,10 +435,8 @@ async function runGlobal(opts: {
       pathHint = recovery.pathHint;
     }
 
-    // No consent prompt here: the install-mode step directly above is where
-    // the user chose "Globally" (or passed --global), and that choice IS the
-    // consent to install the missing package — a second "install it?" select
-    // reads as the same question asked twice.
+    // No consent prompt here: choosing "Globally" (or --global) in the
+    // install-mode step directly above IS the consent to install it.
     p.log.info(`Argent is not installed globally — installing.`);
     track("installation:global_install_decision", { decision: "install" });
 
