@@ -35,6 +35,26 @@ const BASH_PROBE_MARKER = /^argent-bash-version:\S/m;
 
 const BASH_PROBE_TIMEOUT_MS = 5_000;
 
+/**
+ * How long the candidate is given to die after the SIGTERM above, before it is
+ * killed. `spawn`'s own `timeout` option sends one signal and never escalates,
+ * so a candidate that ignores SIGTERM — a wrapper, a version-manager shim —
+ * held the step with nothing left to end it: this lookup runs BEFORE the fork,
+ * so the step's own time limit has not started and the request's abort has
+ * nothing to interrupt.
+ */
+const BASH_PROBE_FORCE_GRACE_MS = 1_000;
+
+/**
+ * How long the answer is waited for once the candidate itself has exited. A
+ * candidate's standard output is inherited by everything it starts, so waiting
+ * for that pipe to CLOSE waits for the last of those processes rather than for
+ * the candidate — a shim that backgrounds one job held the step for as long as
+ * the job ran. The marker is written before the candidate exits, so this window
+ * is only for the read to catch up.
+ */
+const BASH_PROBE_SETTLE_MS = 250;
+
 /** Enough for the marker line; a candidate that streams is cut off, not kept. */
 const BASH_PROBE_MAX_CHARS = 4 * 1024;
 
@@ -120,7 +140,7 @@ async function notBashProblem(candidate: string): Promise<string | null> {
   if (answer.signal) {
     return (
       `answered nothing when it was asked for its version, and was stopped by ${answer.signal} ` +
-      `(the check waits ${BASH_PROBE_TIMEOUT_MS / 1_000} seconds)`
+      `(the check waits ${BASH_PROBE_TIMEOUT_MS / 1_000} seconds, then stops the candidate)`
     );
   }
   return (
@@ -131,12 +151,20 @@ async function notBashProblem(candidate: string): Promise<string | null> {
 }
 
 /**
- * One run of the candidate, bounded on both axes. Its standard input is the
- * null device, the same end of file the step gives the script — without it the
- * wrapper this check exists for reads an open pipe until the timeout, and
+ * One run of the candidate, bounded on every axis — because nothing else here
+ * is. This is the only place a `.sh` step can wait before it has a process to
+ * time out, so a probe that does not settle is a flow run that never finishes.
+ *
+ * The bounds, one per way a candidate can fail to answer. Its standard input is
+ * the null device, the same end of file the step gives the script — without it
+ * the wrapper this check exists for reads an open pipe until the timeout, and
  * answers in five seconds what it can answer at once. Its standard output is
  * kept only up to the marker's own length, so a candidate that streams costs
- * the timeout rather than the heap.
+ * the timeout rather than the heap. A candidate still alive at the timeout is
+ * asked to stop and then killed, rather than asked once and waited on. And the
+ * answer is taken at the candidate's OWN exit, with a short window for the read
+ * behind it, rather than at the close of a pipe whatever it started still
+ * holds.
  */
 function askForBashVersion(
   candidate: string
@@ -146,7 +174,6 @@ function askForBashVersion(
     try {
       child = spawn(candidate, ["-c", BASH_PROBE_COMMAND], {
         stdio: ["ignore", "pipe", "ignore"],
-        timeout: BASH_PROBE_TIMEOUT_MS,
         windowsHide: true,
       });
     } catch (err) {
@@ -154,12 +181,43 @@ function askForBashVersion(
       return;
     }
     let stdout = "";
+    let settled = false;
+    let killedWith: NodeJS.Signals | null = null;
+    const timers: NodeJS.Timeout[] = [];
+    const answer = (signal: NodeJS.Signals | null, failure?: string) => {
+      if (settled) return;
+      settled = true;
+      for (const timer of timers) clearTimeout(timer);
+      // This end of the pipe, and the handle behind it: a candidate that is
+      // still running is one nothing waits for any more, and either would keep
+      // the tool server's own loop alive for it.
+      child.stdout?.destroy();
+      child.unref();
+      resolve({ stdout, signal, ...(failure === undefined ? {} : { failure }) });
+    };
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       if (stdout.length < BASH_PROBE_MAX_CHARS) stdout += chunk;
     });
-    child.on("error", (err) => resolve({ stdout, signal: null, failure: firstLine(err) }));
-    child.on("close", (_code, signal) => resolve({ stdout, signal }));
+    child.on("error", (err) => answer(null, firstLine(err)));
+    child.on("exit", (_code, signal) => {
+      const died = signal ?? killedWith;
+      timers.push(setTimeout(() => answer(died), BASH_PROBE_SETTLE_MS));
+    });
+    child.on("close", (_code, signal) => answer(signal ?? killedWith));
+    timers.push(
+      setTimeout(() => {
+        killedWith = "SIGTERM";
+        child.kill("SIGTERM");
+      }, BASH_PROBE_TIMEOUT_MS)
+    );
+    timers.push(
+      setTimeout(() => {
+        killedWith = "SIGKILL";
+        child.kill("SIGKILL");
+        answer("SIGKILL");
+      }, BASH_PROBE_TIMEOUT_MS + BASH_PROBE_FORCE_GRACE_MS)
+    );
   });
 }
 

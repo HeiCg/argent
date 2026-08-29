@@ -337,6 +337,82 @@ describe("bash on PATH", () => {
   );
 });
 
+/**
+ * A candidate that runs but never answers. Both shapes below defeated the
+ * `timeout` option `spawn` offers — it sends one SIGTERM and never escalates,
+ * and it is the CLOSE of the candidate's pipes that used to settle the probe,
+ * which is the last of everything the candidate started rather than the
+ * candidate itself. This lookup runs before the step forks anything, so neither
+ * the step's own time limit nor the request's abort was there to end it.
+ */
+const onPosix = it.skipIf(realPlatform === "win32");
+
+function nodeExecutable(dir: string, name: string, body: string): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, `#!${process.execPath}\n${body}`);
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+describe("a candidate that will not answer", () => {
+  onPosix(
+    "stops a candidate that ignores SIGTERM instead of waiting on it",
+    async () => {
+      const root = projectWith(undefined);
+      const stubborn = nodeExecutable(
+        root,
+        "bash",
+        'process.on("SIGTERM", () => {});\nsetTimeout(() => {}, 60_000);\n'
+      );
+      fs.writeFileSync(
+        path.join(root, ".argent", "config.json"),
+        JSON.stringify({ scripts: { bash: stubborn } })
+      );
+
+      const startedAt = Date.now();
+      const found = await resolveBashInterpreter(root);
+      const elapsed = Date.now() - startedAt;
+
+      expect((found as { problem: string }).problem).toContain("SIGKILL");
+      // The five second wait plus the grace, and nothing like the sixty the
+      // candidate asked for.
+      expect(elapsed).toBeGreaterThanOrEqual(5_000);
+      expect(elapsed).toBeLessThan(20_000);
+    },
+    30_000
+  );
+
+  onPosix(
+    "answers when the candidate exits, not when the last holder of its pipe does",
+    async () => {
+      const root = projectWith(undefined);
+      const brief = nodeExecutable(
+        root,
+        "bash",
+        'require("node:child_process")\n' +
+          '  .spawn(process.execPath, ["-e", "setTimeout(() => {}, 10_000)"], {\n' +
+          '    stdio: ["ignore", "inherit", "ignore"],\n' +
+          "  })\n" +
+          "  .unref();\n" +
+          'process.stdout.write("\\nargent-bash-version:5.2.37\\n");\n' +
+          "process.exit(0);\n"
+      );
+      fs.writeFileSync(
+        path.join(root, ".argent", "config.json"),
+        JSON.stringify({ scripts: { bash: brief } })
+      );
+
+      const startedAt = Date.now();
+      const found = await resolveBashInterpreter(root);
+      const elapsed = Date.now() - startedAt;
+
+      expect(found).toEqual({ path: brief });
+      expect(elapsed).toBeLessThan(5_000);
+    },
+    30_000
+  );
+});
+
 describe("no bash anywhere", () => {
   it("reports a spawn refusal naming what it looked at and each remedy", async () => {
     setPlatform("win32");
