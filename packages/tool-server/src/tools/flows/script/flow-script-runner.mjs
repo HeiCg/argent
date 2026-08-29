@@ -34,6 +34,15 @@ let runnerIsSending = false;
  */
 let bashMode = false;
 
+/**
+ * The signals a script can aim at its own process group, which this process
+ * leads in bash mode. Held in `heldSignals` rather than acted on: see
+ * `holdGroupSignals`.
+ */
+const GROUP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
+
+const heldSignals = new Set();
+
 const ENTRY_SETTLE_PROBE_MS = 1_000;
 
 /**
@@ -202,6 +211,7 @@ async function prepare() {
  */
 function runBash(request) {
   bashMode = true;
+  holdGroupSignals();
   // Registered here for the reason node mode registers it here: Node references
   // the IPC channel while a `disconnect` listener exists.
   keepListener("disconnect", exitOnParentDisconnect);
@@ -269,9 +279,39 @@ function runBash(request) {
     // reports it, and the deadline watchdog bounds a spawn that reported
     // neither.
     if (code === null && signal === null) return;
-    finish(bashOutcome(request, code, signal));
+    // A signal that reached bash reached this process in the same instant when
+    // it was aimed at the group, and `heldSignals` is what the report names it
+    // by. One turn of the loop, so the handler holding it runs first — the
+    // signal is read off libuv's own pipe, ahead of the child's exit.
+    if (signal) setImmediate(() => finish(bashOutcome(request, code, signal)));
+    else finish(bashOutcome(request, code, signal));
   });
   return never();
+}
+
+/**
+ * Take the group's signals away from Node's default, which is to end this
+ * process. `trap 'kill 0' EXIT` is the standard bash idiom for reaping
+ * background jobs, and `kill 0` means "signal my own process group" — the group
+ * this process leads and bash joined, so it arrives here too. Ended here, the
+ * runner dies before it can read `$ARGENT_OUTPUT` or send a verdict, and the
+ * parent reports the SIGTERM on ITS child as an unexplained one: "the script
+ * process was killed … it did not stop itself", about a process the script
+ * never chose to run.
+ *
+ * Held rather than answered, because bash received the same signal and its own
+ * exit is the verdict either way. Nothing is left holding the process open: the
+ * parent's stop escalates to a SIGKILL on the group, and the deadline watchdog
+ * bounds the run from inside.
+ */
+function holdGroupSignals() {
+  for (const signal of GROUP_SIGNALS) {
+    try {
+      process.on(signal, () => heldSignals.add(signal));
+    } catch {
+      // A platform that does not know the name; the default stands for it.
+    }
+  }
 }
 
 function spawnFailure(request, err) {
@@ -291,6 +331,21 @@ function spawnFailure(request, err) {
  */
 function bashOutcome(request, code, signal) {
   if (signal) {
+    // A signal this process received too went to the group rather than to bash,
+    // and the group is the step's own: nothing outside it knows the number.
+    // That is the script's answer, not something the host did to it, so it is
+    // an `exit` — the kind that reads "it stopped its own process".
+    if (heldSignals.has(signal)) {
+      return {
+        type: "failure",
+        failureType: "exit",
+        message:
+          `The step's process group was sent ${signal}, which killed bash before it exited ` +
+          `(bash: ${request.interpreterPath}), so the step returned no output document. ` +
+          "`kill 0` and `kill -- -$$` reach bash itself, not only the background jobs they are " +
+          "usually written for: signal each job's own pid instead.",
+      };
+    }
     return {
       type: "failure",
       failureType: "signal",

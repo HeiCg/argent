@@ -369,6 +369,31 @@ describe("what a failing bash step says", () => {
     30_000
   );
 
+  // `trap 'kill 0' EXIT` is the standard bash idiom for reaping background jobs,
+  // and `kill 0` is the whole process group — the one this step leads, so it
+  // reaches the runner as well as the jobs it was aimed at. Ended there, the
+  // runner never read `$ARGENT_OUTPUT` and never sent a verdict, and the parent
+  // described the SIGTERM on ITS OWN child as one the script did not choose.
+  onPosix(
+    "reads a group-wide kill as the script's own answer, not as a signal from the host",
+    async () => {
+      const ws = workspace();
+      const result = await runBash(
+        ws,
+        "kill-group",
+        `trap 'kill 0' EXIT
+       sleep 30 &
+       printf '{"seeded":true}' > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`
+      );
+      expect(result.failure?.kind).toBe("exit");
+      expect(result.failure?.message).toContain("process group was sent SIGTERM");
+      expect(result.failure?.message).toContain("kill 0");
+      expect(result.failure?.message).not.toContain("did not stop itself");
+    },
+    30_000
+  );
+
   // The resolver checks its candidate by running it, so what it accepted can
   // still be gone by the time the runner spawns it. That lands on the runner's
   // own `error` handler, and `spawn` is the one kind that tells the author
