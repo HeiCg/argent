@@ -2644,8 +2644,9 @@ export function parseScriptTimeout(raw: unknown, value: unknown): number {
     badEntry(
       raw,
       `script.timeout is in milliseconds and needs at least ${SCRIPT_MIN_TIMEOUT_MS} — the step ` +
-        `spends its first tens of milliseconds starting the Node process, so ${value} leaves the ` +
-        `script too little to run in and errors the step (30 seconds is \`timeout: 30000\`)`
+        `spends its first tens of milliseconds starting the process the script runs in, so ` +
+        `${value} leaves the script too little to run in and errors the step (30 seconds is ` +
+        `\`timeout: 30000\`)`
     );
   }
   return value as number;

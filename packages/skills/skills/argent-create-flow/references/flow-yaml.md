@@ -231,12 +231,12 @@ On Chromium the leading `launch:` boots before step 1, so a `script:` above it r
 ### A `.sh` step
 
 - The exit code is the verdict. 0 passes.
-- `$ARGENT_OUTPUT` names a file holding the output document as JSON. Argent reads it after exit 0. Write a sibling and `mv` it into place: `> "$ARGENT_OUTPUT"` truncates the file before the command that fills it runs, and Argent refuses an empty one.
-- `$ARGENT_REASON` names a file for the failure text. Argent reads it after a non-zero exit and puts it in the step's reason. A failing script that writes nothing there reports only its exit code.
-- Argent runs `bash <file>`: no execute bit needed, the `#!` line is a comment, no arguments, stdin is empty. Nothing the script prints is reported.
-- Argent finds bash from `scripts.bash`, then PATH, then `/bin/bash` and `/usr/bin/bash` (Git for Windows on Windows). macOS ships bash 3.2 at `/bin/bash`; pin `scripts.bash` for bash 4 features.
-- Check the file out with LF line endings. CRLF fails under bash with `$'\r': command not found` and exit 127. Add `*.sh text eol=lf` to `.gitattributes`.
-- A background job dies with the step's process group unless it `setsid`s, and one that writes `$ARGENT_OUTPUT` after bash exits writes to a file nobody reads.
+- `$ARGENT_OUTPUT` names a file holding the output document as JSON. Argent puts the input document there before the script starts and reads the file again after exit 0, so a script that never touches it passes with what it was given, and `>>` appends after a document that is already there. Write a sibling and `mv` it into place: `> "$ARGENT_OUTPUT"` truncates the file before the command that fills it runs, and Argent refuses an empty one.
+- `$ARGENT_REASON` names an empty file for the failure text, so `>>` is safe there. Argent reads about 7000 characters of it after a non-zero exit and puts them in the step's reason. A failing script that writes nothing there reports only its exit code.
+- Argent runs `bash <file>`: no execute bit needed, the `#!` line is a comment, no arguments, stdin is empty. Nothing the script prints is reported. A file bash cannot READ exits 126, the same code as a command that is not executable.
+- Argent finds bash from `scripts.bash`, then PATH, then `/bin/bash` and `/usr/bin/bash` (Git for Windows on Windows, Scoop's copy included; the WSL launcher under `%SystemRoot%` is skipped). Each candidate is run once and has to answer with a `$BASH_VERSION`; one that does not is not a bash, and a `scripts.bash` that fails it errors the step. macOS ships bash 3.2 at `/bin/bash`; pin `scripts.bash` for bash 4 features.
+- Check the file out with LF line endings. CRLF puts the carriage return in the last word of each line: in a command name it gives `$'\r': command not found` and exit 127, in a redirection target it writes a file one carriage return past the one you named, which Argent fails the step for. Add `*.sh text eol=lf` to `.gitattributes`.
+- A background job dies with the step's process group unless it `setsid`s, and one that writes `$ARGENT_OUTPUT` after bash exits writes to a file nobody reads. Do not reap jobs with `trap 'kill 0' EXIT`: `kill 0` signals the step's whole process group, so it kills bash itself and the step loses its document. Signal the pid of the job.
 
 ## Snapshots and standalone runs
 

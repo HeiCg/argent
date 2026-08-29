@@ -74,8 +74,9 @@ export const MIN_SCRIPT_HEAP_LIMIT_MB = 32;
 
 /**
  * The smallest ceiling a flow `script` step can run under and still report on
- * the script rather than on the host. The step starts a Node process before
- * the script runs, and that start alone costs tens of milliseconds, so under
+ * the script rather than on the host. The step starts a process before the
+ * script runs — a bash one as well as a Node one — and that start alone costs
+ * tens of milliseconds, so under
  * this the same script passes or times out according to how busy the machine
  * was. Floored rather than defaulted for the reason the heap limit is: the
  * step that loses the race errors, and names neither this bound nor the value
@@ -176,8 +177,8 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     description:
       "Upper bound, in milliseconds, on the time limit a flow `script` step may ask for " +
       "(default 300000 — five minutes). Bounds how long one script can occupy the host. " +
-      `Values below ${MIN_SCRIPT_TIMEOUT_MS} ms are refused: the step starts a Node process ` +
-      "before the script runs, so a smaller ceiling ends a script that did nothing wrong.",
+      `Values below ${MIN_SCRIPT_TIMEOUT_MS} ms are refused: the step starts a process before ` +
+      "the script runs, so a smaller ceiling ends a script that did nothing wrong.",
     scopes: ["global"],
     parse: (raw) => {
       const value = asPositiveInteger(raw);
@@ -211,9 +212,10 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     description:
       "Absolute path to the bash a flow `script` step runs a `.sh` file with. Unset ⇒ the " +
       "first bash on the tool server's PATH, then /bin/bash and /usr/bin/bash (on Windows, " +
-      "Git for Windows' bash.exe). Project scope is allowed here: which bash a project's own " +
-      "`.sh` files were written for is the project's own fact, and it raises no ceiling on " +
-      "the host.",
+      "Git for Windows' bash.exe; the WSL launcher under %SystemRoot% is skipped). Each " +
+      "candidate is run once and has to answer with a $BASH_VERSION. Project scope is allowed " +
+      "here: which bash a project's own `.sh` files were written for is the project's own " +
+      "fact, and it raises no ceiling on the host.",
     scopes: ["global", "project"],
     // Deliberately permissive: `readScopeValue` hands back `undefined` for a
     // value its `parse` rejected, which is indistinguishable from an absent key

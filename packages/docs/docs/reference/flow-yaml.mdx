@@ -308,38 +308,47 @@ A `.sh` file is a trusted script, the same as an `.mjs` file. Argent does not sa
 
 The contract of a bash script:
 
-| Channel          | Meaning                                                                                             |
-| ---------------- | --------------------------------------------------------------------------------------------------- |
-| The environment  | The input. See the allowlist above                                                                  |
-| `$ARGENT_OUTPUT` | A file that holds the output document as JSON. Argent reads it after an exit code of 0              |
-| `$ARGENT_REASON` | A file for the failure text. Argent reads it after a different exit code, and adds it to the report |
-| The exit code    | The verdict. 0 passes the step. A different code fails it                                           |
+| Channel          | Meaning                                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| The environment  | The input. See the allowlist above                                                                                                            |
+| `$ARGENT_OUTPUT` | A file that holds the output document as JSON. Argent writes the input document there first, and reads the file again after an exit code of 0 |
+| `$ARGENT_REASON` | An empty file for the failure text. Argent reads it after a different exit code, and adds it to the report                                    |
+| The exit code    | The verdict. 0 passes the step. A different code fails it                                                                                     |
 
 Argent runs the file as `bash <file>`. The file needs no execute bit, and Argent ignores the `#!` line. The script gets no arguments. `$0` is the path of the script file. The standard input of the script is empty, so a `read` gets the end of the file. Argent does not report the standard output or the standard error of the script.
 
 Write the output document to a sibling file, then move the file into place. A redirection to `$ARGENT_OUTPUT` empties the file before the command that writes it runs. Argent refuses an empty file. Argent also refuses a file that is missing, a document that is not a JSON object, and a document above 1 MiB.
 
-A failed step that writes no reason shows only the exit code. Two exit codes have a meaning of bash: 127 means "command not found", and 126 means "found, but not executable".
+`$ARGENT_OUTPUT` is not empty when the script starts: it holds the document the step was given, which is `{}` today. Two results follow. A script that never touches the file passes, and the step returns that document. An append with `>>` writes after the document that is already there, and the result is not JSON.
+
+`$ARGENT_REASON` starts empty, so `>>` is safe there. Argent reads about 7000 characters of it. A larger file is cut, and the report says how many bytes the file holds.
+
+A failed step that writes no reason shows only the exit code. Two exit codes have a meaning of bash: 127 means "command not found", and 126 means "found, but Argent could not run it". Code 126 has two causes: bash cannot read the file, or a command in the file is not executable.
 
 #### The bash that Argent runs
 
 Argent looks for bash in this order, and takes the first result:
 
-1. The `scripts.bash` key. See [Available keys](/docs/reference/configuration#available-keys). A value that is set but wrong fails the step. Argent does not fall through to the next source
+1. The `scripts.bash` key. See [Available keys](/docs/reference/configuration#available-keys). A value that is set but wrong errors the step. Argent does not fall through to the next source
 2. `bash` on the PATH of the tool-server
-3. `/bin/bash`, then `/usr/bin/bash`. On Windows, the `bash.exe` of Git for Windows
+3. `/bin/bash`, then `/usr/bin/bash`. On Windows, the `bash.exe` of Git for Windows, in the locations its installer and Scoop use
 
-macOS ships bash 3.2 at `/bin/bash`. Homebrew installs bash 5 earlier on the PATH. Associative arrays, `${var,,}` and `mapfile` need bash 4 or later. Set `scripts.bash` to pin one version. The report names the interpreter path in each failure.
+Argent runs each candidate once and asks it for its `$BASH_VERSION`. bash sets that name and no other shell does. A candidate that answers without one is not a bash, and Argent does not run a `.sh` step under it: the step would report the document Argent seeded rather than the one the script writes. A candidate on the PATH that fails this check is passed over. A `scripts.bash` that fails it errors the step, and the message names the file the value came from.
+
+On Windows, Argent skips the `bash.exe` under `%SystemRoot%`. That file is the WSL launcher. It runs the script inside a Linux distribution, where the project path, the environment and `$ARGENT_OUTPUT` do not exist.
+
+macOS ships bash 3.2 at `/bin/bash`. Homebrew installs bash 5 earlier on the PATH. Associative arrays, `${var,,}` and `mapfile` need bash 4 or later. Set `scripts.bash` to pin one version. The report names the interpreter path when the script exits with a code, when a signal kills bash, and when bash cannot start. A time limit, a bad document and a missing file name no path.
 
 #### What a bash author must know
 
 - **The PATH of the tool-server is a snapshot from when it started.** `curl`, `jq`, `adb` and `gh` resolve against that snapshot. An editor can start the tool-server with a short login PATH. The symptom is exit code 127. Restart the tool-server after you change the PATH
 - **A variable your shell exports does not reach the script.** `DATABASE_URL` and `NODE_ENV` are absent even when your shell sets them. Read a secret or a URL from a file
-- **Use LF line endings.** A `.sh` file with CRLF line endings fails under bash with `$'\r': command not found` and exit code 127. Argent does not read the source of the script, so Argent cannot warn you. Add `*.sh text eol=lf` to `.gitattributes`
+- **Use LF line endings.** A `.sh` file with CRLF line endings puts the carriage return in the last word of each line. What follows depends on the word. A command name gives `$'\r': command not found` and exit code 127. A redirection target gives a file one carriage return past the one you named: Argent sees that name in the private directory of the step and fails the step for it. Add `*.sh text eol=lf` to `.gitattributes`
 - **On Windows, Argent runs the bash of Git for Windows.** `$PWD` is a `/c/...` path there, and `$0` and `$ARGENT_OUTPUT` are `C:/...` paths. Both forms work as an argument and in a redirection. Write for bash, not for `cmd.exe`
 - **A background job ends with the step.** Argent stops the process group of the step after the script exits. A job survives only after `setsid`. A background job that holds the standard output open costs the step a wait of 500 milliseconds
 - **The exchange files are read when bash exits.** A background job that writes `$ARGENT_OUTPUT` later writes to a file that nobody reads
 - **A `TERM` trap gets 1.5 seconds.** Argent then sends `KILL` to the group. bash also holds a trap until the foreground command returns
+- **Do not write `kill 0`.** `trap 'kill 0' EXIT` is a usual way to reap background jobs, but `kill 0` signals the whole process group of the step. It kills bash itself, so the step fails and the document is lost. Argent stops a background job for you. Signal the pid of the job if you must do it yourself
 
 Argent writes `$ARGENT_OUTPUT` and `$ARGENT_REASON` into a private directory of the step. The directory is readable by your user only. Argent removes the directory when the step ends. A tool-server that dies during the step leaves the directory behind; the next bash step on a new tool-server then removes it. The report never carries the document.
 
