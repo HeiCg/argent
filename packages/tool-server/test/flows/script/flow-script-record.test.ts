@@ -21,7 +21,7 @@ import {
   parseFlow,
   type FlowStep,
 } from "../../../src/tools/flows/flow-utils";
-import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
+import { resolveHostBash } from "../../helpers/host-bash";
 
 /** Real child processes, so the budgets are generous. */
 vi.setConfig({ testTimeout: 30_000 });
@@ -109,11 +109,15 @@ function parseError(scriptYaml: string): string {
   throw new Error(`expected parseFlow to reject "${scriptYaml}"`);
 }
 
-/** The bash cases skip where there is none; see flow-script-bash.test.ts. */
+/**
+ * The bash cases skip where there is none, and FAIL rather than skip on CI:
+ * {@link resolveHostBash} is the one probe that draws that line, and the one
+ * that reads past a bash a developer pinned in their own `~/.argent`.
+ */
 let noBash: string | undefined;
 
 beforeAll(async () => {
-  const found = await resolveBashInterpreter(undefined);
+  const found = await resolveHostBash();
   if (!("path" in found)) noBash = found.problem;
 });
 

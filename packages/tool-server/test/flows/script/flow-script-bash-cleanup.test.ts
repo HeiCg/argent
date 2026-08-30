@@ -9,6 +9,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
  * Only the named call is refused here; everything else passes straight through.
  *
  * Its own file, because the mock is module-wide.
+ *
+ * Deliberately NOT in the Windows job's list (`.github/workflows/windows-e2e.yml`):
+ * both refusals arrive from the mock above rather than from a filesystem, so
+ * what is asserted here is the same on every platform and the ubuntu job proves
+ * it. Windows is named only as the host that produces the real `EBUSY`.
  */
 let refuseRemoval: ((target: string) => boolean) | undefined;
 let refuseWrite: ((target: string) => boolean) | undefined;

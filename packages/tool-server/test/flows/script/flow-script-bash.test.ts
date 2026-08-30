@@ -605,6 +605,52 @@ describe("what a failing bash step says", () => {
     30_000
   );
 
+  // The OTHER spelling of the same mistake, and the one the split above cannot
+  // see. A `kill 0` in the body of the script — with bash still to run the rest
+  // of it — kills bash and reaches nothing else: measured on macOS, neither the
+  // runner nor a plain `sleep` in the same process group receives the signal,
+  // while the same kill under a `trap "" TERM` that lets bash survive reaches
+  // both. So this arrives exactly as a host's SIGTERM on bash alone would, and
+  // the report says so rather than leaving the author with a bare signal.
+  onPosix(
+    "names a self-sent group kill in the message when it cannot be told from the host's",
+    async () => {
+      const ws = workspace();
+      const result = await runBash(
+        ws,
+        "kill-group-body",
+        `kill -TERM 0
+       sleep 30`
+      );
+      expect(result.failure?.kind).toBe("signal");
+      expect(result.failure?.message).toContain("killed by SIGTERM");
+      expect(result.failure?.message).toContain("`kill 0` in the body of the script");
+      expect(result.failure?.message).toContain("signal each job's own pid instead");
+    },
+    30_000
+  );
+
+  // The guidance names one spelling because only one of them does anything
+  // here. The runner leads the process group, so `-$$` — bash's own pid — names
+  // a group that does not exist: the kill fails and the script runs on.
+  onPosix(
+    "does not offer `kill -- -$$`, which reaches nothing and lets the step pass",
+    async () => {
+      const ws = workspace();
+      const result = await runBash(
+        ws,
+        "kill-dash-dollar",
+        `trap 'kill -- -$$' EXIT
+       printf '{"ran":true}' > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`
+      );
+
+      expect(result.failure).toBeUndefined();
+      expect(result.output).toEqual({ ran: true });
+    },
+    30_000
+  );
+
   // The same idiom, repeatedly, because the answer above used to be decided one
   // `setImmediate` after bash's exit — a callback in the SAME loop iteration as
   // the exit it was waiting behind. The signal and the exit both arrive through
@@ -1289,6 +1335,71 @@ describe("a tool server that dies mid-step", () => {
     },
     90_000
   );
+
+  // The lifeline itself, on every platform. The two cases either side of this
+  // one are `onPosix`: a signal the runner holds, and a driver that reads pids
+  // bash reports. This one closes the parent's end of the lifeline descriptor
+  // and reads the descendant's pid from NODE rather than from bash — `$!` in
+  // Git Bash is an MSYS number and not a Windows one — so what it asserts is
+  // the same fact on both, and the arm the watchdog takes on Windows
+  // (`taskkill /t`, because there is no process group to name) is finally run
+  // by a job that runs there.
+  it("reaps bash and its descendants when only the lifeline descriptor closes", async () => {
+    const ws = workspace();
+    const exchange = fs.mkdtempSync(path.join(exchangeRoot, "lifeline-"));
+    const outputFile = path.join(exchange, "output.json");
+    const reasonFile = path.join(exchange, "reason.txt");
+    fs.writeFileSync(outputFile, "{}");
+    fs.writeFileSync(reasonFile, "");
+    const descendantFile = ws.resolve("lifeline-descendant.pid");
+    const node = JSON.stringify(process.execPath.replace(/\\/g, "/"));
+    const script = ws.write(
+      "lifeline.sh",
+      `${node} -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);' ${JSON.stringify(
+        descendantFile.replace(/\\/g, "/")
+      )} &
+       while true; do sleep 1; done`
+    );
+
+    const runner = fork(path.join(SOURCE_RUNNER_DIR, "flow-script-runner.mjs"), [], {
+      cwd: ws.dir,
+      env: { ...process.env, ARGENT_FLOW_SCRIPT_RUNNER: "1" },
+      execArgv: [],
+      stdio: ["ignore", "pipe", "pipe", "ignore", "pipe", "ipc"],
+      detached: true,
+    });
+    runner.stdout?.resume();
+    runner.stderr?.resume();
+    const runnerExited = new Promise<void>((resolve) => runner.once("exit", () => resolve()));
+    try {
+      runner.send({
+        type: "execute",
+        interpreter: "bash",
+        interpreterPath: hostBash,
+        scriptPath: script,
+        outputFile,
+        outputJson: "{}",
+        reasonFile,
+        deadlineMs: 120_000,
+        maxOutputBytes: SCRIPT_MAX_OUTPUT_BYTES,
+      });
+
+      const descendant = await readPidFile(descendantFile, 40_000);
+      strays.push(descendant);
+      expect(isAlive(descendant)).toBe(true);
+
+      // The IPC channel stays open, so the runner's own `disconnect` handler
+      // is not what answers: only the lifeline is.
+      const lifeline = runner.stdio[4] as NodeJS.WritableStream & { destroy?: () => void };
+      lifeline.destroy?.();
+
+      expect(await waitForExit(descendant, 20_000)).toBe(true);
+      await runnerExited;
+    } finally {
+      runner.kill("SIGKILL");
+      fs.rmSync(exchange, { recursive: true, force: true });
+    }
+  }, 90_000);
 
   onPosix(
     "takes bash and its descendants with the runner",

@@ -95,7 +95,23 @@ function hostBash(): string | undefined {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-const withBash = it.skipIf(hostBash() === undefined);
+/**
+ * The same line `test/helpers/host-bash.ts` draws, drawn here separately
+ * because the helper asks the resolver under test and this file may not. A
+ * missing bash is a skip on a developer machine and a FAILURE on CI: `skipIf`
+ * reports skipped and exits 0, so a runner that found none would take the five
+ * cases below green having asserted nothing — on Windows, the platform they
+ * were listed for.
+ */
+const hostBashPath = hostBash();
+if (hostBashPath === undefined && process.env.CI) {
+  throw new Error(
+    "This CI host has no bash at any of the fixed locations, so every case gated on one " +
+      "in this file would be skipped."
+  );
+}
+
+const withBash = it.skipIf(hostBashPath === undefined);
 
 /**
  * A home directory of the test's own. The resolver reads `scripts.bash` from

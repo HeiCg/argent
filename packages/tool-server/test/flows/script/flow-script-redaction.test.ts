@@ -5,7 +5,7 @@ import {
   type FlowScriptSecret,
 } from "../../../src/tools/flows/script/flow-script-executor";
 import { SCRIPT_MAX_FAILURE_MESSAGE_CHARS } from "../../../src/tools/flows/script/flow-script-protocol";
-import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
+import { resolveHostBash } from "../../helpers/host-bash";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 const workspaces: ScriptWorkspace[] = [];
@@ -36,7 +36,7 @@ describe("flow script executor — redaction of a bash step", () => {
   let noBash: string | undefined;
 
   beforeAll(async () => {
-    const found = await resolveBashInterpreter(undefined);
+    const found = await resolveHostBash();
     if (!("path" in found)) noBash = found.problem;
   });
 

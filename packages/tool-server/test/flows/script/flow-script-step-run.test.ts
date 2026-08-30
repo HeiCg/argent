@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { ArtifactStore, type Registry, type ToolContext } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../../src/tools/flows/flow-run";
 import { stepRequiresDevice } from "../../../src/tools/flows/flow-device";
-import { resolveBashInterpreter } from "../../../src/tools/flows/script/flow-script-interpreter";
+import { resolveHostBash } from "../../helpers/host-bash";
 
 /**
  * The `script:` step in a run; the executor's own behaviour is covered beside
@@ -120,11 +120,15 @@ async function until(predicate: () => boolean, label: string, timeoutMs = 15_000
   throw new Error(`timed out waiting for ${label}`);
 }
 
-/** The bash cases skip where there is none; see flow-script-bash.test.ts. */
+/**
+ * The bash cases skip where there is none, and FAIL rather than skip on CI:
+ * {@link resolveHostBash} is the one probe that draws that line, and the one
+ * that reads past a bash a developer pinned in their own `~/.argent`.
+ */
 let noBash: string | undefined;
 
 beforeAll(async () => {
-  const found = await resolveBashInterpreter(undefined);
+  const found = await resolveHostBash();
   if (!("path" in found)) noBash = found.problem;
 });
 
