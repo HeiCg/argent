@@ -44,10 +44,8 @@ const FLOW_TREE_SOURCES: Partial<
     (registry: Registry, device: DeviceInfo, target?: FlowTreeTarget) => Promise<DescribeTreeData>
   >
 > = {
-  // Only simulator iOS consumes the target: hardware has no DYLD-injected
-  // hierarchy source, so selectors resolve against the XCUITest runner's AX
-  // tree of the whole screen (see queryIosDeviceFlowTree), and the platforms
-  // below resolve their tree source per-device and never auto-resolve.
+  // Simulator iOS uses the injected hierarchy and an optional target.
+  // Physical devices use the XCUITest runner tree.
   ios: (registry, device, target) =>
     device.kind === "device"
       ? queryIosDeviceFlowTree(registry, device)

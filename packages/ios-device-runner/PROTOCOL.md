@@ -44,9 +44,7 @@ the agent to re-observe the screen and confirm the effect. Suppressed noise
 never flips `ok` (those shapes accompany healthy mutations; that is why the
 suppression exists). Read-only commands never carry the field, it composes
 with `reactivated` (one reply can carry both), and it is encoded only when
-set, so clean replies stay byte-identical on the wire. Hardware calibration
-kept the field: a long gesture flow on a heavy app produced zero warnings on
-healthy gestures, so a warning that does appear is signal, not noise.
+set, so clean replies stay byte-identical on the wire.
 
 ## Request fields
 
@@ -181,9 +179,7 @@ Every command runs under a runner-side main-thread watchdog budget
 (`CommandKind.executionTimeout`, RunnerProtocol.swift); the client sends it
 under a larger transport window (default `RUNNER_COMMAND_TIMEOUT_MS`,
 runner-client.ts; overrides in runner-commands.ts: `GESTURE_TIMEOUT_MS` and
-the `type`/`snapshot` call sites). This table is the authoritative pairing;
-the mirrored code comments point here instead of restating the other side's
-numbers.
+the `type`/`snapshot` call sites).
 
 | Command class              | Runner budget | Client window |
 | -------------------------- | ------------- | ------------- |

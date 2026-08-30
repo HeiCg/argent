@@ -225,12 +225,7 @@ const TYPE_FOCUS_TIMEOUT_MS = 3000;
 //
 // - Vega's toolkit page source never reports `focused`; polling would burn
 //   the whole timeout on every type step.
-// - "xcuitest-runner" (physical iOS) does emit `focused` (the runner maps
-//   XCTest's `hasFocus`), but whether it tracks first-responder handoff
-//   promptly enough to gate typing on is unverified on hardware, so the
-//   fixed settle wins over polling a flag that may lag or never flip. If a
-//   hardware probe shows a tapped field reporting `focused: true` promptly
-//   (worst case: an RN TextInput), add the source here.
+// - "xcuitest-runner" emits focused, but first-responder handoff on hardware is unverified. Keep the fixed settle.
 const FOCUS_REPORTING_SOURCES: ReadonlySet<DescribeSource> = new Set([
   "native-devtools",
   "android-devtools",
@@ -820,10 +815,7 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
           : "rotate is unsupported on chromium — desktop apps have no rotate-gesture idiom; drive the app's rotate controls with tap/keyboard instead",
     };
   }
-  // Physical iOS: not "no backend" either: the XCUITest runner drives
-  // single-finger gestures only (XCTest exposes no two-finger coordinate API
-  // on hardware), so fail here rather than let a selector pinch pay the full
-  // auto-wait and then surface simulator-server's internal wiring error.
+  // Physical iOS: XCTest has no two-finger coordinate API. Fail here before the auto-wait.
   if ((step.kind === "pinch" || step.kind === "rotate") && isIosPhysicalDevice(env.device)) {
     return {
       ok: false,
@@ -989,9 +981,8 @@ const DEFAULT_LONG_PRESS_MS = 800;
 /**
  * Press-and-hold on a target (same resolution as tap) for `duration` ms. Touch
  * platforms dispatch ONE `gesture-custom` train (Down, then Up delayed by the
- * duration) so the hold length is exact; on a physical iOS device that train
- * maps onto the runner's native `longPress` (XCUICoordinate press), so the
- * directive replays on hardware unchanged. Chromium has no touch, so the closest
+ * duration) so the hold length is exact. On a physical iOS device the train
+ * maps to the runner longPress. Chromium has no touch, so the closest
  * honest mapping is a mouse press-hold-release (`gesture-drag` with from == to)
  * — apps implementing pointer-based long-press respond, anything else sees a
  * slow click. A desktop context menu is a *right*-click, deliberately not

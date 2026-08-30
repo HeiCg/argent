@@ -29,9 +29,8 @@ import {
  * view here carries its `accessibilityIdentifier` (React Native `testID`), so
  * a flow can address a container and its children independently.
  *
- * Physical devices (`queryIosDeviceFlowTree`): DYLD injection does not exist
- * on hardware, so flows read the XCUITest runner's accessibility snapshot,
- * the same tree `describe` serves, re-shaped into the flow contract.
+ * Physical devices (`queryIosDeviceFlowTree`): the XCUITest runner accessibility
+ * snapshot, the same tree `describe` serves, reshaped into the flow contract.
  *
  * Both sources honor the contract `fetchFlowTree` states: a read that isn't
  * the screen THROWS (the simulator's no-windows guard, the device source's
@@ -541,27 +540,15 @@ function errMsg(err: unknown): string {
 }
 
 /**
- * Project a runner accessibility node for the shared flatten (see
- * `flow-tree-flatten`). Every node becomes a leaf: the Swift runner emits only
- * elements carrying a label, identifier or value plus the interactive and
- * scroll-container types, so whatever reached here is addressable. Zero-area
- * nodes stay too - `exists` deliberately accepts them - but contribute no text.
- * An identifier (React Native `testID`) shields, scoping hoisted text to the
- * nearest identified ancestor.
- *
- * No scroll-clip inputs (`rect` / `scrolls`, see `flattenHoisting`): the
- * describe adapter normalizes every frame against the Application rect and
- * CLAMPS it into [0, 1], so the unclipped bounds that prune compares are gone
- * before this point - and content scrolled off the app frame arrives zero-area,
- * hoisting nothing.
+ * Project a runner node for the shared flatten (see `flow-tree-flatten`).
  */
 function projectIosDeviceNode(node: DescribeNode): FlatNode<DescribeNode> {
   const onScreen = node.frame.width > 0 && node.frame.height > 0;
+  // No scroll-clip inputs: frames are already clamped to the app rect.
   return {
     skip: false,
     children: node.children,
-    // Off-screen text must not hoist, or a text assert against an ancestor
-    // would pass on content the screen doesn't show.
+    // Off-screen text must not hoist.
     ownText: onScreen ? nodeText(node) : "",
     leaf: { ...node, children: [] },
     shield: Boolean(node.identifier),
@@ -569,14 +556,11 @@ function projectIosDeviceNode(node: DescribeNode): FlatNode<DescribeNode> {
 }
 
 /**
- * Flatten the runner's describe tree into the flat-leaves-under-one-root shape
- * the other flow adapters emit, hoisting descendant text onto container leaves.
+ * Flatten the runner tree into the flow contract (flat leaves, hoisted text).
  */
 function adaptIosDeviceTreeForFlows(tree: DescribeNode): DescribeNode {
   const children: DescribeNode[] = [];
-  // Children only, never the root - matching the other adapters. The
-  // Application root spans the screen, so projecting it would add a leaf
-  // carrying the whole screen's text for any broad assert to pass against.
+  // Children only, never the Application root.
   for (const child of tree.children) {
     flattenHoisting(child, projectIosDeviceNode, children);
   }
@@ -588,37 +572,16 @@ function adaptIosDeviceTreeForFlows(tree: DescribeNode): DescribeNode {
 }
 
 /**
- * Physical-device flow tree: the XCUITest runner's accessibility snapshot,
- * flattened into the flow contract (flat leaves under one root, descendant text
- * hoisted onto container leaves) like every other platform's adapter. Without
- * the hoist a `text` assert scoped to a testID container reads the container's
- * own empty label instead of the text it visibly wraps.
- *
- * DYLD injection (and with it `ViewHierarchy.getFullHierarchy`) does not exist
- * on hardware, so flows resolve selectors against the same runner tree the
- * agent-facing `describe` uses. XCTest nodes carry `accessibilityIdentifier`
- * (React Native `testID`), so testID selectors still work, with one semantic
- * caveat vs simulators: the AX tree collapses an `accessible` container into
- * one leaf, so a testID container's children are not independently
- * addressable the way the raw UIView hierarchy allows. Flows that need that
- * granularity should target labels/text or run on a simulator.
- *
- * Throws on a blind read, mirroring `queryFullHierarchyTree`'s no-windows
- * guard: `describeIosDevice` maps a zero-node runner snapshot to a childless
- * Application root plus a hint, the right shape for the describe/await tools,
- * which surface the hint to the agent, but poison for a flow. `settleTree`
- * reads only `.tree`, so two consecutive blind reads fingerprint identical and
- * "settle", dispatching gestures against a screen nobody saw and reporting a
- * misleading offscreen hint while the runner's own hint is dropped.
+ * Physical-device flow tree from the XCUITest runner snapshot.
+ * Throws on a blind read: an empty tree must not settle or satisfy hidden.
  */
 export async function queryIosDeviceFlowTree(
   registry: Registry,
   device: DeviceInfo
 ): Promise<DescribeTreeData> {
   const data = await describeIosDevice(registry, device);
-  // Empty children alone is not the signal: a degraded-QUALITY hint rides on
-  // a NON-empty tree (that read has matchable nodes and must resolve). Only
-  // the empty-tree-plus-hint pair is describeIosDevice's blind-read shape.
+  // Empty children plus a hint is the describe blind-read shape. A quality
+  // hint on a non-empty tree still has nodes.
   if (data.tree.children.length === 0 && data.hint) {
     throw new Error(
       `${data.hint} Flows resolve selectors against this runner tree, so the step fails ` +

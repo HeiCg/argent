@@ -2,15 +2,8 @@ import { FAILURE_CODES, withFailureSignal } from "@argent/registry";
 import type { IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 
 /**
- * Typed helpers over the Argent runner's wire commands (see
- * packages/ios-device-runner/PROTOCOL.md). Every interaction/snapshot command
- * carries `appBundleId`: the runner refuses app commands without an explicit
- * target (see app-session.ts for how the current app is tracked).
- *
- * Coordinates on the wire are absolute POINTS in `XCUIApplication.frame`
- * (the same rect describe normalizes against). Argent tools speak normalized
- * 0-1 of that full frame (including the keyboard band, matching the
- * simulator HID contract) and convert through `getViewport` + `toPoints`.
+ * Typed helpers for Argent runner wire commands.
+ * Tools use normalized 0-1 coordinates. The runner uses absolute points in XCUIApplication.frame.
  */
 
 export interface RunnerViewport {
@@ -29,27 +22,25 @@ interface ViewportData {
 
 /**
  * Application-frame viewport used to invert describe's 0-1 frames.
- *
- * Not cached: a stale size (keyboard shown/hidden, rotation) would map the
- * same 0-1 point onto different pixels than the last `describe`.
  */
 export async function getViewport(
   api: IosDeviceRunnerApi,
   bundleId: string
 ): Promise<RunnerViewport> {
+  // Do not cache. Keyboard and rotation change the size.
   const data = (await api.run(
     { command: "viewport", appBundleId: bundleId },
     { readOnly: true }
   )) as ViewportData;
+
   const viewport: RunnerViewport = {
     x: data.x ?? 0,
     y: data.y ?? 0,
     width: data.width ?? 0,
     height: data.height ?? 0,
   };
+
   if (!(viewport.width > 0) || !(viewport.height > 0)) {
-    // Same precondition-rejection stamp as the app-session gate: the request
-    // is refused for the current app state with a do-this-then-retry recovery.
     throw withFailureSignal(
       new Error(
         "The app's interaction viewport is unavailable. Bring the app to the foreground, then retry."
@@ -62,12 +53,15 @@ export async function getViewport(
       }
     );
   }
+
   return viewport;
 }
 
 /**
- * Invert describe's normalization: `nx/ny` are fractions of `viewport`
- * (Application frame), result is an absolute point in that same space.
+ * Convert a normalized 0-1 point to an absolute point in `viewport`.
+ *
+ * @param nx horizontal fraction of `viewport.width`.
+ * @param ny vertical fraction of `viewport.height`.
  */
 export function toPoints(
   viewport: RunnerViewport,
@@ -81,20 +75,15 @@ export function toPoints(
 }
 
 /**
- * Gesture calls carry a 90s client window: the runner grants gestures a 75s
- * main-thread budget (XCTest's pre-event idle wait can legitimately stall for
- * ~60s on a screen that never reports quiescent), and the client must outlast
- * the runner's verdict rather than abandon a command that will still land.
- * PROTOCOL.md's "Timeout budgets" table is the authoritative budget contract.
+ * Client timeout for gesture commands.
+ * Must outlast the runner's 75s main-thread budget.
  */
 const GESTURE_TIMEOUT_MS = 90_000;
 
 /**
- * Tap at a point. A multi-tap (`numberOfTaps` > 1) rides this ONE command:
- * the runner owns the inter-tap timing on-device (2 = native double-tap,
- * >2 = tight tap loop), so wire latency between taps cannot push the gesture
- * outside the OS double-tap window. Single taps omit the field, keeping
- * their wire shape unchanged.
+ * Tap at a point.
+ *
+ * @param numberOfTaps when greater than 1, one multi-tap command. The runner owns inter-tap timing.
  */
 export async function tapAt(
   api: IosDeviceRunnerApi,
@@ -114,7 +103,11 @@ export async function tapAt(
   );
 }
 
-/** Press-and-hold at a point for `durationMs` (XCUICoordinate press). */
+/**
+ * Press and hold at a point (XCUICoordinate press).
+ *
+ * @param durationMs how long to hold before lifting.
+ */
 export async function longPressAt(
   api: IosDeviceRunnerApi,
   bundleId: string,
@@ -128,10 +121,9 @@ export async function longPressAt(
 }
 
 /**
- * Coordinate-to-coordinate drag; duration is honored through drag velocity.
- * `settle` rests the touch at the destination before lifting, so the scroll
- * view reads ~0 release velocity and skips its fling, the hardware analogue
- * of the simulator's ease-out swipe.
+ * Drag from one point to another.
+ *
+ * @param settle rests the touch at the destination and skips the scroll-view fling.
  */
 export async function dragBetween(
   api: IosDeviceRunnerApi,
@@ -157,30 +149,37 @@ export async function dragBetween(
 }
 
 /**
- * Hardware buttons the runner's `button` command accepts (PROTOCOL.md). The
- * power/lock button and the app switcher are absent because XCUIDevice exposes
- * no public API for either.
+ * Hardware buttons the runner's `button` command accepts.
  */
 export type RunnerButton = "home" | "volumeUp" | "volumeDown" | "actionButton";
 
 /**
- * Press a hardware button (device-scoped; no app target needed). The runner
- * checks `hasHardwareButton` before pressing, so a button this hardware lacks
- * (no Action button on a non-Pro iPhone) comes back as a failure rather than a
- * silent no-op.
+ * Press a hardware button. Device-scoped. No app target.
  */
 export async function pressButton(api: IosDeviceRunnerApi, button: RunnerButton): Promise<void> {
-  await api.run({ command: "button", button });
+  await api.run({
+    command: "button",
+    button,
+  });
 }
 
+/** Type text into the target app. */
 export async function typeText(
   api: IosDeviceRunnerApi,
   bundleId: string,
   text: string
 ): Promise<void> {
-  await api.run({ command: "type", appBundleId: bundleId, text }, { timeoutMs: 60_000 });
+  await api.run(
+    {
+      command: "type",
+      appBundleId: bundleId,
+      text,
+    },
+    { timeoutMs: 60_000 }
+  );
 }
 
+/** Press the software keyboard Return key. */
 export async function pressKeyboardReturn(
   api: IosDeviceRunnerApi,
   bundleId: string
@@ -189,12 +188,9 @@ export async function pressKeyboardReturn(
 }
 
 /**
- * Device-wide capture (XCUIScreen) through the runner's `screenshot` command:
- * app-agnostic (no `appBundleId`), always answered with an inline base64 PNG,
- * decoded here to bytes. The caller owns the timeout because the two consumers
- * budget differently: the `screenshot` tool grants a flat 30s, the flow
- * settle's poll grants whatever remains of its round. File naming, write
- * location and downscaling stay with the callers too.
+ * Capture a device-wide PNG screenshot through the runner.
+ *
+ * @param timeoutMs caller-owned budget. The screenshot tool and flow settle use different values.
  */
 export async function captureRunnerScreenshotPng(
   api: IosDeviceRunnerApi,
@@ -203,9 +199,11 @@ export async function captureRunnerScreenshotPng(
   const data = (await api.run({ command: "screenshot" }, { readOnly: true, timeoutMs })) as {
     imageBase64?: string;
   };
+
   if (!data.imageBase64) {
     throw new Error("Runner screenshot returned no inline image data.");
   }
+
   return Buffer.from(data.imageBase64, "base64");
 }
 
@@ -236,33 +234,42 @@ interface SnapshotData {
 }
 
 /**
- * Identical snapshot requests in flight at once share one runner command.
- * Snapshots are the runner's heaviest read, and callers can overlap: a wait
- * tool's poll abandons a slow fetch client-side while the runner is still
- * chewing on it, then issues the next. Without coalescing those stack up on
- * the runner's serial queue and pile heavy AX work onto an already-struggling
- * process; with it, concurrent identical reads ride the same reply.
+ * In-flight snapshot requests keyed by device and bundle.
  */
 const inFlightSnapshots = new Map<
   string,
   Promise<{ nodes: RunnerSnapshotNode[]; quality: RunnerSnapshotQuality | null }>
 >();
 
+/**
+ * Capture an accessibility snapshot of the app.
+ */
 export async function captureSnapshot(
   api: IosDeviceRunnerApi,
   bundleId: string
 ): Promise<{ nodes: RunnerSnapshotNode[]; quality: RunnerSnapshotQuality | null }> {
   const key = `${api.udid}|${bundleId}`;
+  // Concurrent identical reads share one runner command.
   const pending = inFlightSnapshots.get(key);
-  if (pending) return pending;
+
+  if (pending) {
+    return pending;
+  }
+
   const request = (async () => {
     const data = (await api.run(
       { command: "snapshot", appBundleId: bundleId },
       { readOnly: true, timeoutMs: 45_000 }
     )) as SnapshotData;
-    return { nodes: data.nodes ?? [], quality: data.quality ?? null };
+
+    return {
+      nodes: data.nodes ?? [],
+      quality: data.quality ?? null,
+    };
   })();
+
   inFlightSnapshots.set(key, request);
+
   try {
     return await request;
   } finally {

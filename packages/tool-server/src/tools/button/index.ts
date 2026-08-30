@@ -47,13 +47,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
 };
 
-// `XCUIDevice.press(_:)` covers home, both volume buttons and the Action
-// button on hardware: volumeUp/volumeDown are marked unavailable on the
-// SIMULATOR SDK, not on devices. `power` and `appSwitch` are the two the runner
-// cannot do: XCUIDevice exposes no public API for the power/lock button or the
-// app switcher. So a physical device narrows BUTTONS_BY_PLATFORM.ios at execute
-// time, and the runner additionally refuses a button this hardware lacks (a
-// non-Pro iPhone has no Action button).
+// Hardware buttons the XCUITest runner can press. power and appSwitch have no XCTest API.
 const PHYSICAL_IOS_BUTTONS: ReadonlySet<string> = new Set<RunnerButton>([
   "home",
   "volumeUp",
@@ -84,11 +78,8 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
   // Declare only the service the resolved path actually consumes. The Android
   // path uses `adb`, so a sim-server here would spawn a service the tool never
   // uses (up to a 30s ready-wait) and could throw ServiceInitializationError
-  // before the adb path even runs. The physical-iOS runner costs far more on a
-  // cold start (an xcodebuild build of up to 15 minutes, then a 120s
-  // ready-wait), so it is declared only for a button `execute` will actually
-  // send: a button this backend cannot press is rejected below without ever
-  // standing a runner up.
+  // before the adb path even runs.
+  // Declare the runner only for a button this path can press. A rejected button must not pay a runner cold start.
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
     if (device.platform === "android") return {};

@@ -35,17 +35,16 @@ import {
 
 export const IOS_DEVICE_RUNNER_NAMESPACE = "IosDeviceRunner";
 
-/**
- * Recent runner deaths that interrupted an app-scoped command, keyed
- * `udid|bundleId`. Outlives the service instance on purpose: each death tears
- * the instance down, and the signal that matters ("every fresh runner dies
- * touching this app") only exists across instances. Entries expire after
- * CRASH_MEMORY_MS; a repeat within the window escalates the error to name the
- * likely cause (the app's current screen state) and the recovery (restart-app).
- */
+/** How long an app-scoped runner death stays in memory. */
 const CRASH_MEMORY_MS = 10 * 60 * 1000;
+
+/**
+ * App-scoped runner deaths, keyed `udid|bundleId`.
+ * Lives outside the service instance. A repeat across respawns can then escalate.
+ */
 const recentAppCrashes = new Map<string, number[]>();
 
+/** Record an app-scoped death and return how many fall inside the window. */
 function recordAppCrash(udid: string, bundleId: string): number {
   const key = `${udid}|${bundleId}`;
   const now = Date.now();
@@ -55,30 +54,23 @@ function recordAppCrash(udid: string, bundleId: string): number {
   return kept.length;
 }
 
-/** Transport shapes a dead runner produces; only meaningful once the child exited. */
+/** True for a transport error that can mean the runner died. */
 function looksTransportDead(error: unknown): boolean {
-  // "device-unattached" is excluded: it is a pre-send cable verdict, and its
-  // connect-the-cable hint is the honest story even when the child also died.
+  // device-unattached is a cable verdict. Keep its connect-the-cable hint even if the child also died.
   return isIosDeviceTransportError(error) && error.kind !== "device-unattached";
 }
 
 /**
- * The synthesized runner-death errors carry this marker so `recoverable()`
- * keys off a typed property instead of message text.
+ * True when the error is a synthesized runner-death.
+ * `recoverable()` keys off this marker, not message text.
  */
 function isRunnerExitedError(error: unknown): boolean {
   return (error as { runnerExited?: unknown } | null)?.runnerExited === true;
 }
 
 /**
- * Diagnose a command that failed mid-flight. A transport-dead shape is only
- * the death story when the child really exited; give a straggling exit event a
- * beat to land so the race between the failed dial and the exit callback can't
- * hide it. Returns the error `api.run` should throw: the original when the
- * runner is not provably dead (post-send losses with a live child are the
- * client's status recovery's job), or the enriched post-mortem (crash summary
- * from the session's result bundle, death-count escalation, log path) once
- * the exit is confirmed.
+ * If the runner died mid-command, replace the transport error with a post-mortem.
+ * Otherwise return the original error.
  */
 async function explainRunnerDeath(options: {
   error: unknown;
@@ -88,14 +80,23 @@ async function explainRunnerDeath(options: {
   logPath: string;
   /** Resolves once the child has exited, or after `ms`, whichever first. */
   settleExit: (ms: number) => Promise<void>;
-  /** undefined = still running; the exit code (possibly null) once dead. */
+  /** `undefined` while the child still runs. The exit code (possibly null) once dead. */
   getExitCode: () => number | null | undefined;
 }): Promise<unknown> {
   const { error, command, udid } = options;
-  if (!looksTransportDead(error)) return error;
+
+  if (!looksTransportDead(error)) {
+    return error;
+  }
+
+  // Wait briefly for a straggling exit. A dead transport does not prove the child exited.
   await options.settleExit(1_500);
   const exitCode = options.getExitCode();
-  if (exitCode === undefined) return error;
+
+  if (exitCode === undefined) {
+    return error;
+  }
+
   const bundleId = typeof command.appBundleId === "string" ? command.appBundleId : null;
   const deaths = bundleId ? recordAppCrash(udid, bundleId) : 0;
   const crash = await readRunnerCrashSummary(options.resultBundlePath);
@@ -105,8 +106,8 @@ async function explainRunnerDeath(options: {
         `${CRASH_MEMORY_MS / 60_000} minutes; the app's current screen is likely crashing ` +
         `XCTest. Run restart-app for ${bundleId}, then retry.`
       : ` The runner respawns on the next call; re-observe the screen and retry.`;
-  // The marker keeps recoverable() matching, so the registry still tears the
-  // instance down and the next call respawns.
+
+  // The marker keeps recoverable() matching. The registry tears the instance down.
   return Object.assign(
     withFailureSignal(
       new Error(
@@ -128,18 +129,9 @@ async function explainRunnerDeath(options: {
   );
 }
 
-/**
- * Per-device XCUITest runner service for PHYSICAL iOS devices.
- *
- * The factory builds (or reuses) the signed runner artifact, launches it on
- * the device via detached `xcodebuild test-without-building`, and exposes a
- * command client over the usbmux-first transport. Startup is expensive: the
- * first ever call pays an xcodebuild build (minutes), every cold start pays
- * the testmanagerd ramp (~25s), so the instance is cached by the registry
- * and disposed only on tool-server shutdown or `recoverable()` teardown.
- */
+/** Per-device XCUITest runner for a physical iOS device. */
 export interface IosDeviceRunnerApi {
-  /** Low-level escape hatch: send a raw runner command. */
+  /** Send a raw runner command. */
   run(
     command: Record<string, unknown>,
     opts?: { readOnly?: boolean; timeoutMs?: number }
@@ -148,6 +140,7 @@ export interface IosDeviceRunnerApi {
   udid: string;
 }
 
+/** Registry ref for the runner on this device. */
 export function iosDeviceRunnerRef(device: DeviceInfo): {
   urn: string;
   options: { device: DeviceInfo };
@@ -158,9 +151,10 @@ export function iosDeviceRunnerRef(device: DeviceInfo): {
   };
 }
 
-/** Runner startup budget: testmanagerd install and launch, then the listener bind. */
+/** Startup budget for install, launch, and the first ready envelope. */
 const RUNNER_READY_TIMEOUT_MS = 120_000;
 
+/** Registry blueprint that builds, launches, and recycles the on-device runner. */
 export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, DeviceInfo> = {
   namespace: IOS_DEVICE_RUNNER_NAMESPACE,
   getURN(device: DeviceInfo) {
@@ -168,9 +162,9 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
   },
   async factory(_deps, payload, options): Promise<ServiceInstance<IosDeviceRunnerApi>> {
     const deviceFromOpts = (options as { device?: DeviceInfo } | undefined)?.device;
-    // The registry hands the factory the parsed URN payload: always a string
-    // (the udid); options.device is the richer channel iosDeviceRunnerRef fills.
+    // URN payload is the udid string. options.device is the richer object iosDeviceRunnerRef fills.
     const udid = deviceFromOpts?.id ?? (typeof payload === "string" ? payload : undefined);
+
     if (!udid) {
       throw new FailureError(
         `${IOS_DEVICE_RUNNER_NAMESPACE}.factory could not determine the device; pass it via iosDeviceRunnerRef(device).`,
@@ -192,33 +186,36 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       artifact: RunnerArtifact
     ): Promise<{ launched: LaunchedRunner; client: RunnerClient }> => {
       const port = await pickFreePort();
+
       await assertXctestrunParses(artifact.xctestrunPath);
+
       const launched = await launchRunner({
         udid,
         xctestrunPath: artifact.xctestrunPath,
         derivedDataPath: artifact.derivedDataPath,
         port,
       });
+
       const sender = createUsbmuxCommandSender();
       const client = createRunnerClient({
         udid,
         port,
         send: sender.sendCommand,
       });
-      // The permanent "exit" listener attaches only after startRunner resolves,
-      // so a child dying now (the profile-missing install rejection lands within
-      // seconds) would otherwise leave the readiness poll grinding its full
-      // budget against a runner that will never come up. Race the wait against
-      // the exit; the rejection flows through the same catch as a poll timeout.
+
+      // The factory exit listener is not attached yet. Race ready against exit so a dead child does not burn the full ready budget.
       let onExit!: (code: number | null) => void;
+
       const exited = new Promise<never>((_resolve, reject) => {
         onExit = (code) =>
           reject(new Error(`xcodebuild exited (code ${code}) before the runner became ready`));
       });
-      // The race's loser must never surface as an unhandled rejection; a
-      // post-kill exit on the timeout path still fires onExit.
+
+      // Swallow the losing race. A post-kill exit on the timeout path still fires onExit.
       exited.catch(() => {});
+
       launched.child.once("exit", onExit);
+
       try {
         await Promise.race([
           waitForRunnerReady(client, { timeoutMs: RUNNER_READY_TIMEOUT_MS }),
@@ -227,6 +224,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       } catch (error) {
         killRunnerProcess(launched.child);
         const logText = await fs.readFile(launched.logPath, "utf8").catch(() => "");
+
         throw Object.assign(
           withFailureSignal(
             new Error(
@@ -246,8 +244,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
           { runnerExited: true, runnerLogText: logText }
         );
       } finally {
-        // Once ready, the factory's own "exit" listener becomes the sole owner
-        // of exits, so "terminated" fires exactly once on a post-ready death.
+        // Drop this listener. The factory listener owns exits after ready. terminated then fires once.
         launched.child.removeListener("exit", onExit);
       }
       return { launched, client };
@@ -255,46 +252,40 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
 
     let started: Awaited<ReturnType<typeof startRunner>>;
     let artifact: RunnerArtifact;
+
     try {
       artifact = await ensureRunnerArtifact(signing);
     } catch (error) {
-      // A team that has never registered a device cannot mint a profile from
-      // the generic-destination build, so a brand-new account fails on its
-      // very first build. Building against this concrete device registers it,
-      // the same recovery the launch-time arm below applies.
+      // A new team cannot mint a profile from the generic build. Rebuild against this device to register it.
       const message = error instanceof Error ? error.message : String(error);
       if (!isProfileMissingDeviceFailure(message)) throw error;
       artifact = await rebuildRunnerArtifactForDevice(udid, signing);
     }
+
     try {
       started = await startRunner(artifact);
     } catch (error) {
       if (error instanceof XctestrunFormatError && artifact.fromCache) {
-        // A CACHED artifact whose xctestrun cannot be parsed is a poisoned
-        // cache (torn by an interrupted build), and since findBaseXctestrun
-        // keys hits on mere file existence, it would hard-fail every session
-        // until a human deleted the directory. Wipe it and rebuild once. Only
-        // the cached case heals: the same error from the FRESH artifact below
-        // is a genuine build failure and propagates loudly, so a
-        // deterministic failure never loops.
+        // A cached xctestrun that does not parse is a poisoned cache. Wipe it and rebuild once.
+        // A fresh artifact with the same error is a real build failure. Do not loop.
         await fs.rm(artifact.derivedDataPath, { recursive: true, force: true });
         started = await startRunner(await ensureRunnerArtifact(signing, { force: true }));
       } else {
         const logText = (error as { runnerLogText?: string }).runnerLogText ?? "";
         if (!isProfileMissingDeviceFailure(logText)) throw error;
-        // A newly connected device is not in the (locally provisioned) profile.
-        // Rebuild against this concrete device so automatic signing regenerates
-        // the profile to include it, then retry once.
+        // This device is not in the local profile. Rebuild against it. Signing then adds it. Retry once.
         started = await startRunner(await rebuildRunnerArtifactForDevice(udid, signing));
       }
     }
+
     const { launched, client } = started;
 
     const events = new TypedEventEmitter<ServiceEvents>();
     let disposed = false;
-    // undefined = still running; the exit code (possibly null) once dead.
+    // undefined while still running. The exit code (possibly null) once dead.
     let exitCode: number | null | undefined;
     const exitWaiters: Array<() => void> = [];
+
     launched.child.on("exit", (code) => {
       exitCode = code;
       for (const wake of exitWaiters.splice(0)) wake();
@@ -347,25 +338,20 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       events,
       dispose: async () => {
         disposed = true;
+
         try {
-          // Mutating, so it goes out at most once (PROTOCOL.md, Send-once
-          // contract): a resend after a lost reply is forbidden, and it keeps
-          // the 3s a real teardown budget instead of three attempts plus
-          // backoff. The child is killed below either way.
+          // shutdown is mutating. Send it once. The child is killed below either way.
           await client.run({ command: "shutdown" }, { timeoutMs: 3_000 });
         } catch {
           /* best-effort graceful stop */
         }
+
         killRunnerProcess(launched.child);
       },
     };
   },
   recoverable(error: unknown): boolean {
-    // Conservative: only the synthesized runner-death errors, where the child
-    // provably exited. RunnerCommandError (the runner answered) is NOT
-    // recoverable: the runner is alive; and transport losses while the child
-    // still runs are handled by the client's status recovery, not by instance
-    // teardown.
+    // Only a confirmed runner death. A live runner that answered, or a transport loss with a live child, is not recoverable here.
     return isRunnerExitedError(error);
   },
 };

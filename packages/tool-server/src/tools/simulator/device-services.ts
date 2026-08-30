@@ -108,9 +108,7 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
 export function transportNamespacesForPlatform(platform: string): readonly string[] {
   if (platform === "chromium") return [CHROMIUM_CDP_NAMESPACE];
   if (platform === "android") return [SIMULATOR_SERVER_NAMESPACE, ANDROID_TV_CONTROL_NAMESPACE];
-  // A tvOS UDID is iOS-shaped and can't be told apart from a phone here without
-  // an async probe, and a simulator UDID is only told from a physical one by
-  // its shape, so cover all three.
+  // Shape cannot tell tvOS from iOS or a simulator from a physical device here. Cover all three namespaces.
   return [SIMULATOR_SERVER_NAMESPACE, IOS_DEVICE_RUNNER_NAMESPACE, TV_CONTROL_NAMESPACE];
 }
 

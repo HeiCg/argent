@@ -9,34 +9,16 @@ import {
 } from "./usbmux-protocol";
 
 /**
- * Command client for the on-device XCUITest runner: stamps command ids,
- * interprets the runner's JSON envelope, and (the part that earns its keep)
- * recovers mutating commands whose transport response was lost.
- *
- * A lost response does not mean the command did not run: the tap may have
- * landed and only the reply died with the cable. Replaying would tap twice, so
- * instead the client asks the runner what happened to that exact commandId
- * (`status` + statusCommandId) and either returns the retained response,
- * surfaces the runner's own failure, or (only when the runner cannot say)
- * rethrows the transport error for the caller to handle conservatively.
+ * Command client for the on-device XCUITest runner.
+ * Stamps command ids, unwraps the JSON envelope, and recovers lost mutating-command responses.
  */
 
-/** Default client window per send; PROTOCOL.md's "Timeout budgets" table is the contract. */
 export const RUNNER_COMMAND_TIMEOUT_MS = 45_000;
-/**
- * Recovery must be fast: it runs while a user-visible command is already
- * failing, and a reachable runner answers `status` in milliseconds. The 3s is
- * one whole-transport budget per send attempt (usbmux handshake and HTTP
- * exchange included), and a runner that cannot answer within it is
- * effectively gone, so the transport error is the honest answer.
- */
 const RUNNER_STATUS_RECOVERY_TIMEOUT_MS = 3_000;
 const RUNNER_READY_POLL_INTERVAL_MS = 250;
-/** Readiness probes are cheap; keep each one short so a dead port fails fast. */
 const RUNNER_READY_PROBE_TIMEOUT_MS = 2_000;
 
 const RUNNER_BUSY_ERROR_CODE = "RUNNER_BUSY";
-/** unwrapEnvelope's verdict for a reply that was not a runner envelope at all. */
 const INVALID_RUNNER_RESPONSE_CODE = "INVALID_RUNNER_RESPONSE";
 
 export interface RunnerCommand {
@@ -57,27 +39,24 @@ export interface RunnerResponseEnvelope {
   data?: unknown;
   error?: RunnerResponseError;
   /**
-   * The runner re-fronted a backgrounded target app before executing this
-   * command (PROTOCOL.md, Envelope). Encoded only when true; an
-   * already-foreground target's reply never carries the field.
+   * The runner re-fronted a backgrounded target app before this command.
+   * Encoded only when true.
    */
   reactivated?: boolean;
   /**
-   * Advisory on an ok reply (PROTOCOL.md, Envelope): the mutation succeeded,
-   * but suppressed accessibility noise grew during it, so the effect deserves
-   * a re-observe. Encoded only when set; clean replies never carry the field.
+   * Advisory on an ok reply when suppressed accessibility noise grew during the mutation.
+   * Encoded only when set.
    */
   warning?: string;
 }
 
 /**
- * A failure the RUNNER reported (as opposed to a transport failure): the
- * envelope parsed and carried ok:false. `retryable` is true only for
- * RUNNER_BUSY, the runner's explicit "try again" verdict.
+ * A failure the runner reported in an `ok: false` envelope.
+ * `retryable` is true only for `RUNNER_BUSY`.
  */
 export class RunnerCommandError extends Error {
   readonly code?: string;
-  /** Kept for callers that branch on it; the message carries the same text. */
+  /** Callers may branch on this. The message already includes the same text. */
   readonly hint?: string;
   readonly retryable: boolean;
 
@@ -95,13 +74,7 @@ export class RunnerCommandError extends Error {
 
     this.retryable = options.code === RUNNER_BUSY_ERROR_CODE;
 
-    // Telemetry stamp so a runner-reported failure classifies instead of
-    // landing in the registry's unclassified fallback. The physical-iOS code
-    // family has no runner-command constant, so this reuses its one
-    // command-failure code; the stage tells the channels apart
-    // (ios_devicectl_command vs ios_device_runner_command). The runner's own
-    // wire `code` stays on the `code` field: the envelope's open set does not
-    // map onto the closed error_kind list, so the kind stays coarse.
+    // Classify the failure here. The runner wire code stays on `code`.
     withFailureSignal(this, {
       error_code: FAILURE_CODES.IOS_DEVICECTL_COMMAND_FAILED,
       failure_stage: "ios_device_runner_command",
@@ -112,16 +85,10 @@ export class RunnerCommandError extends Error {
 }
 
 /**
- * Failure signal for a transport error surfacing to users. Stamped HERE, not
- * in the IosDeviceTransportError constructor: usbmux-protocol.ts is
- * deliberately dependency-free (see its header) and cannot import
- * `@argent/registry`, so classification happens at this layer boundary, where
- * the errors are (re)thrown to callers. One code for "the runner was
- * unreachable for this command"; the transport `kind` maps onto the
- * error_kind/network_failure axes so telemetry can split cable, port, and
- * mid-exchange failures.
+ * Failure signal for a transport error.
  */
 function transportFailureSignal(kind: IosDeviceTransportErrorKind): FailureSignal {
+  // Stamp here. usbmux-protocol cannot import `@argent/registry`.
   const base = {
     error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
     failure_stage: "ios_device_runner_transport",
@@ -143,24 +110,26 @@ function transportFailureSignal(kind: IosDeviceTransportErrorKind): FailureSigna
 }
 
 export interface RunCommandOptions {
-  /** See SendRunnerCommandOptions: read-only commands may be retried by the send layer. */
+  /** Read-only commands may be retried by the send layer. */
   readOnly?: boolean;
   timeoutMs?: number;
 }
 
 export interface RunnerClient {
   /**
-   * Accepts any object (see RunnerCommand for the expected shape) so callers
-   * assembling commands dynamically do not have to cast; the `command` field
-   * is read defensively.
+   * Send a command to the runner and return the unwrapped result.
    */
   run(command: Record<string, unknown>, options?: RunCommandOptions): Promise<unknown>;
 }
 
+/**
+ * Create a runner command client.
+ *
+ * @param options.send injected send. The client does not own the transport.
+ */
 export function createRunnerClient(options: {
   udid: string;
   port: number;
-  /** The usbmux sender's sendCommand, injected so the client is transport-agnostic. */
   send: SendRunnerCommand;
 }): RunnerClient {
   const run = async (
@@ -184,20 +153,15 @@ export function createRunnerClient(options: {
         throw error;
       }
 
-      // Stamp once at catch-entry: every path below (the direct rethrows and
-      // recovery's `throw transportError`) surfaces this same object, and the
-      // in-place stamp preserves error identity for callers that compare it.
+      // Stamp once here. Every path below rethrows this same object.
       withFailureSignal(error, transportFailureSignal(error.kind));
 
-      // Read-only commands are idempotent: the send layer already retried
-      // them, and there is nothing to recover. Status commands must never
-      // recurse into recovery.
+      // Read-only already retried at the send layer. Status must not recurse into recovery.
       if (readOnly || command.command === "status" || !commandId) {
         throw error;
       }
 
-      // Pre-send kinds: the usbmux connection never opened, so the command
-      // cannot have executed and a status probe would ride the same dead route.
+      // Pre-send kinds never opened a connection. The command cannot have run.
       if (error.kind === "device-unattached" || error.kind === "runner-not-listening") {
         throw error;
       }
@@ -207,7 +171,7 @@ export function createRunnerClient(options: {
   };
 
   /**
-   * The mutating-command lost-response protocol: ask the runner for the fate
+   * The mutating-command lost-response protocol. Asks the runner for the fate
    * of the exact commandId that was in flight.
    */
   const recoverAfterLostResponse = async (
@@ -226,10 +190,10 @@ export function createRunnerClient(options: {
       );
 
       const data = unwrapEnvelope(response);
+
       status = typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
     } catch {
-      // The status probe failing tells us nothing new; the original
-      // transport error remains the most truthful report.
+      // Status probe failed. Rethrow the original transport error.
       throw transportError;
     }
 
@@ -238,15 +202,12 @@ export function createRunnerClient(options: {
     if (state === "completed") {
       const retained = parseRetainedResponse(status.responseJson);
 
-      // The retained JSON is the response the transport lost, envelope and
-      // all: an ok:false in it surfaces as the command's real outcome.
+      // Retained JSON is the lost envelope. Unwrap it as the real outcome.
       if (retained && asEnvelope(retained)) {
         return unwrapEnvelope(retained);
       }
 
-      // Completed but nothing (usable) retained: the effect happened, the
-      // result is gone. Do not pretend to have data; surface the transport
-      // error.
+      // Completed with no usable retained response. The effect happened. Surface the transport error.
       throw transportError;
     }
 
@@ -269,14 +230,7 @@ export function createRunnerClient(options: {
 }
 
 /**
- * Poll `status` until the runner produces its first parsed envelope. Even an
- * ok:false envelope counts as ready: it proves the HTTP stack on the device is
- * up, which is all readiness means here.
- *
- * A reply that is NOT an envelope does not count. The port comes from
- * pickFreePort and the runner binds it only later, so whatever else grabbed it
- * in between would otherwise answer the first probe, end the wait in success,
- * and leave the first real command to fail.
+ * Poll `status` until the runner returns a parsed envelope.
  */
 export async function waitForRunnerReady(
   client: RunnerClient,
@@ -308,19 +262,20 @@ export async function waitForRunnerReady(
       return;
     } catch (error) {
       if (error instanceof RunnerCommandError && error.code !== INVALID_RUNNER_RESPONSE_CODE) {
+        // An ok:false envelope still counts. It proves the HTTP stack is up.
         return;
       }
 
+      // A non-envelope reply does not count. The port is reserved before the runner binds it.
       lastError = error;
     }
+
     await sleep(RUNNER_READY_POLL_INTERVAL_MS);
   }
 }
 
 /**
- * Every non-status command gets a fresh id so lost-response recovery can name
- * exactly the command it is asking about. Caller-provided ids are preserved
- * (retry orchestration above this layer may re-issue with a known id).
+ * Stamp a fresh command id on every non-status command that does not already have one.
  */
 function withCommandId(command: Record<string, unknown>): Record<string, unknown> {
   if (command.command === "status" || typeof command.commandId === "string") {
@@ -350,15 +305,7 @@ function unwrapEnvelope(response: unknown): unknown {
 }
 
 /**
- * A success envelope's out-of-band markers ride the returned data object:
- * `reactivated: true` means the runner re-fronted a backgrounded target
- * before executing (the foreground screen changed as a side effect of the
- * command), and `warning` carries the runner's advisory on an ok mutation
- * (suppressed accessibility noise grew during it). Success replies have no
- * hint channel (hints are folded into error messages only), so the markers
- * are copied onto the data object for the tool layer to surface; one reply
- * can carry both. An envelope without markers returns its data untouched:
- * same reference, byte-identical behavior.
+ * Copy `reactivated` and `warning` from a success envelope onto the data object.
  */
 function withEnvelopeMarkers(envelope: RunnerResponseEnvelope): unknown {
   const reactivated = envelope.reactivated === true;
@@ -370,6 +317,7 @@ function withEnvelopeMarkers(envelope: RunnerResponseEnvelope): unknown {
 
   const data = envelope.data;
 
+  // Markers attach only to object data.
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     return data;
   }

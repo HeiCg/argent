@@ -1,39 +1,18 @@
 import { FAILURE_CODES, withFailureSignal } from "@argent/registry";
 
 /**
- * Tracks the app under automation per physical device.
- *
- * The XCUITest runner requires an explicit `appBundleId` on interaction and
- * snapshot commands and refuses them otherwise (APP_BUNDLE_ID_REQUIRED); it
- * never redirects an app command to its own host app. Argent's gesture and
- * describe tools don't carry a bundle id in their params; instead, launch-app
- * / restart-app record the launched app here and the tool layer injects it
- * into every runner command.
- *
- * Lifecycle: an entry means this bundle was started (or attached, for system
- * UI) under automation and has not been knowingly killed by us. It
- * deliberately survives runner respawn and cable unplug: runner death does
- * not kill the app, and commands re-attach per call via `appBundleId`. It is
- * invalidated only when we kill the process, which today means reinstall.
+ * Tracks the app under automation on each physical device.
+ * launch-app records the bundle id. The entry survives runner respawn and is cleared when we kill the process.
  */
 const currentAppByUdid = new Map<string, string>();
 
 /**
- * System-UI processes that are not devicectl-launchable (and never need
- * launching; they are always running). launch-app accepts them as launch
- * targets and just registers the automation session, which lets
- * describe/gestures drive their UI through the runner's XCUIApplication
- * attach. SpringBoard owns the home screen, App Library, and many system
- * alerts. Spotlight owns the pull-down search overlay (a separate process,
- * invisible to a SpringBoard-scoped snapshot). The runner's foreground gate
- * even gives `activate()` a useful meaning here: activating SpringBoard
- * dismisses the foreground app to the home screen. restart-app and
- * reinstall-app reject these ids up front. There is no process to restart
- * and no bundle to reinstall.
+ * System UI bundle ids that launch-app only registers. They are always running.
+ * restart-app and reinstall-app reject these ids.
  */
 const SESSION_ONLY_SYSTEM_UI_BUNDLE_IDS = new Set(["com.apple.springboard", "com.apple.Spotlight"]);
 
-/** Exact, case-sensitive bundle-id match (the ids above are the canonical spellings). */
+/** True for SpringBoard and Spotlight. Match is exact and case-sensitive. */
 export function isSessionOnlySystemUi(bundleId: string): boolean {
   return SESSION_ONLY_SYSTEM_UI_BUNDLE_IDS.has(bundleId);
 }
@@ -42,13 +21,21 @@ export function setCurrentIosDeviceApp(udid: string, bundleId: string): void {
   currentAppByUdid.set(udid, bundleId);
 }
 
-/** Delete the entry when it matches `bundleId`, or unconditionally when omitted. */
+/**
+ * Delete the current-app entry for a device.
+ *
+ * @param bundleId when set, delete only if it matches. When omitted, delete unconditionally.
+ */
 export function clearCurrentIosDeviceApp(udid: string, bundleId?: string): void {
   if (bundleId === undefined || currentAppByUdid.get(udid) === bundleId) {
     currentAppByUdid.delete(udid);
   }
 }
 
+/**
+ * Return the current app under automation.
+ * Throws if none is set.
+ */
 export function requireCurrentIosDeviceApp(udid: string): string {
   const bundleId = currentAppByUdid.get(udid);
 

@@ -507,10 +507,8 @@ async function treeSourceGate(
   signal?: AbortSignal
 ): Promise<string | null> {
   if (isIosPhysicalDevice(device) && !signal?.aborted) {
-    // Physical devices: the flow tree comes from the XCUITest runner, not
-    // native devtools. Resolving the runner service here (it blocks until the
-    // on-device HTTP server answers) absorbs the cold-start ramp so it never
-    // eats the next step's auto-wait budget.
+    // Physical devices read the XCUITest runner, not native devtools.
+    // Resolve it here. Cold start must not eat the next step's auto-wait.
     try {
       const ref = iosDeviceRunnerRef(device);
       await registry.resolveService(ref.urn, ref.options);

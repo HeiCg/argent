@@ -324,8 +324,7 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     androidIsTv: boolean
   ): Promise<DescribeTreeData> {
     if (device.platform === "ios") {
-      // Physical devices poll the XCUITest runner snapshot — the same tree
-      // `describe` returns there, so waits and taps see identical frames.
+      // Physical devices poll the same XCUITest runner snapshot as describe.
       if (device.kind === "device") {
         return describeIosDevice(registry, device);
       }
@@ -396,10 +395,7 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       else if (device.platform === "android") await ensureDeps(androidRequires);
       else if (device.platform === "vega") await ensureDeps(vegaRequires);
 
-      // Resolve once, outside the poll loop: an id that isn't listed is never
-      // cached, so probing per fetch would re-run `simctl list` / `adb devices`
-      // on every poll. Physical devices skip the tvOS probe: they are never
-      // tvOS simulators, and `simctl` would not list them anyway.
+      // Resolve tvOS / Android-TV once. Physical devices skip the tvOS probe. They are never tvOS simulators.
       const isTvOs =
         device.platform === "ios" && device.kind !== "device" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));

@@ -70,10 +70,7 @@ type RunSequenceResult = {
 // Gates only the *outer* invocation: every step resolves its own platform from
 // `params.udid` and is gated separately in `execute`.
 const capability: ToolCapability = {
-  // Physical iOS is a valid outer target: the ported steps (gesture-tap,
-  // gesture-swipe, gesture-custom, button, keyboard, await-ui-element) run
-  // there, and each step's own capability gate below rejects the rest with a
-  // per-step error instead of a blanket 400 on the whole sequence.
+  // Physical iOS is a valid outer target. Unsupported steps fail at their own gate, not the whole sequence.
   apple: { simulator: true, device: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },

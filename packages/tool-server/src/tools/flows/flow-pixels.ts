@@ -155,9 +155,7 @@ export async function statusBarMaskFraction(device: ActionEnv["device"]): Promis
   }
   if (device.platform === "ios-remote") return STATUS_BAR_MASK_FRACTION;
   if (device.platform !== "ios") return 0;
-  // A physical iPhone/iPad always paints a status bar, and its UDID shape is
-  // not a simulator UUID — the simctl probe below would answer from the wrong
-  // namespace, so it is not asked.
+  // Physical devices always have a status bar. Do not ask simctl. The UDID is not a simulator UUID.
   if (device.kind === "device") return STATUS_BAR_MASK_FRACTION;
   return (await isTvOsSimulator(device.id)) ? 0 : STATUS_BAR_MASK_FRACTION;
 }
@@ -171,9 +169,7 @@ export const FIRST_PIXEL_CAPTURE_TIMEOUT_MS =
 export const PIXEL_CAPTURE_TIMEOUT_MS = 2_000;
 
 /**
- * A physical iPhone's capture is an on-device PNG encode of the full screen
- * plus a usbmux round trip of those bytes — around a second warm, with real
- * variance. A ceiling, like the others: unspent budget costs nothing.
+ * Ceiling for a physical-iOS settle capture. The runner PNG path is slower than the other routes.
  */
 const IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS = 4_000;
 
@@ -317,16 +313,10 @@ async function captureFile(env: ActionEnv, budgetMs: number): Promise<string> {
 }
 
 /**
- * Physical-iOS capture for the settle: straight to the on-device XCUITest
- * runner's inline screenshot, with no devicectl attempt — probed or otherwise.
- * Mid-flow the runner is already resident (the launch gate resolved it), so at
- * poll cadence the runner hop is both the warm path and the cheap one. The
- * full-resolution PNG then takes the same best-effort in-place downscale as
- * the `screenshot` tool's device route — a failed `sips` still answers, it
- * just costs a bigger decode this round — so normally only the quarter-scale
- * frame is decoded on this process's event loop.
+ * Physical-iOS settle capture through the on-device runner.
  */
 async function captureIosDeviceFile(env: ActionEnv, budgetMs: number): Promise<string> {
+  // The runner is already up mid-flow.
   const ref = iosDeviceRunnerRef(env.device);
   const runner = (await env.registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
   const png = await captureRunnerScreenshotPng(runner, budgetMs);
@@ -335,6 +325,7 @@ async function captureIosDeviceFile(env: ActionEnv, budgetMs: number): Promise<s
     `argent-ios-device-settle-${env.device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
   await fs.writeFile(file, png);
+  // Same best-effort sips path as the screenshot tool.
   await downscalePngInPlace(file, CAPTURE_SCALE, captureAbortSignal(env, budgetMs));
   return file;
 }

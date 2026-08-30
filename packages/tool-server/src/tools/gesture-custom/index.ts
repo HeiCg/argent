@@ -75,22 +75,10 @@ type IosDeviceGesturePlan =
   | { kind: "unsupported"; reason: string };
 
 /**
- * The runner's plan for one event train, or the reason it has none. XCTest has
- * no raw HID stream, so the physical-iOS backend maps only the two shapes it
- * can execute faithfully: a press-hold (`Down` then `Up` at the same point →
- * runner `longPress`) and a straight single-finger drag (`Down` then `Up`
- * elsewhere → runner `drag`). Everything else (second finger, waypoint
- * `Move`s) is rejected with authoring guidance rather than approximated into a
- * different gesture.
- *
- * A pure read of the request, so `services()` can consult it too and skip
- * declaring the runner for a train `execute` will reject: a rejected gesture
- * must not pay a runner cold start (an xcodebuild build of up to 15 minutes,
- * then a 120s ready-wait). The raw `events` are inspected, not the interpolated
- * train: interpolation only smooths the HID stream, and the runner plans its
- * own gesture.
+ * Map a custom event train to a runner gesture, or the reason it cannot run.
  */
 function planIosDeviceGesture(events: Params["events"]): IosDeviceGesturePlan {
+  // XCTest has no raw HID stream. Only press-hold (same point) and a straight drag are faithful.
   if (events.some((e) => e.x2 !== undefined || e.y2 !== undefined)) {
     return {
       kind: "unsupported",
@@ -170,10 +158,7 @@ Example pinch-to-zoom (with interpolate:10 for smoothness):
   interpolate: 10`,
   zodSchema,
   capability,
-  // The physical-iOS runner is declared only for an event train the runner can
-  // actually replay: `execute` rejects the rest with authoring guidance, and
-  // that rejection must not first pay a runner cold start (see
-  // planIosDeviceGesture).
+  // Declare the runner only for a train execute can replay. A rejected train must not pay a runner cold start.
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
     if (isIosPhysicalDevice(device)) {

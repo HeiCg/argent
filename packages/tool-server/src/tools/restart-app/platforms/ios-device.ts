@@ -8,8 +8,8 @@ import {
 import type { RestartAppParams, RestartAppResult } from "../types";
 
 /**
- * Physical-iOS restart: devicectl's `--terminate-existing` makes this a single
- * launch call; no separate terminate + pid-join round trip needed.
+ * Restart an app on a physical iOS device.
+ * One launch with terminate-existing.
  */
 export const iosDeviceImpl: PlatformImpl<
   Record<string, unknown>,
@@ -18,9 +18,7 @@ export const iosDeviceImpl: PlatformImpl<
 > = {
   requires: ["xcrun"],
   handler: async (_services, params) => {
-    // Pre-flight before any device contact: launching system UI with
-    // --terminate-existing fails with a raw CoreDevice error whose generic
-    // hint gives misleading locked-screen advice.
+    // Reject system UI before contacting the device. terminate-existing fails with a misleading CoreDevice error.
     if (isSessionOnlySystemUi(params.bundleId)) {
       throw new InvalidToolInputError(
         `${params.bundleId} is system UI: it is always running and cannot be restarted. ` +

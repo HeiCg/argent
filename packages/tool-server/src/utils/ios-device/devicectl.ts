@@ -1,14 +1,3 @@
-/**
- * Wrappers around `xcrun devicectl`, Apple's CoreDevice CLI (Xcode 15+) and
- * the control plane for physical iPhones/iPads. Discovery, app lifecycle, and
- * connection readiness. The XCUITest runner (interaction/snapshot path) is
- * separate; see runner-build.ts / the ios-device-runner blueprint.
- *
- * One invariant that follows from how devicectl actually behaves (verified
- * against real devices): JSON output goes to a FILE (`--json-output <tmp>`),
- * never stdout. stdout/stderr are only good for error-hint matching.
- */
-
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs/promises";
@@ -17,6 +6,10 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { FAILURE_CODES, subprocessFailureMetadata, withFailureSignal } from "@argent/registry";
 import { appendHintToMessage } from "./usbmux-protocol";
+
+/**
+ * Wrappers around `xcrun devicectl` for discovery, app lifecycle, and connection readiness.
+ */
 
 const execFileAsync = promisify(execFile);
 
@@ -35,16 +28,14 @@ interface IosPhysicalDevice {
   /** CoreDevice pairing state, e.g. "paired". */
   pairingState: string | null;
   /**
-   * How CoreDevice currently reaches the device: "wired" while cabled,
-   * "localNetwork" once unplugged (live-verified values, devicectl 518.x).
-   * Reachability for argent's usbmux transport gates on "wired" alone.
+   * How CoreDevice currently reaches the device. "wired" while cabled, "localNetwork" once unplugged.
    */
   transportType: string | null;
   tunnelState: string | null;
 }
 
 class IosDeviceControlError extends Error {
-  /** Kept for callers that branch on it; the message carries the same text. */
+  /** Callers may branch on this. The message already includes the same text. */
   readonly hint: string | null;
 
   constructor(message: string, opts?: { hint?: string; cause?: unknown }) {
@@ -59,14 +50,11 @@ class IosDeviceControlError extends Error {
   }
 }
 
-/** Map devicectl failure output to an actionable hint; the matched strings are
- * stable across recent Xcodes. */
+/** Map devicectl failure output to an actionable hint. */
 function resolveDevicectlHint(output: string): string {
   const lower = output.toLowerCase();
 
-  // CoreDeviceError 10002 "The application failed to launch" is what a locked
-  // screen produces (seen live on iOS 26). Surface unlock first: it is by far
-  // the most common cause on an otherwise healthy paired device.
+  // CoreDeviceError 10002 is what a locked screen produces. Surface unlock first.
   if (lower.includes("failed to launch") || lower.includes("10002")) {
     return "Unlock the device and keep the screen awake, then retry; a locked iPhone refuses app launches.";
   }
@@ -109,6 +97,7 @@ async function runDevicectl(
   const argv = ["devicectl", ...args];
 
   if (opts.json) {
+    // devicectl writes JSON to a file. stdout and stderr are only for error-hint matching.
     jsonPath = path.join(os.tmpdir(), `argent-devicectl-${process.pid}-${randomUUID()}.json`);
     argv.push("--json-output", jsonPath);
   }
@@ -135,8 +124,7 @@ async function runDevicectl(
     const e = error as { stdout?: string; stderr?: string; message?: string };
     const output = [e.stdout ?? "", e.stderr ?? "", e.message ?? ""].join("\n");
 
-    // Error payloads are still written to --json-output; keep them for callers
-    // that need structured error details beyond the message text.
+    // Error payloads are still written to --json-output. Keep them for callers.
     let errorJson: unknown | null = null;
 
     if (jsonPath) {
@@ -195,11 +183,8 @@ interface DevicectlListPayload {
 }
 
 /**
- * List physical iOS-family devices CoreDevice can currently see. Rows can
- * include devices CoreDevice only remembers or reaches over the network;
- * callers gate reachability on `transportType === "wired"`. Returns [] when
- * devicectl is missing or fails, so discovery composes with the other
- * platform listers on non-mac hosts, same contract as `listIosSimulators`.
+ * List physical iOS-family devices CoreDevice can currently see.
+ * Returns an empty list when devicectl is missing or fails.
  */
 export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
   if (process.platform !== "darwin") {
@@ -227,17 +212,14 @@ export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
       const platform = (hardwareProperties.platform ?? "").toLowerCase();
       const productType = hardwareProperties.productType ?? null;
 
-      // Support iPhone / iPad only for now
-      const isSupportedProductType = /^(iphone|ipad|ipod)/i.test(productType ?? "");
+      const isSupportedProductType = /^(iphone|ipad)/i.test(productType ?? "");
 
       if (platform !== "ios" && !isSupportedProductType) {
         continue;
       }
 
-      // Physical hardware only. Real phones report reality "physical". Simulators, when
-      // CoreDevice lists them, report "simulated" with otherwise-passing platform/productType.
-      // The field is absent on older toolchains, so only an explicit non-physical value
-      // skips the row.
+      // Physical hardware only. Real phones report reality "physical". Simulators report "simulated".
+      // The field is absent on older toolchains. Only an explicit non-physical value skips the row.
       if (hardwareProperties.reality != null && hardwareProperties.reality !== "physical") {
         continue;
       }
@@ -273,7 +255,7 @@ export async function installApp(udid: string, installablePath: string): Promise
   );
 }
 
-/** Uninstall by bundle id. Not installed counts as success so that the operation is idempotent. */
+/** Uninstall by bundle id. Missing apps count as success. */
 export async function uninstallApp(udid: string, bundleId: string): Promise<void> {
   try {
     await runDevicectl(["device", "uninstall", "app", "--device", udid, bundleId], "uninstall app");
@@ -292,7 +274,11 @@ interface LaunchAppOptions {
   terminateExisting?: boolean;
 }
 
-/** Launch an installed app by bundle id. */
+/**
+ * Launch an installed app by bundle id.
+ *
+ * @param opts.terminateExisting kill an already-running instance first.
+ */
 export async function launchApp(
   udid: string,
   bundleId: string,
@@ -321,11 +307,7 @@ interface DevicectlDetailsPayload {
 }
 
 /**
- * Read the device's CoreDevice connection details. `tunnelState: "connecting"`
- * means NOT ready; commands issued in that window time out. (The tunnel is
- * CoreDevice's own control channel and exists over USB too; this is a
- * readiness probe, not a Wi-Fi route.) `transportType` reports the same wired/
- * localNetwork values as `list devices`.
+ * Read the device's CoreDevice connection details.
  */
 async function deviceInfoDetails(
   udid: string,
@@ -354,23 +336,20 @@ const READY_MEMO_TTL_MS = 5_000;
 const readyMemo = new Map<string, number>();
 
 /**
- * Ensure the device is cabled and its CoreDevice tunnel is not mid-handshake.
- * The cable check is not redundant with the tunnel one: an unplugged paired
- * device keeps a connected tunnel over localNetwork, yet argent drives it over
- * usbmux, which needs the cable. Without this gate the failure surfaces minutes
- * later, after a full runner build. transportType is absent on older toolchains,
- * so only an explicit non-wired value rejects. Memoized for 5s per device: callers
- * sprinkle this before commands, and a fresh probe per call would dominate hot-path latency.
+ * Ensure the device is on USB and its CoreDevice tunnel is ready.
  */
 export async function ensureDeviceReady(udid: string): Promise<void> {
+  // Memoized for 5s. Callers hit this on the hot path.
   const at = readyMemo.get(udid);
 
   if (at != null && Date.now() - at < READY_MEMO_TTL_MS) {
     return;
   }
 
+  // An unplugged paired device can keep a network tunnel. usbmux still needs the cable.
   const info = await deviceInfoDetails(udid, { timeoutSeconds: 15 });
 
+  // Older toolchains omit transportType. Only an explicit non-wired value rejects.
   if (info.transportType != null && info.transportType !== "wired") {
     throw new IosDeviceControlError(`Device transport is ${info.transportType}, not wired`, {
       hint: "Connect the device by USB cable and unlock it, then retry.",

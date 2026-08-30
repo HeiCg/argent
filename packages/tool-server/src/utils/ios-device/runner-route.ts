@@ -3,18 +3,12 @@ import { postRunnerCommand } from "./runner-http";
 import { createDeadline, openUsbmuxRunnerSocket, type Deadline } from "./usbmux";
 import { isIosDeviceTransportError } from "./usbmux-protocol";
 
-// Re-exported for runner-client's readiness poll, which imports its sleep from
-// this module; the implementation is the shared utils/timing one.
+/** Re-exported for runner-client's readiness poll. */
 export { sleep };
 
 /**
- * The usbmux send for physical iOS devices, wrapped in retry policy: mutating
- * commands go out AT MOST ONCE, read-only commands retry with backoff on
- * retryable errors. USB cable is the only transport: the CoreDevice Wi-Fi
- * tunnel could reach a cable-less device too, but it re-probes `devicectl`
- * (seconds per command) and has never been hardware-verified, so it is
- * deliberately not a fallback: a Wi-Fi-only device fails fast with usbmuxd's
- * typed "device-unattached" verdict, whose hint says to connect the cable.
+ * Send a command to the runner over usbmux.
+ * Mutating commands go out at most once. Read-only commands retry on retryable errors.
  */
 
 const READ_ONLY_MAX_ATTEMPTS = 3;
@@ -24,10 +18,8 @@ const RETRY_MAX_DELAY_MS = 2_000;
 export interface SendRunnerCommandOptions {
   timeoutMs: number;
   /**
-   * Read-only commands are idempotent and may be retried on retryable
-   * transport errors. Mutating commands (the default) are sent AT MOST ONCE:
-   * a lost response does not prove the command did not execute, so replaying
-   * it could tap twice.
+   * Read-only commands are idempotent and may be retried on retryable transport errors.
+   * Mutating commands (the default) are sent at most once.
    */
   readOnly?: boolean;
 }
@@ -39,12 +31,13 @@ export type SendRunnerCommand = (
   options: SendRunnerCommandOptions
 ) => Promise<unknown>;
 
+/**
+ * Create a sender that posts commands over usbmux.
+ *
+ * @param options.sendViaUsbmux test seam. Replaces the usbmux socket and HTTP send.
+ */
 export function createUsbmuxCommandSender(
   options: {
-    /**
-     * Test seam: replaces the usbmux socket + HTTP send. The deadline is the
-     * whole send's budget, created fresh per attempt, already ticking.
-     */
     sendViaUsbmux?: (
       udid: string,
       port: number,
@@ -63,8 +56,7 @@ export function createUsbmuxCommandSender(
       let lastError: unknown;
       for (let attempt = 1; attempt <= READ_ONLY_MAX_ATTEMPTS; attempt += 1) {
         try {
-          // A fresh deadline per attempt: timeoutMs is the per-attempt budget
-          // (backoff sleeps between attempts do not spend from it).
+          // Fresh deadline per attempt. Backoff sleeps do not spend from timeoutMs.
           return await sendViaUsbmux(udid, port, body, createDeadline(sendOptions.timeoutMs));
         } catch (error) {
           lastError = error;
@@ -80,10 +72,7 @@ export function createUsbmuxCommandSender(
 }
 
 /**
- * The one deadline bounds the whole send: the usbmux handshake spends from the
- * same budget as the HTTP exchange (remainingMs is read when the factory
- * runs), so a slow handshake shrinks the HTTP stage's timeout instead of the
- * two stages each getting the full timeoutMs.
+ * Send one command over a usbmux socket and HTTP POST.
  */
 function defaultSendViaUsbmux(
   udid: string,
@@ -91,6 +80,7 @@ function defaultSendViaUsbmux(
   body: unknown,
   deadline: Deadline
 ): Promise<unknown> {
+  // One deadline covers the handshake and the HTTP exchange.
   return postRunnerCommand({
     socketFactory: () => openUsbmuxRunnerSocket({ udid, port, timeoutMs: deadline.remainingMs() }),
     body,

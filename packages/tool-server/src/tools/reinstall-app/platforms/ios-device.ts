@@ -9,9 +9,8 @@ import { ensureDeviceReady, installApp, uninstallApp } from "../../../utils/ios-
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
 /**
- * Physical-iOS reinstall via devicectl. The .app must be a DEVICE build
- * (arm64, signed for this device's provisioning); a simulator build fails at
- * install time with a CoreDevice error naming the platform mismatch.
+ * Reinstall an app on a physical iOS device with devicectl.
+ * The .app must be a device build signed for this device.
  */
 export const iosDeviceImpl: PlatformImpl<
   ReinstallAppServices,
@@ -20,8 +19,7 @@ export const iosDeviceImpl: PlatformImpl<
 > = {
   requires: ["xcrun"],
   handler: async (_services, params) => {
-    // Pre-flight before any device contact: system UI is not an installed
-    // bundle, so an uninstall attempt could only fail (or worse).
+    // Reject system UI before contacting the device. It is not an installed bundle.
     if (isSessionOnlySystemUi(params.bundleId)) {
       throw new InvalidToolInputError(
         `${params.bundleId} is system UI: it is always running and cannot be reinstalled. ` +
@@ -30,8 +28,7 @@ export const iosDeviceImpl: PlatformImpl<
     }
     await ensureDeviceReady(params.udid);
     await uninstallApp(params.udid, params.bundleId);
-    // Uninstall killed the process; the session is stale from here even if
-    // the install below fails.
+    // Uninstall killed the process. Clear the session even if install fails.
     clearCurrentIosDeviceApp(params.udid, params.bundleId);
     await installApp(params.udid, resolvePath(params.appPath));
     return { reinstalled: true, bundleId: params.bundleId };

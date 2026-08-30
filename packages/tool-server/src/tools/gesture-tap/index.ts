@@ -128,9 +128,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const viewport = await getViewport(runner, bundleId);
       const point = toPoints(viewport, params.x, params.y);
-      // The whole multi-tap is ONE runner command: per-tap wire round-trips
-      // have uncontrolled latency (see GESTURE_TIMEOUT_MS in runner-commands),
-      // so only on-device inter-tap timing keeps the double-tap window.
+      // The whole multi-tap is one runner command. Per-tap round-trips would miss the OS double-tap window.
       await tapAt(runner, bundleId, point, clickCount);
       return { tapped: true, timestampMs };
     }

@@ -78,12 +78,7 @@ const capability: ToolCapability = {
 };
 
 /**
- * Physical-iOS screenshot: a device-wide capture through the on-device
- * XCUITest runner, finished with the same best-effort `sips` downscale as the
- * tvOS path. The runner is the only route. There is no host-side capture to
- * try first: `xcrun devicectl` advertises no `screenshot` subcommand on the
- * toolchains Argent supports (devicectl 518.x, the iOS 26 SDK, does not ship
- * one).
+ * Capture a physical-iOS screenshot through the on-device XCUITest runner.
  */
 async function iosPhysicalScreenshot(
   registry: Registry,
@@ -96,10 +91,7 @@ async function iosPhysicalScreenshot(
   );
   const ref = iosDeviceRunnerRef(device);
   const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
-  // The client window must strictly exceed the runner's own 30s screenshot
-  // budget (see PROTOCOL.md): at or below it, the runner's COMMAND_TIMED_OUT
-  // verdict arrives here as a raw transport timeout and forces journal
-  // recovery for an answer the runner was already delivering.
+  // Client timeout must exceed the runner screenshot budget. A shorter window turns COMMAND_TIMED_OUT into a transport timeout.
   await fs.writeFile(file, await captureRunnerScreenshotPng(runner, RUNNER_COMMAND_TIMEOUT_MS));
   await downscalePngInPlace(file, scale);
   return file;
@@ -156,11 +148,7 @@ export async function tvTargetLongSide(file: string, scale: number): Promise<num
 }
 
 /**
- * Best-effort in-place downscale shared by the two physical-iOS routes (this
- * tool's device capture and the flow settle's, flow-pixels.ts): cap the PNG's
- * longest actual side at `scale` of itself via `sips -Z`, skipping the spawn
- * entirely at scale 1 and keeping the full-resolution file when `sips` fails,
- * mirroring the tvOS path.
+ * Best-effort in-place downscale via sips. Keeps the original file if sips fails.
  */
 export async function downscalePngInPlace(
   file: string,
@@ -217,8 +205,7 @@ Fails if the device backend is not reachable: the simulator-server for iOS simul
         return { image };
       }
 
-      // Physical iPhones/iPads capture through the on-device runner, before the
-      // tvOS probe (which shells out to simctl and can't know hardware UDIDs).
+      // Physical devices use the runner. Probe tvOS only after this. simctl does not list hardware UDIDs.
       if (isIosPhysicalDevice(device)) {
         const pngPath = await iosPhysicalScreenshot(registry, device, scale);
         const image = await requireArtifacts(ctx).register({

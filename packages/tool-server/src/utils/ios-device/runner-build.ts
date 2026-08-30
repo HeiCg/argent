@@ -1,21 +1,3 @@
-/**
- * Build + launch orchestration for Argent's on-device XCUITest runner
- * `packages/ios-device-runner`. The runner is a UI-test bundle whose single
- * `testServeCommands` method hosts an HTTP command server and parks for 24h;
- * see that package's PROTOCOL.md for the wire contract.
- *
- * Device runners must be signed with the USER's Apple team, so artifacts are
- * built lazily on first use (never shipped prebuilt) into the one build dir
- * ~/.argent/ios-device-runner/derived, stamped with a fingerprint of the
- * runner sources, the Xcode/SDK version, and the static xcodebuild arguments
- * (which carry the signing settings). A stamp mismatch (an Argent or Xcode
- * update, a team change) rebuilds in place, so exactly one artifact tree
- * exists at a time and nothing accumulates. The stamp doubles as protocol
- * versioning: an Argent update that changes runner sources rebuilds the
- * runner, so the wire protocol needs no version handshake. Launch logs and
- * crash bundles are one fixed path per device, overwritten each launch.
- */
-
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -34,12 +16,15 @@ import {
 } from "../process-kill";
 import { PS_BIN } from "../vega-process";
 
+/**
+ * Build and launch the on-device XCUITest runner.
+ */
+
 const execFileAsync = promisify(execFile);
 
 /**
- * Config for automatic singing, under a single team. The
- * bundle ids are derived from the team, so they are unique
- * per team by construction and nothing about them is configurable.
+ * Automatic signing under a single Apple team.
+ * Bundle ids are derived from the team id.
  */
 export interface RunnerSigningConfig {
   teamId: string;
@@ -57,9 +42,7 @@ function signingTeamError(message: string): Error {
 }
 
 /**
- * Resolve the signing configuration from ARGENT_IOS_TEAM_ID. The bundle ids are
- * derived from the team, so they are unique per team by construction and need no
- * configuration.
+ * Resolve signing from `ARGENT_IOS_TEAM_ID`.
  */
 export function resolveRunnerSigningConfig(): RunnerSigningConfig {
   const teamId = process.env.ARGENT_IOS_TEAM_ID?.trim();
@@ -85,14 +68,11 @@ export function resolveRunnerSigningConfig(): RunnerSigningConfig {
 const PROJECT_SUFFIX = "ios-device-runner/ArgentRunner/ArgentRunner.xcodeproj";
 
 /**
- * Locates the runner's Xcode project.
- *
- * Next to the tool-server bundle by default, where the pack step copies it.
- * Development builds of the bundle produce the same layout, so this is the
- * one location; a tool-server run outside the bundle (ts-node, tsc dist, tests)
- * sets ARGENT_IOS_RUNNER_PROJECT instead.
+ * Locate the runner Xcode project.
  */
 export function resolveRunnerProjectPath(): string {
+  // Packaged tool-server copies the project next to the bundle.
+  // Outside the bundle, set ARGENT_IOS_RUNNER_PROJECT.
   const override = process.env.ARGENT_IOS_RUNNER_PROJECT;
 
   if (override) {
@@ -131,13 +111,12 @@ const SOURCE_EXTENSIONS = new Set([
   ".xcscheme",
 ]);
 
-/** Hashes runner sources. */
+/** Hash runner sources for the cache key. */
 async function fingerprintRunnerSources(projectPath: string): Promise<string> {
   const root = path.dirname(projectPath);
   const hash = createHash("sha256");
 
-  // Note that hashing is order sensitive in that case. That's the reason for
-  // sorting files in subfolders.
+  // Hashing is order-sensitive. Sort files for a stable digest.
   const walk = async (dir: string): Promise<void> => {
     const entries = (await fsp.readdir(dir, { withFileTypes: true })).sort((a, b) =>
       a.name.localeCompare(b.name)
@@ -147,6 +126,7 @@ async function fingerprintRunnerSources(projectPath: string): Promise<string> {
       const full = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
+        // Local Xcode noise. Not part of the source fingerprint.
         if (["xcuserdata", "DerivedData"].includes(entry.name)) {
           continue;
         }
@@ -155,8 +135,7 @@ async function fingerprintRunnerSources(projectPath: string): Promise<string> {
       } else if (SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
         const content = await fsp.readFile(full);
 
-        // We are not using size and mtime as pack step copy & npm install restamp mtimes.
-        // This would invalidate the cache.
+        // Skip mtime. Pack and npm install restamp files and would bust the cache.
         hash.update(`${path.relative(root, full)}|${content.length}\n`);
         hash.update(content);
       }
@@ -196,10 +175,7 @@ function resultsRoot(): string {
 }
 
 /**
- * Stamp naming the generation (cache key) of the artifact in the build dir,
- * written only after a successful build. Cache hits require a matching stamp,
- * so an interrupted build (no stamp, or the previous generation's) rebuilds
- * instead of trusting whatever files survived.
+ * Stamp written after a successful build. Cache hits require a matching stamp.
  */
 const CACHE_KEY_FILE = ".argent-cache-key";
 
@@ -226,10 +202,8 @@ function findBaseXctestrun(derivedDataPath: string): string | null {
 
 /** The xcodebuild lines worth reading out of a failed build. */
 export function xcodebuildFailureSummary(output: string): string {
-  // Every failure ends with the same boilerplate (asterisk banner, "The following build
-  // commands failed"), so a blind tail shows ceremony and cuts the `error:`
-  // lines that name the cause. Deduped because xcodebuild repeats each error
-  // per target; falls back to the tail when no error line exists.
+  // Prefer unique `error:` lines. xcodebuild repeats each error per target.
+  // Fall back to the tail when no error line exists.
   const lines = output.split("\n");
   const errors = [...new Set(lines.filter((line) => /(^|\s)error: /.test(line)))];
 
@@ -243,13 +217,12 @@ export function xcodebuildFailureSummary(output: string): string {
   return lines.slice(-15).join("\n").trim();
 }
 
+/** Map xcodebuild output to a signing-recovery hint, or null. */
 export function resolveSigningHint(output: string): string | null {
   const lower = output.toLowerCase();
 
-  // Checked before the provisioning arm: this message also contains the words
-  // "provisioning profile", and the sign-into-Xcode advice would be wrong.
-  // Normally auto-healed by the concrete-destination rebuild (see
-  // isProfileMissingDeviceFailure). Surfaced only when that retry failed too.
+  // Check this before the provisioning arm. This message also mentions
+  // "provisioning profile" and the Xcode-account hint would be wrong.
   if (lower.includes("team has no devices")) {
     return (
       "This team has no registered devices yet. Keep the phone connected and retry: " +
@@ -259,15 +232,12 @@ export function resolveSigningHint(output: string): string | null {
 
   if (
     lower.includes("failed registering bundle identifier") ||
-    // Bare "is not available" also appears in unrelated failures destination,
-    // device, OS availability, so it only counts as a registration failure
-    // alongside its real registration context.
+    // Bare "is not available" also appears in destination and OS failures.
+    // Require identifier or registered context as well.
     (lower.includes("is not available") &&
       (lower.includes("identifier") || lower.includes("registered")))
   ) {
-    // The derived bundle id is unique per team, so this is not a cross-team
-    // collision. Free personal Team accounts cap how many new app ids they
-    // may register in a rolling window.
+    // The derived bundle id is unique per team. This is a free-team app-id cap.
     return (
       "Registering the runner bundle id failed. On a free Personal Team, Apple limits " +
       "new app ids; wait a few days and retry, or sign under a paid team."
@@ -287,8 +257,8 @@ export function resolveSigningHint(output: string): string | null {
 const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
- * The static xcodebuild arguments of a runner build. Everything except the per-run
- *`-destination` and `-derivedDataPath` pair.
+ * Static xcodebuild arguments for a runner build.
+ * Excludes the per-run destination and derived-data path.
  */
 export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigningConfig): string[] {
   return [
@@ -316,9 +286,7 @@ export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigning
 }
 
 /**
- * Artifact cache key: sources + toolchain + the static build args. The args
- * carry the signing config, so hashing them (instead of a hand-bumped version
- * literal) keys the cache on the full build invocation by construction.
+ * Cache key over sources, toolchain, and static build args.
  */
 export function computeRunnerCacheKey(
   sourcesHash: string,
@@ -332,29 +300,19 @@ export function computeRunnerCacheKey(
 }
 
 /**
- * True when a runner install or launch failure means the profile does not cover
- * the target device, the signature of plugging in a new phone after the artifact
- * was minted. Recoverable by rebuilding against the concrete device destination
- * (see `rebuildRunnerArtifactForDevice`).
+ * True when install or launch failed because the profile does not cover the device.
  */
 export function isProfileMissingDeviceFailure(logText: string): boolean {
   return (
     logText.includes("0xe8008012") ||
     /doesn't include the currently selected device/i.test(logText) ||
     /provisioning profile cannot be installed on this device/i.test(logText) ||
-    // A team that has never registered a device cannot mint a development
-    // profile from the generic-destination build at all, so a brand-new
-    // account fails here on its very first run. Same recovery as the other
-    // shapes. A concrete-destination build registers the device.
     /team has no devices/i.test(logText)
   );
 }
 
 /**
- * Rebuild the runner against a concrete device destination with `-allowProvisioningDeviceRegistration`,
- * so automatic signing regenerates the profile to include that device. Reuses
- * the same derived-data cache dir: only the signing changes, so the incremental
- * rebuild is fast.
+ * Rebuild the runner against a concrete device. Automatic signing then includes that device.
  */
 export async function rebuildRunnerArtifactForDevice(
   udid: string,
@@ -363,32 +321,24 @@ export async function rebuildRunnerArtifactForDevice(
   return ensureRunnerArtifact(config, { destinationUdid: udid, force: true });
 }
 
-/**
- * In-process build serialization: the registry dedups per-URN (per-device)
- * only, so two device factories in one server would otherwise race
- * `build-for-testing` into the one derived dir, the origin of torn
- * artifacts. Same shared mutex as withFlowFileLock (flow-utils.ts).
- */
 const runnerBuildLocks = new Map<string, Promise<unknown>>();
 
+/** Serialize runner builds. Only one build runs at a time. */
 async function withRunnerBuildLock<T>(fn: () => Promise<T>): Promise<T> {
   return withKeyedLock(runnerBuildLocks, "runner-build", fn);
 }
 
 /**
- * Ensure the artifact in the one build dir matches the current sources +
- * toolchain + signing config, building it if not.
+ * Ensure the runner artifact matches the current sources, toolchain, and signing config.
  *
- * First build takes minutes. Subsequent calls are a cache hit. Setting `force`
- * skips the cache check and always rebuilds. The profile-missing-device retry
- * and the blueprint's poisoned-cache self-heal both use it.
+ * @param opts.force skip the cache and rebuild.
+ * @param opts.build test seam. Defaults to the real xcodebuild.
  */
 export async function ensureRunnerArtifact(
   config: RunnerSigningConfig,
   opts: {
     destinationUdid?: string;
     force?: boolean;
-    /** Test seam over the xcodebuild arm; defaults to the real build. */
     build?: typeof buildRunnerArtifact;
   } = {}
 ): Promise<RunnerArtifact> {
@@ -410,36 +360,40 @@ export async function ensureRunnerArtifact(
       const cached = findBaseXctestrun(derivedDataPath);
 
       if (cached) {
-        return { xctestrunPath: cached, derivedDataPath, fromCache: true };
+        return {
+          xctestrunPath: cached,
+          derivedDataPath,
+          fromCache: true,
+        };
       }
     }
 
-    // No matching stamp means whatever the dir holds cannot be trusted:
-    // another generation's products (older sources, Xcode or signing), an
-    // interrupted build, or a pre-stamp layout. Start clean so generations
-    // cannot mix. A force rebuild under a MATCHING stamp keeps the tree: the
-    // device-registration retry only re-signs, and incremental is fast.
     if (stamped !== cacheKey) {
+      // No stamp or a mismatched stamp means rebuild. Do not trust leftover files.
       await fsp.rm(derivedDataPath, { recursive: true, force: true });
     }
 
     const built = await build(derivedDataPath, staticArgs, opts.destinationUdid);
     await fsp.writeFile(stampPath, cacheKey);
+
     return built;
   });
 }
 
-/** The build arm of `ensureRunnerArtifact`: cache miss (or forced rebuild). */
+/**
+ * Build the runner artifact.
+ */
 async function buildRunnerArtifact(
   derivedDataPath: string,
   staticArgs: readonly string[],
   destinationUdid: string | undefined
 ): Promise<RunnerArtifact> {
   await fsp.mkdir(derivedDataPath, { recursive: true });
+
   const args = [
     ...staticArgs,
     "-destination",
-    // Concrete-destination why: see rebuildRunnerArtifactForDevice.
+    // A concrete UDID lets automatic signing register that device on the profile.
     destinationUdid ? `platform=iOS,id=${destinationUdid}` : "generic/platform=iOS",
     "-derivedDataPath",
     derivedDataPath,
@@ -471,15 +425,15 @@ async function buildRunnerArtifact(
     );
   }
 
-  return { xctestrunPath: built, derivedDataPath, fromCache: false };
+  return {
+    xctestrunPath: built,
+    derivedDataPath,
+    fromCache: false,
+  };
 }
 
 /**
- * Thrown when an .xctestrun does not parse as a plist: a truncated file, the
- * signature of a build interrupted mid-write. Typed because the blueprint's
- * cache self-heal keys on it: a first occurrence on a CACHED artifact means
- * cache poisoning (wipe the derived dir, force one rebuild), while on a
- * freshly built artifact it propagates as a genuine build failure.
+ * Thrown when an `.xctestrun` does not parse as a plist.
  */
 export class XctestrunFormatError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -489,10 +443,7 @@ export class XctestrunFormatError extends Error {
 }
 
 /**
- * Cheap validity probe over a cached .xctestrun. `findBaseXctestrun` trusts
- * mere existence, so a torn file (interrupted build) would otherwise ride the
- * cache hit into xcodebuild and fail there with an unclassifiable message;
- * caught here instead, the blueprint recognizes the poisoning and self-heals.
+ * Lint a cached .xctestrun as a plist.
  */
 export async function assertXctestrunParses(xctestrunPath: string): Promise<void> {
   try {
@@ -510,32 +461,12 @@ export async function assertXctestrunParses(xctestrunPath: string): Promise<void
 export interface LaunchedRunner {
   child: ChildProcess;
   logPath: string;
-  /** This device's one crash bundle; overwritten on every launch. */
+  /** This device's one crash bundle. Overwritten on every launch. */
   resultBundlePath: string;
 }
 
 /**
- * Launch the runner on the device via `xcodebuild test-without-building`,
- * detached: testmanagerd installs the `<testBundleId>.xctrunner` app and
- * starts the never-ending test. The child outlives individual commands; the
- * blueprint owns its lifecycle. Log output goes to a file for postmortems.
- *
- * The session's port travels as TEST_RUNNER_ARGENT_RUNNER_PORT on the
- * xcodebuild process: xcodebuild forwards TEST_RUNNER_-prefixed variables,
- * prefix stripped, into the test runner process (man xcodebuild), so the
- * on-device runner reads ARGENT_RUNNER_PORT without any per-session copy of
- * the .xctestrun. Verified on hardware against test-without-building.
- *
- * The launch log and the crash bundle are one fixed path per device,
- * overwritten each launch: nothing accumulates, so there is nothing to
- * sweep. Only the latest session's postmortem survives, which is the only
- * one the crash reader ever consumed. testmanagerd allows one session per
- * device, so per-device paths cannot collide.
- *
- * Resolves only once xcodebuild has actually spawned. A spawn failure (Xcode
- * moved or removed after an artifact cache hit) arrives as an async "error"
- * event that nothing else listens for, so it rejects here instead of killing
- * the whole tool-server as an uncaught exception.
+ * Launch the runner on the device with `xcodebuild test-without-building`.
  */
 export async function launchRunner(opts: {
   udid: string;
@@ -545,15 +476,20 @@ export async function launchRunner(opts: {
 }): Promise<LaunchedRunner> {
   const logDir = logsRoot();
   const resultsDir = resultsRoot();
+
   await Promise.all([
     fsp.mkdir(logDir, { recursive: true }),
     fsp.mkdir(resultsDir, { recursive: true }),
   ]);
+
   const deviceTag = opts.udid.slice(0, 8);
+  // One log and one crash bundle per device. Each launch overwrites them.
   const logPath = path.join(logDir, `runner-${deviceTag}.log`);
   const resultBundlePath = path.join(resultsDir, `argent-${deviceTag}.xcresult`);
+
   // xcodebuild refuses to write onto an existing result bundle.
   await fsp.rm(resultBundlePath, { recursive: true, force: true });
+
   const logFd = fs.openSync(logPath, "w");
 
   const child = spawn(
@@ -584,14 +520,17 @@ export async function launchRunner(opts: {
     {
       detached: true,
       stdio: ["ignore", logFd, logFd],
+      // xcodebuild forwards TEST_RUNNER_* into the test process with the prefix stripped.
       env: { ...process.env, TEST_RUNNER_ARGENT_RUNNER_PORT: String(opts.port) },
     }
   );
+
+  // Detached and unref'd. The runner outlives this call.
   child.unref();
   fs.closeSync(logFd);
+
   try {
-    // events.once resolves on "spawn", rejects on "error", and removes both
-    // listeners either way.
+    // Spawn failure must reject here.
     await once(child, "spawn");
   } catch (error) {
     throw new FailureError(
@@ -605,41 +544,25 @@ export async function launchRunner(opts: {
       { cause: error as Error }
     );
   }
+
   // A late "error" event must never become an uncaught exception.
   child.on("error", () => {});
-  return { child, logPath, resultBundlePath };
+
+  return {
+    child,
+    logPath,
+    resultBundlePath,
+  };
 }
 
 /**
- * Kill ORPHANED stale runner xcodebuild processes for a device, left behind
- * when a previous tool-server process exited without disposing its runner
- * service (the child is spawned detached and survives its parent). Two
- * concurrent test sessions on one device conflict in testmanagerd, so the
- * factory sweeps before every launch. Matches only OUR processes:
- * `test-without-building`, this device's destination, and our cache root in
- * the argv.
+ * Kill orphaned runner xcodebuild processes for a device.
  *
- * A match is reaped only when its owner is gone: ppid 1 (the dead
- * tool-server's runner was re-parented to launchd) or a ppid that no longer
- * exists (the kill(ppid, 0) liveness probe fails). A matched runner with a
- * LIVE parent belongs to a peer tool-server and is deliberately spared:
- * reaping on the argv alone made two servers driving one device SIGTERM each
- * other's runners on every factory start. If the spared runner's session
- * genuinely conflicts with ours, testmanagerd raises its own loud
- * two-simultaneous-sessions error at launch, which is the intended outcome.
- *
- * Resolves only once every signaled pid has exited (or been SIGKILLed after
- * `STALE_EXIT_TIMEOUT_MS`); returning on the bare SIGTERM would let a fast
- * cache-hit start race the old session's testmanagerd teardown, recreating
- * exactly the conflict this sweep exists to prevent. No stale runners means
- * no wait at all. The ps-snapshot/probe/kill/sleep parameters are test seams,
- * `waitForPidsToExit`'s plus the process listing; the escalation forwards
- * them wholesale.
+ * @param opts.listProcesses snapshot of `ps -ax -o pid=,ppid=,command=`. Defaults to running it.
  */
 export async function killStaleRunnersForDevice(
   udid: string,
   opts: {
-    /** Snapshot of `ps -ax -o pid=,ppid=,command=`; defaults to running it. */
     listProcesses?: () => Promise<string>;
     timeoutMs?: number;
     pollIntervalMs?: number;
@@ -657,12 +580,14 @@ export async function killStaleRunnersForDevice(
   try {
     stdout = await listProcesses();
   } catch {
+    // A missing process table is not a reason to abort.
     return 0;
   }
 
   const signaled: number[] = [];
 
   for (const line of stdout.split("\n")) {
+    // Match only our processes: test-without-building, this UDID, and the cache root.
     if (
       !line.includes("test-without-building") ||
       !line.includes(`platform=iOS,id=${udid}`) ||
@@ -675,18 +600,17 @@ export async function killStaleRunnersForDevice(
     const pid = Number.parseInt(pidField ?? "", 10);
     const ppid = Number.parseInt(ppidField ?? "", 10);
 
-    // An unparseable line is spared like a live-parent one: when ownership
-    // cannot be determined, not killing is the recoverable mistake.
+    // An unparseable line is spared. When ownership is unknown, not killing is safer.
     if (!Number.isFinite(pid) || !Number.isFinite(ppid) || pid === process.pid) {
       continue;
     }
 
-    // a live peer tool-server owns it
+    // A live parent means a peer tool-server owns this runner. Leave it alone.
     if (ppid !== 1 && isAlive(ppid)) {
       continue;
     }
 
-    // nothing reached, nothing to await
+    // SIGTERM did not land. Do not wait on this pid.
     if (!signalGroupThenPid(kill, pid, "SIGTERM")) {
       continue;
     }
@@ -702,34 +626,27 @@ export async function killStaleRunnersForDevice(
 }
 
 /**
- * Argv of the real process-table snapshot, exported so tests can pin the
- * binary: it must be `PS_BIN`, never bare "ps". A tool-server launched from a
- * GUI / launchd context inherits a PATH without /bin, a bare "ps" spawn
- * ENOENTs there, and the sweep's catch would read that failure as zero stale
- * runners, silently reaping nothing; see PS_BIN's comment in vega-process.ts.
+ * Process-table snapshot argv. `PS_BIN` keeps `ps` findable when the tool-server is GUI-launched.
  */
 export const PROCESS_TABLE_ARGV = [PS_BIN, "-ax", "-o", "pid=,ppid=,command="] as const;
 
 /** Real process-table snapshot behind `killStaleRunnersForDevice`'s seam. */
 async function listProcessTable(): Promise<string> {
   const [bin, ...args] = PROCESS_TABLE_ARGV;
+
   const { stdout } = await execFileAsync(bin, args, {
     maxBuffer: 16 * 1024 * 1024,
   });
+
   return stdout;
 }
 
-/** SIGTERM-to-SIGKILL escalation delay; mirrors killRunnerProcess's 5s. */
+/** SIGTERM-to-SIGKILL escalation delay. Mirrors killRunnerProcess's 5s. */
 const STALE_EXIT_TIMEOUT_MS = 5_000;
 const STALE_EXIT_POLL_INTERVAL_MS = 100;
 
 /**
- * Wait (bounded) for already-signaled pids to exit, then SIGKILL holdouts:
- * process group first with a pid fallback, like killRunnerProcess. Pids dead
- * on entry cost nothing; live ones are re-probed every poll interval, so a
- * cooperative exit returns within one interval. Returns the SIGKILLed pids.
- * The probe/kill/sleep parameters are test seams over the process table,
- * forwarded to the shared poll/escalation primitives in utils/process-kill.
+ * Wait for signaled pids to exit, then SIGKILL holdouts.
  */
 export async function waitForPidsToExit(
   pids: readonly number[],
@@ -742,26 +659,31 @@ export async function waitForPidsToExit(
   } = {}
 ): Promise<number[]> {
   const kill = opts.kill ?? process.kill.bind(process);
+
   const remaining = await pollPidsUntilGone(pids, {
     timeoutMs: opts.timeoutMs ?? STALE_EXIT_TIMEOUT_MS,
     pollIntervalMs: opts.pollIntervalMs ?? STALE_EXIT_POLL_INTERVAL_MS,
     isAlive: opts.isAlive,
     sleep: opts.sleep,
   });
+
   for (const pid of remaining) {
-    // A swallowed double failure means the pid exited between the last poll
-    // and the escalation, which is the desired outcome.
+    // Swallowed failure: the pid exited between the last poll and SIGKILL.
     signalGroupThenPid(kill, pid, "SIGKILL");
   }
+
   return remaining;
 }
 
 /** Kill a runner's whole process group (xcodebuild spawns helpers). */
 export function killRunnerProcess(child: ChildProcess): void {
   const pid = child.pid;
-  if (!pid) return;
+
+  if (!pid) {
+    return;
+  }
+
   signalGroupThenPid(process.kill.bind(process), pid, "SIGTERM");
-  // Unconditional after the grace period; this path has always accepted the
-  // recycled-pgid window (boot-electron's fallback gates on a re-probe).
+  // Unconditional after the grace period. This path accepts the recycled-pgid window.
   scheduleGroupSigkill(pid, 5_000, { gateOnGroupLiveness: false });
 }

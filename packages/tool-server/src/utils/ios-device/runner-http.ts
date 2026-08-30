@@ -4,49 +4,31 @@ import { requireTimeRemaining, type Deadline } from "./usbmux";
 import { IosDeviceTransportError } from "./usbmux-protocol";
 
 /**
- * One HTTP POST per connection to the XCUITest runner's /command endpoint.
- *
- * The runner speaks plain HTTP/1.1, but on a physical device the "connection"
- * is a usbmux socket that is already established before HTTP enters the
- * picture. node:http cannot dial such a socket itself, so each request gets a
- * throwaway Agent whose createConnection hands back the pre-connected socket.
- * One request per connection (Connection: close) keeps the lifecycle trivial:
- * no keep-alive pooling of muxed sockets whose device may unplug between
- * requests, and every error path can simply destroy both agent and socket.
+ * POST one command to the XCUITest runner over a pre-connected socket.
  */
 
-/**
- * Large snapshot/screenshot payloads are legitimate, but the length is
- * attacker-adjacent data from a USB peripheral; cap it so a corrupt stream
- * cannot drive an unbounded allocation.
- */
+/** Cap on runner response size. */
 const RUNNER_HTTP_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 interface PostRunnerCommandOptions {
-  /**
-   * Produces the connected socket for this one request. A factory rather than
-   * a socket so the (potentially slow) usbmux handshake only happens once the
-   * caller actually commits to sending, and so its typed errors flow through
-   * this function's error path.
-   */
   socketFactory: () => Promise<net.Socket>;
-  /** JSON-serialized as the POST body. */
   body: unknown;
-  /**
-   * Whole-send budget, already ticking and shared with the usbmux handshake
-   * inside socketFactory: the HTTP exchange gets only what the handshake has
-   * not already spent.
-   */
   deadline: Deadline;
 }
 
-/** POST one runner command over a pre-connected socket; resolves with the parsed JSON body. */
+/**
+ * POST one runner command over a pre-connected socket. Resolves with the parsed JSON body.
+ *
+ * @param options.socketFactory opens the usbmux socket when the send starts.
+ * @param options.deadline send budget, shared with the usbmux handshake.
+ */
 export async function postRunnerCommand(options: PostRunnerCommandOptions): Promise<unknown> {
   requireTimeRemaining(options.deadline.remainingMs(), "send runner command");
+
   const socket = await options.socketFactory();
   const agent = new http.Agent({ keepAlive: false });
-  // @types/node exposes createConnection on Agent instances; returning the
-  // pre-connected socket short-circuits the dial step entirely.
+
+  // node:http cannot dial a usbmux socket. A throwaway Agent injects the pre-connected one.
   agent.createConnection = ((
     _options: unknown,
     callback?: (err: Error | null, stream: net.Socket) => void
@@ -54,14 +36,16 @@ export async function postRunnerCommand(options: PostRunnerCommandOptions): Prom
     callback?.(null, socket);
     return socket;
   }) as typeof agent.createConnection;
+
   try {
     const payload = Buffer.from(JSON.stringify(options.body), "utf8");
-    // Re-read the budget now that the handshake has spent its share; a
-    // handshake that ate everything must fail here, not start a zero-ms HTTP
-    // request.
+
+    // Re-read remaining time after the handshake.
     const httpTimeoutMs = options.deadline.remainingMs();
     requireTimeRemaining(httpTimeoutMs, "send runner command");
+
     const response = await requestOverAgent(agent, socket, payload, httpTimeoutMs);
+
     return parseRunnerResponseBody(response.statusCode, response.body);
   } finally {
     agent.destroy();
@@ -76,12 +60,13 @@ async function requestOverAgent(
   timeoutMs: number
 ): Promise<{ statusCode: number; body: Buffer }> {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
+
   try {
     return await new Promise((resolve, reject) => {
       const request = http.request(
         {
           method: "POST",
-          // Host header only: the actual connection is the injected socket.
+          // Host header only because the connection is the injected socket.
           host: "127.0.0.1",
           path: "/command",
           headers: {
@@ -99,9 +84,9 @@ async function requestOverAgent(
           );
         }
       );
+
       request.once("error", reject);
-      // The usbmux layer leaves the socket paused with any early bytes
-      // unshifted; resume so the response can flow.
+      // Resume the paused usbmux socket. The HTTP response arrives on this pipe.
       socket.resume();
       request.end(payload);
     });
@@ -113,7 +98,11 @@ async function requestOverAgent(
         { retryable: true, cause: error }
       );
     }
-    if (error instanceof IosDeviceTransportError) throw error;
+
+    if (error instanceof IosDeviceTransportError) {
+      throw error;
+    }
+
     throw new IosDeviceTransportError(
       "http",
       `Runner HTTP request failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -125,9 +114,11 @@ async function requestOverAgent(
 async function readBoundedBody(response: http.IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
+
   for await (const chunk of response) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
     totalBytes += buffer.length;
+
     if (totalBytes > RUNNER_HTTP_MAX_RESPONSE_BYTES) {
       throw new IosDeviceTransportError(
         "protocol",
@@ -135,19 +126,20 @@ async function readBoundedBody(response: http.IncomingMessage): Promise<Buffer> 
         { retryable: false }
       );
     }
+
     chunks.push(buffer);
   }
+
   return Buffer.concat(chunks);
 }
 
 /**
- * The runner encodes command failures inside its JSON envelope (ok:false), so
- * a parseable body is returned regardless of HTTP status and left to the
- * client layer to interpret. Only an unparseable body is a transport-level
- * failure; at that point the status code is the best diagnostic available.
+ * Parse the runner response body as JSON.
  */
 function parseRunnerResponseBody(statusCode: number, body: Buffer): unknown {
   const text = body.toString("utf8");
+
+  // Command failures live in the JSON envelope. Only an unparseable body is a transport failure.
   try {
     return JSON.parse(text) as unknown;
   } catch {

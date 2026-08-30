@@ -8,11 +8,8 @@ import { pressKeyboardReturn, typeText } from "../../../utils/ios-device/runner-
 import type { KeyboardParams, KeyboardResult } from "../types";
 
 /**
- * Physical-iOS typing: the XCUITest runner types into the currently-focused
- * element (tap a field first with gesture-tap). Only `enter` is available as a
- * named key: XCTest exposes no per-keycode HID surface on hardware, unlike
- * the simulator-server's stdin HID channel. `delayMs` is accepted but ignored
- * here: XCTest types whole strings, with no per-keystroke cadence to pace.
+ * Type into the focused element on a physical iOS device.
+ * Only `enter` is available as a named key.
  */
 export function makeIosDeviceImpl(
   registry: Registry
@@ -21,36 +18,28 @@ export function makeIosDeviceImpl(
     requires: ["xcrun"],
     handler: async (_services, params, device) => {
       const key = params.key?.trim().toLowerCase();
-      // Gate on the raw `key` like the sibling backends do: a whitespace-only
-      // name trims away to "" and would otherwise fall through to the no-op
-      // below, returning a success the caller cannot tell apart from a real
-      // press (the reason for the empty-key guard in ../index.ts).
+      // Gate on the raw key. A whitespace-only name would otherwise succeed as a no-op.
       if (params.key && key !== "enter") {
         throw new InvalidToolInputError(
           `Named key '${params.key}' is not supported on physical iOS devices: only 'enter'. ` +
             "Type text into the focused field, or use gesture-tap to press on-screen keys.",
           {
-            // The bucket every unusable `key` value gets across backends; see
-            // the sibling guards in simulator-server-keys.ts / chromium.ts and
-            // the empty-key guard in ../index.ts.
             error_code: FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED,
             failure_stage: "keyboard_named_key_ios_device",
             error_kind: "unsupported",
           }
         );
       }
-      // The empty request is the tool's documented no-op (see ../index.ts).
-      // Return before requiring a tracked app or resolving the runner, so it
-      // touches no device, matching the simulator and Android branches.
+      // Empty request is a documented no-op. Return before resolving the runner.
       if (!params.text && !key) return { typed: "", keys: 0 };
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const ref = iosDeviceRunnerRef(device);
       const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
 
-      // Secret placeholders are already resolved by the tool's execute wrapper
-      // (and the placeholder form restored in its reply); type text verbatim.
+      // XCTest types whole strings and has no per-keycode HID surface. delayMs is ignored.
       let keys = 0;
       if (params.text) {
+        // Secret placeholders are already resolved by the execute wrapper.
         await typeText(api, bundleId, params.text);
         keys += params.text.length;
       }

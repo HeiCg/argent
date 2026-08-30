@@ -99,8 +99,7 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
     androidIsTv: boolean
   ): Promise<DescribeTreeData> {
     if (device.platform === "ios") {
-      // Physical devices poll the XCUITest runner snapshot — the same tree
-      // `describe` returns there, so "settled" means the same content held.
+      // Physical devices poll the same XCUITest runner snapshot as describe.
       if (device.kind === "device") {
         return describeIosDevice(registry, device);
       }
@@ -145,10 +144,7 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
       if (device.platform === "ios") await ensureDeps(iosRequires);
       else if (device.platform === "android") await ensureDeps(androidRequires);
 
-      // Hoisted out of the poll loop: `isAndroidTv` runs `adb devices` (plus an
-      // avdName getprop) on every call, even on a cache hit, so letting
-      // `describeAndroid` probe would pay that per poll. Physical devices skip
-      // the tvOS probe: they are never tvOS simulators.
+      // Resolve tvOS / Android-TV once. Physical devices skip the tvOS probe. They are never tvOS simulators.
       const isTvOs =
         device.platform === "ios" && device.kind !== "device" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));

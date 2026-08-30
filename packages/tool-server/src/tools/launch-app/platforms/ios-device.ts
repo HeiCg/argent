@@ -7,12 +7,7 @@ import {
 import type { LaunchAppParams, LaunchAppResult } from "../types";
 
 /**
- * Physical-iOS launch: `xcrun devicectl device process launch`. No
- * native-devtools env warm-up here: DYLD injection does not exist on
- * hardware, so the launch is a plain CoreDevice process start. System UI
- * (SpringBoard/Spotlight; see isSessionOnlySystemUi) is accepted as a
- * session-only target: it is always running, so no launch happens and only
- * the automation session is registered.
+ * Launch an app on a physical iOS device with devicectl.
  */
 export const iosDeviceImpl: PlatformImpl<
   Record<string, unknown>,
@@ -22,6 +17,7 @@ export const iosDeviceImpl: PlatformImpl<
   requires: ["xcrun"],
   handler: async (_services, params) => {
     await ensureDeviceReady(params.udid);
+    // System UI is always running. Register the session only. Do not launch.
     if (!isSessionOnlySystemUi(params.bundleId)) {
       await launchApp(params.udid, params.bundleId);
     }

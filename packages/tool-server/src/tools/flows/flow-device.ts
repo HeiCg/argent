@@ -59,7 +59,7 @@ interface RawDevice {
   udid?: string;
   serial?: string;
   id?: string;
-  /** iOS: "device" marks a physical iPhone/iPad (list-devices state "connected"). */
+  /** Physical iPhone/iPad when kind is "device". */
   kind?: string;
 }
 
@@ -72,8 +72,7 @@ function deviceEntryId(d: RawDevice): string | undefined {
 function isBooted(d: RawDevice): boolean {
   switch (d.platform) {
     case "ios":
-      // Simulators report simctl's "Booted"; physical devices are listed only
-      // while reachable and report state "connected" with kind "device".
+      // Simulators report Booted. Physical devices report connected with kind device.
       return d.state === "Booted" || (d.kind === "device" && d.state === "connected");
     case "android":
       return d.state === "device";

@@ -8,9 +8,8 @@ import {
 import type { DescribeNode, DescribeTreeData } from "../contract";
 
 /**
- * Physical-iOS describe: the XCUITest runner's accessibility snapshot, adapted
- * from its flat indexed node list (absolute point rects + parentIndex links)
- * into the describe contract's nested tree with 0-1 normalized frames.
+ * Describe the current screen on a physical iOS device.
+ * Adapts the XCUITest runner snapshot into the describe contract tree.
  */
 export async function describeIosDevice(
   registry: Registry,
@@ -20,9 +19,7 @@ export async function describeIosDevice(
   const ref = iosDeviceRunnerRef(device);
   const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
   let { nodes, quality } = await captureSnapshot(api, bundleId);
-  // Right after launch-app, XCTest can attach before the UI is fully built
-  // and report a root-only tree. One short settle-and-retry recovers the
-  // common case without pushing retry logic onto the agent.
+  // XCTest can attach before the UI is built and report a root-only tree. One retry recovers the common case.
   if (nodes.length <= 1) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     ({ nodes, quality } = await captureSnapshot(api, bundleId));
@@ -34,8 +31,7 @@ export async function describeIosDevice(
       `reason ${quality.reasonCode ?? quality.reason ?? "?"}). The tree may be incomplete; ` +
       "retry after the UI settles, or fall back to the screenshot.";
   } else if (data.tree.children.length === 0) {
-    // Downstream blind-read guards (await-ui-element, the flow tree sources)
-    // key off this hint, so every childless tree, empty or root-only, carries one.
+    // Blind-read guards key off this hint. Every childless tree must carry one.
     data.hint =
       "The runner returned an empty or root-only accessibility tree. The app may still " +
       "be launching, or this screen exposes no accessibility elements.";
@@ -44,19 +40,8 @@ export async function describeIosDevice(
 }
 
 /**
- * XCUITest element types → the AX-style content roles the describe formatter
- * emits unconditionally (see format-tree.ts CONTENT_ROLES). Covers the runner's
- * interactive allowlist so icon-only Cells, compact date pickers, and valueless
- * toggles survive the formatter's content gate. The mapping is grounded in the
- * simulator trait adapter (button-ish traits → AXButton, adjustable →
- * AXAdjustable) and partially confirmed on hardware: Tables render scrollable
- * and toggles emit as AXAdjustable with values; the rest of the widget matrix
- * (icon-only Cells, compact date pickers) is unconfirmed on-device.
- * Unmapped types (Window, Other, NavigationBar, …) keep their XCTest name and
- * surface via the nested renderer's container rules: printed when labeled or
- * when they have printable descendants. SegmentedControl stays unmapped on
- * purpose: its Button children carry the interaction, and the container rule
- * emits the control itself whenever it has children.
+ * XCTest element types mapped to the AX-style roles the describe formatter emits.
+ * Unmapped types keep their XCTest name, SegmentedControl included (its Button children carry the interaction).
  */
 export const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
   Button: "AXButton",
@@ -80,28 +65,21 @@ export const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
   PickerWheel: "AXAdjustable",
 };
 
-// Containers whose content scrolls. Mirrors the Swift runner's
-// scrollContainerTypes (ArgentRunnerUITests/ArgentRunnerSession+Snapshot.swift);
-// keep the two lists in lockstep. These deliberately get no content role:
-// `scrollable` alone keeps them emitted even unlabeled and childless, and puts
-// the [scrollable] flag on the rendered line so the agent knows where a swipe
-// can reveal more.
+/**
+ * Scroll container types kept in lockstep with the Swift runner `scrollContainerTypes` list.
+ * They carry no content role and stay emitted via the `scrollable` flag.
+ */
 export const SCROLL_CONTAINER_TYPES = new Set(["ScrollView", "Table", "CollectionView", "WebView"]);
 
 function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
-  // A zero-node snapshot has no root rect to normalize against: hand back the
-  // same childless Application shape a root-only snapshot adapts to.
+  // Empty snapshot has no root rect. Return the same childless Application shape as a root-only tree.
   if (nodes.length === 0) {
     return {
       tree: { role: "Application", frame: { x: 0, y: 0, width: 1, height: 1 }, children: [] },
       source: "xcuitest-runner",
     };
   }
-  // Reference frame: the shallowest node's rect (the Application root, i.e.
-  // `XCUIApplication.frame`). Gesture 0-1 is inverted through the runner's
-  // `viewport` command, which returns that same rect; they must stay in lockstep.
-  // XCTest occasionally reports children a point outside the root, so clamp
-  // into [0, 1] to satisfy the contract schema.
+  // Normalize against the Application frame. Clamp because XCTest can report children a point outside the root.
   const root = nodes.reduce((a, b) => (b.depth < a.depth ? b : a));
   const refW = root.rect.width > 0 ? root.rect.width : 1;
   const refH = root.rect.height > 0 ? root.rect.height : 1;

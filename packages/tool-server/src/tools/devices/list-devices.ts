@@ -20,26 +20,23 @@ import {
 } from "../../utils/vega-devices";
 type IosDevice = IosSimulator & { platform: "ios" };
 
-// A physical iPhone/iPad visible to CoreDevice (`xcrun devicectl`). Presence in
-// the list does NOT mean CoreDevice can currently reach it: a paired device
-// stays listed for days after it was last seen. transportType alone decides
-// the state: "connected" only while the transport is wired, else "paired".
-// Hardware-verified (devicectl 518.x): on unplug, transportType flips to
-// "localNetwork" within seconds, but tunnelState can stay "connected" (the
-// CoreDevice tunnel migrates to Wi-Fi) while argent's usbmux transport is
-// dead, so tunnelState must not count as reachable. Flag-gated behind
-// `ios-physical-devices`.
+/**
+ * A physical iPhone/iPad from CoreDevice (`xcrun devicectl`).
+ * Flag-gated behind `ios-physical-devices`.
+ */
 type IosPhysicalDevice = {
   platform: "ios";
   kind: "device";
   udid: string;
   name: string;
+  // connected = wired transport. paired = listed but not reachable over USB.
   state: "connected" | "paired";
   runtime: string;
   model: string | null;
   developerModeEnabled: boolean | null;
   pairingState: string | null;
   transportType: string | null;
+  // Not reachability. The CoreDevice tunnel can stay up over Wi-Fi after unplug.
   tunnelState: string | null;
 };
 
@@ -98,7 +95,8 @@ function readinessRank(
   if (d.platform === "android") return d.state === "device" ? 0 : 1;
   if (d.platform === "vega") return d.state === "running" || d.state === "device" ? 0 : 1;
   if (d.platform === "chromium") return 0; // Chromium entries are only listed when their CDP is responsive
-  if ("kind" in d && d.kind === "device") return d.state === "connected" ? 0 : 1; // physical iOS: paired-but-unreachable sinks with the shut-down ones
+  // Physical iOS: paired-but-unreachable ranks with shut-down devices.
+  if ("kind" in d && d.kind === "device") return d.state === "connected" ? 0 : 1;
   return d.state === "Booted" ? 0 : 1; // ios + ios-remote
 }
 

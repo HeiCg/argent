@@ -77,10 +77,7 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     const timestampMs = Date.now();
     const device = resolveDevice(params.udid);
     if (isIosPhysicalDevice(device)) {
-      // XCUITest executes the drag as one planned gesture, so there is no
-      // per-frame easing to shape; `settle` instead rests the touch at the
-      // destination before lifting (runner-side hold), which zeroes the
-      // release velocity the same way the simulator's ease-out does.
+      // XCTest is one planned drag. settle holds at the destination. Release velocity is then zero.
       const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const viewport = await getViewport(runner, bundleId);

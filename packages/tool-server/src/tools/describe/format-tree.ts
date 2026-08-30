@@ -147,9 +147,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     opts.source === "android-devtools" ||
     opts.source === "cdp-dom" ||
     opts.source === "vega-automation" ||
-    // Physical iOS: the XCUITest runner reports a real parent/child element
-    // tree (Application > Window > … with parentIndex links), not ax-service's
-    // flat leaf list; nested rendering keeps that structure visible.
+    // Physical iOS: the runner reports a parent/child tree. Nested mode keeps that structure.
     opts.source === "xcuitest-runner"
       ? "nested"
       : "flat";
@@ -169,10 +167,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
         'and count rows/columns to build the path (e.g. one row down and two columns right → ["down","right","right","select"]).'
     );
   } else {
-    // Physical iOS: the XCUITest runner drives single-finger gestures only, so
-    // recommending gesture-pinch here would point agents (who follow this
-    // header verbatim) at a guaranteed capability reject. Every other source
-    // keeps the generic line byte-identical.
+    // Physical iOS has no two-finger gestures. Do not recommend gesture-pinch for this source.
     header.push(
       opts.source === "xcuitest-runner"
         ? "Pass them straight to gesture-tap / gesture-swipe, which expect this same space. " +
