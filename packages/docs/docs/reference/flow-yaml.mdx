@@ -319,7 +319,14 @@ The contract of a bash script:
 
 Argent runs the file as `bash <file>`. The file needs no execute bit, and Argent ignores the `#!` line. The script gets no arguments. `$0` is the path of the script file. The standard input of the script is empty, so a `read` gets the end of the file. Argent does not report the standard output or the standard error of the script.
 
-Write the output document to a sibling file, then move the file into place. A redirection to `$ARGENT_OUTPUT` empties the file before the command that writes it runs. Argent refuses an empty file. Argent also refuses a file that is missing, a document that is not a JSON object, and a document above 1 MiB.
+A plain redirection is safe. `printf '{"id":"7"}' > "$ARGENT_OUTPUT"` passes. Two shapes are not safe:
+
+- A command that reads `$ARGENT_OUTPUT` in its own redirection. The shell empties the file before the command runs, so `jq . "$ARGENT_OUTPUT" > "$ARGENT_OUTPUT"` reads an empty file. Argent refuses an empty file.
+- A background job that writes the file after bash exits. Argent reads the file when bash exits, so the step gets the document that was there at that moment. The step does not fail. The step returns the wrong document.
+
+The example above writes the document to a sibling file, then moves the file into place. That shape is safe in both cases.
+
+Argent also refuses a file that is missing, a document that is not a JSON object, and a document above 1 MiB.
 
 `$ARGENT_OUTPUT` is not empty when the script starts: it holds the document the step was given, which is `{}` today. Two results follow. A script that never touches the file passes, and the step returns that document. An append with `>>` writes after the document that is already there, and the result is not JSON.
 

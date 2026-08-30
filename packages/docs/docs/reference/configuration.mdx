@@ -47,7 +47,9 @@ Argent reads `scripts.maxTimeoutMs` and `scripts.heapLimitMb` from the global fi
 
 Argent reads `scripts.bash` from the project file as well. Which bash a project wrote its `.sh` files for is a fact of the project, and the value raises no limit on the host. A `scripts.bash` that is set but wrong **errors** the script step. Argent does not fall through to the PATH, so a wrong value cannot pass on one machine and fail in CI. A value that is empty or is not a string errors the step too, with the file it came from named. Argent runs the value once and asks it for its `$BASH_VERSION`: a program that answers without one is not a bash, and a `.sh` step under it would report the document Argent seeded rather than the one the script writes.
 
-A path value is absolute, starts with `~`, or is relative. For `ios.additionalDeviceSets`, Argent resolves a relative entry against the scope that set it: the project root for the project file, the home directory for the global file.
+A path value is absolute, starts with `~`, or is relative. `scripts.bash` is the exception. Argent accepts only an absolute path there, in the form of the host that runs the tool-server. Argent refuses `~/bin/bash` and `bin/bash` on every host. Argent refuses `C:\...\bash.exe` on macOS and Linux, and `/usr/bin/bash` on Windows. The project file matters here, because one repository shares it between hosts.
+
+For `ios.additionalDeviceSets`, Argent resolves a relative entry against the scope that set it: the project root for the project file, the home directory for the global file.
 
 Argent resolves `recordings.directory` on the client host, the machine that receives the mp4. A relative value always resolves against the project root, or the home directory when there is no project, regardless of which file set the value.
 
