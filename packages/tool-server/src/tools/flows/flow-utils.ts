@@ -2600,6 +2600,20 @@ export function scriptInterpreter(scriptPath: string): "node" | "bash" {
 const SCRIPT_EXTENSIONS = [".mjs", ".sh"] as const;
 
 /**
+ * Whether a path carries an extension {@link scriptInterpreter} keys on, rather
+ * than falling through to its `node` default.
+ *
+ * The caller reads the interpreter off the CANONICAL path, and a symlink target
+ * carries whatever name it was given — `seed.sh -> ../tools/seed` resolves to a
+ * name with no extension at all. Answering `node` for that hands a shell script
+ * to Node, which reports `Unexpected string` and names neither the file nor the
+ * interpreter that read it.
+ */
+export function hasScriptExtension(scriptPath: string): boolean {
+  return SCRIPT_EXTENSIONS.some((extension) => scriptPath.endsWith(extension));
+}
+
+/**
  * Floor on a `script` step's `timeout`, sized from the fixed cost of the step
  * rather than from the script: a fork, a Node boot, the runner preload and the
  * script's own import all run before the first line the limit is meant to

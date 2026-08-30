@@ -17,6 +17,7 @@ import {
   getConfigDefinition,
   getConfigValue,
   getConfigValueAtScope,
+  WINDOWS_ROOTED_PATH_RE,
   type ConfigDefinition,
 } from "@argent/configuration-core";
 import { commandOnPath } from "../../../utils/command-on-path";
@@ -276,13 +277,22 @@ function withoutRepeats(candidates: string[]): string[] {
  * resolve against the runner's own cwd; executable because a readable file is
  * not a runnable one — except on Windows, where `X_OK` succeeds for any file
  * and existence is the whole check.
+ *
+ * The two shape rules — absolute, and rooted on a drive under Windows — are the
+ * ones `argent config set scripts.bash` applies before it writes, through the
+ * same {@link WINDOWS_ROOTED_PATH_RE}. The filesystem checks below are this
+ * side's alone: the file has to exist on the host that RUNS the step, and a
+ * project `.argent/config.json` is shared by hosts that do not all have it.
  */
 function interpreterProblem(candidate: string): string | null {
   if (candidate === "") return "is empty";
   if (!platformPath().isAbsolute(candidate)) {
     return "is not an absolute path (a relative path would resolve against the tool server's own working directory)";
   }
-  if (process.platform === "win32" && !WINDOWS_ROOTED_RE.test(stripExtendedPrefix(candidate))) {
+  if (
+    process.platform === "win32" &&
+    !WINDOWS_ROOTED_PATH_RE.test(stripExtendedPrefix(candidate))
+  ) {
     return (
       "names no drive (a path that begins with a backslash is rooted on whatever drive the " +
       "process is on, and the tool server and the script's own process are not on the same one)"
@@ -350,9 +360,6 @@ function spellingsOf(candidate: string): string[] {
   }
   return spellings;
 }
-
-/** A drive letter, or a UNC share. Not a bare leading separator. */
-const WINDOWS_ROOTED_RE = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
 
 function stripExtendedPrefix(candidate: string): string {
   if (/^\\\\[?.]\\UNC\\/.test(candidate)) return `\\\\${candidate.slice(8)}`;

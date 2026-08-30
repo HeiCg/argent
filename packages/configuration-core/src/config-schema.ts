@@ -71,13 +71,31 @@ function asPresentText(raw: unknown): string | undefined {
 }
 
 /**
+ * What a rooted Windows path looks like: a drive letter, or a UNC share. The
+ * one rule, shared with the tool server's own interpreter check, because this
+ * is the WRITE gate for a value that check reads back — and
+ * `path.win32.isAbsolute("/usr/bin/bash")` is true, so on Windows the two
+ * disagreed in exactly one direction: `argent config set` stored a POSIX path
+ * that every `.sh` step then refused with "names no drive".
+ */
+export const WINDOWS_ROOTED_PATH_RE = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
+
+/**
  * Accept a non-blank string that names an absolute path on THIS host. The
  * running platform's rules, because the path is for a program this host has to
- * start: `C:\\…` is not a path a POSIX tool server can spawn.
+ * start: `C:\\…` is not a path a POSIX tool server can spawn, and a
+ * `/usr/bin/…` is not one a Windows tool server can.
  */
 function asAbsolutePath(raw: unknown): string | undefined {
   const text = asString(raw);
-  return text !== undefined && path.isAbsolute(text) ? text : undefined;
+  if (text === undefined) return undefined;
+  const win32 = process.platform === "win32";
+  // Explicit win32 semantics under win32 rather than the bare `path` object's,
+  // which is the same thing on a real Windows host and is testable from a POSIX
+  // one — the shape `flow-script-interpreter.ts` reads the value back with.
+  if (!(win32 ? path.win32 : path.posix).isAbsolute(text)) return undefined;
+  if (win32 && !WINDOWS_ROOTED_PATH_RE.test(text)) return undefined;
+  return text;
 }
 
 /** Accept a finite JSON number. */
@@ -249,9 +267,17 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     // reader keeps: `parse` above holds on to a wrong value so the resolver can
     // name it, and there is no reason to let one be typed in.
     validateWrite: asAbsolutePath,
-    expected: "an absolute path to a bash executable",
+    expected:
+      "an absolute path to a bash executable, spelled the way the host running the tool server " +
+      "spells one (`/usr/bin/bash` on macOS and Linux, `C:\\...\\bash.exe` on Windows)",
     merge: "prioritize-local",
-    example: "/opt/homebrew/bin/bash",
+    // Host-specific for the same reason the check above is: the example is
+    // printed back as a command to run, and one this host would refuse is a
+    // command that reproduces the error it is offered to fix.
+    example:
+      process.platform === "win32"
+        ? "C:\\Program Files\\Git\\bin\\bash.exe"
+        : "/opt/homebrew/bin/bash",
   },
 ] as const;
 

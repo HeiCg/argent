@@ -350,6 +350,14 @@ function runBash(request) {
  * exit is the verdict either way. Nothing is left holding the process open: the
  * parent's stop escalates to a SIGKILL on the group, and the deadline watchdog
  * bounds the run from inside.
+ *
+ * The EXIT trap is the only spelling this can see. A `kill 0` in the BODY of
+ * the script — with bash still to run the rest of it — reaches bash alone:
+ * measured on macOS, neither this process nor a plain `sleep` in the same group
+ * received the signal, and the same `kill 0` under a `trap "" TERM` that makes
+ * bash survive it reached both. So the signal a script sends itself is only
+ * observable here when it does not kill its own sender, and `bashOutcome` says
+ * so in the message it prints for the case this set is empty for.
  */
 function holdGroupSignals() {
   for (const signal of GROUP_SIGNALS) {
@@ -441,8 +449,8 @@ function bashOutcome(request, code, signal) {
         message:
           `The step's process group was sent ${signal}, which killed bash before it exited ` +
           `(bash: ${request.interpreterPath}), so the step returned no output document. ` +
-          "`kill 0` and `kill -- -$$` reach bash itself, not only the background jobs they are " +
-          "usually written for: signal each job's own pid instead.",
+          "`kill 0` reaches bash itself, not only the background jobs it is usually written " +
+          "for: signal each job's own pid instead.",
       };
     }
     return {
@@ -450,7 +458,15 @@ function bashOutcome(request, code, signal) {
       failureType: "signal",
       message:
         `The script was killed by ${signal} before it exited ` +
-        `(bash: ${request.interpreterPath}).`,
+        `(bash: ${request.interpreterPath}).` +
+        // The other spelling of the mistake above. A `kill 0` in the body of
+        // the script kills bash and reaches nothing else — not this process,
+        // which is what the branch above reads a group signal by — so the two
+        // causes arrive here identically and the message names both.
+        (GROUP_SIGNALS.includes(signal)
+          ? " A `kill 0` in the body of the script ends bash the same way and is not " +
+            "distinguishable from this: signal each job's own pid instead."
+          : ""),
     };
   }
   const status = code ?? 0;
