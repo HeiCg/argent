@@ -128,6 +128,30 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
     return { cleared: false, focus: focus, reason: opaque ? "host-opaque" : "not-editable" };
   }
   const before = contentOf(el);
+  // The page's own selection, cloned before anything replaces it, and put back
+  // on every refusal below. A highlighted code block or quoted paragraph is
+  // visible page state: a call that reports "nothing was cleared" and still
+  // takes the page from one highlighted range to none has changed the screen,
+  // and the next \`screenshot\` / \`screenshot-diff\` registers it. It is the
+  // mirror of the hazard the delete-refused branch already guards against.
+  const selection = document.getSelection();
+  const savedRanges = [];
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i++) savedRanges.push(selection.getRangeAt(i).cloneRange());
+  }
+  const restoreSelection = () => {
+    if (!selection) return;
+    selection.removeAllRanges();
+    for (let i = 0; i < savedRanges.length; i++) {
+      // A range whose nodes the delete removed can no longer be added; the rest
+      // still can, so this is per-range rather than all-or-nothing.
+      try {
+        selection.addRange(savedRanges[i]);
+      } catch (e) {
+        /* the range's nodes are gone */
+      }
+    }
+  };
   // A text CONTROL keeps its own selection, separate from the document's, and
   // \`execCommand("selectAll")\` acts on the DOCUMENT's. When that one is anchored
   // outside the focused control — a copy-to-clipboard button that highlights a
@@ -153,11 +177,12 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // nothing else distinguishes them). What it does NOT answer for is an editor
   // that restores the value afterwards, which is what the read-back below is for.
   if (!document.execCommand("delete")) {
-    // \`selectAll\` has already run, and on a field it then refuses it selects the
-    // WHOLE DOCUMENT (measured on Chrome 151 for a focused date input). Left
-    // behind, that highlight reaches the next screenshot and every screenshot-diff.
-    const sel = document.getSelection();
-    if (sel) sel.removeAllRanges();
+    // The select-all has already run, and on a field Chrome then refuses it
+    // selects the WHOLE DOCUMENT (measured on Chrome 151 for a focused date
+    // input). Left behind, that highlight reaches the next screenshot and every
+    // screenshot-diff — so the page's own selection goes back, rather than the
+    // page being left with none.
+    restoreSelection();
     return { cleared: false, focus: focus, reason: "delete-refused" };
   }
   // Hand the read-back the element by IDENTITY, not by the label above. Two
@@ -186,6 +211,16 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
     // A page can replace or delete \`document.execCommand\` — editors and
     // polyfills do. Without this the throw leaves \`result.value\` undefined,
     // which reads as a refusal: the wrong cause, with the wrong repair.
+    //
+    // A throw between the select-all and the delete leaves a page-wide highlight
+    // on screen, exactly as the refusal above would — so this branch undoes it
+    // too. Its own try, because the restore is defined further down than the
+    // first thing that can throw.
+    try {
+      restoreSelection();
+    } catch (e) {
+      /* the selection could not be read at all */
+    }
     return { cleared: false, reason: "script-error", detail: String((err && err.message) || err) };
   }
 })()`;

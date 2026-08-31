@@ -80,10 +80,21 @@ function run(
    * `execCommand` may also be replaced with a thrower.
    */
   documentExtras: Record<string, unknown> = {}
-): { outcome: Outcome; commands: string[]; selectionsDropped: number } {
+): {
+  outcome: Outcome;
+  commands: string[];
+  selectionsDropped: number;
+  /** What the page's selection holds when the script returns. */
+  selection: () => unknown[];
+} {
   const commands: string[] = [];
   commandLog = commands;
   const dropped = { count: 0 };
+  // The page's own selection, as one opaque range. The script must clone it
+  // before it selects anything and put it back on every refusal — a highlighted
+  // code block is visible page state the next screenshot-diff registers.
+  const pageRange = { id: "page-selection" };
+  let ranges: unknown[] = [pageRange];
   const g = globalThis as Record<string, unknown>;
   const had = Object.hasOwn(g, "document");
   const saved = g.document;
@@ -97,15 +108,23 @@ function run(
     // refuses, `selectAll` selects the whole document, and that highlight would
     // otherwise reach the next screenshot.
     getSelection: () => ({
+      get rangeCount() {
+        return ranges.length;
+      },
+      getRangeAt: (i: number) => ({ cloneRange: () => ranges[i] }),
+      addRange(r: unknown) {
+        ranges.push(r);
+      },
       removeAllRanges() {
         dropped.count++;
+        ranges = [];
       },
     }),
     ...documentExtras,
   };
   try {
     const outcome = (0, eval)(CLEAR_FOCUSED_EDITABLE_SCRIPT) as Outcome;
-    return { outcome, commands, selectionsDropped: dropped.count };
+    return { outcome, commands, selectionsDropped: dropped.count, selection: () => ranges };
   } finally {
     if (had) g.document = saved;
     else delete g.document;
@@ -502,28 +521,54 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a host script cannot see into", () =
 });
 
 describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — it leaves nothing behind", () => {
-  it("drops the selection when the delete is refused", () => {
-    // `selectAll` has already run by then, and on a field Chrome then refuses it
-    // selects the WHOLE DOCUMENT — measured on Chrome 151 for a focused date
+  it("RESTORES the page's own selection when the delete is refused", () => {
+    // The select-all has already run by then, and on a field Chrome then refuses
+    // it selects the WHOLE DOCUMENT — measured on Chrome 151 for a focused date
     // input, where `document.getSelection()` came back holding the page text.
     // Left in place, that highlight reaches the next screenshot and every
     // screenshot-diff taken after it.
-    const { outcome, selectionsDropped } = run(el("INPUT", { type: "date" }), { delete: false });
+    //
+    // Dropping it is not enough either: a call that reports "nothing was
+    // cleared" and still takes the page from one highlighted range to none has
+    // changed visible state. Measured on Chrome 151 against the standard
+    // copy-to-clipboard shape, `rangeCount` went 1 -> 0.
+    const { outcome, selectionsDropped, selection } = run(el("INPUT", { type: "date" }), {
+      delete: false,
+    });
     expect(outcome.reason).toBe("delete-refused");
     expect(selectionsDropped).toBe(1);
+    expect(selection()).toEqual([{ id: "page-selection" }]);
   });
 
-  it("drops nothing on a refusal that never selected", () => {
-    // The other refusals return before `selectAll`, so there is no selection to
-    // undo — and calling `removeAllRanges` there would clear a selection the
-    // USER or a previous `gesture-drag` made.
+  it("restores it when the page throws BETWEEN the select-all and the delete", () => {
+    // The sibling hazard: `selectAll` succeeded, `delete` threw, and this branch
+    // returned without undoing the page-wide highlight the first half left.
+    const { outcome, selection } = run(
+      el("DIV", { isContentEditable: true }),
+      {},
+      {
+        execCommand(name: string) {
+          commandLog.push(name);
+          if (name === "delete") throw new Error("editor took over");
+          return true;
+        },
+      }
+    );
+    expect(outcome.reason).toBe("script-error");
+    expect(selection()).toEqual([{ id: "page-selection" }]);
+  });
+
+  it("touches nothing on a refusal that never selected", () => {
+    // The other refusals return before the select-all, so there is no selection
+    // to undo — and touching it there would disturb a selection the USER or a
+    // previous `gesture-drag` made.
     expect(run(el("BUTTON", {})).selectionsDropped).toBe(0);
     expect(run(el("INPUT", { type: "text", readOnly: true })).selectionsDropped).toBe(0);
   });
 
   it("leaves the selection alone on a successful clear", () => {
-    // The delete consumed it; removing the ranges again would be a no-op at
-    // best and a caret move at worst.
+    // The delete consumed it; putting the old ranges back would resurrect a
+    // highlight over content that is gone.
     expect(run(textInput()).selectionsDropped).toBe(0);
   });
 });
