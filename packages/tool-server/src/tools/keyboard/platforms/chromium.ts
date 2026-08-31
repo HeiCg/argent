@@ -249,7 +249,11 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
 // buffer on every edit (the ProseMirror / Slate / Quill shape) and a field that
 // blurs on change both leave focus somewhere with nothing to read, and the
 // restored value was then reported as `cleared: true`.
-const CLEAR_READBACK_SCRIPT = `(() => {
+// Exported for test/keyboard-clear-readback-script.test.ts, which evals it
+// against a mock document — the sibling script has done that since it was
+// written, and this one decides just as much: which element is read, whether it
+// counts `value` or text, and what "still holds something" means.
+export const CLEAR_READBACK_SCRIPT = `(() => {
   // What the two stages compare, and the ONLY thing carried across them. A
   // signature, never the content: a cleared field may have held a credential,
   // and this runs before any redaction the tool does.
