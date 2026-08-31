@@ -40,10 +40,23 @@ function subject(dropped: DroppedGeometry[]): string {
 
 /**
  * Chromium can do both transforms — it just needs `sharp`, which is optional
- * and not shipped — so this case is worth telling the caller how to fix.
+ * and not shipped — so the common case is worth telling the caller how to fix.
+ * The rarer `png-header-unreadable` reason gets different wording: there,
+ * `sharp` IS installed and a requested rotation still ran, so "unmodified
+ * capture" and "install sharp" would both be wrong.
  */
-export function chromiumDropNote(dropped: DroppedGeometry[]): string | undefined {
+export function chromiumDropNote(
+  dropped: DroppedGeometry[],
+  reason: "sharp-missing" | "png-header-unreadable" = "sharp-missing"
+): string | undefined {
   if (dropped.length === 0) return undefined;
+  if (reason === "png-header-unreadable") {
+    return (
+      `${subject(dropped)} not applied — the captured PNG's header could not be read, so the ` +
+      `resize could not be sized. A rotation requested on the same call was still applied. ` +
+      `\`sharp\` is already installed; retrying the same call will likely lose the scale again.`
+    );
+  }
   return (
     `${subject(dropped)} not applied — this is the unmodified capture. Chromium image ` +
     `post-processing needs the optional \`sharp\` package: run \`npm install sharp\` in the ` +

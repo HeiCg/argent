@@ -90,6 +90,7 @@ export async function captureScreenshot(
   const scale = opts.scale != null && opts.scale > 0 && opts.scale < 1 ? opts.scale : null;
 
   const dropped: ("rotation" | "scale")[] = [];
+  let dropReason: MediaReady["dropReason"];
 
   if (rotation || scale) {
     const sharp = tryLoadSharp();
@@ -98,6 +99,7 @@ export async function captureScreenshot(
       warnSharpMissingOnce(features);
       if (rotation) dropped.push("rotation");
       if (scale) dropped.push("scale");
+      dropReason = "sharp-missing";
     } else {
       let pipeline = sharp(bytes);
       if (rotation) pipeline = pipeline.rotate(ROTATION_DEGREES[rotation]);
@@ -122,6 +124,7 @@ export async function captureScreenshot(
           // Header unreadable: the rotation still runs, but the resize cannot
           // be sized, so the scale the caller asked for is lost.
           dropped.push("scale");
+          dropReason = "png-header-unreadable";
         }
       }
       bytes = Buffer.from(await pipeline.png({ compressionLevel: 6 }).toBuffer());
@@ -135,7 +138,7 @@ export async function captureScreenshot(
   return {
     url: `file://${filePath}`,
     path: filePath,
-    ...(dropped.length > 0 ? { droppedFeatures: dropped } : {}),
+    ...(dropped.length > 0 ? { droppedFeatures: dropped, dropReason } : {}),
   };
 }
 

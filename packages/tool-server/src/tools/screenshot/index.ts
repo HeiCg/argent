@@ -185,7 +185,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
         // visual snapshot passes scale 1, which is a no-op, not a loss.
         const requested = requestedGeometry(params);
         const dropped = (captured.droppedFeatures ?? []).filter((f) => requested.includes(f));
-        const note = chromiumDropNote(dropped);
+        const note = chromiumDropNote(dropped, captured.dropReason);
         return { image, ...(note ? { [RESULT_NOTE_KEY]: note } : {}) };
       }
 

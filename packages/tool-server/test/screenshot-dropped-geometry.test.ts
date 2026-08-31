@@ -50,6 +50,16 @@ describe("drop notes", () => {
     expect(chromiumDropNote(["scale"])).toContain("scale was not applied");
   });
 
+  it("does not blame a missing sharp when the PNG header was the problem", () => {
+    // sharp is installed in this case and a requested rotation still ran, so
+    // neither "unmodified capture" nor "npm install sharp" would be true.
+    const note = chromiumDropNote(["scale"], "png-header-unreadable")!;
+    expect(note).toContain("scale was not applied");
+    expect(note).toContain("rotation requested on the same call was still applied");
+    expect(note).not.toContain("npm install");
+    expect(note).not.toContain("unmodified capture");
+  });
+
   it("does not invite a pointless retry on a target that cannot transform", () => {
     const note = unsupportedDropNote(["rotation"], "Apple TV");
     expect(note).toContain("Apple TV");
