@@ -206,6 +206,16 @@ describe("keyboard `clear` — refusal taxonomy", () => {
     expect(err.message).toMatch(/`clear` is not supported on Vega/);
   });
 
+  it("vega: that refusal is not gated behind an adb preflight", () => {
+    // `requires` is preflighted by `dispatchByPlatform` BEFORE the handler runs,
+    // so on a host without adb a Vega `clear` answered 424 "install adb"
+    // instead of the documented UnsupportedOperationError — a caller told to
+    // install a binary for a capability that will never exist. The check moved
+    // into the handler, below the refusal; keyboard-vega-adb-preflight.test.ts
+    // pins both halves against a missing adb.
+    expect(vegaImpl.requires ?? []).not.toContain("adb");
+  });
+
   it("chromium: nothing editable focused → 400 + KEYBOARD_CLEAR_NO_EDITABLE_FOCUS", async () => {
     // Its own code, not KEYBOARD_KEY_UNSUPPORTED / CHARACTER_UNSUPPORTED: this
     // is the only keyboard rejection about the state of the PAGE rather than
@@ -618,7 +628,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
       .mockResolvedValueOnce({ cleared: true, focus: "input type=text" })
       .mockRejectedValueOnce(
         new FailureError("timed out", {
-          error_code: FAILURE_CODES.DEBUGGER_CDP_TIMEOUT,
+          error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
           failure_stage: "debugger_cdp_request",
           failure_area: "tool_server",
           error_kind: "timeout",
