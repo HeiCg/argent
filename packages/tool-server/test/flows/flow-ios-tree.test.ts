@@ -17,8 +17,16 @@ import { evaluateCondition, selectorToFrame } from "../../src/utils/ui-tree-matc
 import { resolveNativeTargetApp } from "../../src/utils/native-target-app";
 import {
   __resetDeviceSetCacheForTesting,
+  deviceSetForUdid,
   rememberDeviceSet,
 } from "../../src/utils/ios-device-sets";
+
+// A pass-through spy, so the case below can count which reasons pay for the
+// device-set lookup while every other case keeps the real memo.
+vi.mock("../../src/utils/ios-device-sets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/ios-device-sets")>();
+  return { ...actual, deviceSetForUdid: vi.fn(actual.deviceSetForUdid) };
+});
 
 const DEVICE = {
   id: "00000000-0000-0000-0000-0000000000ab",
@@ -598,6 +606,31 @@ describe("flow iOS full-hierarchy source", () => {
       DEVICE
     ).catch((err) => err);
     expect(unresolvable.message.length).toBeLessThanOrEqual(MAX_TARGETING_REASON_CHARS);
+  });
+
+  it("resolves the device set only for a reason that offers the terminate command", async () => {
+    // With additional sets configured, a default-set udid matches none of them,
+    // so `deviceSetForUdid` caches no verdict and re-runs the whole
+    // `simctl list devices` sweep on every call. Building the command up front
+    // charged that to every branch, including the four that never quote it - and
+    // a failing `await:` rebuilds its reason once per poll.
+    const lookups = vi.mocked(deviceSetForUdid);
+    // One connection covers the sub-case with nothing to clear: the probe-failure
+    // branch offers the command only when a second app is connected.
+    for (const appCount of [1, 2]) {
+      for (const { branch, api, launched } of targetingFailures(appCount)) {
+        lookups.mockClear();
+        const error = await queryFullHierarchyTree(
+          registryFor(api),
+          DEVICE,
+          launched ? { bundleId: launched, pinned: false, probeAnswered: false } : undefined
+        ).catch((err) => err);
+        const quotesCommand = error.message.includes("xcrun simctl");
+        expect(`${branch} x${appCount}: ${lookups.mock.calls.length}`).toBe(
+          `${branch} x${appCount}: ${quotesCommand ? 1 : 0}`
+        );
+      }
+    }
   });
 
   it("keeps the reason the same size as connections pile up", async () => {
