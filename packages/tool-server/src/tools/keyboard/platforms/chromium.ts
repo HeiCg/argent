@@ -32,6 +32,22 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // against a mock document to lock in the editable/refusal classification.
 export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   try {
+  // What the two stages compare, and the ONLY thing carried across them. A
+  // signature, never the content: a cleared field may have held a credential,
+  // and this runs before any redaction the tool does.
+  const contentOf = (node) => {
+    const t = node ? String(node.tagName).toLowerCase() : null;
+    if (t === "input" || t === "textarea") return String(node.value == null ? "" : node.value);
+    if (!node || node.isContentEditable !== true) return null;
+    // Same measure the read-back counts by, so "changed" and "how much is left"
+    // can never disagree: end-trimmed text with the zero-width seeds an editor
+    // adds stripped, plus the content that HAS no text.
+    const text = String(node.textContent == null ? "" : node.textContent).replace(/[\\u200b\\ufeff]/g, "").trim();
+    const embedded = node.querySelectorAll
+      ? node.querySelectorAll("img,video,audio,canvas,svg,iframe,object,embed,input,textarea,select,table").length
+      : 0;
+    return text + "\\u0000" + embedded;
+  };
   let el = document.activeElement;
   // A custom element hands focus down into its shadow root, where the real
   // <input> lives; document.activeElement only ever names the host.
@@ -111,6 +127,7 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
       !!el && !el.shadowRoot && tag !== null && (tag.indexOf("-") !== -1 || el.childNodes.length === 0);
     return { cleared: false, focus: focus, reason: opaque ? "host-opaque" : "not-editable" };
   }
+  const before = contentOf(el);
   // A text CONTROL keeps its own selection, separate from the document's, and
   // \`execCommand("selectAll")\` acts on the DOCUMENT's. When that one is anchored
   // outside the focused control — a copy-to-clipboard button that highlights a
@@ -155,7 +172,12 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // attribute it reaches neither the DOM, nor CSS, nor a screenshot. The
   // read-back deletes it.
   try {
-    window.__argentClearTarget = el;
+    // \`before\` rides along so the read-back can tell a value that SURVIVED from
+    // one the page REPLACED. A currency, phone or card mask seeds its own value
+    // on \`input\`, so the field is non-empty afterwards while the caller's value
+    // is already destroyed — reported as "nothing was cleared", which is the
+    // opposite of what happened.
+    window.__argentClearTarget = { el: el, before: before };
   } catch (e) {
     /* a page may seal \`window\`; the read-back then simply has no identity */
   }
@@ -182,14 +204,31 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
 // blurs on change both leave focus somewhere with nothing to read, and the
 // restored value was then reported as `cleared: true`.
 const CLEAR_READBACK_SCRIPT = `(() => {
-  // Read and dropped in one go, so a later clear cannot inherit a stale target.
-  let target;
+  // What the two stages compare, and the ONLY thing carried across them. A
+  // signature, never the content: a cleared field may have held a credential,
+  // and this runs before any redaction the tool does.
+  const contentOf = (node) => {
+    const t = node ? String(node.tagName).toLowerCase() : null;
+    if (t === "input" || t === "textarea") return String(node.value == null ? "" : node.value);
+    if (!node || node.isContentEditable !== true) return null;
+    // Same measure the read-back counts by, so "changed" and "how much is left"
+    // can never disagree: end-trimmed text with the zero-width seeds an editor
+    // adds stripped, plus the content that HAS no text.
+    const text = String(node.textContent == null ? "" : node.textContent).replace(/[\\u200b\\ufeff]/g, "").trim();
+    const embedded = node.querySelectorAll
+      ? node.querySelectorAll("img,video,audio,canvas,svg,iframe,object,embed,input,textarea,select,table").length
+      : 0;
+    return text + "\\u0000" + embedded;
+  };
+  // Read and dropped in one go, so a later clear cannot inherit a stale record.
+  let record;
   try {
-    target = window.__argentClearTarget;
+    record = window.__argentClearTarget;
     delete window.__argentClearTarget;
   } catch (e) {
-    target = undefined;
+    record = undefined;
   }
+  const target = record ? record.el : undefined;
   let focused = document.activeElement;
   while (focused && focused.shadowRoot && focused.shadowRoot.activeElement) {
     focused = focused.shadowRoot.activeElement;
@@ -199,11 +238,14 @@ const CLEAR_READBACK_SCRIPT = `(() => {
   // about what is on screen now. Only a live target can contradict the delete.
   const el = target && target.isConnected === true ? target : focused;
   const same = !!target && target.isConnected === true;
+  // Whether what is there now is a DIFFERENT value, not the one the clear was
+  // aimed at. Only meaningful when the target itself was read.
+  const changed = same ? contentOf(el) !== record.before : false;
   const tag = el ? String(el.tagName).toLowerCase() : null;
   const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
   const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
   if (tag === "input" || tag === "textarea") {
-    return { focus: focus, same: same, remaining: String(el.value == null ? "" : el.value).length, embeds: 0 };
+    return { focus: focus, same: same, changed: changed, remaining: String(el.value == null ? "" : el.value).length, embeds: 0 };
   }
   if (el && el.isContentEditable === true) {
     // A cleared contenteditable keeps a placeholder <br> or an empty <p>, and an
@@ -219,11 +261,11 @@ const CLEAR_READBACK_SCRIPT = `(() => {
     const embedded = el.querySelectorAll
       ? el.querySelectorAll("img,video,audio,canvas,svg,iframe,object,embed,input,textarea,select,table")
       : null;
-    return { focus: focus, same: same, remaining: text.length, embeds: embedded ? embedded.length : 0 };
+    return { focus: focus, same: same, changed: changed, remaining: text.length, embeds: embedded ? embedded.length : 0 };
   }
   // Nothing readable to look at. The delete already reported success, so there
   // is nothing here to contradict it.
-  return { focus: focus, same: same, remaining: null, embeds: 0 };
+  return { focus: focus, same: same, changed: changed, remaining: null, embeds: 0 };
 })()`;
 
 // The renderer answers the scripts above. Nothing else in the tool depends on
@@ -242,6 +284,8 @@ interface ReadbackOutcome {
   remaining?: number | null;
   /** Content with no text of its own — an image, embed, table or form control. */
   embeds?: number;
+  /** Whether what is there now differs from what the clear was aimed at. */
+  changed?: boolean;
 }
 
 /**
@@ -446,19 +490,41 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
       typeof remaining === "number" && remaining > 0
         ? `${remaining} character${remaining === 1 ? "" : "s"}`
         : `${embeds} embedded element${embeds === 1 ? "" : "s"} (an image, table or attachment)`;
+    // A field the page REWROTE is not a field that kept its value, and saying
+    // "nothing was cleared" of one is false twice over: the caller's value is
+    // already destroyed, and what is quoted back as "the value the field still
+    // holds" is the mask's own seed. A currency, phone or card mask reseeds on
+    // `input`, so this is the ordinary shape, not a corner.
+    if (readback.changed === true) {
+      throw new InvalidToolInputError(
+        `the <${focus ?? "element"}> this clear ran against is not empty — it holds ${held}, and they ` +
+          "are NOT what it held before: the page rewrote the value after the delete, which is what a " +
+          "currency, phone or card-number mask does from its `input` listener. The value you aimed at " +
+          "is gone; what is there now is the page's own seed, and typing would append to THAT. Read the " +
+          "field back (`describe`) and clear or type according to what it actually holds — a second " +
+          "`clear` reaches the same mask and seeds it again.",
+        {
+          error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
+          // Its own stage: the old value is destroyed here and intact in the
+          // sibling below, which is the difference an agent acts on.
+          failure_stage: "keyboard_clear_chromium_reformatted",
+          error_kind: "unsupported",
+        }
+      );
+    }
     // The KIND of field again, not focus: a retry of this same call reaches the
     // same editor and is restored the same way. Worded off the element the clear
     // RAN AGAINST rather than "the focused" one, because a restoring editor
     // routinely moves focus away before this read.
     throw new InvalidToolInputError(
       `the <${focus ?? "element"}> this clear ran against still holds ${held} ` +
-        "after the delete — nothing was cleared. The delete was accepted and the content is still there, " +
-        "which two shapes produce: a rich-text editor that keeps its own document model (Lexical, " +
-        "CKEditor) restores it from that model afterwards — a page can do the same from an `input` " +
-        'listener — and a field holding a `contenteditable="false"` block (a locked header, an embed, a ' +
-        "node view, a mention chip) never loses it at all. Typing now would APPEND to the value the field " +
-        "still holds: empty it through the app's own control, or select the text with `gesture-drag` and " +
-        "type over the selection instead.",
+        "after the delete — nothing was cleared, and the value is the one it held before. The delete was " +
+        "accepted and the content is still there, which two shapes produce: a rich-text editor that keeps " +
+        "its own document model (Lexical, CKEditor) restores it from that model afterwards — a page can " +
+        'do the same from an `input` listener — and a field holding a `contenteditable="false"` block (a ' +
+        "locked header, an embed, a node view, a mention chip) never loses it at all. Typing now would " +
+        "APPEND to the value the field still holds: empty it through the app's own control, or select the " +
+        "text with `gesture-drag` and type over the selection instead.",
       {
         error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
         failure_stage: "keyboard_clear_chromium_restored",

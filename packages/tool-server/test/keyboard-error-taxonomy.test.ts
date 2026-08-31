@@ -498,6 +498,43 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
   });
 
+  it("a field the page REFORMATTED is not reported as one that kept its value", async () => {
+    // A currency, phone or card mask reseeds its own value from the `input`
+    // listener, so the field is non-empty after the delete while the caller's
+    // value is already destroyed. "nothing was cleared ... the value the field
+    // still holds" was false twice over, and an agent that believed it treated
+    // the original as intact. Its own stage, because that is the difference an
+    // agent acts on.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "input type=text" },
+      { focus: "input type=text", same: true, changed: true, remaining: 4, embeds: 0 },
+    ]);
+    const err = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    const signal = getFailureSignal(err);
+    expect(signal?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD);
+    expect(signal?.failure_stage).toBe("keyboard_clear_chromium_reformatted");
+    expect(err?.message).toMatch(/NOT what it held before/);
+    expect(err?.message).not.toMatch(/nothing was cleared/);
+  });
+
+  it("a field that kept the SAME value still reports the restore", async () => {
+    // The positive control for the branch above: `changed: false` is the
+    // restoring editor, where the caller's value really is intact.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "div" },
+      { focus: "div", same: true, changed: false, remaining: 20, embeds: 0 },
+    ]);
+    const err = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(getFailureSignal(err)?.failure_stage).toBe("keyboard_clear_chromium_restored");
+    expect(err?.message).toMatch(/the value is the one it held before/);
+  });
+
   it("reads EVERY accepted clear back — there is no delete's-word-alone path", async () => {
     // `delete` answers true whether or not it removed anything (measured on
     // Chrome 151), so its return value is never the evidence `cleared` reports.
