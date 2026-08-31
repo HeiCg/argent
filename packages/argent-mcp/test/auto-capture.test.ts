@@ -11,6 +11,7 @@ import {
   autoDescribeEnabled,
   shouldAutoDescribe,
   containsSecretPlaceholder,
+  resultUsedSecret,
   getUdidFromArgs,
   normalizeToolName,
   shouldAutoScreenshot,
@@ -339,6 +340,19 @@ describe("containsSecretPlaceholder", () => {
 // like run-sequence, on both the screenshot and describe paths.
 // ---------------------------------------------------------------------------
 describe("run-script auto-capture", () => {
+  // getAutoScreenshotDelayMs treats ARGENT_AUTO_SCREENSHOT_DELAY_MS as a floor,
+  // so the 15000 assertion below fails when the process exports a larger value.
+  // Isolate the variable for this suite (this package has no ARGENT_*-stripping
+  // setup file the way tool-server does).
+  const original = process.env.ARGENT_AUTO_SCREENSHOT_DELAY_MS;
+  beforeEach(() => {
+    delete process.env.ARGENT_AUTO_SCREENSHOT_DELAY_MS;
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env.ARGENT_AUTO_SCREENSHOT_DELAY_MS;
+    else process.env.ARGENT_AUTO_SCREENSHOT_DELAY_MS = original;
+  });
+
   it("is a member of both auto-capture sets", () => {
     expect(AUTO_SCREENSHOT_TOOLS.has("run-script")).toBe(true);
     expect(AUTO_DESCRIBE_TOOLS.has("run-script")).toBe(true);
@@ -349,5 +363,23 @@ describe("run-script auto-capture", () => {
     expect(shouldAutoScreenshot("mcp__argent__run-script")).toBe(true);
     expect(shouldAutoDescribe("run-script")).toBe(true);
     expect(getAutoScreenshotDelayMs("run-script")).toBe(15000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resultUsedSecret — the tool-server flags a dynamically built placeholder on
+// the result, since the request args carry none for the arg-scan to catch.
+// ---------------------------------------------------------------------------
+describe("resultUsedSecret", () => {
+  it("is true when the result carries secretsUsed: true", () => {
+    expect(resultUsedSecret({ completed: true, logs: "", steps: 3, secretsUsed: true })).toBe(true);
+  });
+
+  it("is false without the flag, and for non-object results", () => {
+    expect(resultUsedSecret({ completed: true, logs: "", steps: 3 })).toBe(false);
+    expect(resultUsedSecret({ secretsUsed: false })).toBe(false);
+    expect(resultUsedSecret(null)).toBe(false);
+    expect(resultUsedSecret(undefined)).toBe(false);
+    expect(resultUsedSecret("secretsUsed")).toBe(false);
   });
 });

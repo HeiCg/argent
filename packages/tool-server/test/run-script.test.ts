@@ -225,6 +225,93 @@ describe("run-script runtime", () => {
     expect((err as Error).name).toBe("ScriptAbortError");
     expect(registry.invokeTool).toHaveBeenCalledTimes(1);
   });
+
+  it("kills a synchronous infinite loop at the deadline (RUN_SCRIPT_TIMEOUT)", async () => {
+    // A `while (true) {}` blocks the child's event loop, so no in-script timer
+    // could ever fire. The parent's deadline kills the child process instead.
+    const registry = mockRegistry();
+    const err = await runScript({
+      registry,
+      device: resolveDevice(IOS),
+      script: "while (true) {}",
+      timeoutMs: 300,
+      ctx: undefined,
+    }).catch((e) => e);
+    expect(getFailureSignal(err)?.error_code).toBe("RUN_SCRIPT_TIMEOUT");
+  }, 15000);
+
+  it("isolates a constructor escape in a throwaway child with no host state", async () => {
+    // The classic vm escape now lands in a separate process spawned with an
+    // empty env, so a sentinel the parent holds is unreachable.
+    const sentinel = "argent-parent-sentinel-8f3ac1";
+    const prev = process.env.ARGENT_TEST_SENTINEL;
+    process.env.ARGENT_TEST_SENTINEL = sentinel;
+    try {
+      const registry = mockRegistry();
+      const result = await runScript({
+        registry,
+        device: resolveDevice(IOS),
+        script:
+          "const p = ui.describe.constructor('return process')();" +
+          "console.log('sentinel=' + (p.env.ARGENT_TEST_SENTINEL || 'ABSENT'));",
+        timeoutMs: 5000,
+        ctx: undefined,
+      });
+      expect(result.completed).toBe(true);
+      expect(result.logs).toContain("sentinel=ABSENT");
+      expect(result.logs).not.toContain(sentinel);
+    } finally {
+      if (prev === undefined) delete process.env.ARGENT_TEST_SENTINEL;
+      else process.env.ARGENT_TEST_SENTINEL = prev;
+    }
+  }, 15000);
+
+  it("caps a console flood at record time", async () => {
+    const registry = mockRegistry();
+    const result = await runScript({
+      registry,
+      device: resolveDevice(IOS),
+      script: "for (let i = 0; i < 20000; i++) console.log('X'.repeat(200));",
+      timeoutMs: 10000,
+      ctx: undefined,
+    });
+    expect(result.logs.length).toBeLessThanOrEqual(4001);
+    expect(result.logs.startsWith("…")).toBe(true);
+  }, 15000);
+
+  it("flags secretsUsed when a script types a dynamically built placeholder", async () => {
+    fetchTreeMock.mockResolvedValue(treeWith([leaf("PW")]) as any);
+    const registry = mockRegistry();
+    const result = await runScript({
+      registry,
+      device: resolveDevice(IOS),
+      // Built at runtime, so params.script carries no marker for an arg-scan.
+      script: 'await ui.fill({ text: "PW" }, "{{se" + "cret:X}}");',
+      timeoutMs: 5000,
+      ctx: undefined,
+    });
+    expect(result.completed).toBe(true);
+    expect(result.secretsUsed).toBe(true);
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "keyboard",
+      expect.objectContaining({ text: "{{secret:X}}", udid: IOS }),
+      expect.anything()
+    );
+  }, 15000);
+
+  it("omits secretsUsed for a run that types no secret", async () => {
+    fetchTreeMock.mockResolvedValue(treeWith([leaf("Email")]) as any);
+    const registry = mockRegistry();
+    const result = await runScript({
+      registry,
+      device: resolveDevice(IOS),
+      script: 'await ui.fill({ text: "Email" }, "hello");',
+      timeoutMs: 5000,
+      ctx: undefined,
+    });
+    expect(result.completed).toBe(true);
+    expect(result.secretsUsed).toBeUndefined();
+  }, 15000);
 });
 
 describe("run-script ui facade", () => {
