@@ -30,10 +30,11 @@ const registry = {} as Registry;
 // `{ typed: "", keys: 0 }` — a success that pressed nothing — and that
 // directive's submit would silently no-op on a still-filled field.
 //
-// The tool's own text/key exclusivity guard never reaches this backend, so it
-// cannot stand in for this one: it runs above the platform dispatch and only
-// sees requests carrying BOTH parameters, while what a TV rejects is `key` on
-// its own. That is why the exclusivity message carries the TV caveat statically
+// The tool's own exclusivity guard never reaches this backend, so it cannot
+// stand in for this one: it runs above the platform dispatch and only sees
+// requests carrying MORE THAN ONE of `text` / `key` / `clear`, while what a TV
+// rejects is `key` on its own and `clear` on its own. That is why the
+// exclusivity message carries the TV caveat statically
 // (keyboard-text-key-exclusive.test.ts) instead of relying on this rejection.
 describe("typeTv — the TV keyboard backend", () => {
   beforeEach(() => {

@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { FAILURE_CODES, getFailureSignal, type FailureCode } from "@argent/registry";
 
 import { assertValidProjectRoot, assertSafeFlowName } from "../src/tools/flows/flow-utils";
@@ -8,12 +8,24 @@ import { flowInsertEchoTool } from "../src/tools/flows/flow-insert-echo";
 import { createRunFlowTool } from "../src/tools/flows/flow-run";
 import type { DeviceInfo, Registry } from "@argent/registry";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import { createKeyboardTool } from "../src/tools/keyboard";
+import { adbShell, getAndroidRuntimeKind } from "../src/utils/adb";
 import { chromiumCdpBlueprint } from "../src/blueprints/chromium-cdp";
 import { ensureCdpReachable, discoverPrimaryPage } from "../src/chromium-server/cdp-session";
 import { readViewport } from "../src/chromium-server/viewport";
 import { captureScreenshot } from "../src/chromium-server/screenshot";
 import type { CDPClient } from "../src/utils/debugger/cdp-client";
 import { injectVegaText, injectVegaNamedKey } from "../src/utils/vega-input";
+vi.mock("../src/utils/adb", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/adb")>()),
+  adbShell: vi.fn(async (): Promise<string> => ""),
+  getAndroidRuntimeKind: vi.fn(async (): Promise<"mobile" | "tv" | undefined> => "mobile"),
+}));
+vi.mock("../src/utils/check-deps", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/check-deps")>()),
+  ensureDeps: vi.fn(async (): Promise<void> => {}),
+}));
+
 import {
   readAndroidNativeProfilerMetadata,
   androidNativeProfilerMetadataPath,
@@ -199,9 +211,11 @@ describe("keyboard classifications", () => {
     );
   });
 
-  // The two `clear` codes, pinned here alongside the two older keyboard ones so
-  // the tool's whole failure surface is classified in one place. Each needs its
-  // own `evaluate` answer, so they take a registry of their own.
+  // The Chromium `clear` codes, pinned here alongside the two older keyboard ones
+  // so the tool's whole failure surface is classified in one place. Each needs
+  // its own `evaluate` answer, so they take a registry of their own.
+  // KEYBOARD_CLEAR_UNCONFIRMED and KEYBOARD_TARGET_KIND_UNKNOWN are reached
+  // through the ANDROID path and are classified below, off their own backend.
   const withEvaluate = (answers: unknown[]) => {
     let call = 0;
     return makeChromiumImpl({
@@ -249,6 +263,41 @@ describe("keyboard classifications", () => {
       ),
       FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
     );
+  });
+});
+
+// The two clear codes the ANDROID path owns. Both were exercised only against
+// `injectAndroidClear` and the platform impl directly, never through the tool's
+// own `execute()` — which is where a caller meets them, and where a `services`
+// or dispatch change could reclassify one without any of those going red.
+describe("keyboard classifications — the android clear path, through execute()", () => {
+  const device = { id: "emulator-5554", platform: "android", kind: "emulator" } as DeviceInfo;
+  const registry = { resolveService: async () => ({}) } as unknown as Registry;
+
+  it("classifies a burst that failed partway as KEYBOARD_CLEAR_UNCONFIRMED", async () => {
+    vi.mocked(adbShell).mockRejectedValueOnce(
+      Object.assign(new Error("adb: killed by signal"), { signal: "SIGKILL" })
+    );
+    vi.mocked(getAndroidRuntimeKind).mockResolvedValue("mobile");
+    expectCode(
+      await captureError(
+        createKeyboardTool(registry).execute({}, { udid: device.id, clear: true })
+      ),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED
+    );
+  });
+
+  it("classifies an unreadable form factor as KEYBOARD_TARGET_KIND_UNKNOWN", async () => {
+    // `clear` means different things on a phone and on a TV, so an indeterminate
+    // probe is refused rather than guessed — and nothing reaches the device.
+    vi.mocked(getAndroidRuntimeKind).mockResolvedValue(undefined);
+    expectCode(
+      await captureError(
+        createKeyboardTool(registry).execute({}, { udid: device.id, clear: true })
+      ),
+      FAILURE_CODES.KEYBOARD_TARGET_KIND_UNKNOWN
+    );
+    vi.mocked(getAndroidRuntimeKind).mockResolvedValue("mobile");
   });
 });
 

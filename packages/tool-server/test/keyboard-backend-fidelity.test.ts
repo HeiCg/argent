@@ -89,9 +89,9 @@ const CDP_ENTER = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
 const CDP_ESCAPE = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 };
 
 // Single-parameter fidelity: does each backend emit exactly the action it was
-// given? Every request here carries `text` or `key`, never both — the tool
-// rejects the combined shape (keyboard-text-key-exclusive.test.ts), so one
-// action per call is the only shape a backend ever sees, and there is no
+// given? Every request here carries exactly ONE of `text`, `key` and `clear` —
+// the tool rejects any combination of them (keyboard-text-key-exclusive.test.ts),
+// so one action per call is the only shape a backend ever sees, and there is no
 // relative order left to pin.
 //
 // What a success shape cannot see is a backend that emits its one action
