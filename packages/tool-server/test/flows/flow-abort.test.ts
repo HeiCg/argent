@@ -383,6 +383,11 @@ describe("run cancellation mid-directive", () => {
     expect(result.steps[0].reason).toBe("run aborted");
     // Not the tool's own "aborted - cancelled mid-gesture after N of M frames".
     expect(result.steps[0].reason).not.toMatch(/frames/);
+    // The swipe provably went out (asserted above), so this skip has to carry
+    // the marker: an unmarked skip tells `reachedAStep` nothing was dispatched,
+    // and the recorder then drops the partial-mutation warning for a run that
+    // did move the device.
+    expect(result.steps[0].reached).toBe(true);
     expect(result.aborted).toBe(true);
   });
 
