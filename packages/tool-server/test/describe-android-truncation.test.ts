@@ -1,8 +1,10 @@
-// The android-devtools helper walks at most `maxNodes` accessibility nodes and
-// reports whether it stopped early. A truncated capture is indistinguishable
-// from a complete one once it has been rendered as text, so `describe` has to
-// say when the tree is partial — a WebView's web DOM can spend the whole budget
-// on a single page.
+// The android-devtools helper walks a screen under a node-count limit and a
+// tree-depth limit, and reports one `truncated` flag for either — measured on
+// an API 35 emulator, where `maxDepth: 3` with `maxNodes: 5000` came back
+// truncated at 11 nodes. A truncated capture is indistinguishable from a
+// complete one once it has been rendered as text, so `describe` has to say when
+// the tree is partial — a WebView's web DOM can spend the whole node budget on
+// a single page.
 import { describe, it, expect, vi } from "vitest";
 import { describeAndroid } from "../src/tools/describe/platforms/android";
 import type { AndroidDevtoolsApi } from "../src/blueprints/android-devtools";
@@ -36,10 +38,13 @@ function registryWith(truncated: boolean): Registry {
 }
 
 describe("describeAndroid — partial capture", () => {
-  it("tells the agent when the helper stopped at its node budget", async () => {
+  it("tells the agent when the helper stopped at a walk limit", async () => {
     const data = await describeAndroid(registryWith(true), SERIAL, undefined, false);
     expect(data.source).toBe("android-devtools");
     expect(data.hint).toContain("PARTIAL");
+    // The helper reports one flag for both of its limits, so the hint must not
+    // promise that a smaller region recovers the missing content.
+    expect(data.hint).toContain("too deep returns the same partial tree");
     // The tree it did capture is still returned — a partial read beats none.
     expect(data.tree.children.length).toBeGreaterThan(0);
   });

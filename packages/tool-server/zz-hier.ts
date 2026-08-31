@@ -16,7 +16,9 @@ async function main() {
   };
   const ref = androidDevtoolsRef(device as any);
   const api = await registry.resolveService<AndroidDevtoolsApi>(ref.urn, ref.options);
-  const res = await api.getHierarchy({ clearCache: true });
+  const maxDepth = process.argv[4] ? Number(process.argv[4]) : undefined;
+  const maxNodes = process.argv[5] ? Number(process.argv[5]) : undefined;
+  const res = await api.getHierarchy({ clearCache: true, ...(maxDepth ? { maxDepth } : {}), ...(maxNodes ? { maxNodes } : {}) });
   const size = await api.getScreenSize();
   fs.writeFileSync(out, res.xml);
   console.log(

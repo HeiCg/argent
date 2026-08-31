@@ -24,15 +24,20 @@ const ANDROID_TV_HINT =
   "(up/down/left/right/select/back/menu/home) to move focus, and `keyboard` to type, " +
   "rather than coordinate taps.";
 
-// The android-devtools helper stops walking at `maxNodes` accessibility nodes
-// and says so. A truncated capture looks exactly like a complete one once it
-// is a tree of text, and a WebView's web DOM can now spend that whole budget
-// on one page, so the agent must be told the tree is partial. Mirrors what the
-// Chromium describe path does with its own walker budget.
+// The android-devtools helper walks a screen under two limits — a node count
+// and a tree depth — and raises the same `truncated` flag for either. A
+// truncated capture looks exactly like a complete one once it is a tree of
+// text, and a WebView's web DOM can now spend the whole node budget on one
+// page, so the agent must be told the tree is partial. The flag does not say
+// which limit stopped the walk, so the hint must not promise that a smaller
+// region helps: a screen that is too deep returns the same tree on a retry.
+// Mirrors what the Chromium describe path does with its own walker budget.
 export const ANDROID_TRUNCATED_HINT =
-  "describe hit the node budget and returned a PARTIAL tree — some on-screen content is " +
-  "missing, and web content inside a WebView can consume the whole budget. Scope the " +
-  "inspection to a smaller region (scroll to or collapse the relevant view) and describe again.";
+  "describe stopped at a capture limit and returned a PARTIAL tree — some on-screen content " +
+  "is missing, and web content inside a WebView can consume the whole node budget. The helper " +
+  "limits both how many nodes and how deep it walks, and reports one flag for both: scoping " +
+  "the inspection to a smaller region (scroll to or collapse the relevant view) recovers a " +
+  "screen with too many nodes, but a screen that is too deep returns the same partial tree.";
 
 function joinHints(...hints: (string | undefined)[]): string | undefined {
   const kept = hints.filter((h): h is string => Boolean(h));
@@ -70,8 +75,8 @@ export async function describeAndroid(
         // Server-side warning so a partial tree is visible to ops, matching the
         // Chromium path.
         process.stderr.write(
-          "[describe.android] hierarchy truncated at the helper's node budget; " +
-            "the screen exceeds what one capture can carry.\n"
+          "[describe.android] hierarchy truncated at a helper walk limit (node count or " +
+            "tree depth); the screen exceeds what one capture can carry.\n"
         );
       }
       return {
