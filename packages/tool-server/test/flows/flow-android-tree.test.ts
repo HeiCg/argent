@@ -520,6 +520,29 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
 
     expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
   });
+  // The label gate on the same remap, which also only this tree can pin: an
+  // unlabelled web node never reaches the remap in describe (the layout-container
+  // passthrough returns its children before a role is computed), but the flow
+  // tree computes a role for every node it keeps. Chromium publishes a
+  // `<div id="banner">` as a childless, nameless `android.view.View`, and
+  // `StaticText` for a node with no text is the wrong answer.
+  it("does not call an id-only web node a text run", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" bounds="[0,200][1080,1200]">
+      <node index="0" class="android.view.View" resource-id="banner" package="com.acme.app" bounds="[20,260][1060,320]" />
+    </node>
+  </node>
+</hierarchy>`;
+    const [banner] = findAll(adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H), {
+      identifier: "banner",
+    });
+    expect(banner).toBeDefined();
+    expect(banner!.label).toBeUndefined();
+    expect(banner!.role).toBe("View");
+  });
+
   // The web half of the scroll rule, which only this tree can pin: Chromium
   // maps a `<ul>` onto `android.widget.ListView`, a SCROLL_CLASSES member, and
   // the flow flatten clips a scroller's own children. Reading the class name
