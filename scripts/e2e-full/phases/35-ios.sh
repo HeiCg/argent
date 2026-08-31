@@ -17,14 +17,14 @@
 # the tool.
 #
 # Env overrides:
-#   E2E_IOS_UDID   an already-booted simulator; with none, the first booted one
-#                  in `list-devices` is used, and the tier skips if there is none.
-
-_ios_booted_udid() {
-  run_tool list-devices '{}'
-  printf '%s' "$RT_JSON" |
-    jq -r 'first(.devices[]? | select(.platform=="ios" and .state=="Booted" and .runtimeKind!="tv") | .udid) // empty' 2>/dev/null
-}
+#   E2E_IOS_UDID   the simulator to drive. REQUIRED — the tier skips without it,
+#                  and boots the named device when it is not already running.
+#
+# Deliberately NOT "whatever happens to be booted". A developer machine runs
+# several agent sessions at once, so the first booted simulator in `list-devices`
+# is somebody else's device — and this tier launches Settings on it, types, and
+# presses Home. Mirrors the android tier, which takes E2E_ANDROID_SERIAL or boots
+# E2E_ANDROID_AVD and never picks a device for you.
 
 # The search field's tap point, from `describe`. Returns "x y" in the normalized
 # space the gesture tools take, or nothing when the node is not on screen.
@@ -40,6 +40,27 @@ _search_tap_point() { # udid
   ' 2>/dev/null
 }
 
+# What the search field currently HOLDS, from its own `describe` node — "" when
+# the field is empty (the node then carries no `value=` at all) and "" when the
+# node is missing, which the caller has already ruled out by the time it asks.
+#
+# The marker test alone cannot see a forward-delete regression: with the caret
+# one character from the end, backspaces alone leave exactly that character
+# behind, and "the value no longer contains the marker" is true either way.
+# Reading the value is what tells "Argentclearmark" from "k" (both measured on a
+# real iOS 26.5 simulator).
+_search_value() { # udid
+  run_tool describe "{\"udid\":\"$1\"}"
+  printf '%s' "$RT_JSON" | jq -r '
+    (.description // "")
+    | [splits("\n")]
+    | map(select(test("AXGroup \"Search\"")))
+    | first // ""
+    | (capture("value=\"(?<v>[^\"]*)\"") // {v: ""})
+    | .v
+  ' 2>/dev/null
+}
+
 run_phase() {
   local P=ios
   if [ "$E2E_OS" != darwin ]; then
@@ -48,9 +69,22 @@ run_phase() {
   ensure_server || { skip "$P" tier all "tool-server unavailable"; return 0; }
 
   local DEV="${E2E_IOS_UDID:-}"
-  [ -n "$DEV" ] || DEV="$(_ios_booted_udid)"
   if [ -z "$DEV" ]; then
-    skip "$P" tier all "no booted iOS simulator (boot one, or set E2E_IOS_UDID)"; return 0
+    skip "$P" tier all "no simulator named (set E2E_IOS_UDID)"; return 0
+  fi
+  # The boot path the android tier has and this one lacked: on a cold
+  # release-gate machine every assertion below was skipped, and the tier that
+  # calls itself the only check that can go red for the HID burst went green
+  # having run nothing.
+  run_tool list-devices '{}'
+  if ! printf '%s' "$RT_JSON" |
+    jq -e --arg u "$DEV" 'any(.devices[]?; .udid==$u and .state=="Booted")' >/dev/null 2>&1; then
+    log "booting simulator $DEV"
+    run_tool boot-device "{\"udid\":\"$DEV\"}"
+    if [ "$RT_RC" -ne 0 ]; then
+      fail "$P" boot-device boot "$(rt_detail 160)"; return 0
+    fi
+    pass "$P" boot-device boot "booted $DEV"
   fi
   pass "$P" list-devices present "simulator $DEV"
 
@@ -63,7 +97,11 @@ run_phase() {
   set -- $POINT
   X="${1:-}"; Y="${2:-}"
   if [ -z "$X" ] || [ -z "$Y" ]; then
-    skip "$P" keyboard clear "Settings' search field not found in describe"; return 0
+    # A FAILURE, not a skip: `await_ui` above has already seen "Search" on this
+    # screen, so the precondition is met and the node not parsing out of
+    # `describe` is a describe-format regression. Skipping scored that green in
+    # the one tier whose header calls itself the only check that can go red.
+    fail "$P" describe search-field "Settings' search field did not parse out of describe"; return 0
   fi
   assert_true "$P" gesture-tap focus-search "{\"udid\":\"$DEV\",\"x\":$X,\"y\":$Y}" '.tapped'
 
@@ -76,13 +114,30 @@ run_phase() {
   assert_field "$P" describe clear-baseline "{\"udid\":\"$DEV\"}" \
     "(.description|ascii_downcase|contains(\"$MARK\"))" 'true'
 
-  # The burst itself. `keys` is 200 — the CLEAR_KEY_PAIRS * 2 contract the tool
-  # description states to callers — and the describe after it is what proves the
-  # HID deletes actually reached the field rather than being dropped.
-  assert_field "$P" keyboard clear "{\"udid\":\"$DEV\",\"clear\":true}" '.cleared' 'true'
-  assert_field "$P" keyboard clear-keys "{\"udid\":\"$DEV\",\"clear\":true}" '.keys' '200'
-  assert_field "$P" describe clear-took-effect "{\"udid\":\"$DEV\"}" \
-    "(.description|ascii_downcase|contains(\"$MARK\"))" 'false'
+  # One `arrow-left` first, so the caret is NOT at the end. The burst is 100
+  # backspaces interleaved with 100 forward-deletes, and with the caret at the
+  # end the backspaces alone satisfy every assertion — deleting
+  # FORWARD_DELETE_KEYCODE from it left this tier green. Measured on a real
+  # iOS 26.5 simulator: from one character in, the full burst empties the field
+  # and backspaces alone leave "k" behind.
+  assert_ok "$P" keyboard caret-off-end "{\"udid\":\"$DEV\",\"key\":\"arrow-left\"}"
+
+  # The burst itself, in ONE call: `keys` is 200 — the CLEAR_KEY_PAIRS * 2
+  # contract the tool description states to callers — and it cannot depend on
+  # the device, so asserting it from a second burst only fires 200 more HID
+  # events for nothing.
+  assert_field "$P" keyboard clear "{\"udid\":\"$DEV\",\"clear\":true}" \
+    '(.cleared == true and .keys == 200)' 'true'
+  # What proves the HID deletes actually reached the field: its own value, not
+  # the absence of the marker. See `_search_value` — the marker test passes for
+  # a field still holding the character the forward-delete was meant to remove.
+  local LEFT
+  LEFT="$(_search_value "$DEV")"
+  if [ -z "$LEFT" ]; then
+    pass "$P" describe clear-took-effect "search field emptied"
+  else
+    fail "$P" describe clear-took-effect "search field still holds \"$LEFT\""
+  fi
 
   # One action per call, `clear` included — the same guard the other tiers make.
   assert_reject "$P" keyboard clear-and-text "{\"udid\":\"$DEV\",\"clear\":true,\"text\":\"x\"}"
