@@ -33,14 +33,33 @@ interface Outcome {
 const DATE_TIME_TYPES = ["date", "datetime-local", "month", "week", "time"];
 
 /**
+ * Where `run` collects what the script asked the renderer to do — both
+ * `execCommand` names and `.select()` on a text control, in call order. Element
+ * mocks are built before `run` has its local array, so they push through here.
+ */
+let commandLog: string[] = [];
+
+/**
  * One element as the script sees it. `tagName` is uppercase, as in a real DOM.
  *
  * `childNodes` defaults to one node — "an ordinary element with light content".
  * The script reads it to spot a host hiding a CLOSED shadow root, whose light
  * subtree is empty; pass `childNodes: []` for that shape.
+ *
+ * `select` is the text control's own select-all: the script calls it instead of
+ * `execCommand("selectAll")` for an <input>/<textarea>, because that command
+ * acts on the DOCUMENT's selection and a page selection anchored elsewhere then
+ * hijacks it.
  */
 function el(tagName: string, props: Record<string, unknown> = {}): Record<string, unknown> {
-  return { tagName, childNodes: [{}], ...props };
+  return {
+    tagName,
+    childNodes: [{}],
+    select() {
+      commandLog.push("select");
+    },
+    ...props,
+  };
 }
 
 const textInput = () => el("INPUT", { type: "text" });
@@ -63,6 +82,7 @@ function run(
   documentExtras: Record<string, unknown> = {}
 ): { outcome: Outcome; commands: string[]; selectionsDropped: number } {
   const commands: string[] = [];
+  commandLog = commands;
   const dropped = { count: 0 };
   const g = globalThis as Record<string, unknown>;
   const had = Object.hasOwn(g, "document");
@@ -93,27 +113,34 @@ function run(
 }
 
 describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
-  // `selectAll` then `delete`, in that order: `delete` on its own removes one
+  // Select-all then `delete`, in that order: `delete` on its own removes one
   // character (or nothing, with a collapsed caret at the end), which is exactly
   // the silent near-no-op the whole design is built to avoid. Pinning the pair
   // and the order also records that neither is a keyboard event — the script
   // delivers no keydown, so a page shortcut bound to "a" cannot cancel it.
+  //
+  // WHICH select-all is per element kind, and that is load-bearing. A text
+  // control keeps its own selection and `.select()` acts on THAT;
+  // `execCommand("selectAll")` acts on the document's, which a page selection
+  // anchored elsewhere hijacks — measured on Chrome 151 as an ordinary <input>
+  // that could not be cleared at all. A contenteditable has no separate
+  // selection to hijack, and `selectAll` is also what reaches into an open
+  // shadow root, so it keeps that one.
   it.each([
-    ["a text input", () => el("INPUT", { type: "text" }), "input type=text"],
-    ["an input with no explicit type", () => el("INPUT", {}), "input type=text"],
-    ["a password input", () => el("INPUT", { type: "password" }), "input type=password"],
-    ["a number input", () => el("INPUT", { type: "number" }), "input type=number"],
-    ["a search input", () => el("INPUT", { type: "search" }), "input type=search"],
-    ["an email input", () => el("INPUT", { type: "email" }), "input type=email"],
-    ["a textarea", () => el("TEXTAREA", {}), "textarea"],
-    ["a contenteditable element", () => el("DIV", { isContentEditable: true }), "div"],
-  ])("clears %s with selectAll + delete", (_label, make, focus) => {
+    ["a text input", () => el("INPUT", { type: "text" }), "input type=text", "select"],
+    ["an input with no explicit type", () => el("INPUT", {}), "input type=text", "select"],
+    ["a password input", () => el("INPUT", { type: "password" }), "input type=password", "select"],
+    ["a number input", () => el("INPUT", { type: "number" }), "input type=number", "select"],
+    ["a search input", () => el("INPUT", { type: "search" }), "input type=search", "select"],
+    ["an email input", () => el("INPUT", { type: "email" }), "input type=email", "select"],
+    ["a textarea", () => el("TEXTAREA", {}), "textarea", "select"],
+    ["a contenteditable element", () => el("DIV", { isContentEditable: true }), "div", "selectAll"],
+  ])("clears %s with %s + delete", (_label, make, focus, selectAll) => {
     const { outcome, commands } = run(make());
-    // `focus` rides along on the success too: the backend compares it with the
-    // read-back's own focus, and only a read of the SAME element can contradict
-    // the delete.
+    // `focus` rides along on the success too: the backend quotes it in the
+    // read-back's own refusal.
     expect(outcome).toEqual({ cleared: true, focus });
-    expect(commands).toEqual(["selectAll", "delete"]);
+    expect(commands).toEqual([selectAll, "delete"]);
   });
 
   // The refusals. Each one must ALSO leave the page untouched: the script
@@ -257,7 +284,25 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     // It still TRIED — the refusal is read from the attempt, not predicted from
     // the type. An allowlist of known-bad types would pass this assertion on
     // `outcome` alone while going stale the next time Chromium adds one.
-    expect(commands).toEqual(["selectAll", "delete"]);
+    // Measured on Chrome 151: `.select()` leaves `delete` answering false for
+    // these five exactly as `execCommand("selectAll")` did.
+    expect(commands).toEqual(["select", "delete"]);
+  });
+
+  it("selects the text control's OWN value, not the document's selection", () => {
+    // The bug this replaces: `execCommand("selectAll")` acts on the DOCUMENT's
+    // selection, so a page selection anchored outside the focused control — the
+    // everyday copy-to-clipboard button that highlights a code block and keeps
+    // focus in the field — selected the whole document instead, `delete`
+    // refused, and an ordinary <input> was reported unclearable with the
+    // date-input wording. Measured on Chrome 151, and `.select()` clears the
+    // same field.
+    //
+    // The mock answers `selectAll: false`, so a script that still routed a text
+    // control through `execCommand` would take the delete-refused branch.
+    const { outcome, commands } = run(textInput(), { selectAll: false, delete: true });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
+    expect(commands).toEqual(["select", "delete"]);
   });
 
   it("separates the two refusals by `reason`, not only by wording", () => {
@@ -276,7 +321,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     // empty field is the ordinary state of a field a flow just cleared.
     const { outcome, commands } = run(textInput(), { selectAll: false });
     expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
-    expect(commands).toEqual(["selectAll", "delete"]);
+    expect(commands).toEqual(["select", "delete"]);
   });
 });
 
@@ -290,7 +335,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const host = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const { outcome, commands } = run(host);
     expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
-    expect(commands).toEqual(["selectAll", "delete"]);
+    expect(commands).toEqual(["select", "delete"]);
   });
 
   it("descends through nested shadow roots", () => {
@@ -365,7 +410,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — the document as its own editing host
     const field = el("INPUT", { type: "text", isContentEditable: true, parentElement: body });
     const { outcome, commands } = run(field, {}, withDocumentRoots(body));
     expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
-    expect(commands).toEqual(["selectAll", "delete"]);
+    expect(commands).toEqual(["select", "delete"]);
   });
 
   it("refuses a focused DESCENDANT of a document-wide editing host", () => {

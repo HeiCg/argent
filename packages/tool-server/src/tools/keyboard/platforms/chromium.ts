@@ -111,7 +111,22 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
       !!el && !el.shadowRoot && tag !== null && (tag.indexOf("-") !== -1 || el.childNodes.length === 0);
     return { cleared: false, focus: focus, reason: opaque ? "host-opaque" : "not-editable" };
   }
-  document.execCommand("selectAll");
+  // A text CONTROL keeps its own selection, separate from the document's, and
+  // \`execCommand("selectAll")\` acts on the DOCUMENT's. When that one is anchored
+  // outside the focused control — a copy-to-clipboard button that highlights a
+  // code block while keeping focus in the field is the everyday shape — it
+  // selected the whole document instead, and \`delete\` then refused an ordinary
+  // <input>: the field was reported as unclearable, and the repair it was given
+  // (press backspace) is a measured no-op on it.
+  //
+  // \`.select()\` selects that control's own value and nothing else. Measured on
+  // Chrome 151: it empties the field the document-wide selection made
+  // unclearable, it throws for no input type, and it still leaves \`delete\`
+  // answering false for exactly the five date/time types — the distinction the
+  // refusal below reads. A contenteditable has no separate selection to hijack,
+  // so it keeps \`selectAll\`, which also reaches into an open shadow root.
+  if (tag === "input" || tag === "textarea") el.select();
+  else document.execCommand("selectAll");
   // The cheap half of the check, and it is exact for the fields it does answer
   // for. Measured on Chrome 151: \`delete\` answers true for every element that
   // ends up empty — including one that was ALREADY empty, where \`selectAll\`
