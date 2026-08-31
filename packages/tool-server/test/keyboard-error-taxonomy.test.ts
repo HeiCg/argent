@@ -381,7 +381,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     // document model produces. Without this the tool answers `cleared: true`
     // and the caller's next `text` is appended to the old value.
     const tool = toolWithChromiumEvaluate([
-      { cleared: true, focus: "div", verifiable: true },
+      { cleared: true, focus: "div" },
       { focus: "div", remaining: 11 },
     ]);
     await expectInvalidInput(
@@ -395,7 +395,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     // read-back answering 0. A read-back wired to refuse on anything but a
     // strict `remaining === 0` would still pass that test and fail this one.
     const tool = toolWithChromiumEvaluate([
-      { cleared: true, focus: "input type=text", verifiable: true },
+      { cleared: true, focus: "input type=text" },
       { focus: "input type=text", remaining: 0 },
     ]);
     await expect(
@@ -408,7 +408,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     // belongs to another field, so it is no evidence about the one that was
     // cleared — treating it as evidence would fail every app that blurs on edit.
     const tool = toolWithChromiumEvaluate([
-      { cleared: true, focus: "input type=text", verifiable: true },
+      { cleared: true, focus: "input type=text" },
       { focus: "input type=search", remaining: 9 },
     ]);
     await expect(
@@ -416,15 +416,16 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
   });
 
-  it("an unverifiable clear is reported on the delete's word alone", async () => {
-    // A closed shadow root: the browser's editing command reaches the field, but
-    // nothing script-side can read it back. One evaluate, not two.
+  it("reads EVERY accepted clear back — there is no delete's-word-alone path", async () => {
+    // `delete` answers true whether or not it removed anything (measured on
+    // Chrome 151), so its return value is never the evidence `cleared` reports.
+    // A host the script cannot read back is refused in the renderer instead,
+    // which is why nothing here can arrive already-cleared and unverifiable.
     const registry = new Registry();
-    const evaluate = vi.fn(async () => ({
-      cleared: true,
-      focus: "my-field",
-      verifiable: false,
-    }));
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ cleared: true, focus: "div" })
+      .mockResolvedValueOnce({ focus: "div", remaining: 0 });
     vi.spyOn(registry, "resolveService").mockResolvedValue({ evaluate } as never);
     await expect(
       makeChromiumImpl(registry).handler(
@@ -433,7 +434,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
         chromiumDevice
       )
     ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
-    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
   it("a CDP wait that runs out is KEYBOARD_CLEAR_UNCONFIRMED, not a debugger failure", async () => {
@@ -500,7 +501,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
       ["readonly", "keyboard_clear_chromium_readonly", /read-only field ignores every edit/],
       ["disabled", "keyboard_clear_chromium_disabled", /until the app enables it/],
       ["not-a-text-field", "keyboard_clear_chromium_not_a_text_field", /holds no text to clear/],
-      ["host-opaque", "keyboard_clear_chromium_host_opaque", /custom element whose internals/],
+      ["host-opaque", "keyboard_clear_chromium_host_opaque", /exposes no open shadow root/],
     ];
     for (const [reason, stage, repair] of cases) {
       const registry = new Registry();

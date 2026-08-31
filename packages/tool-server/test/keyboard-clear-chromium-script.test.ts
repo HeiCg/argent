@@ -21,7 +21,6 @@ interface Outcome {
   focus?: string | null;
   reason?: string;
   detail?: string;
-  verifiable?: boolean;
 }
 
 // Chrome's own answers, measured on 151.0.7922.174 by evaluating `selectAll`
@@ -33,9 +32,15 @@ interface Outcome {
 // refusal tests drive.
 const DATE_TIME_TYPES = ["date", "datetime-local", "month", "week", "time"];
 
-/** One element as the script sees it. `tagName` is uppercase, as in a real DOM. */
+/**
+ * One element as the script sees it. `tagName` is uppercase, as in a real DOM.
+ *
+ * `childNodes` defaults to one node — "an ordinary element with light content".
+ * The script reads it to spot a host hiding a CLOSED shadow root, whose light
+ * subtree is empty; pass `childNodes: []` for that shape.
+ */
 function el(tagName: string, props: Record<string, unknown> = {}): Record<string, unknown> {
-  return { tagName, ...props };
+  return { tagName, childNodes: [{}], ...props };
 }
 
 const textInput = () => el("INPUT", { type: "text" });
@@ -107,7 +112,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
     // `focus` rides along on the success too: the backend compares it with the
     // read-back's own focus, and only a read of the SAME element can contradict
     // the delete.
-    expect(outcome).toEqual({ cleared: true, focus, verifiable: true });
+    expect(outcome).toEqual({ cleared: true, focus });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
@@ -214,7 +219,6 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
       expect(run(el("INPUT", { type })).outcome, `refused type="${type}"`).toEqual({
         cleared: true,
         focus: `input type=${type}`,
-        verifiable: true,
       });
     }
   });
@@ -271,7 +275,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     // would turn every clear of an empty field into a spurious failure — and an
     // empty field is the ordinary state of a field a flow just cleared.
     const { outcome, commands } = run(textInput(), { selectAll: false });
-    expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 });
@@ -285,7 +289,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = textInput();
     const host = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const { outcome, commands } = run(host);
-    expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
@@ -296,7 +300,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — focus inside a shadow root", () => {
     const inner = el("TEXTAREA", {});
     const mid = el("MY-FIELD", { shadowRoot: { activeElement: inner } });
     const host = el("MY-ROW", { shadowRoot: { activeElement: mid } });
-    expect(run(host).outcome).toEqual({ cleared: true, focus: "textarea", verifiable: true });
+    expect(run(host).outcome).toEqual({ cleared: true, focus: "textarea" });
   });
 
   it("stops at a host whose shadow root focuses nothing, and refuses it by its own tag", () => {
@@ -360,7 +364,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — the document as its own editing host
     // so the walk up to the host must not capture it.
     const field = el("INPUT", { type: "text", isContentEditable: true, parentElement: body });
     const { outcome, commands } = run(field, {}, withDocumentRoots(body));
-    expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
+    expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 
@@ -396,39 +400,49 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — the document as its own editing host
     const body = el("BODY", { isContentEditable: false });
     const editor = el("DIV", { isContentEditable: true, parentElement: body });
     const { outcome, commands } = run(editor, {}, withDocumentRoots(body));
-    expect(outcome).toEqual({ cleared: true, focus: "div", verifiable: true });
+    expect(outcome).toEqual({ cleared: true, focus: "div" });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 });
 
 describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a host script cannot see into", () => {
-  it("tries a custom element with no reachable shadow root, and reports it unverifiable", () => {
+  it("REFUSES a custom element with no reachable shadow root, without selecting anything", () => {
     // `attachShadow({mode:"closed"})` leaves `el.shadowRoot` null, so the
     // descent stops on the host and the tag test cannot see the <input> that
-    // actually holds focus — while the browser's own editing commands DO reach
-    // it. Measured on Chrome 151: `delete` answers true and the inner field
-    // empties to "". The same opacity means it cannot be read back, so the
-    // success is marked unverifiable rather than sent through the read-back.
-    const { outcome, commands } = run(el("MY-FIELD", {}));
-    expect(outcome).toEqual({ cleared: true, focus: "my-field", verifiable: false });
-    expect(commands).toEqual(["selectAll", "delete"]);
-  });
-
-  it("takes the delete's refusal as the verdict for such a host", () => {
-    // Measured on Chrome 151 for a custom element with nothing editable inside:
-    // `delete` answers false and the rest of the page is untouched. Its own
-    // reason, because the date-input wording would send the caller to press
-    // backspace on a field that has none.
-    const { outcome } = run(el("MY-FIELD", {}), { delete: false });
+    // may hold focus. Deleting blind there was measured on Chrome 151 to empty
+    // a DIFFERENT editor — `execCommand` acts on the document's selection, not
+    // on the focused element — while `delete` answers true whether or not it
+    // removed anything and an opaque host cannot be read back to check. So the
+    // command list must stay EMPTY: nothing selected, nothing deleted.
+    const { outcome, commands } = run(el("MY-FIELD", { childNodes: [] }));
     expect(outcome).toEqual({ cleared: false, focus: "my-field", reason: "host-opaque" });
+    expect(commands).toEqual([]);
   });
 
-  it("does not treat an ordinary unknown tag as an opaque host", () => {
-    // The heuristic is the custom-element name rule (a hyphen), not "any tag I
-    // do not recognise" — widening it would run selectAll + delete on a focused
-    // <video> or a future built-in.
-    expect(run(el("VIDEO", {})).outcome.reason).toBe("not-editable");
-    expect(run(el("SUMMARY", {})).outcome.reason).toBe("not-editable");
+  it("refuses a light-DOM custom element the same way", () => {
+    // `<my-field><input></my-field>` (the Stencil `shadow: false` / Lit
+    // `createRenderRoot` default) is the same shape from outside, and focus on
+    // the HOST is not focus on the field — the old hyphen test let it through
+    // and reported a success with the inner value untouched.
+    const { outcome, commands } = run(el("MY-FIELD", { childNodes: [{}] }));
+    expect(outcome).toEqual({ cleared: false, focus: "my-field", reason: "host-opaque" });
+    expect(commands).toEqual([]);
+  });
+
+  it("gives a NON-hyphenated closed-shadow host the same reason, not 'tap the field'", () => {
+    // `<div>` + `attachShadow({mode:"closed"})` hosts one too, and its empty
+    // light subtree is the tell. `not-editable` would answer "tap the field
+    // first" to an element that already HAS focus, which is a loop.
+    const { outcome, commands } = run(el("DIV", { childNodes: [] }));
+    expect(outcome).toEqual({ cleared: false, focus: "div", reason: "host-opaque" });
+    expect(commands).toEqual([]);
+  });
+
+  it("still reports an ordinary non-editable element as a focus problem", () => {
+    // These have light content of their own, so nothing is hidden and "tap the
+    // field first" is the right repair.
+    expect(run(el("VIDEO", { childNodes: [{}] })).outcome.reason).toBe("not-editable");
+    expect(run(el("SUMMARY", { childNodes: [{}] })).outcome.reason).toBe("not-editable");
   });
 
   it("does not try a host whose OPEN shadow root simply focuses nothing", () => {

@@ -243,7 +243,7 @@ describe("keyboard classifications", () => {
     expectCode(
       await captureError(
         withEvaluate([
-          { cleared: true, focus: "div", verifiable: true },
+          { cleared: true, focus: "div" },
           { focus: "div", remaining: 11 },
         ])({}, { udid: device.id, clear: true }, device)
       ),

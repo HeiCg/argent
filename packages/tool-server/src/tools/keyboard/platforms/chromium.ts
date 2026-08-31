@@ -80,15 +80,37 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   if (el && el.disabled === true) return { cleared: false, focus: focus, reason: "disabled" };
   if (el && el.readOnly === true) return { cleared: false, focus: focus, reason: "readonly" };
   const editable = !!el && (tag === "input" || tag === "textarea" || el.isContentEditable === true);
-  // A CLOSED shadow root is opaque to script: \`el.shadowRoot\` is null, so the
-  // descent above stopped on the host and the tag test cannot see the <input>
-  // that actually holds focus. The browser's own editing commands DO reach it,
-  // so the host is tried rather than refused. Measured on Chrome 151: \`delete\`
-  // answers true and empties the inner field, and false for a host with nothing
-  // editable inside, leaving the rest of the page untouched either way. The same
-  // opacity means the value cannot be read back, hence \`verifiable: false\`.
-  const opaqueHost = !editable && !!el && !el.shadowRoot && tag !== null && tag.indexOf("-") !== -1;
-  if (!editable && !opaqueHost) return { cleared: false, focus: focus, reason: "not-editable" };
+  if (!editable) {
+    // A CLOSED shadow root is opaque to script: \`el.shadowRoot\` is null, so the
+    // descent above stopped on the host and the tag test cannot see the <input>
+    // that may hold focus. It is REFUSED rather than tried, because a blind
+    // select-and-delete here cannot be told from a destructive one:
+    //
+    //   * \`execCommand\` acts on the document's SELECTION, not on the focused
+    //     element. Measured on Chrome 151 with the standard rich-text toolbar
+    //     shape (\`mousedown\` + \`preventDefault\` + \`focus()\`, which keeps the
+    //     editor's selection alive): focus on the button, selection still in a
+    //     neighbouring \`contenteditable\` — \`selectAll\` + \`delete\` emptied THAT
+    //     editor and answered true.
+    //   * \`delete\` answers true whether or not it removed anything, so its
+    //     return value is not evidence, and an opaque host cannot be read back
+    //     to get any. \`cleared\` on this backend means the field was SEEN empty;
+    //     this path could never make that claim.
+    //
+    // The plain-light-DOM custom element (\`<my-field><input></my-field>\`, the
+    // Stencil \`shadow: false\` / Lit \`createRenderRoot\` default) is the same
+    // shape from outside and got the same gamble, which is why the hyphen alone
+    // never made it safe. Its own repair — tap the inner field — is in the
+    // message.
+    //
+    // \`childNodes.length === 0\` catches the same host on a NON-hyphenated tag
+    // (\`<div>\` + \`attachShadow({mode:"closed"})\`): a closed root leaves the
+    // light subtree empty, and "tap the field first" is a loop for an element
+    // that already has focus.
+    const opaque =
+      !!el && !el.shadowRoot && tag !== null && (tag.indexOf("-") !== -1 || el.childNodes.length === 0);
+    return { cleared: false, focus: focus, reason: opaque ? "host-opaque" : "not-editable" };
+  }
   document.execCommand("selectAll");
   // The cheap half of the check, and it is exact for the fields it does answer
   // for. Measured on Chrome 151: \`delete\` answers true for every element that
@@ -104,9 +126,9 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
     // behind, that highlight reaches the next screenshot and every screenshot-diff.
     const sel = document.getSelection();
     if (sel) sel.removeAllRanges();
-    return { cleared: false, focus: focus, reason: opaqueHost ? "host-opaque" : "delete-refused" };
+    return { cleared: false, focus: focus, reason: "delete-refused" };
   }
-  return { cleared: true, focus: focus, verifiable: !opaqueHost };
+  return { cleared: true, focus: focus };
   } catch (err) {
     // A page can replace or delete \`document.execCommand\` — editors and
     // polyfills do. Without this the throw leaves \`result.value\` undefined,
@@ -153,7 +175,6 @@ interface ClearOutcome {
   focus?: string | null;
   reason?: string;
   detail?: string;
-  verifiable?: boolean;
 }
 
 interface ReadbackOutcome {
@@ -182,10 +203,12 @@ const UNCLEARABLE_FIELD_MESSAGES: Record<string, string> = {
     "will not help; set it through the app's own control (`gesture-tap` an option, `gesture-drag` a " +
     "slider), or clear a different field.",
   "host-opaque":
-    "is a custom element whose internals this clear cannot see — it exposes no open shadow root — and " +
-    "it refused the delete, so nothing was cleared and nothing inside it can be read to say why. Tap " +
-    "the field inside it (`gesture-tap`) if it exposes one, or select the text with `gesture-drag` and " +
-    "type over the selection instead.",
+    "is not editable itself and exposes no open shadow root, so this clear can see neither whether it " +
+    "holds a field nor what that field contains — and it will not delete blind: `execCommand` acts on " +
+    "the document's SELECTION rather than on the focused element, so a blind attempt can empty a " +
+    "DIFFERENT editor and still report success. Nothing was cleared, and nothing was selected. Tap the " +
+    "field inside it (`gesture-tap`) if it exposes one, or select the text with `gesture-drag` and type " +
+    "over the selection instead.",
 };
 
 /**
@@ -312,10 +335,9 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
       }
     );
   }
-  // A closed shadow root answered the delete but cannot be read back through it
-  // either. `delete` returning true is the whole evidence there is — and it is
-  // the same evidence the browser itself acted on.
-  if (outcome.verifiable === false) return { typed: "", keys: 0, cleared: true };
+  // Every accepted clear is read back — there is no path that reports `cleared`
+  // on the delete's word alone, because `delete` answers true whether or not it
+  // removed anything.
   const readback = (await evaluateClearStep(
     api,
     CLEAR_READBACK_SCRIPT,
