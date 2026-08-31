@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAILURE_CODES, getFailureSignal, Registry } from "@argent/registry";
 import { InvalidToolInputError } from "../src/utils/capability";
 import { CLIENT_UNSAFE_TOP_LEVEL_KEYWORDS, advertisedSchema } from "./helpers/catalog";
@@ -346,6 +346,74 @@ describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => 
 // indistinguishable from a real press, while the tool description promises a
 // failure for an unsupported key name, which `""` is. It is now rejected in
 // `execute`, above the dispatch, so one guard covers every backend.
+describe("keyboard — one device is driven by one call at a time", () => {
+  // Its own serial: the queue is per device and module-level, so sharing one
+  // with the rest of the file would let an unrelated test's call decide the
+  // order these assert on.
+  const udid = "emulator-5599";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isAndroidTv.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    adbShell.mockImplementation(async () => "");
+  });
+
+  it("serializes concurrent calls per device instead of interleaving them", async () => {
+    // Both `keyboard` and `paste` write to whatever holds keyboard focus, over
+    // several unserialized steps each — and `clear` widens that window from one
+    // keystroke to 700ms on iOS and 2-90s on Android. Measured on a booted
+    // simulator with a 250-character field: `{ clear: true }` and, 200ms later,
+    // `{ text: "HELLO" }` left `…aaaaaaaaaaLO` — "HEL" eaten by backspaces still
+    // in flight — with BOTH calls reporting success. One tool-server is shared
+    // by every agent session on the machine, so two sessions at one device is
+    // the documented default, not an exotic case.
+    //
+    // Interleaving is observable as an overlap: each call marks the transport on
+    // entry and on exit, and a second entry before the first exit is the bug.
+    const tool = createKeyboardTool(registry());
+    const order: string[] = [];
+    adbShell.mockImplementation(async (_serial: string, cmd: string) => {
+      const tag = cmd.startsWith("input keyevent") ? "clear" : "text";
+      order.push(`${tag}:in`);
+      await new Promise((r) => setTimeout(r, 40));
+      order.push(`${tag}:out`);
+      return "";
+    });
+
+    const clearing = tool.execute({}, { udid, clear: true } as never);
+    await new Promise((r) => setTimeout(r, 5));
+    const typing = tool.execute({}, { udid, text: "HELLO" } as never);
+    await Promise.all([clearing, typing]);
+
+    expect(order).toEqual(["clear:in", "clear:out", "text:in", "text:out"]);
+  });
+
+  it("rejects a malformed request immediately, not behind the queue", async () => {
+    // The exclusivity and empty-`key` guards are pure validation of the request
+    // shape. Queueing them would make a caller's own mistake wait out another
+    // session's 90s burst before it was told about it.
+    const tool = createKeyboardTool(registry());
+    let release = () => {};
+    adbShell.mockImplementation(
+      async () =>
+        new Promise<string>((resolve) => {
+          release = () => resolve("");
+        })
+    );
+    const blocking = tool.execute({}, { udid, clear: true } as never);
+    await new Promise((r) => setTimeout(r, 5));
+
+    await expectCombinedRejection(tool.execute({}, { udid, text: "a", key: "enter" } as never));
+    await expectUnsupportedKey(tool.execute({}, { udid, key: "" } as never));
+
+    release();
+    await blocking;
+  });
+});
+
 describe("keyboard — the MCP adapter must not re-send a slow call", () => {
   it("is declared longRunning, so a call outrunning 30s is not aborted and retried", () => {
     // Without this the adapter caps each `keyboard` fetch at 30s and

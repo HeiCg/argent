@@ -1,6 +1,7 @@
 import type { Registry, ToolCapability, ToolDefinition } from "@argent/registry";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import { redactSecretsFromError, resolveSecretPlaceholders } from "../../utils/secrets";
+import { serializedPerDevice } from "../../utils/device-serial";
 import { pasteZodSchema } from "./schema";
 import type { PasteParams, PasteResult, PasteServices } from "./types";
 import { makeIosImpl, makeIosRemoteImpl } from "./platforms/ios";
@@ -22,29 +23,6 @@ const capability: ToolCapability = {
   // `ios`/`simulator`, an Android TV emulator `android`/`emulator`), so each
   // handler probes the runtime kind and rejects a TV itself.
 };
-
-/**
- * A paste is two unserialized steps — fill the clipboard, then send the
- * keystroke — so two concurrent calls on one device can let the second fill
- * land before the first keystroke, pasting one text twice and the other never
- * while both report success.
- */
-const pasteQueues = new Map<string, Promise<unknown>>();
-
-function serializedPerDevice<T>(deviceId: string, task: () => Promise<T>): Promise<T> {
-  const previous = pasteQueues.get(deviceId) ?? Promise.resolve();
-  const next = previous.then(task, task);
-  pasteQueues.set(deviceId, next);
-  void next.then(
-    () => {
-      if (pasteQueues.get(deviceId) === next) pasteQueues.delete(deviceId);
-    },
-    () => {
-      if (pasteQueues.get(deviceId) === next) pasteQueues.delete(deviceId);
-    }
-  );
-  return next;
-}
 
 export function createPasteTool(registry: Registry): ToolDefinition<PasteParams, PasteResult> {
   const dispatch = dispatchByPlatform<PasteServices, PasteServices, PasteParams, PasteResult>({

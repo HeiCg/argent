@@ -8,6 +8,7 @@ import {
   redactSecretsFromError,
   resolveSecretPlaceholders,
 } from "../../utils/secrets";
+import { serializedPerDevice } from "../../utils/device-serial";
 import type { KeyboardParams, KeyboardResult } from "./types";
 import { makeIosImpl, makeIosRemoteImpl } from "./platforms/ios";
 import { makeAndroidImpl } from "./platforms/android";
@@ -288,22 +289,35 @@ One call does one action: pass text, key OR clear, never two of them. \`text\` a
           }
         );
       }
-      // Resolve inside `execute`: after every logging boundary (agent
-      // transcript, mcp-calls.log, the event log and recorded flow YAMLs all
-      // see only the placeholder) and before the dispatch, so run-sequence and
-      // flow `type` steps are covered for free.
-      if (params.text === undefined) return dispatch(services, params, options);
-      const { text, secrets } = resolveSecretPlaceholders(params.text);
-      if (secrets.length === 0) return dispatch(services, params, options);
-      try {
-        const result = await dispatch(services, { ...params, text }, options);
-        // Echo the placeholder form, never the resolved value.
-        return { ...result, typed: params.text };
-      } catch (err) {
-        // A backend error can quote its input (e.g. the Android `input text`
-        // command line) — scrub the resolved values before it propagates.
-        throw redactSecretsFromError(err, secrets);
-      }
+      // Serialized per device, on the same queue `paste` uses and for the same
+      // reason it gives: both tools write to whatever holds keyboard focus over
+      // several unserialized steps, so two concurrent calls at one device
+      // interleave and BOTH report success. `clear` widens that window from one
+      // keystroke to 700ms on iOS and 2-90s on Android — measured on a booted
+      // simulator against a 250-character field, `{ clear: true }` with
+      // `{ text: "HELLO" }` 200ms behind it left `…aaaaaaaaaaLO`, with "HEL"
+      // eaten by backspaces still in flight.
+      //
+      // Below the two request-shape guards above, which are pure validation and
+      // must fail immediately rather than behind another session's burst.
+      return serializedPerDevice(params.udid, async () => {
+        // Resolve inside `execute`: after every logging boundary (agent
+        // transcript, mcp-calls.log, the event log and recorded flow YAMLs all
+        // see only the placeholder) and before the dispatch, so run-sequence and
+        // flow `type` steps are covered for free.
+        if (params.text === undefined) return dispatch(services, params, options);
+        const { text, secrets } = resolveSecretPlaceholders(params.text);
+        if (secrets.length === 0) return dispatch(services, params, options);
+        try {
+          const result = await dispatch(services, { ...params, text }, options);
+          // Echo the placeholder form, never the resolved value.
+          return { ...result, typed: params.text };
+        } catch (err) {
+          // A backend error can quote its input (e.g. the Android `input text`
+          // command line) — scrub the resolved values before it propagates.
+          throw redactSecretsFromError(err, secrets);
+        }
+      });
     },
   };
 }
