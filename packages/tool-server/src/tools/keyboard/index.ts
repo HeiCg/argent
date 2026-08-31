@@ -218,7 +218,10 @@ One call does one action: pass text, key OR clear, never two of them. \`text\` a
             '{ key: "enter" } to type and submit, or { clear: true } followed by ' +
             '{ text: "hello" } to replace a value. On a TV target (Apple TV / Android TV) ' +
             "neither `key` nor `clear` is supported at all — type with `text` and move focus " +
-            "with `tv-remote` (up/down/left/right/select)." +
+            "with `tv-remote` (up/down/left/right/select). On Vega, `key` works but `clear` " +
+            "does not, so the `{ clear }` half of that split is rejected outright there: empty " +
+            "the field with the app's own on-screen keyboard, driven with `tv-remote`, then " +
+            "type." +
             // The split above prescribes a `key`, and this request's `key` names
             // none — so following it literally sends a `{ key: "enter" }` the
             // caller never asked for, whose retry then fails with

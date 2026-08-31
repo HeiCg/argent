@@ -346,6 +346,19 @@ describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => 
 // indistinguishable from a real press, while the tool description promises a
 // failure for an unsupported key name, which `""` is. It is now rejected in
 // `execute`, above the dispatch, so one guard covers every backend.
+describe("keyboard — the exclusivity message's platform caveats", () => {
+  it("names Vega, whose `clear` half of the prescribed split is rejected outright", () => {
+    // The message prescribes splitting into `{ clear: true }` then `{ text }`,
+    // and its caveat named only Apple TV / Android TV — so on a Vega VVD the
+    // caller followed it into a step `platforms/vega.ts` refuses. `clear`'s own
+    // `.describe()` already gets this right.
+    return combinedError({ clear: true, text: "hello" }).then((err) => {
+      expect(err.message).toMatch(/On Vega/);
+      expect(err.message).toMatch(/`clear` does not/);
+    });
+  });
+});
+
 describe("keyboard — one device is driven by one call at a time", () => {
   // Its own serial: the queue is per device and module-level, so sharing one
   // with the rest of the file would let an unrelated test's call decide the
