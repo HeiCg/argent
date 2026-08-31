@@ -59,12 +59,12 @@ function flatten(tree: DescribeNode): DescribeNode[] {
 
 // One line per direct child of a node: role plus whatever identifies it, with
 // long body copy cut short so the expectation stays readable (and so a page's
-// prose does not get duplicated into this file).
+// prose does not get duplicated into this file). Nothing else is filtered — the
+// row has to show what an agent reads off the describe line, invisible
+// characters included.
 function webRows(n: DescribeNode): string[] {
   return n.children.map((c) => {
-    // Chrome's own icon-font glyphs live in the Private Use Area and render as
-    // nothing, so drop them rather than embedding invisible characters here.
-    const name = (c.identifier ?? c.label ?? "").replace(/[\uE000-\uF8FF]/g, "").trim();
+    const name = (c.identifier ?? c.label ?? "").trim();
     return [c.role, name.length > 32 ? name.slice(0, 32) + "…" : name].filter(Boolean).join(" ");
   });
 }
@@ -140,7 +140,7 @@ describe("Android WebView describe — real captures", () => {
       "TextField username",
       "StaticText Password",
       "TextField password",
-      "Button Login",
+      "Button \uF090 Login",
       "StaticText Powered by",
       "View Elemental Selenium",
     ]);
@@ -151,6 +151,22 @@ describe("Android WebView describe — real captures", () => {
     expect(byId.get("com.android.chrome:id/url_bar")?.label).toBe(
       "the-internet.herokuapp.com/login"
     );
+  });
+
+  it("keeps an icon-font glyph in the label, where the agent reads it", () => {
+    // Chrome's own icon fonts expose glyphs as Private Use Area code points.
+    // They render as nothing, and `escapeForLine` leaves them alone, so the
+    // describe line for the login button reads `Button " Login"` while the label
+    // is U+F090 followed by " Login". This capture is the first one to put such
+    // a code point in an Android describe label, so pin the shape: a `text`
+    // selector still finds the button as a substring, and a `textMatch: "equals"`
+    // copied off the visible line does not.
+    const nodes = flatten(
+      parseUiAutomatorDump(read("android-webview-chrome.xml"), SCREEN_W, SCREEN_H)
+    );
+    const login = nodes.find((n) => n.role === "Button" && n.label?.includes("Login"));
+    expect(login?.label).toBe("\uF090 Login");
+    expect(login?.label).not.toBe("Login");
   });
 
   it("never lets a WebView password input's plaintext escape", () => {
