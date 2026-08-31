@@ -23,6 +23,7 @@ export const AUTO_SCREENSHOT_TOOLS = new Set([
   "open-url",
   "describe",
   "run-sequence",
+  "run-script",
 ]);
 
 /**
@@ -42,6 +43,9 @@ export const AUTO_SCREENSHOT_DELAY_MS_BY_TOOL: Record<string, number> = {
   "gesture-pinch": 1500,
   "gesture-rotate": 1500,
   "run-sequence": 15000,
+  // Same amortization as run-sequence: one capture after the whole script, not
+  // one per ui.* step, so a long scripted interaction gets a generous settle cap.
+  "run-script": 15000,
   "button": 1500,
   "rotate": 1000,
   "keyboard": 300,
@@ -79,6 +83,7 @@ export const AUTO_DESCRIBE_TOOLS = new Set([
   "restart-app",
   "open-url",
   "run-sequence",
+  "run-script",
 ]);
 
 // Opt-out only: the `disable-auto-describe` flag is off by default.

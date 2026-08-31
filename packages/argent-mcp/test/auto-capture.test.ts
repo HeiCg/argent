@@ -333,3 +333,21 @@ describe("containsSecretPlaceholder", () => {
     expect(shouldAutoScreenshot("run-sequence")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// run-script — a single amortized capture after the whole scripted run, exactly
+// like run-sequence, on both the screenshot and describe paths.
+// ---------------------------------------------------------------------------
+describe("run-script auto-capture", () => {
+  it("is a member of both auto-capture sets", () => {
+    expect(AUTO_SCREENSHOT_TOOLS.has("run-script")).toBe(true);
+    expect(AUTO_DESCRIBE_TOOLS.has("run-script")).toBe(true);
+  });
+
+  it("captures once after the run, with the run-sequence-sized settle cap", () => {
+    expect(shouldAutoScreenshot("run-script")).toBe(true);
+    expect(shouldAutoScreenshot("mcp__argent__run-script")).toBe(true);
+    expect(shouldAutoDescribe("run-script")).toBe(true);
+    expect(getAutoScreenshotDelayMs("run-script")).toBe(15000);
+  });
+});
