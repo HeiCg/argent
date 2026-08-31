@@ -621,11 +621,20 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     );
   }
   // No key events are dispatched at all, hence `keys: 0`. `clearVerified` is the
-  // structural half of that claim: `cleared` alone means "sent" on the key
-  // backends and "seen empty" here, and a caller branching on the result had
-  // only `keys` (0 vs 200) to tell them apart — which is not what `keys` is
+  // structural half of the claim: `cleared` alone means "sent" on the key
+  // backends and "read back empty" here, and a caller branching on the result
+  // had only `keys` (0 vs 200) to tell them apart — which is not what `keys` is
   // documented to mean.
-  return { typed: "", keys: 0, cleared: true, clearVerified: true };
+  //
+  // Conditional, because the read-back can decline to answer: a page that
+  // REPLACED the field leaves the target detached, and a page that sealed
+  // `window` leaves no target at all. The delete was still accepted, so
+  // `cleared` stands — but nothing saw the field empty, and saying otherwise
+  // would make the flag the one thing it must never be, a guess.
+  const verified = readback?.same === true && survived === 0;
+  return verified
+    ? { typed: "", keys: 0, cleared: true, clearVerified: true }
+    : { typed: "", keys: 0, cleared: true };
 }
 
 async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise<KeyboardResult> {

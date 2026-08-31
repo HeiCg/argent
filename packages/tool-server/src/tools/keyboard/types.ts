@@ -26,14 +26,15 @@ export interface KeyboardResult {
    * On iOS and Android it reports that the burst was SENT: nothing is read back
    * (a cleared field may have held a secret, and the key transports cannot read
    * one anyway), and a field longer than the burst keeps its remainder.
-   * On Chromium it reports that the field was seen EMPTY afterwards.
+   * On Chromium it reports that the delete was ACCEPTED.
    */
   cleared?: true;
   /**
-   * The structural discriminator for the two meanings of `cleared`: present
-   * only when the backend read the field back and found it empty, which today
-   * is Chromium alone. Absent means "sent, not verified" — assert the field or
-   * its consequence if you need proof.
+   * The structural discriminator for the two meanings of `cleared`: present only
+   * where the backend read the field back and found it empty, which today is
+   * Chromium alone — and not even there when the read could not be taken (a page
+   * that replaced the field, or sealed `window`). Absent means "not verified":
+   * assert the field or its consequence if you need proof.
    */
   clearVerified?: true;
 }

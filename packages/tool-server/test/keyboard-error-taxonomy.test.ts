@@ -475,9 +475,11 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
       { cleared: true, focus: "input type=text" },
       { focus: "input type=text", same: false, remaining: 1 },
     ]);
+    // No `clearVerified`: the read was taken on a DIFFERENT element, so nothing
+    // saw the cleared field empty. The delete stands; the verification does not.
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
-    ).resolves.toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
   });
 
   it("contradicts the delete even when the restoring editor moved focus away", async () => {
@@ -521,9 +523,11 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
       { cleared: true, focus: "input type=text" },
       { focus: "input type=text", same: false, remaining: 11, embeds: 0 },
     ]);
+    // And unverified for the same reason: a detached node is not evidence about
+    // the live field either way.
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
-    ).resolves.toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
   });
 
   it("a field the page REFORMATTED is not reported as one that kept its value", async () => {
@@ -561,6 +565,21 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     );
     expect(getFailureSignal(err)?.failure_stage).toBe("keyboard_clear_chromium_restored");
     expect(err?.message).toMatch(/the value is the one it held before/);
+  });
+
+  it("does not claim verification when the read-back could not be taken", async () => {
+    // The one place `cleared` and `clearVerified` come apart on this backend: a
+    // page that REPLACED the field leaves the target detached, and one that
+    // sealed `window` leaves no target at all. The delete was still accepted, so
+    // `cleared` stands — but nothing saw the field empty, and the flag must not
+    // guess. `keyboard`'s own description says it is absent exactly there.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "input type=text" },
+      { focus: "input type=text", same: false, remaining: null, embeds: 0 },
+    ]);
+    const result = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined);
+    expect(result).toEqual({ typed: "", keys: 0, cleared: true });
+    expect(result.clearVerified).toBeUndefined();
   });
 
   it("reads EVERY accepted clear back — there is no delete's-word-alone path", async () => {
