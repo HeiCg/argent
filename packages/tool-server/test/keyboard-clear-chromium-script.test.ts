@@ -308,6 +308,21 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     expect(commands).toEqual(["select", "delete"]);
   });
 
+  it("reads `disabled` / `readOnly` only where they are IDL attributes", () => {
+    // A component library that exposes `disabled` as a plain JS property on a
+    // non-form host — `ce.disabled = true` on a <div contenteditable>, the shape
+    // a wrapper component takes — made a perfectly clearable field refuse with
+    // "nothing can be until the app enables it", a repair the caller cannot act
+    // on. Measured on Chrome 151: the same field clears.
+    const { outcome, commands } = run(el("DIV", { isContentEditable: true, disabled: true }));
+    expect(outcome).toEqual({ cleared: true, focus: "div" });
+    expect(commands).toEqual(["selectAll", "delete"]);
+    expect(run(el("DIV", { isContentEditable: true, readOnly: true })).outcome.cleared).toBe(true);
+    // The positive control: on a form control they still decide.
+    expect(run(el("INPUT", { type: "text", readOnly: true })).outcome.reason).toBe("readonly");
+    expect(run(el("TEXTAREA", { disabled: true })).outcome.reason).toBe("disabled");
+  });
+
   it("selects the text control's OWN value, not the document's selection", () => {
     // The bug this replaces: `execCommand("selectAll")` acts on the DOCUMENT's
     // selection, so a page selection anchored outside the focused control — the

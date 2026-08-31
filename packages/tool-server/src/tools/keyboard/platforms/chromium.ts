@@ -93,8 +93,19 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
       (tag === "input" && /^(button|checkbox|radio|file|submit|reset|image|range|color)$/.test(type))) {
     return { cleared: false, focus: focus, reason: "not-a-text-field" };
   }
-  if (el && el.disabled === true) return { cleared: false, focus: focus, reason: "disabled" };
-  if (el && el.readOnly === true) return { cleared: false, focus: focus, reason: "readonly" };
+  // Only on the elements where these are IDL attributes rather than an ordinary
+  // JS property. A component library that exposes \`disabled\` on a non-form host
+  // (\`ce.disabled = true\` on a <div contenteditable>) made a perfectly
+  // clearable field refuse with "nothing can be until the app enables it" — it
+  // fails closed, so only the diagnosis was wrong, and the repair it gave was
+  // one the caller cannot act on.
+  const formControl = tag === "input" || tag === "textarea" || tag === "select";
+  if (el && formControl && el.disabled === true) {
+    return { cleared: false, focus: focus, reason: "disabled" };
+  }
+  if (el && formControl && el.readOnly === true) {
+    return { cleared: false, focus: focus, reason: "readonly" };
+  }
   const editable = !!el && (tag === "input" || tag === "textarea" || el.isContentEditable === true);
   if (!editable) {
     // A CLOSED shadow root is opaque to script: \`el.shadowRoot\` is null, so the
