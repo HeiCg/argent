@@ -375,6 +375,36 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     );
   });
 
+  it("does not diagnose every refused delete as a date/time input", async () => {
+    // A `contenteditable` whose first child is a `contenteditable="false"` block
+    // — a locked header, an embed, a node view, a mention chip — refuses the
+    // delete too (measured on Chrome 151, static HTML with no listeners). The
+    // date/time wording sent it to press a `backspace` that is a no-op on it.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: false, focus: "div", reason: "delete-refused" },
+    ]);
+    const err = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD);
+    expect(err?.message).not.toMatch(/date and time inputs/);
+    expect(err?.message).toMatch(/contenteditable="false"/);
+  });
+
+  it("still diagnoses a real date input as one", async () => {
+    // The positive control: the wording above must not swallow the case it was
+    // written for. The type comes from the script's own `focus` label.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: false, focus: "input type=date", reason: "delete-refused" },
+    ]);
+    const err = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err?.message).toMatch(/date and time inputs/);
+  });
+
   it("a field that survives the delete is refused, not reported as cleared", async () => {
     // The read-back, end to end: `delete` said true, and the SECOND evaluate
     // finds the value still there — which is what an editor with its own

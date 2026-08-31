@@ -317,6 +317,14 @@ async function evaluateClearStep(
   }
 }
 
+/**
+ * The five input types whose structured value `execCommand("delete")` cannot
+ * remove — matched against the script's own `focus` label, which already
+ * carries the type it read. Every OTHER refused delete is a different cause
+ * with a different repair.
+ */
+const DATE_TIME_FOCUS = /^input type=(date|datetime-local|month|week|time)$/;
+
 function unclearableField(message: string, stage: string): InvalidToolInputError {
   return new InvalidToolInputError(message, {
     error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
@@ -350,12 +358,26 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     // about the KIND of field, not about focus: the element is editable by
     // every signal the script can read, and the delete still did not land.
     if (reason === "delete-refused") {
+      // The date/time wording is for the date/time inputs, and only them. It
+      // used to be returned for EVERY refusal — so a rich-text field whose
+      // first child is a `contenteditable="false"` block (a locked header, an
+      // embed, a node view, a mention chip rendered as a block) was told it was
+      // a date input, and sent to press a backspace that is a measured no-op on
+      // it. `focus` already carries the input type the script read.
+      const dateTime = DATE_TIME_FOCUS.test(focus ?? "");
       throw unclearableField(
-        `the focused <${focus ?? "input"}> kept its value — nothing was cleared. Chromium's ` +
-          "date and time inputs (date, datetime-local, month, week, time) hold a structured " +
-          "value that a select-and-delete cannot remove. Clear that one with `keyboard` " +
-          '`{ key: "backspace" }` while it has focus — one press empties it — or set it ' +
-          "through the app's own control.",
+        dateTime
+          ? `the focused <${focus}> kept its value — nothing was cleared. Chromium's ` +
+              "date and time inputs (date, datetime-local, month, week, time) hold a structured " +
+              "value that a select-and-delete cannot remove. Clear that one with `keyboard` " +
+              '`{ key: "backspace" }` while it has focus — one press empties it — or set it ' +
+              "through the app's own control."
+          : `the focused <${focus ?? "element"}> kept its value — the browser refused to delete ` +
+              "the selection, so nothing was cleared. A rich-text field holding a block the editor " +
+              'will not remove does this — a `contenteditable="false"` header, embed, node view or ' +
+              "mention chip — and pressing `backspace` on one is a measured no-op too. Empty it " +
+              "through the app's own control, or select the text with `gesture-drag` and type over " +
+              "the selection instead.",
         "keyboard_clear_chromium_refused"
       );
     }
@@ -430,11 +452,13 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     // routinely moves focus away before this read.
     throw new InvalidToolInputError(
       `the <${focus ?? "element"}> this clear ran against still holds ${held} ` +
-        "after the delete — nothing was cleared. A rich-text editor that keeps its own document model " +
-        "(Lexical, CKEditor) accepts the delete and then restores the text from that model, and a page can " +
-        "do the same from an `input` listener. Typing now would APPEND to the value the field still holds: " +
-        "empty it through the app's own control, or select the text with `gesture-drag` and type over the " +
-        "selection instead.",
+        "after the delete — nothing was cleared. The delete was accepted and the content is still there, " +
+        "which two shapes produce: a rich-text editor that keeps its own document model (Lexical, " +
+        "CKEditor) restores it from that model afterwards — a page can do the same from an `input` " +
+        'listener — and a field holding a `contenteditable="false"` block (a locked header, an embed, a ' +
+        "node view, a mention chip) never loses it at all. Typing now would APPEND to the value the field " +
+        "still holds: empty it through the app's own control, or select the text with `gesture-drag` and " +
+        "type over the selection instead.",
       {
         error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD,
         failure_stage: "keyboard_clear_chromium_restored",
