@@ -134,9 +134,11 @@ Example — type text and submit (two keyboard steps; one call cannot carry both
     { "tool": "keyboard", "args": { "key": "enter" } }
   ]}
 
-Example — replace what a field already holds (tap it first; typing into a filled field appends):
+Example — replace what a field already holds (tap it first, and give the tap \`delayMs\` to land:
+the default 100ms gap is not enough for a slow app, and a clear that arrives before focus moves
+deletes from the PREVIOUSLY focused element and still reports success):
   { "udid": "<UDID>", "steps": [
-    { "tool": "gesture-tap", "args": { "x": 0.5, "y": 0.3 } },
+    { "tool": "gesture-tap", "args": { "x": 0.5, "y": 0.3 }, "delayMs": 500 },
     { "tool": "keyboard", "args": { "clear": true } },
     { "tool": "keyboard", "args": { "text": "new value" } },
     { "tool": "keyboard", "args": { "key": "enter" } }

@@ -177,13 +177,13 @@ Values: `home`, `back`, `power`, `volumeUp`, `volumeDown`, `appSwitch`, `actionB
 
 One call does one action. `text`, `key` and `clear` are mutually exclusive, and a call that carries two of them is rejected with nothing typed, pressed or cleared. To type and then submit, send two `keyboard` steps in one `run-sequence` (§ 8) — `{ "text": "search query" }`, then `{ "key": "enter" }`. Two separate calls do the same work, but cost an extra round-trip.
 
-**Clearing a field.** `{ "udid": "<UDID>", "clear": true }` empties whatever holds keyboard focus, so tap the field first. Never type into a field that already holds a value: the keystrokes land at the cursor and the app receives the old value with yours spliced into it — a wrong value the app then saves, not a slow path. Clear first, then type:
+**Clearing a field.** `{ "udid": "<UDID>", "clear": true }` empties whatever holds keyboard focus, so tap the field first. Never type into a field that already holds a value: the keystrokes land at the cursor and the app receives the old value with yours spliced into it — a wrong value the app then saves, not a slow path. Clear first, then type. Give the tap a `delayMs` of at least 500: `run-sequence` waits only 100ms between steps and no backend checks focus, so on a slow app a clear that arrives early deletes from the PREVIOUSLY focused element and still reports success.
 
 ```json
 {
   "udid": "<UDID>",
   "steps": [
-    { "tool": "gesture-tap", "args": { "x": 0.5, "y": 0.3 } },
+    { "tool": "gesture-tap", "args": { "x": 0.5, "y": 0.3 }, "delayMs": 500 },
     { "tool": "keyboard", "args": { "clear": true } },
     { "tool": "keyboard", "args": { "text": "new value" } }
   ]
