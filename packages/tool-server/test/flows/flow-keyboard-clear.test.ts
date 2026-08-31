@@ -133,13 +133,18 @@ describe("a recorded `keyboard { clear: true }` step", () => {
     expect(calls.filter((c) => c.id === "keyboard" && c.args.text !== undefined)).toEqual([]);
   });
 
-  it("does not fold a `clear` step into the `type` directive's own focus tap", async () => {
-    // The polish rule says a focus tap plus a raw `tool: keyboard` folds into
-    // one `type:` step. With a clear recorded between them the tap and the text
-    // are no longer adjacent, and folding them anyway leaves the clear FIRST,
-    // with nothing focused — a hard refusal on Chromium and, on iOS/Android, a
-    // 200-key burst into whatever the app happens to focus. The runner keeps
-    // them as separate steps, in order.
+  it("runs a tap / clear / type trio in the authored order", async () => {
+    // What this pins is the RUNNER's ordering, not a fold: no folding logic
+    // exists in the runner at all — the "a focus tap plus a raw
+    // `tool: keyboard` becomes one `type:`" rule is an instruction to the
+    // authoring agent, in argent-create-flow's live-authoring reference, and it
+    // is that agent's job not to apply it across a `clear`.
+    //
+    // The ordering is worth its own case because this trio is the shape the
+    // docs prescribe for replacing a value, and the clear is the step whose
+    // outcome depends on the one before it: run before the tap it would refuse
+    // on Chromium and, on iOS/Android, burst 200 delete keys into whatever the
+    // app happens to focus.
     const calls: Call[] = [];
     const registry = mockRegistry(calls, () => ({ typed: "", keys: 200, cleared: true }));
 
@@ -166,5 +171,10 @@ describe("a recorded `keyboard { clear: true }` step", () => {
       .filter((c) => c.id === "gesture-tap" || c.id === "keyboard")
       .map((c) => c.id);
     expect(order).toEqual(["gesture-tap", "keyboard", "keyboard"]);
-  });
+    // The `tap:` directive settles the tree first, and this registry serves no
+    // tree at all — so the case runs out `SETTLE_TIMEOUT_MS` (3s) inside the
+    // 5s default, leaving 40% headroom in a repo with a documented 5s-timeout
+    // flake class under host load. Explicit budget, like the cases in
+    // flow-gesture-settle.test.ts that also burn the settle on purpose.
+  }, 15_000);
 });

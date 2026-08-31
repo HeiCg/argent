@@ -115,12 +115,15 @@ describe("run-sequence", () => {
     expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "keyboard", { text: "hi", udid: IOS });
   });
 
-  it("passes a keyboard `clear` step through as its own step, un-merged", async () => {
+  it("forwards a keyboard `clear` step's args verbatim, udid aside", async () => {
     // The documented replace-a-value form. `keyboard` rejects `{ clear, text }`
-    // in one call, so the ONLY way to express it is consecutive steps — and
-    // run-sequence must forward each step's args verbatim rather than folding
-    // the pair (an "optimisation" that would recreate the rejected shape) or
-    // dropping the `clear` boolean while injecting the udid.
+    // in one call, so the ONLY way to express it is consecutive steps — and what
+    // is pinned here is the args pass-through: run-sequence injects the udid and
+    // must change nothing else. A runner that dropped the `clear` boolean, or
+    // coerced it, would send the second step at a field the first never
+    // emptied. (There is no folding logic in run-sequence to guard against; the
+    // fold is an authoring rule, in argent-create-flow's live-authoring
+    // reference.)
     const registry = mockRegistry();
     const tool = createRunSequenceTool(registry);
 
