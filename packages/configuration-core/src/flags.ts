@@ -65,7 +65,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   {
     name: "run-script",
     description:
-      "The run-script tool — execute an agent-authored JavaScript program in a node:vm sandbox to drive the device through multi-step interaction with conditionals, loops and waits in a single call. Off by default: it runs model-written code locally in the tool-server process, so it is opt-in.",
+      "The run-script tool — execute an agent-authored JavaScript program in a separate, disposable Node.js process to drive the device through multi-step interaction with conditionals, loops and waits in a single call. Off by default: it runs model-written code locally in a child process, so it is opt-in.",
   },
   {
     name: "video-watermark",

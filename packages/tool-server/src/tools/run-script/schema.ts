@@ -17,7 +17,7 @@ export const runScriptZodSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "JavaScript (NOT TypeScript — no type annotations) async function BODY. It runs in a node:vm sandbox whose only globals are `ui` (the device facade) and `console`; there is no require/import/process/fs/network and no other tools. `await` every ui.* call. Discover the `ui` API and copy-pasteable examples from the `argent-device-interact` skill. Use `console.log(...)` to surface values — captured (tail-capped) in the result's `logs`."
+      "JavaScript (NOT TypeScript — no type annotations) async function BODY. It runs in a separate, disposable Node.js process whose only injected globals are `ui` (the device facade) and `console`; each ui.* call crosses an IPC boundary to the tool-server. Only `ui` and `console` are supported (do not use require/import/fs/network), there are no other tools, and the process is discarded after the run. `await` every ui.* call. Discover the `ui` API and copy-pasteable examples from the `argent-device-interact` skill. Use `console.log(...)` to surface values — captured (tail-capped) in the result's `logs`."
     ),
   timeout_ms: z
     .number()
