@@ -458,7 +458,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     ]);
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
-    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
   });
 
   it("a read-back on a DIFFERENT element cannot contradict the delete", async () => {
@@ -477,7 +477,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     ]);
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
-    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
   });
 
   it("contradicts the delete even when the restoring editor moved focus away", async () => {
@@ -523,7 +523,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     ]);
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
-    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
   });
 
   it("a field the page REFORMATTED is not reported as one that kept its value", async () => {
@@ -580,7 +580,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
         { udid: chromiumDevice.id, clear: true },
         chromiumDevice
       )
-    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
     expect(evaluate).toHaveBeenCalledTimes(2);
   });
 

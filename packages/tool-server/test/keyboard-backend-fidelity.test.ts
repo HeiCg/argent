@@ -575,6 +575,32 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       expect(events).toEqual([]);
     });
 
+    it("marks a Chromium clear as verified, and the key backends as not", async () => {
+      // `cleared` means two different things — "sent" on the key backends,
+      // "seen empty" here — and the only discriminator in the result was `keys`
+      // (0 vs 200), which is documented as the count of key presses issued, not
+      // as a verification flag. A flow assertion or a caller branching on the
+      // result had nothing structural to read.
+      const { api } = cdpRecorder();
+      const evaluate = vi.fn(async (_expr: string, _opts?: unknown) =>
+        _expr === CLEAR_FOCUSED_EDITABLE_SCRIPT
+          ? { cleared: true, focus: "input type=text" }
+          : { focus: "input type=text", same: true, changed: false, remaining: 0, embeds: 0 }
+      );
+      const chromium = await makeChromiumImpl(registryWith({ ...api, evaluate })).handler(
+        {},
+        { udid: CHROMIUM.id, clear: true },
+        CHROMIUM
+      );
+      expect(chromium).toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
+
+      // The key backends send a fixed burst and read nothing, so the flag must
+      // be ABSENT there rather than false — the claim is not made at all.
+      const ios = await clearSimulatorServer(registryWith(hidRecorder().api), IOS_SIM);
+      expect(ios).toEqual({ typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true });
+      expect(ios.clearVerified).toBeUndefined();
+    });
+
     it("clears through TWO renderer evaluations and no key events at all", async () => {
       const { events, api } = cdpRecorder();
       const evaluate = vi.fn(async (_expr: string, _opts?: unknown) =>
@@ -609,8 +635,9 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       expect(evaluate.mock.calls[0]![1]).toEqual({ returnByValue: true });
       expect(evaluate.mock.calls[1]![1]).toEqual({ returnByValue: true });
       // `keys: 0` — the count reports key events sent, and this backend sends
-      // none.
-      expect(result).toEqual({ typed: "", keys: 0, cleared: true });
+      // none. `clearVerified` is what says the field was SEEN empty, which is
+      // the claim only this backend can make.
+      expect(result).toEqual({ typed: "", keys: 0, cleared: true, clearVerified: true });
     });
   });
 

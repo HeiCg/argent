@@ -19,10 +19,21 @@ export interface KeyboardResult {
   typed: string;
   keys: number;
   /**
-   * Present only on a `clear` call. It reports that the clear was SENT, not
-   * what the field now holds: no backend reads the value back (a cleared field
-   * may have held a secret), and a field longer than the burst keeps its
-   * remainder.
+   * Present only on a `clear` call, and it means two different things per
+   * backend — read `clearVerified` to tell them apart rather than inferring it
+   * from `keys`, which is documented as the count of key presses issued.
+   *
+   * On iOS and Android it reports that the burst was SENT: nothing is read back
+   * (a cleared field may have held a secret, and the key transports cannot read
+   * one anyway), and a field longer than the burst keeps its remainder.
+   * On Chromium it reports that the field was seen EMPTY afterwards.
    */
   cleared?: true;
+  /**
+   * The structural discriminator for the two meanings of `cleared`: present
+   * only when the backend read the field back and found it empty, which today
+   * is Chromium alone. Absent means "sent, not verified" — assert the field or
+   * its consequence if you need proof.
+   */
+  clearVerified?: true;
 }

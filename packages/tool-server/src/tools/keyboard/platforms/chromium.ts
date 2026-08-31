@@ -616,9 +616,12 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
       }
     );
   }
-  // No key events are dispatched at all, hence `keys: 0`. `cleared` reports a
-  // field read back empty — on this backend alone, not merely what was sent.
-  return { typed: "", keys: 0, cleared: true };
+  // No key events are dispatched at all, hence `keys: 0`. `clearVerified` is the
+  // structural half of that claim: `cleared` alone means "sent" on the key
+  // backends and "seen empty" here, and a caller branching on the result had
+  // only `keys` (0 vs 200) to tell them apart — which is not what `keys` is
+  // documented to mean.
+  return { typed: "", keys: 0, cleared: true, clearVerified: true };
 }
 
 async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise<KeyboardResult> {
