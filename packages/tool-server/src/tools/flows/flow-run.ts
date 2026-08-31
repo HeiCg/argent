@@ -2654,8 +2654,18 @@ async function execLeafStep(
         // A gesture tool that consults the signal rejects when the run is
         // cancelled mid-dispatch. Per ABORTED_OUTCOME that is a skip, never a
         // step failure carrying the tool's own "aborted after N frames".
+        // Marked reached: the tool was invoked, so the gesture may already have
+        // gone out. Like the directive arm above, an unknown resolves to
+        // reached - an unmarked skip reads as "the device is untouched" and
+        // would drop the recorder's partial-mutation warning.
         if (signal?.aborted) {
-          return { ...base, status: "skip", tool: step.name, reason: ABORTED_OUTCOME.reason };
+          return {
+            ...base,
+            status: "skip",
+            tool: step.name,
+            reason: ABORTED_OUTCOME.reason,
+            reached: true,
+          };
         }
         const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
         return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
