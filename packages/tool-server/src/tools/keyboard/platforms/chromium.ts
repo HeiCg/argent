@@ -49,12 +49,26 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
   // input — tapping it again changes nothing.
   //
   // \`document.designMode = "on"\` and <body contenteditable> make the DOCUMENT
-  // its own editing host, and document.activeElement defaults to <body> — so a
-  // clear that has been aimed at nothing passes every editability test below and
-  // selects and deletes the entire page. Nothing bounds an editing host, and
-  // this one needs no prior interaction at all, so it is refused by identity
-  // before anything is selected.
-  if (el && (el === document.body || el === document.documentElement) && el.isContentEditable === true) {
+  // its own editing host. Nothing bounds an editing host, and this one needs no
+  // prior interaction at all, so it is refused before anything is selected.
+  //
+  // The identity that decides it is the EDITING HOST's, not the focused node's.
+  // Every element inside a document-wide host reports
+  // \`isContentEditable === true\` (measured on Chrome 151), so a focused
+  // <button>, link or <div tabindex> passes a test on the focused node and then
+  // has the whole page selected and deleted under it — reachable with nothing
+  // but \`autofocus\`. Walking up to the outermost editable ancestor returns
+  // <body> (or <html> under designMode) for exactly those cases.
+  //
+  // <input> and <textarea> inherit the flag too (measured) and are exempt: they
+  // hold their own value, which select-and-delete empties without reaching the
+  // page around them — a real field on a designMode page stays clearable.
+  let host = el;
+  while (host && host.parentElement && host.parentElement.isContentEditable === true) {
+    host = host.parentElement;
+  }
+  if (el && el.isContentEditable === true && tag !== "input" && tag !== "textarea" &&
+      (host === document.body || host === document.documentElement)) {
     return { cleared: false, focus: focus, reason: "document-editable" };
   }
   // Checked before \`disabled\`/\`readOnly\`, so a \`<input type=checkbox readonly>\`
@@ -277,8 +291,13 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     throw new InvalidToolInputError(
       (reason === "document-editable"
         ? "the whole document is editable here (`designMode` is on, or <body> carries " +
-          "`contenteditable`) and keyboard focus is still on it rather than on a field, so " +
-          "clearing would have emptied the ENTIRE page"
+          "`contenteditable`) and keyboard focus is " +
+          // Naming the focused element matters here: the editing host swallows
+          // every descendant, so this refusal fires for a focused <button> or
+          // link just as it does for <body> itself, and the two look nothing
+          // alike from the caller's side.
+          (focus ? `on <${focus}>, inside that editing host` : "on the host itself") +
+          " rather than on a field, so clearing would have emptied the ENTIRE page"
         : focus
           ? `nothing editable has keyboard focus (it is on <${focus}>)`
           : "no element has keyboard focus") +

@@ -352,13 +352,51 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — the document as its own editing host
 
   it("clears a real field on the SAME designMode page", () => {
     // The positive control. A refusal written as "designMode is on" rather than
-    // "focus is ON the editing host" would make every field on such a page
+    // "the EDITING HOST is the document" would make every field on such a page
     // unclearable — which is the ordinary case once the caller has tapped one.
     const body = el("BODY", { isContentEditable: true });
-    // A focused <input> inherits `isContentEditable`, and it is still an input.
-    const field = el("INPUT", { type: "text", isContentEditable: true });
+    // A focused <input> inherits `isContentEditable` (measured on Chrome 151),
+    // and it is still an input: its own value is what select-and-delete empties,
+    // so the walk up to the host must not capture it.
+    const field = el("INPUT", { type: "text", isContentEditable: true, parentElement: body });
     const { outcome, commands } = run(field, {}, withDocumentRoots(body));
     expect(outcome).toEqual({ cleared: true, focus: "input type=text", verifiable: true });
+    expect(commands).toEqual(["selectAll", "delete"]);
+  });
+
+  it("refuses a focused DESCENDANT of a document-wide editing host", () => {
+    // The reachable route, and it needs no interaction at all: `autofocus` on a
+    // <button> inside <body contenteditable>. Every element inside such a host
+    // reports `isContentEditable === true`, so a test on the FOCUSED node lets
+    // the button past and `selectAll` + `delete` then empties the page —
+    // measured on Chrome 151 at 160 characters of <body> down to "<br>",
+    // reported as `{ cleared: true }`.
+    const body = el("BODY", { isContentEditable: true });
+    const button = el("BUTTON", { isContentEditable: true, parentElement: body });
+    const { outcome, commands } = run(button, {}, withDocumentRoots(body));
+    expect(outcome).toEqual({ cleared: false, focus: "button", reason: "document-editable" });
+    expect(commands).toEqual([]);
+  });
+
+  it("walks PAST an intermediate editable ancestor to reach the host", () => {
+    // Under `designMode` the host is <html>, so the walk has to keep going past
+    // <body>; stopping at the first editable ancestor would let this through.
+    const html = el("HTML", { isContentEditable: true });
+    const body = el("BODY", { isContentEditable: true, parentElement: html });
+    const div = el("DIV", { isContentEditable: true, parentElement: body });
+    const { outcome, commands } = run(div, {}, { body, documentElement: html });
+    expect(outcome.reason).toBe("document-editable");
+    expect(commands).toEqual([]);
+  });
+
+  it("still clears a contenteditable whose editing host is NOT the document", () => {
+    // The regression guard for the walk: an ordinary rich-text editor is a
+    // <div contenteditable> under a non-editable <body>, so the walk stops on
+    // the div and the clear proceeds as it always did.
+    const body = el("BODY", { isContentEditable: false });
+    const editor = el("DIV", { isContentEditable: true, parentElement: body });
+    const { outcome, commands } = run(editor, {}, withDocumentRoots(body));
+    expect(outcome).toEqual({ cleared: true, focus: "div", verifiable: true });
     expect(commands).toEqual(["selectAll", "delete"]);
   });
 });
