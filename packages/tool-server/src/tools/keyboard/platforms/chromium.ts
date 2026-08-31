@@ -499,6 +499,14 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
           ? `nothing editable has keyboard focus (it is on <${focus}>)`
           : "no element has keyboard focus") +
         " — nothing was cleared. Tap the field first (`gesture-tap`), then clear it. " +
+        // Without this the repair loops forever on the commonest cause: a
+        // `disabled` control cannot become `document.activeElement` at all
+        // (measured on Chrome 151 — a real `gesture-tap` on one leaves focus on
+        // <body>), so the `disabled` diagnosis is unreachable for every standard
+        // form control and THIS is the message that has to carry it.
+        "If the same error comes back after that tap, check whether the field is `disabled`: " +
+        "`describe` marks it, a disabled control cannot take keyboard focus at all, and no number " +
+        "of taps will move focus onto one — change it through the app's own control instead. " +
         "A field inside an <iframe> reports as `iframe` here: the page's active element is " +
         "the frame, and this clear does not reach into it — for that one, select the text " +
         "with `gesture-drag` and type over the selection instead.",

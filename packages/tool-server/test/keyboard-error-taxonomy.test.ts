@@ -375,6 +375,24 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     );
   });
 
+  it("names `disabled` in the no-focus repair, which is the only message that can", async () => {
+    // A `disabled` control cannot become `document.activeElement` (measured on
+    // Chrome 151: a real `gesture-tap` on one leaves focus on <body>), so the
+    // `disabled` diagnosis is unreachable for every standard form control and
+    // this refusal is what an agent actually gets. Told only "tap the field
+    // first", it taps the same field and gets the same error forever.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: false, focus: "body", reason: "not-editable" },
+    ]);
+    const err = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_NO_EDITABLE_FOCUS);
+    expect(err?.message).toMatch(/`disabled`/);
+    expect(err?.message).toMatch(/cannot take keyboard focus at all/);
+  });
+
   it("does not diagnose every refused delete as a date/time input", async () => {
     // A `contenteditable` whose first child is a `contenteditable="false"` block
     // — a locked header, an embed, a node view, a mention chip — refuses the
