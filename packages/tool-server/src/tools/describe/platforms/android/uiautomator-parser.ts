@@ -195,11 +195,13 @@ const SCROLL_CLASSES = new Set([
  * both trees agree on which containers clip.
  *
  * Inside a WebView the class name is Chromium's mapping of an HTML tag, not a
- * real scroll container: a `<ul>` arrives as `android.widget.ListView` and a
- * `<table>` as `android.widget.GridView`, neither of which scrolls — the page's
- * only scroller is the WebView itself. Trust the framework's own `scrollable`
- * flag there and never the class name, so an element positioned outside its
- * list's box is not treated as scrolled away and dropped.
+ * real scroll container: a `<ul>` arrives as `android.widget.ListView` carrying
+ * `scrollable="false"`, and a web list does not scroll — the page scrolls in
+ * the WebView, or in the element Chromium marks `scrollable` itself.
+ * `ListView` is the only `SCROLL_CLASSES` member a web tag is known to reach,
+ * so it is the one this arm changes. Trust the framework's own flag there and
+ * never the class name, so an element positioned outside its list's box is not
+ * treated as scrolled away and dropped.
  */
 export function isUiAutomatorScrollable(attrs: Record<string, string>, inWebView = false): boolean {
   if (inWebView) return attrIsTrue(attrs, "scrollable");
