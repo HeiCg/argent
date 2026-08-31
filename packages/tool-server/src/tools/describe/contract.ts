@@ -61,16 +61,18 @@ export const describeNodeSchema: z.ZodType<DescribeNode> = z.lazy(() =>
 );
 
 // Where the tree came from. "ax-service" / "native-devtools": iOS.
-// "uiautomator" / "android-devtools": Android. "cdp-dom": the Chromium DOM walk
-// over Chrome DevTools Protocol. "vega-automation": the Vega on-device
-// automation toolkit. "tv-focus": the focus-driven view for a TV target (Apple
-// TV / Android TV), which reports focused / focusable elements rather than a
-// tap-oriented tree.
+// "uiautomator" / "android-devtools" / "open-device-server": Android
+// ("open-device-server" is the open-source on-device control server, gated behind
+// the `open-device-server` flag). "cdp-dom": the Chromium DOM walk over Chrome
+// DevTools Protocol. "vega-automation": the Vega on-device automation toolkit.
+// "tv-focus": the focus-driven view for a TV target (Apple TV / Android TV),
+// which reports focused / focusable elements rather than a tap-oriented tree.
 export type DescribeSource =
   | "ax-service"
   | "native-devtools"
   | "uiautomator"
   | "android-devtools"
+  | "open-device-server"
   | "cdp-dom"
   | "vega-automation"
   | "tv-focus";

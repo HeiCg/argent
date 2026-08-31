@@ -8,11 +8,18 @@ import {
   orientScreenSize,
   parseDumpRotation,
 } from "../../../../utils/android-screen";
+import { isFlagEnabled } from "@argent/configuration-core";
 import { parseUiAutomatorDump } from "./uiautomator-parser";
 import {
   androidDevtoolsRef,
   type AndroidDevtoolsApi,
 } from "../../../../blueprints/android-devtools";
+import {
+  openDeviceServerRef,
+  type OpenDeviceServerApi,
+} from "../../../../blueprints/android-open-server";
+import { openServerElementsToDescribeNode } from "./open-server-tree";
+import { openDeviceServerMutex } from "../../../../utils/device-mutex";
 
 export const androidRequires: ToolDependency[] = ["adb"];
 
@@ -40,6 +47,40 @@ export async function describeAndroid(
   isTv?: boolean
 ): Promise<DescribeTreeData> {
   const hint = (isTv ?? (await isAndroidTv(serial))) ? ANDROID_TV_HINT : undefined;
+
+  // Preferred source when the `open-device-server` flag is on and the open-source
+  // on-device server is reachable: it reads the accessibility tree directly from
+  // UiAutomation (no `uiautomator dump` round-trip, and it settles with
+  // waitForIdle first), fixing the ~40% busy-UI dump flakiness. Any failure falls
+  // through to the android-devtools helper, then the raw dump — same one-way
+  // recovery the two legacy sources already have.
+  if (registry && isFlagEnabled("open-device-server")) {
+    try {
+      const device = resolveDevice(serial);
+      const ref = openDeviceServerRef(device);
+      const tree = await openDeviceServerMutex.withDeviceLock(serial, async () => {
+        const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+        const [treeResult, info] = await Promise.all([
+          server.getAccessibilityTree(),
+          server.getInfo(),
+        ]);
+        // UiDevice.displayWidth/Height are rotation-aware and match the pixel
+        // space of getBoundsInScreen, so no separate rotation correction is needed.
+        return openServerElementsToDescribeNode(
+          treeResult.tree,
+          info.screenWidth,
+          info.screenHeight
+        );
+      });
+      return { tree, source: "open-device-server", hint };
+    } catch (serverErr) {
+      console.debug(
+        `[describe.android] open-device-server failed, falling back: ${
+          serverErr instanceof Error ? serverErr.message : String(serverErr)
+        }`
+      );
+    }
+  }
 
   if (registry) {
     try {

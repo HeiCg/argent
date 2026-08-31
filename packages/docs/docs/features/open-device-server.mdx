@@ -1,0 +1,64 @@
+---
+sidebar_position: 10
+sidebar_label: Open device server
+title: Open device server
+sidebar_custom_props:
+  icon: server
+---
+
+Argent can drive Android entirely through an open-source on-device server. The
+server reads the accessibility tree and injects taps, swipes and keys straight
+from UiAutomator, so `describe` and the touch gestures no longer depend on a
+`uiautomator` screen dump or the bundled simulator-server binary. The Kotlin
+sources, the Gradle build and the version manifest all live in this repository —
+nothing about the Android control path is a black box.
+
+The feature is off by default. Turn it on with the `open-device-server` flag:
+
+```bash
+argent enable open-device-server
+```
+
+## What changes when it is on
+
+The agent uses the same tools; only the backend they reach changes.
+
+- **`describe`** reads the accessibility hierarchy from the server. The result is
+  tagged `source: "open-device-server"`. This settles the UI with `waitForIdle`
+  before serializing, which removes the intermittent empty or half-captured trees
+  that a raw `uiautomator dump` returns while the screen is still animating.
+- **`gesture-tap`** and **`gesture-swipe`** dispatch their touches through the
+  server instead of the proprietary simulator-server. This is the first fully
+  open-source touch path on Android.
+
+Keyboard text already goes through `adb input` on Android and is unchanged.
+
+## Automatic fallback
+
+Every path degrades safely. If the server is not installed, cannot start, or
+stops answering, `describe` falls back to the `android-devtools` helper and then
+to a raw `uiautomator` dump, and the gestures fall back to the simulator-server —
+the exact behavior you get with the flag off. Turning the flag on never removes a
+working path; it only adds a preferred one.
+
+## How it runs on the device
+
+The host starts the server with `am instrument`. The server binds an ephemeral
+TCP port and reports it back over the instrumentation status channel; the host
+reads that port and forwards it with `adb forward tcp:0`, so two devices — or two
+sessions — never contend for a fixed port. Requests are newline-delimited
+JSON-RPC, one in flight at a time per device, serialized by a per-device lock so a
+`describe` and a tap on the same device take turns rather than interleaving.
+
+## Building the server APK
+
+The APK is built from the committed Kotlin sources and is not checked in. Build it
+once with the Android SDK and Gradle:
+
+```bash
+npm run build:android-device-server
+```
+
+The build writes `packages/android-device-server/bin/argent-device-control-<version>.apk`.
+Argent installs it on demand the first time a device needs the server, and skips
+the install when the device already carries the same or a newer version.

@@ -1,0 +1,8 @@
+bin/
+dist/
+node_modules/
+tsconfig.tsbuildinfo
+local.properties
+.gradle/
+build/
+.build/

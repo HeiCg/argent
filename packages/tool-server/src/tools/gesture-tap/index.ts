@@ -1,10 +1,11 @@
 import { z } from "zod";
-import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
+import type { Registry, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
+import { shouldUseOpenServer, openServerTap } from "../../utils/open-server-input";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -80,63 +81,87 @@ async function tapChromium(
   }
 }
 
-export const gestureTapTool: ToolDefinition<Params, Result> = {
-  id: "gesture-tap",
-  interaction: {
-    startedMsg: ({ params }) => tapDescription(params, "present"),
-    completedMsg: ({ params }) => tapDescription(params, "past"),
-    failedMsg: ({ params, failureSignal }) =>
-      `Failed to tap at (${Math.round(params.x * 100)}%, ${Math.round(params.y * 100)}%): ${failureSignal.error_code}`,
-  },
-  description: `Press the device screen (iOS simulator, Android emulator, or Chromium app) at normalized coordinates: x and y are fractions of screen width and height in 0.0–1.0 (not pixels).
+export function createGestureTapTool(registry: Registry): ToolDefinition<Params, Result> {
+  return {
+    id: "gesture-tap",
+    interaction: {
+      startedMsg: ({ params }) => tapDescription(params, "present"),
+      completedMsg: ({ params }) => tapDescription(params, "past"),
+      failedMsg: ({ params, failureSignal }) =>
+        `Failed to tap at (${Math.round(params.x * 100)}%, ${Math.round(params.y * 100)}%): ${failureSignal.error_code}`,
+    },
+    description: `Press the device screen (iOS simulator, Android emulator, or Chromium app) at normalized coordinates: x and y are fractions of screen width and height in 0.0–1.0 (not pixels).
 Sends a Down event followed by an Up event at the same point. For Chromium, this dispatches a CDP mouse-press/release on the renderer.
 Set clickCount: 2 for a double-tap / double-click — the taps are dispatched as one gesture with proper click counting, which two separate tap calls cannot guarantee.
 Use when you need to tap a button, link, or any tappable element on the screen.
 Returns { tapped: true, timestampMs }. Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device.
 Before tapping, determine the correct coordinates by using discovery tools — pick by platform: iOS / Android use \`describe\`, \`native-describe-screen\`, or \`debugger-component-tree\`; Chromium uses \`describe\` (the DOM walker), since the native and RN-specific discovery tools don't apply. More information in \`argent-device-interact\` skill`,
-  alwaysLoad: true,
-  searchHint: "tap press button element device simulator emulator chromium touch down up click",
-  zodSchema,
-  capability,
-  services: (params): Record<string, ServiceRef> => {
-    const device = resolveDevice(params.udid);
-    if (device.platform === "chromium") {
-      return { chromium: chromiumCdpRef(device) };
-    }
-    return { simulatorServer: simulatorServerRef(device) };
-  },
-  async execute(services, params) {
-    const device = resolveDevice(params.udid);
-    const timestampMs = Date.now();
-    const clickCount = params.clickCount ?? 1;
-    if (device.platform === "chromium") {
-      const chromium = services.chromium as ChromiumCdpApi;
-      // Mouse dispatch stalls at ~5s per event on a hidden window.
-      await assertChromiumWindowVisible(chromium, "tap", "chromium_tap_window_hidden");
-      await tapChromium(chromium, params.x, params.y, clickCount);
+    alwaysLoad: true,
+    searchHint: "tap press button element device simulator emulator chromium touch down up click",
+    zodSchema,
+    capability,
+    services: (params): Record<string, ServiceRef> => {
+      const device = resolveDevice(params.udid);
+      if (device.platform === "chromium") {
+        return { chromium: chromiumCdpRef(device) };
+      }
+      // With the open-device-server flag on, the simulator-server is resolved
+      // lazily in execute only if the open path fails, so a healthy open backend
+      // never spawns the proprietary server.
+      if (shouldUseOpenServer(device)) {
+        return {};
+      }
+      return { simulatorServer: simulatorServerRef(device) };
+    },
+    async execute(services, params) {
+      const device = resolveDevice(params.udid);
+      const timestampMs = Date.now();
+      const clickCount = params.clickCount ?? 1;
+      if (device.platform === "chromium") {
+        const chromium = services.chromium as ChromiumCdpApi;
+        // Mouse dispatch stalls at ~5s per event on a hidden window.
+        await assertChromiumWindowVisible(chromium, "tap", "chromium_tap_window_hidden");
+        await tapChromium(chromium, params.x, params.y, clickCount);
+        return { tapped: true, timestampMs };
+      }
+      let api: SimulatorServerApi;
+      if (shouldUseOpenServer(device)) {
+        try {
+          await openServerTap(registry, device, params.x, params.y, clickCount);
+          return { tapped: true, timestampMs };
+        } catch (err) {
+          console.debug(
+            `[gesture-tap] open-device-server failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+          const ref = simulatorServerRef(device);
+          api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
+        }
+      } else {
+        api = services.simulatorServer as SimulatorServerApi;
+      }
+      for (let i = 1; i <= clickCount; i++) {
+        if (i > 1) await sleep(MULTI_TAP_GAP_MS);
+        await sendCommand(api, {
+          cmd: "touch",
+          type: "Down",
+          x: params.x,
+          y: params.y,
+          second_x: null,
+          second_y: null,
+        });
+        await sleep(TAP_HOLD_MS);
+        await sendCommand(api, {
+          cmd: "touch",
+          type: "Up",
+          x: params.x,
+          y: params.y,
+          second_x: null,
+          second_y: null,
+        });
+      }
       return { tapped: true, timestampMs };
-    }
-    const api = services.simulatorServer as SimulatorServerApi;
-    for (let i = 1; i <= clickCount; i++) {
-      if (i > 1) await sleep(MULTI_TAP_GAP_MS);
-      await sendCommand(api, {
-        cmd: "touch",
-        type: "Down",
-        x: params.x,
-        y: params.y,
-        second_x: null,
-        second_y: null,
-      });
-      await sleep(TAP_HOLD_MS);
-      await sendCommand(api, {
-        cmd: "touch",
-        type: "Up",
-        x: params.x,
-        y: params.y,
-        second_x: null,
-        second_y: null,
-      });
-    }
-    return { tapped: true, timestampMs };
-  },
-};
+    },
+  };
+}

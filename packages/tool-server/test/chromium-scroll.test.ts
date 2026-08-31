@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { gestureScrollTool } from "../src/tools/gesture-scroll";
-import { gestureSwipeTool } from "../src/tools/gesture-swipe";
+import { Registry } from "@argent/registry";
+import { createGestureSwipeTool } from "../src/tools/gesture-swipe";
+
+const gestureSwipeTool = createGestureSwipeTool(new Registry());
 import { assertSupported, UnsupportedOperationError } from "../src/utils/capability";
 import { resolveDevice } from "../src/utils/device-info";
 

@@ -1,0 +1,23 @@
+{
+  "name": "@argent/android-device-server",
+  "version": "0.22.1",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "bin/",
+    "assets/"
+  ],
+  "scripts": {
+    "build": "rm -rf dist/index.* tsconfig.tsbuildinfo && tsc",
+    "build:native": "bash scripts/build.sh",
+    "test": "vitest run",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

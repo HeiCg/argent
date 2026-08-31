@@ -1,8 +1,15 @@
 import { z } from "zod";
-import type { ToolCapability, ToolContext, ToolDefinition } from "@argent/registry";
+import type {
+  Registry,
+  ServiceRef,
+  ToolCapability,
+  ToolContext,
+  ToolDefinition,
+} from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
+import { shouldUseOpenServer, openServerSwipe } from "../../utils/open-server-input";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -89,112 +96,148 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
 };
 
-export const gestureSwipeTool: ToolDefinition<Params, Result> = {
-  id: "gesture-swipe",
-  interaction: {
-    startedMsg: ({ params }) =>
-      `Swiping from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
-    completedMsg: ({ params }) =>
-      `Swiped from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
-    failedMsg: ({ failureSignal }) => `Failed to swipe: ${failureSignal.error_code}`,
-  },
-  // The bounds are spelled out rather than interpolated: extract-tools scans this
-  // description statically, so a `${}` in it drops the tool out of the scan.
-  description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
+export function createGestureSwipeTool(registry: Registry): ToolDefinition<Params, Result> {
+  return {
+    id: "gesture-swipe",
+    interaction: {
+      startedMsg: ({ params }) =>
+        `Swiping from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
+      completedMsg: ({ params }) =>
+        `Swiped from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
+      failedMsg: ({ failureSignal }) => `Failed to swipe: ${failureSignal.error_code}`,
+    },
+    // The bounds are spelled out rather than interpolated: extract-tools scans this
+    // description statically, so a `${}` in it drops the tool out of the scan.
+    description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
 Generates interpolated Move events for a natural feel (~60fps).
 Swipe up (fromY > toY) to scroll content down.
 Use when you need to scroll a list, dismiss a modal, drag an element, or navigate between pages. Not supported on Chromium — use gesture-scroll there instead.
 Pass momentum:false for a momentum-free swipe that lands where the finger lifts (little to no fling at the 300 default), when you need a deterministic scroll distance; it needs durationMs >= 150 and is rejected below that, a shorter ease-out leaving the OS too little wall clock to read the deceleration as a stop. At 150 it lands short of the lift point instead, and 2 of 47 runs still flung backwards. A plain swipe takes any duration up to 10000ms and is delivered as close to the speed it was authored as a 16ms frame allows: below ~32ms the whole travel lands in one or two frames, which the OS flings as hard as it flings anything. Returns { swiped: true, timestampMs }. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
-  alwaysLoad: true,
-  searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
-  zodSchema,
-  capability,
-  services: (params) => ({
-    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
-  }),
-  async execute(services, params, ctx?: ToolContext) {
-    const duration = params.durationMs ?? DEFAULT_DURATION_MS;
-    const momentumFree = params.momentum === false;
-    const timestampMs = Date.now();
-    const api = services.simulatorServer as SimulatorServerApi;
-    // No sample floor on this ramp, unlike `momentum: false` above: a fast swipe
-    // is delivered as fast as it was authored. At durationMs 16 the whole travel
-    // is one Move, the hardest flick either OS can be handed, but the fling
-    // saturates at the platform's own ceiling rather than at anything invented
-    // here. Flooring the count would only turn durationMs into a lie.
-    const steps = Math.max(1, Math.round(duration / 16));
-    // Last dispatched sample, so an abort can lift from where the finger is.
-    let lastX = 0;
-    let lastY = 0;
-    // Neither touch backend delivers the Up's coordinates: on both, the finger
-    // lifts wherever the last Move landed. So the end point has to be repeated as
-    // a Move or the swipe lands short of where it was authored - a full step out
-    // for a plain swipe (50% at durationMs 32), (1/steps)^n for a momentum-free
-    // one. Unconditional, because the duplicate sample does not damp the iOS
-    // fling it used to be withheld for (806px with against 803px without, n=14).
-    for (let i = 0; i <= steps; i++) {
-      // Every frame below is a 16ms sleep, so without this a cancelled run keeps
-      // driving the device for the rest of the duration, its samples interleaving
-      // into whatever gesture is sent to that device next.
-      if (ctx?.signal?.aborted) {
-        const err = new Error(
-          `gesture-swipe aborted - cancelled mid-gesture after ${i} of ${steps + 1} frames`
-        );
-        err.name = "AbortError";
-        // Down has already landed, so lift the finger before unwinding. Best
-        // effort - a cancel is often the device going away - so a lift that is
-        // refused rides along as the AbortError's `cause` rather than replacing
-        // it, which callers key on by name.
-        if (i > 0) {
-          try {
-            await sendCommand(api, {
-              cmd: "touch",
-              type: "Up",
-              x: lastX,
-              y: lastY,
-              second_x: null,
-              second_y: null,
-            });
-          } catch (liftErr) {
-            err.cause = liftErr;
-          }
+    alwaysLoad: true,
+    searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
+    zodSchema,
+    capability,
+    services: (params): Record<string, ServiceRef> => {
+      const device = resolveDevice(params.udid);
+      // See gesture-tap: skip resolving the proprietary server when the open path
+      // is active; it is resolved lazily in execute only as a fallback.
+      if (shouldUseOpenServer(device)) return {};
+      return { simulatorServer: simulatorServerRef(device) };
+    },
+    async execute(services, params, ctx?: ToolContext) {
+      const duration = params.durationMs ?? DEFAULT_DURATION_MS;
+      const momentumFree = params.momentum === false;
+      const timestampMs = Date.now();
+      const device = resolveDevice(params.udid);
+
+      if (shouldUseOpenServer(device)) {
+        try {
+          // The on-device server interpolates its own steps; map the host frame
+          // budget to a comparable step count. Momentum/abort semantics of the
+          // per-frame path below don't apply to a single-RPC swipe.
+          const steps = Math.max(1, Math.round(duration / 16));
+          await openServerSwipe(
+            registry,
+            device,
+            params.fromX,
+            params.fromY,
+            params.toX,
+            params.toY,
+            steps
+          );
+          return { swiped: true, timestampMs };
+        } catch (err) {
+          console.debug(
+            `[gesture-swipe] open-device-server failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
         }
-        throw err;
       }
 
-      const t = i / steps;
-      // A momentum-free swipe lifts at ~0 velocity, so the OS applies no fling.
-      // Ease-out beats a train of identical "hold" samples: those get coalesced
-      // away, leaving the fast pre-hold velocity to fling, and a beyond-the-end
-      // hold would run off-screen for a swipe that already finishes at an edge.
-      const progress = momentumFree ? 1 - Math.pow(1 - t, MOMENTUM_FREE_EASE_EXPONENT) : t;
-      const x = params.fromX + (params.toX - params.fromX) * progress;
-      const y = params.fromY + (params.toY - params.fromY) * progress;
-      const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
-      // In the Up's own frame, with no added sleep, so the cadence is unchanged.
-      if (type === "Up") {
+      const ref = simulatorServerRef(device);
+      const api = shouldUseOpenServer(device)
+        ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+        : (services.simulatorServer as SimulatorServerApi);
+      // No sample floor on this ramp, unlike `momentum: false` above: a fast swipe
+      // is delivered as fast as it was authored. At durationMs 16 the whole travel
+      // is one Move, the hardest flick either OS can be handed, but the fling
+      // saturates at the platform's own ceiling rather than at anything invented
+      // here. Flooring the count would only turn durationMs into a lie.
+      const steps = Math.max(1, Math.round(duration / 16));
+      // Last dispatched sample, so an abort can lift from where the finger is.
+      let lastX = 0;
+      let lastY = 0;
+      // Neither touch backend delivers the Up's coordinates: on both, the finger
+      // lifts wherever the last Move landed. So the end point has to be repeated as
+      // a Move or the swipe lands short of where it was authored - a full step out
+      // for a plain swipe (50% at durationMs 32), (1/steps)^n for a momentum-free
+      // one. Unconditional, because the duplicate sample does not damp the iOS
+      // fling it used to be withheld for (806px with against 803px without, n=14).
+      for (let i = 0; i <= steps; i++) {
+        // Every frame below is a 16ms sleep, so without this a cancelled run keeps
+        // driving the device for the rest of the duration, its samples interleaving
+        // into whatever gesture is sent to that device next.
+        if (ctx?.signal?.aborted) {
+          const err = new Error(
+            `gesture-swipe aborted - cancelled mid-gesture after ${i} of ${steps + 1} frames`
+          );
+          err.name = "AbortError";
+          // Down has already landed, so lift the finger before unwinding. Best
+          // effort - a cancel is often the device going away - so a lift that is
+          // refused rides along as the AbortError's `cause` rather than replacing
+          // it, which callers key on by name.
+          if (i > 0) {
+            try {
+              await sendCommand(api, {
+                cmd: "touch",
+                type: "Up",
+                x: lastX,
+                y: lastY,
+                second_x: null,
+                second_y: null,
+              });
+            } catch (liftErr) {
+              err.cause = liftErr;
+            }
+          }
+          throw err;
+        }
+
+        const t = i / steps;
+        // A momentum-free swipe lifts at ~0 velocity, so the OS applies no fling.
+        // Ease-out beats a train of identical "hold" samples: those get coalesced
+        // away, leaving the fast pre-hold velocity to fling, and a beyond-the-end
+        // hold would run off-screen for a swipe that already finishes at an edge.
+        const progress = momentumFree ? 1 - Math.pow(1 - t, MOMENTUM_FREE_EASE_EXPONENT) : t;
+        const x = params.fromX + (params.toX - params.fromX) * progress;
+        const y = params.fromY + (params.toY - params.fromY) * progress;
+        const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
+        // In the Up's own frame, with no added sleep, so the cadence is unchanged.
+        if (type === "Up") {
+          await sendCommand(api, {
+            cmd: "touch",
+            type: "Move",
+            x,
+            y,
+            second_x: null,
+            second_y: null,
+          });
+        }
         await sendCommand(api, {
           cmd: "touch",
-          type: "Move",
+          type,
           x,
           y,
           second_x: null,
           second_y: null,
         });
+        lastX = x;
+        lastY = y;
+        if (i < steps) await sleep(16);
       }
-      await sendCommand(api, {
-        cmd: "touch",
-        type,
-        x,
-        y,
-        second_x: null,
-        second_y: null,
-      });
-      lastX = x;
-      lastY = y;
-      if (i < steps) await sleep(16);
-    }
 
-    return { swiped: true, timestampMs };
-  },
-};
+      return { swiped: true, timestampMs };
+    },
+  };
+}

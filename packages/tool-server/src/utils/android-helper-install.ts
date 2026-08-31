@@ -1,12 +1,19 @@
 import { runAdb, adbShell } from "./adb";
 import { bundledHelperApkPath, helperManifest } from "@argent/native-devtools-android";
+import { bundledServerApkPath, serverManifest } from "@argent/android-device-server";
 
-/** Manifest-driven install of the argent-android-devtools helper APK. */
+/**
+ * Manifest-driven install of an Argent Android helper/server APK.
+ *
+ * Parameterized over the manifest so both the `android-devtools` snapshot helper
+ * and the open-source `android-device-server` share one install gate (probe the
+ * installed versionCode, skip if current, reinstall on a signing-key mismatch).
+ */
 
 const installedHelpers = new Map<string, true>();
 
-function cacheKey(serial: string, versionCode: number): string {
-  return `${serial}|${versionCode}`;
+function cacheKey(serial: string, packageName: string, versionCode: number): string {
+  return `${serial}|${packageName}|${versionCode}`;
 }
 
 interface InstalledVersionProbe {
@@ -46,20 +53,27 @@ async function probeInstalledVersion(
   return { installed: false, versionCode: null };
 }
 
-/** Install the helper APK unless the device already has at least the bundled versionCode. */
-export async function ensureAndroidDevtoolsInstalled(serial: string): Promise<void> {
-  const manifest = helperManifest();
-  const key = cacheKey(serial, manifest.versionCode);
+interface HelperInstallSpec {
+  serial: string;
+  packageName: string;
+  versionCode: number;
+  installFlags: string[];
+  apkPath: string;
+}
+
+/** Install `apkPath` unless the device already has at least `versionCode`. */
+async function ensureHelperInstalled(spec: HelperInstallSpec): Promise<void> {
+  const { serial, packageName, versionCode, installFlags, apkPath } = spec;
+  const key = cacheKey(serial, packageName, versionCode);
   if (installedHelpers.has(key)) return;
 
-  const probe = await probeInstalledVersion(serial, manifest.packageName);
-  if (probe.installed && probe.versionCode !== null && probe.versionCode >= manifest.versionCode) {
+  const probe = await probeInstalledVersion(serial, packageName);
+  if (probe.installed && probe.versionCode !== null && probe.versionCode >= versionCode) {
     installedHelpers.set(key, true);
     return;
   }
 
-  const apkPath = bundledHelperApkPath();
-  const args = ["-s", serial, "install", ...manifest.installFlags, apkPath];
+  const args = ["-s", serial, "install", ...installFlags, apkPath];
 
   try {
     await runAdb(args, { timeoutMs: 60_000 });
@@ -69,7 +83,7 @@ export async function ensureAndroidDevtoolsInstalled(serial: string): Promise<vo
       // Same package installed under a different signing key (e.g. a rotated
       // local debug keystore); Android only allows the update after uninstall.
       try {
-        await runAdb(["-s", serial, "uninstall", manifest.packageName], { timeoutMs: 30_000 });
+        await runAdb(["-s", serial, "uninstall", packageName], { timeoutMs: 30_000 });
       } catch {
         // Let the retried install report the failure.
       }
@@ -80,6 +94,30 @@ export async function ensureAndroidDevtoolsInstalled(serial: string): Promise<vo
   }
 
   installedHelpers.set(key, true);
+}
+
+/** Install the argent-android-devtools snapshot helper APK. */
+export async function ensureAndroidDevtoolsInstalled(serial: string): Promise<void> {
+  const manifest = helperManifest();
+  await ensureHelperInstalled({
+    serial,
+    packageName: manifest.packageName,
+    versionCode: manifest.versionCode,
+    installFlags: manifest.installFlags,
+    apkPath: bundledHelperApkPath(),
+  });
+}
+
+/** Install the open-source android-device-server APK. */
+export async function ensureOpenDeviceServerInstalled(serial: string): Promise<void> {
+  const manifest = serverManifest();
+  await ensureHelperInstalled({
+    serial,
+    packageName: manifest.packageName,
+    versionCode: manifest.versionCode,
+    installFlags: manifest.installFlags,
+    apkPath: bundledServerApkPath(),
+  });
 }
 
 /**
