@@ -296,6 +296,14 @@ function isInteractive(attrs: Record<string, string>): boolean {
  * shift matching on every native screen. Gating on `inWebView` touches web
  * content only.
  *
+ * The second rule keeps a role off the class name where `isUiAutomatorScrollable`
+ * already refuses to read one: a `<ul>` arrives as `android.widget.ListView`,
+ * whose role is "ScrollView", on a node Chromium marks `scrollable="false"`.
+ * That node both asserts and denies scrolling, and `isScrollContainer` in
+ * `flow-actions` counts any `/scroll/i` role as a scroller — against the
+ * `scrolls: false` the flow tree sets for the same node. A web scroller the
+ * framework does flag (`overflow: scroll`) keeps its role.
+ *
  * Both Android trees call this — the agent-facing `describe` trim and the flow
  * selector tree (`flow-android-tree`) — so a `role` an agent reads out of
  * `describe` still matches when a flow replays it.
@@ -321,7 +329,13 @@ export function deriveUiAutomatorRoleInContext(
   ) {
     return "StaticText";
   }
-  return deriveUiAutomatorRole(className);
+  const role = deriveUiAutomatorRole(className);
+  // The same regex `isScrollContainer` uses, so no node inside a WebView can
+  // report a scroll role to it unless the framework flagged the node scrollable.
+  if (ctx.inWebView && /scroll/i.test(role) && !attrIsTrue(attrs, "scrollable")) {
+    return "List";
+  }
+  return role;
 }
 
 export function labelOf(attrs: Record<string, string>): string {

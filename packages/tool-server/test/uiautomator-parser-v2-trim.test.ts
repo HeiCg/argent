@@ -320,6 +320,48 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(labels).toContain("Escaped link");
   });
 
+  it("does not give a web list a role that claims scrolling", () => {
+    // Chromium maps a <ul> onto android.widget.ListView, whose role is
+    // "ScrollView" — on a node it marks scrollable="false". One node cannot
+    // both assert and deny the property: `isScrollContainer` in flow-actions
+    // reads the role, `isUiAutomatorScrollable` reads the flag, and they would
+    // disagree about the same list.
+    const list = (scrollable: string) => `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][1080,2400]" text="Menu Page">
+    <node class="android.widget.ListView" resource-id="mylist" scrollable="${scrollable}" bounds="[20,170][1060,400]">
+      <node class="android.widget.TextView" bounds="[20,180][220,240]" text="alpha"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const roleOf = (xml: string) =>
+      flatten(parseUiAutomatorDump(xml, 1080, 2400)).find((n) => n.identifier === "mylist");
+
+    const plain = roleOf(list("false"));
+    expect(plain?.role).toBe("List");
+    expect(plain?.scrollable).toBeFalsy();
+
+    // A real web scroller (`overflow: scroll`) is flagged, and keeps its role.
+    const scroller = roleOf(list("true"));
+    expect(scroller?.role).toBe("ScrollView");
+    expect(scroller?.scrollable).toBe(true);
+  });
+
+  it("leaves a native list's scroll role alone", () => {
+    // Outside a WebView the class name is the signal, and a ListView that
+    // reports scrollable="false" is still a scroll container.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.ListView" resource-id="feed" scrollable="false" bounds="[20,170][1060,400]">
+    <node class="android.widget.TextView" bounds="[20,180][220,240]" text="alpha"/>
+  </node>
+</hierarchy>`;
+    const feed = flatten(parseUiAutomatorDump(xml, 1080, 2400)).find(
+      (n) => n.identifier === "feed"
+    );
+    expect(feed?.role).toBe("ScrollView");
+  });
+
   it("still clips against a web container the framework marks scrollable", () => {
     // A web scroller is real when Chromium says so (overflow: scroll). Its box
     // is then a genuine viewport and content outside it is genuinely hidden.

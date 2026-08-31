@@ -520,6 +520,37 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
 
     expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
   });
+  // Both trees read the role through the same contextual rule, so a web list
+  // that the framework says does not scroll reports the same non-scrolling role
+  // in each — otherwise a `role` copied out of describe misses at replay, and
+  // `isScrollContainer` (which reads any /scroll/i role) contradicts the
+  // `scrolls: false` this tree sets for the very same node.
+  it("agrees with describe on a web list's role", () => {
+    const xml = (scrollable: string) => `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" bounds="[0,0][1080,1920]">
+      <node index="0" class="android.widget.ListView" resource-id="mylist" scrollable="${scrollable}" package="com.acme.app" bounds="[20,170][1060,400]">
+        <node index="0" class="android.widget.TextView" package="com.acme.app" text="alpha" bounds="[20,180][220,240]" />
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const roleIn = (tree: DescribeNode) => findAll(tree, { identifier: "mylist" })[0]?.role;
+
+    const plain = xml("false");
+    expect(roleIn(adaptFullAndroidHierarchyToDescribeResult(plain, SCREEN_W, SCREEN_H))).toBe(
+      "List"
+    );
+    expect(roleIn(parseUiAutomatorDump(plain, SCREEN_W, SCREEN_H))).toBe("List");
+
+    const scrolling = xml("true");
+    expect(roleIn(adaptFullAndroidHierarchyToDescribeResult(scrolling, SCREEN_W, SCREEN_H))).toBe(
+      "ScrollView"
+    );
+    expect(roleIn(parseUiAutomatorDump(scrolling, SCREEN_W, SCREEN_H))).toBe("ScrollView");
+  });
+
   // The label gate on the same remap, which also only this tree can pin: an
   // unlabelled web node never reaches the remap in describe (the layout-container
   // passthrough returns its children before a role is computed), but the flow
