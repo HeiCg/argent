@@ -524,11 +524,19 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     // refusal cannot stand in for the routing.
     isAndroidTv.mockResolvedValue(true);
     getAndroidRuntimeKind.mockResolvedValue("tv");
-    typeTv.mockRejectedValue(new Error("clear is not supported on a TV target"));
+    // A neutral sentinel, not a message this test wrote itself: asserting the
+    // rejection text against a string the mock was just handed only proves the
+    // mock. What is being pinned is the ROUTE — that the request reached
+    // `typeTv` with the clear intact, and that nothing was injected. `typeTv`'s
+    // own refusal wording is pinned in keyboard-tv.test.ts, against the real
+    // implementation.
+    const refusal = new Error("routed-to-typeTv");
+    typeTv.mockRejectedValue(refusal);
     await expect(
       impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone)
-    ).rejects.toThrow(/not supported on a TV target/);
+    ).rejects.toBe(refusal);
     expect(typeTv).toHaveBeenCalledTimes(1);
+    expect(typeTv.mock.calls[0]![2]).toMatchObject({ clear: true });
     expect(adbShell).not.toHaveBeenCalled();
   });
 
@@ -585,11 +593,17 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     expect(res).toEqual({ typed: "100%safe", keys: 8 });
   });
 
-  it("returns { typed:'', keys: 200, cleared: true } for a clear, and types nothing", async () => {
+  it("returns { typed:'', cleared: true } for a clear, and types nothing", async () => {
     // `typed: ""` because nothing was typed — echoing anything else would put a
     // value in the result of a call whose whole point is that the field's
     // contents are unknown (and may have been a secret). `keys` counts what was
     // SENT: two key events per pair.
+    //
+    // Written against the CONSTANT on purpose, and titled that way: the literal
+    // 200 that reaches callers is pinned once, in "reports `keys` as the literal
+    // 200 the tool description promises callers" below. A title promising a
+    // number this assertion does not check would leave a test NAMED 200 green
+    // for a constant set to 3.
     adbShell.mockClear();
     const res = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone);
     expect(res).toEqual({ typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true });
