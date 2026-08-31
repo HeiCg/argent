@@ -11,7 +11,7 @@ export const SHIFT_KEYCODE = 225;
 // The `key` vocabulary is NOT uniform on this point across backends, and adding
 // a name for 76 would have to be decided for all of them at once: `delete` is
 // backspace on iOS (above) and on Android (../../utils/android-input.ts, KEYCODE_DEL
-// 67), but the FORWARD delete on chromium (../chromium-keys.ts, VK 46) and on
+// 67), but the FORWARD delete on chromium (./chromium-keys.ts, VK 46) and on
 // Vega (../../utils/vega-input.ts, KEY_DELETE). With the caret between `b` and
 // `c` in `abc`, `key: "delete"` therefore leaves `ac` on the first two and `ab`
 // on the last two. That divergence predates the clear burst and is unchanged by
@@ -23,6 +23,12 @@ export const FORWARD_DELETE_KEYCODE = 76;
 // so the burst has to be a fixed size, and 100 characters on each side of the
 // caret covers the fields an agent types into. A longer value keeps its
 // remainder, and the documented repair is a second `clear` call.
+//
+// "On each side" is the capacity, not the throughput: a tap into a filled field
+// lands the caret at the END, where only the backspaces do anything, so one call
+// clears 100 characters rather than 200 — measured at 250 -> 150 -> 50 -> 0 over
+// three calls on a real simulator. `argent-device-interact/SKILL.md` states it
+// that way to callers.
 //
 // Shared by the two key-injecting backends (../../utils/android-input.ts and
 // ./simulator-server-keys.ts) so the contract stated in the tool description
