@@ -33,7 +33,7 @@ A `com.apple.*` app does not get a flow tree. Use this form only for a `com.appl
 - Keep `launch:`. It passes after about 16 seconds.
 - Use raw `tool: await-ui-element` checks and point taps from `describe`, each with an echo.
 - For text, use a point focus tap, a raw `keyboard` with `text` and `delayMs: 500`, then a raw `keyboard` with `key: "enter"`.
-- Use raw swipes with `settle: true`, because the tree is necessary for `scroll-to`.
+- Use raw swipes with `momentum: false` and `durationMs` of at least 150, because the tree is necessary for `scroll-to`.
 - Put a `wait:` or a raw wait before a gesture that follows a screen change.
 - A recorded wait gives a warning that the runner tree is unavailable. This warning is expected. Keep the wait as a raw `tool:` step.
 

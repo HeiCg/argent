@@ -12,7 +12,7 @@ Read this file before you replay or repair a flow.
 
 ## Read the report
 
-- A pass shows `PASS` in the report (`ok: true` in the JSON report), with each step done. The report does not count echo steps. Manual help during the run voids the pass.
+- A pass shows `PASS` in the report (`ok: true` in the JSON report), with each step done. The counts do not include echo steps. The two runners number the step list differently, so identify a step by its directive and target, not only by its number. Manual help during the run voids the pass.
 - The runner did not evaluate an `errored` step: an `idle` wait with an unreadable tree, a step that threw, or a missing `run:` target. Repair the environment. Then run again. A failed `launch:` is also `errored`, but it is a verdict about the app. In a report, name an `errored` step as errored, not as failed.
 - A `type:` step passes also when the runner could not make sure of the focus. The value check after it catches a miss.
 - A step with a `⚠` mark passed with a warning. Examine it. Read [Warnings](warnings.md).
@@ -53,4 +53,4 @@ Name the added proof before you run again.
 
 ## Correction limit
 
-After each correction, audit and replay from the declared start. Stop after two unsuccessful correction cycles. Report the problem. If failures move while the flow becomes longer, record that span again. Do not make a check that the task specifies weaker, remove it, or hide it to get a pass. Keep an app check that fails. Report the flow as an unproven artifact.
+After each correction, audit ([Polish: Audit](polish.md#audit)) and replay from the declared start. Stop after two unsuccessful correction cycles. Report the problem. If failures move while the flow becomes longer, record that span again. Do not make a check that the task specifies weaker, remove it, or hide it to get a pass. Keep an app check that fails. Report the flow as an unproven artifact.

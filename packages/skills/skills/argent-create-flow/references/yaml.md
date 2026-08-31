@@ -34,7 +34,7 @@ Do not write a bare string such as `tap: Save`. It tries `id` first and then `te
 - tap: { role: Switch, next: { text: Wi-Fi } } # nearest matching follower
 ```
 
-`within` is visual containment, not the source tree. `after` and `next` use reading order (top to bottom, left to right). `next` skips neighbors that do not match, so it can get to the next row when the intended row has no control. When a missing control must fail, use `within` on a stable row container. A child that overflows its container, or a popover anchored to it, is outside `within`. Use a strict selector (an id or exact text) for each anchor. Scopes nest, with a maximum of six scope keys. Live `await-ui-element` does not support scopes.
+`within` is visual containment, not the source tree. `after` and `next` use reading order (top to bottom, left to right). `next` skips neighbors that do not match, so it can get to the next row when the intended row has no control. When a missing control must fail, use `within` on a stable row container. A child that overflows its container, or a popover anchored to it, is outside `within`. Use a strict selector (an id or exact text) for each anchor. Scopes nest, with a maximum of six scope keys. Live `await-ui-element` does not support scopes. On `scroll-to`, the top-level `within` names the scroller, not a match scope. To limit which element matches, put `within` inside `target`.
 
 ## Directives
 
@@ -45,6 +45,7 @@ Do not write a bare string such as `tap: Save`. It tries `id` first and then `te
 | `long-press` | `<selector>` or `{ on, duration }`                                 | `duration` in ms                                          |
 | `type`       | `{ into, text, submit }`                                           | Presses Enter unless `submit: false`                      |
 | `scroll-to`  | `{ target, direction, within }`                                    | `direction` is `down` (default), `up`, `left`, or `right` |
+| `swipe`      | `<direction>` or `{ from, direction, to, by, momentum, duration }` | The travel of the finger. See [Swipe](#swipe)             |
 | `pinch`      | `{ on, scale }`                                                    | `scale` > 1 zooms in. Screen center without `on`          |
 | `rotate`     | `{ on, by }`                                                       | Degrees, clockwise positive. Not the device orientation   |
 | `await`      | `{ <condition>, timeout }` or `{ idle: true, stableFor, timeout }` | Default `timeout` 7500 ms                                 |
@@ -56,7 +57,11 @@ Do not write a bare string such as `tap: Save`. It tries `id` first and then `te
 | `echo`       | `<message>`                                                        | Printed in the report                                     |
 | `tool`       | `<tool name>`, with `args:` and optional `delayMs:`                | One of the Argent tools                                   |
 
-`tap`, `type`, and `long-press` do not scroll. When the target can be off-screen, put `scroll-to` before them. A `type` step can contain `{{secret:NAME}}`. The runner reads it from the environment variable `ARGENT_SECRET_NAME`, from `.argent/secrets.env` or `~/.argent/secrets.env` as `NAME`, or from `.env.local` or `.env` as `ARGENT_SECRET_NAME`. The report redacts the value, so do not use a secret for text that the report must show.
+A `type` step can contain `{{secret:NAME}}`. The runner uses the first source that has the name: the environment variable `ARGENT_SECRET_NAME`, the project `.argent/secrets.env` as `NAME`, `.env.local` or `.env` as `ARGENT_SECRET_NAME`, then `~/.argent/secrets.env` as `NAME`. The report redacts the value, so do not use a secret for text that the report must show.
+
+### Swipe
+
+`swipe` is one flick where the gesture is the action: dismiss a card, page a carousel, pull to refresh. Do not use `swipe` to scroll. To make an element visible, use `scroll-to`. `direction` is the travel of the finger, opposite to the content direction of `scroll-to`: `swipe: left` shows the content on the right. Give one travel: `direction`, `by: { x, y }` (signed screen fractions), or `to` (a selector or a point). `from` anchors the start on a selector or a point. The travel must be at least 0.03. Only the `direction` presets keep a margin from the OS edges, so write a system edge gesture as a raw `tool: gesture-swipe` step. `momentum: false` stops where the finger stops, with a `duration` of at least 150 ms (default 300). On Chromium, do not anchor `from` on an image, a link, or a `draggable` node. The browser starts its drag-and-drop, and the swipe does not travel.
 
 ### Launch map
 
@@ -88,7 +93,7 @@ Use `await` for a result that comes after an interval. Increase its timeout only
 - await: { idle: true } # readiness
 ```
 
-The identity selector must be only on the destination screen. `idle` waits until the screen has content and does not move in the tree or in the pixels. The two checks do not replace each other.
+The identity selector must be only on the destination screen. `idle` waits until the UI tree has elements and the screen does not move in the tree or in the pixels. The two checks do not replace each other.
 
 ```yaml
 - await: { idle: true, stableFor: 400, timeout: 9000 }
@@ -121,7 +126,7 @@ The guard is one `exists`, `visible`, `hidden`, or `text` condition, or `{ platf
 - snapshot: { name: price-card, cropOn: { id: price-card }, maxMismatch: 0.2 }
 ```
 
-A snapshot compares the screen, or the frame of `cropOn`, with a baseline in `.argent/flows/__baselines__/<flow>/`. A missing baseline, a mismatch above `maxMismatch` percent (default 0.5), or a `cropOn` dimension change fails the step. Write baselines from a known-good state with `--update-baselines` (`updateBaselines: true` in `flow-execute`). Examine each baseline. Let the user examine it. Do not commit it. A baseline update is not a test pass. Do not update a baseline only to make a diff pass.
+A snapshot compares the screen, or the frame of `cropOn`, with a baseline in `.argent/flows/__baselines__/<flow>/`. A missing baseline, a mismatch above `maxMismatch` percent (default 0.5), or a `cropOn` dimension change fails the step. Write baselines from a known-good state with `--update-baselines` (`updateBaselines: true` in `flow-execute`). Examine each baseline. Let the user examine and commit it. Do not commit it yourself. A missing baseline fails the step, so CI needs the committed baseline. A baseline update is not a test pass. Do not update a baseline only to make a diff pass.
 
 Use a snapshot for layout, color, spacing, typography, clipping, and icons. Do not use it as the only proof of navigation, data, or network behavior. Keep timestamps, live data, ads, and animation out of the captured region.
 

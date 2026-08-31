@@ -7,7 +7,8 @@ Read this file before you record a flow or record steps again. Do each action th
 - Give the same `name` and the same absolute `project_root` to each recording tool. Use a name that is unique to your task. Give each concurrent recording its own device.
 - `flow-start-recording` erases the named YAML, also a complete flow. Make a copy of the previous flow first. If a call says that the recording is inactive, record with a new name.
 - After each `flow-add-step` call, read `recorded`, `message`, and `toolResult`. The recorder also records a call that returns an unmet condition.
-- `flow-add-step.command` is a tool name, and `args` is a JSON string. A directive name gets guidance and records nothing.
+- `flow-add-step.command` is a tool name, and `args` is a JSON string. Most directive names get guidance and record nothing. `rotate` is also a tool name: the call turns the device and records a `tool: rotate` step. `tool` returns an error.
+- If `savedTo` is `null`, the write of the YAML file failed on your side. The step is in the recording. Do not restart the recording. Continue, and read the file after `flow-finish-recording`.
 
 ## Start
 
@@ -28,7 +29,7 @@ Go to each screen through the app UI. Do not use `open-url` as a replacement for
 
 ### Navigation
 
-After each screen change, record `await-ui-element` with `visible` on an element that is only on the destination screen. A tab bar, a shared header, or a positional id does not identify the screen. If a stable control (not a data value) shows that the data is loaded, record a second wait on it. In the polish pass, add `await: { idle: true }` after the identity check. Go to a fixed destination when possible. A back button or a back swipe pops one stack entry, so its destination can change between visits. If the test is about back navigation, use back. Then check its result like each other screen change.
+After each screen change, record `await-ui-element` with `visible` on an element that is only on the destination screen. A tab bar, a shared header, or a positional id does not identify the screen. If a stable control (not a data value) shows that the data is loaded, record a second wait on it. In the polish pass, add `await: { idle: true }` after the identity check. Go to a fixed destination when possible. A back button or a back swipe pops one stack entry, so its destination can change between visits. If the test is about back navigation, record the tap on the back control or the back swipe. Then check its result like each other screen change.
 
 ### Absence
 
@@ -54,7 +55,11 @@ Write a credential as `{{secret:NAME}}`, not as a literal. Do not `describe` or 
 
 ### Scrolls and swipes
 
-Record the live gesture. In the polish pass, convert a movement that finds an element to `scroll-to`. If the test is about the gesture itself, keep the raw swipe. Give each kept raw gesture an echo and a result check.
+Record the live gesture. In the polish pass, convert a movement that finds an element to `scroll-to`, and a movement that is the action to `swipe:`. Keep a system edge swipe raw. Give each kept raw gesture an echo and a result check.
+
+### Nested flows
+
+To record a `run:` step, call `flow-execute` through `flow-add-step`. The top-level `name` is the name of the recording. `args.name` is the sibling flow that becomes `run:`. If the recorder keeps a raw `flow-execute` step, read the warning ([Warnings](warnings.md#capture-warnings)).
 
 ### Live waits
 
@@ -73,7 +78,7 @@ Target sequence: a strict stable id, then narrow stable text or an accessibility
 Do the gate when capture keeps a raw point or only a role. Keep the source screen open:
 
 1. Find candidates with the platform discovery tool.
-2. Do a test of each candidate in a scratch fragment with `assert: { visible: <candidate> }` on the correct screen. A scratch fragment is a temporary YAML file with an `executionPrerequisite` and only the assert step. Run it with `flow-execute` and `flow_path`. Then remove it. Examine each failure before you try a better id, label, or container.
+2. Do a test of each candidate in a scratch fragment with `assert: { visible: <candidate> }` on the correct screen. A scratch fragment is a temporary YAML file with an `executionPrerequisite` and only the assert step. Run it with `flow-execute`, an absolute `flow_path`, and `prerequisiteAcknowledged: true`. Then remove it. Examine each failure before you try a better id, label, or container.
 3. If the source code is available, look for `testID`, `accessibilityIdentifier`, or `resource-id`. If there is none, report the missing stable id as the correct repair.
 
 An unreadable tree makes the test void. Repair the tree. Then do the test again. Keep coordinates only for an element with no id, text, or label. Also keep them if all candidates fail against a readable tree. Give each kept point an echo and a hard check on the result. Report the point, the discovery results, and each candidate that failed. A QA flow keeps a point only for an element with no label.

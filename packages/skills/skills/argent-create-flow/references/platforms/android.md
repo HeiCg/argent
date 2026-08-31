@@ -15,4 +15,4 @@ Record `restart-app` with only `udid` (the serial) and `bundleId` (the package).
 
 ## Missing flow tree
 
-If a result says that the android devtools helper is unavailable, unlock the device. Make sure that the device permits `adb install -t`, because Argent installs the helper APK itself. Then call `restart-app`. Record those steps again.
+If a result says that the android devtools helper is unavailable, unlock the device. Make sure that the device permits `adb install -t`, because Argent installs the helper APK itself. Then record those steps again. The helper is not part of the app, so `restart-app` does not repair it.

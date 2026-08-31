@@ -16,16 +16,17 @@ Read this file after `flow-finish-recording`. Convert the recorded steps without
 | text `keyboard` + `key: enter` `keyboard` | `type:` with the default submit, no Enter in `text` |
 | `tool: await-ui-element`                  | `await:` or `assert:`                               |
 | a movement that finds an element          | `scroll-to:`                                        |
+| a movement that is the action             | `swipe:` ([Flow YAML: Swipe](yaml.md#swipe))        |
 | a coordinate tap or long-press            | a strict selector, after the fallback gate          |
 | `tool: gesture-pinch`                     | `pinch:` with `scale = endDistance / startDistance` |
 | `tool: gesture-rotate`                    | `rotate:` with `by = endAngle - startAngle`         |
-| sibling `tool: flow-execute`              | `run:` (the recorder writes it)                     |
+| sibling `tool: flow-execute`              | `run:` (recorded, or a raw step with a warning)     |
 
 - Write the recorded `selector:` map into the condition. Do not write a bare string. `identifier` and `id` are the same field, and you can rename it to `id`. A converted `await:` gets the flow default timeout (7500 ms) unless you copy `timeoutMs` to `timeout`.
 - If the recorder wrote `text:` for an element that has a stable id, change the selector to the id. The replay proves it.
 - Convert `textMatch: equals` to `equals:`. Convert other text checks to `contains:`.
 - A focus tap plus one text-only `keyboard` call becomes `type:` with `submit: false`.
-- If the conversion changes the behavior, keep the raw tool step. Examples are a point-anchored pinch, a swipe with a tested speed, and a rotation with a tested start angle. A wait with `pollIntervalMs` or `bundleId` also stays raw.
+- If the conversion changes the behavior, keep the raw tool step. Examples are a point-anchored pinch, a system edge swipe, and a rotation with a tested start angle. A wait with `pollIntervalMs` or `bundleId` also stays raw.
 - Keep screenshots as evidence for a person. Use `snapshot:` when the runner must compare the screens.
 - Replay the full flow after the conversion ([Replay](replay.md)).
 
@@ -36,6 +37,8 @@ You can add only these steps by hand, at states that you saw live:
 - A planned `snapshot:`.
 - `await: { idle: true }` after each identity check, also after the first-screen check that follows `launch:`.
 - A `long-press:` on an element that you long-pressed live. No tool records one, so add it and prove it with the replay.
+- A `when:` block around recorded optional steps. Record the steps first. Then wrap them, and prove the two paths with the replay.
+- A `wait:` before a gesture that follows a screen change. Give it an echo and a hard check after it.
 - The Chromium `launch:` (platform file).
 
 If the polish pass shows a missing action or check, go back to the state before it. Then record it.
@@ -75,19 +78,19 @@ Run these searches before the replay (`rg`, or `grep -nE` if `rg` is not install
 
 ```text
 rg -n '(\{ *x:|^ +(x|centerX|fromX|toX):|gesture-(tap|swipe|scroll|drag|pinch|rotate|custom))' .argent/flows/<name>.yaml
-rg -n -B2 '^ +role:' .argent/flows/<name>.yaml
-rg -n '(udid|device_id|serial)' .argent/flows/<name>.yaml
-rg -n '(-selector-\d+|selector-\d+\b)' .argent/flows/<name>.yaml
+rg -n -B2 '^ +role:|\{ *role: *[^,}]+ *\}' .argent/flows/<name>.yaml
+rg -n '(udid|device_id|serial|devices:)' .argent/flows/<name>.yaml
+rg -n '(-selector-[0-9]+|selector-[0-9]+\b)' .argent/flows/<name>.yaml
 rg -n '(visible|hidden|exists) *: *["'"'"'A-Za-z0-9]' .argent/flows/<name>.yaml
 rg -n '^\s*- wait:|open-url' .argent/flows/<name>.yaml
 ```
 
-Correct each hit. Then make sure that:
+Examine each hit and correct the incorrect ones. Then make sure that:
 
 - Each action uses a stable selector, or the fallback gate let it through and you documented the step.
-- No `tap:` or `long-press:` has `role:` as its only key.
+- No `tap:` or `long-press:` has `role:` as its only key, unless the fallback gate let it through and you documented the step.
 - Each movement that finds an element is `scroll-to`.
-- No device id or literal credential is in the file.
+- No device id or literal credential is in the file. The `devices:` list of a recorded `stop-all-simulator-servers` stays. Do not remove it.
 - Each condition and `when:` guard uses a selector map without positional or data-derived values.
 - Each `wait:` has an echo and a hard check after it. No `open-url` replaces navigation.
 - Each `snapshot:` is planned, deterministic, and does not change state.

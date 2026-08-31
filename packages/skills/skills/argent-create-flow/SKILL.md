@@ -5,7 +5,7 @@ description: Create, record, edit, replay, or repair reusable Argent flow YAML f
 
 # Create an Argent flow
 
-A flow is a list of steps in `.argent/flows/<name>.yaml` that Argent can replay. Flows run on iOS, Android, and Chromium. Vega, Apple TV, and Android TV are not supported at this time. If the device is a TV, tell the user. Then stop.
+A flow is a list of steps in `.argent/flows/<name>.yaml` that Argent can replay. Flows run on iOS, Android, and Chromium. This skill does not record or author flows for Vega, Apple TV, or Android TV at this time. The runtime replays a hand-written Vega flow with `argent flow run --platform vega`. If the device is a TV, tell the user. Then stop.
 
 If the task is a QA test case, a ticket, or an acceptance criterion, load `argent-qa-flows` first.
 
@@ -15,6 +15,7 @@ If the task is a QA test case, a ticket, or an acceptance criterion, load `argen
 2. Read the file for your phase:
    - Record a new flow, or record steps again: [Record](references/record.md).
    - Convert the recorded YAML: [Polish](references/polish.md) and [Flow YAML](references/yaml.md).
+   - Audit before each replay: [Polish: Audit](references/polish.md#audit).
    - Replay or repair a flow: [Replay](references/replay.md).
 3. If a tool result or a replay report contains a warning, read [Warnings](references/warnings.md).
 

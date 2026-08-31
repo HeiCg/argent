@@ -16,7 +16,7 @@ A QA flow is complete only when:
 3. Each requirement maps to a hard `await:`, `assert:`, or examined `snapshot:`. Echoes and screenshots are not verdicts.
 4. Each screen change has an identity check and then `await: { idle: true }`.
 5. Each target obeys the stable-selector rule and the coordinate fallback gate. A QA flow keeps a coordinate only for an element with no label.
-6. The unchanged YAML passes two times with the same runner. Pass 1 starts with restarted Argent services. Pass 2 follows immediately.
+6. The unchanged YAML passes two times with the same runner. Pass 1 starts with restarted Argent services on iOS or Android, or with a run that boots its own instance on Chromium. Pass 2 follows immediately.
 
 ## 1. Write the test contract
 
@@ -57,7 +57,7 @@ Do the create-flow [Start](../argent-create-flow/references/record.md#start) and
 - **State change:** show the new state. When the two can match, also show that the previous state is not shown.
 - **Cancel or persistence:** go across the commit boundary. After cancel or save, go out of the screen. Go into it again. Then make sure of the kept state.
 - **Absence:** show the screen that contains the element. Record the same selector as `visible`, then the action, then `hidden`. In a collection, absence in the viewport is not global absence. Use a fixed seeded position, a count, or an empty state.
-- **Repeated controls:** use an id. If there is none, use `within` with a stable container and `text.in` for membership.
+- **Repeated controls:** use an id. If there is none, use a `visible` condition with `text` and `within` on a stable container. `text.in` reads one element, so it is not a membership check.
 - **Dynamic content:** assert controlled state or stable app chrome. Use an anchored regex for an unavoidable dynamic value and report the dependency.
 - **Visual state:** snapshot only a correct, settled, deterministic screen. Use the full screen for global changes and `cropOn` for one component.
 
@@ -77,16 +77,16 @@ Write a navigation table with one row for each screen change, with the identity 
 
 After the last edit and audit, set the streak to zero:
 
-1. Select one runner for the two passes: `flow-execute`, or `argent flow run <name> --platform <platform>` for CI. A change of runner resets the streak.
+1. Select one runner for the two passes: `flow-execute`, or `argent flow run <name> --device <device>` for CI (on Chromium, `--platform chromium` and no `--device`). A change of runner resets the streak.
 2. Write and examine the snapshot baselines. Then freeze them. A baseline update is not a pass.
-3. Before pass 1 on iOS or Android, call `stop-all-simulator-servers` with `devices: [<device>]`, or `argent run stop-all-simulator-servers --devices <device>` from the standalone runner. A call without `devices` stops the devices of all agents on this machine. On Chromium, the restarted service is the instance that the runner boots itself, so do not pass `device`.
+3. Before pass 1 on iOS or Android, call `stop-all-simulator-servers` with `devices: [<device>]`, or `argent run stop-all-simulator-servers --devices <device>` from the standalone runner. A call without `devices` stops the devices of all agents on this machine. The restart must not change app or account data. On Chromium, do not call `stop-all-simulator-servers`. The runner boots its own instance, and the run gets no `device` argument (platform file).
 4. Run from the launch, without baseline-update mode. When the report shows `PASS` and each acceptance check ran, count a pass. An `errored` step does not increase the streak. If the step could not run, repair the environment. Then run again. A failed `launch:` is a verdict about the app. Report it.
-5. Resolve each warning before the flow is complete. Read [Warnings](../argent-create-flow/references/warnings.md).
+5. Read [Warnings](../argent-create-flow/references/warnings.md) for each warning. Resolve it, or accept it when that file says so. Report each accepted warning with its cause.
 6. Run the same YAML again immediately with the same runner. Do not reset app or account data by hand.
-7. Reset the streak after a failure, an edit, a new recording, or a baseline update. Also reset it after a manual recovery that changes state. Repair through `argent-create-flow`. Audit again. Then start again with restarted services.
+7. Reset the streak after a failure, an edit, a new recording, or a baseline update. Also reset it after a manual recovery that changes state. Repair through `argent-create-flow`. Audit again ([Audit](../argent-create-flow/references/polish.md#audit)). Then start again with restarted services.
 
 When the streak is two, finish. If the intended runner is not available, report that the proof is blocked. If the app fails, keep the check. Report the regression.
 
 ## 6. Report
 
-Report the flow name, path, platform, and standalone command. Report the contract rows mapped to actions and checks, and the navigation table. Report the baseline setup, the end-state restoration, and the accepted data dependencies. Report the two pass results, the runner, the service-restart setup, and the resolved warnings. Report the snapshot scope, the examined baseline status, and the mismatch tolerance. Report each coordinate or raw-gesture step that you kept, and each manual decision or problem that stays.
+Report the flow name, path, platform, and standalone command. Report the contract rows mapped to actions and checks, and the navigation table. Report the baseline setup, the end-state restoration, and the accepted data dependencies. Report the two pass results, the runner, the service-restart setup, the resolved warnings, and each accepted warning with its cause. Report the snapshot scope, the examined baseline status, and the mismatch tolerance. Report each coordinate or raw-gesture step that you kept, and each manual decision or problem that stays.
