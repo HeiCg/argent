@@ -520,4 +520,62 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
 
     expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
   });
+  // The web half of the scroll rule, which only this tree can pin: Chromium
+  // maps a `<ul>` onto `android.widget.ListView`, a SCROLL_CLASSES member, and
+  // the flow flatten clips a scroller's own children. Reading the class name
+  // there turns the list's box into a clip window and drops a control the page
+  // paints below it — while describe, which trusts the framework flag, still
+  // shows it.
+  // The leaves sit under a wrapper because the describe trim applies a clip
+  // to a scroller's grandchildren, not to its own children.
+  it("does not let a non-scrolling web list clip the flow tree", () => {
+    const web = (scrollable: string) => `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" text="Menu Page" bounds="[0,0][1080,1920]">
+      <node index="0" class="android.widget.ListView" package="com.acme.app" scrollable="${scrollable}" bounds="[20,170][1060,260]">
+        <node index="0" class="android.view.View" package="com.acme.app" bounds="[20,170][220,230]">
+          <node index="0" class="android.widget.TextView" package="com.acme.app" text="Inbox item" bounds="[20,170][220,230]" />
+          <node index="1" class="android.view.View" package="com.acme.app" content-desc="Escaped link" clickable="true" bounds="[20,1220][260,1280]" />
+        </node>
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+
+    // Chromium says the list does not scroll, so nothing below it is hidden.
+    const open = adaptFullAndroidHierarchyToDescribeResult(web("false"), SCREEN_W, SCREEN_H);
+    expect(findAll(open, { text: "Escaped link" })).toHaveLength(1);
+    expect(
+      findAll(parseUiAutomatorDump(web("false"), SCREEN_W, SCREEN_H), { text: "Escaped link" })
+    ).toHaveLength(1);
+
+    // Chromium says it does (`overflow: scroll`), so its box is a real viewport
+    // and both trees drop what sits outside it.
+    const scrolling = adaptFullAndroidHierarchyToDescribeResult(web("true"), SCREEN_W, SCREEN_H);
+    expect(findAll(scrolling, { text: "Escaped link" })).toHaveLength(0);
+    expect(
+      findAll(parseUiAutomatorDump(web("true"), SCREEN_W, SCREEN_H), { text: "Escaped link" })
+    ).toHaveLength(0);
+  });
+
+  // The same class outside a WebView is a real Android list, and there the
+  // class name is the signal — a RecyclerView-era `ListView` that reports
+  // `scrollable="false"` still clips.
+  it("still clips a native list the class name marks as a scroller", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.ListView" package="com.acme.app" scrollable="false" bounds="[20,170][1060,260]">
+      <node index="0" class="android.view.View" package="com.acme.app" bounds="[20,170][220,230]">
+        <node index="0" class="android.widget.TextView" package="com.acme.app" text="Inbox item" bounds="[20,170][220,230]" />
+        <node index="1" class="android.view.View" package="com.acme.app" content-desc="Escaped link" clickable="true" bounds="[20,1220][260,1280]" />
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const flow = adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H);
+    expect(findAll(flow, { text: "Inbox item" })).toHaveLength(1);
+    expect(findAll(flow, { text: "Escaped link" })).toHaveLength(0);
+  });
 });
