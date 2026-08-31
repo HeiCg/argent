@@ -100,6 +100,26 @@ function projectAndroidNode(
   // nodes add dozens of meaningless leaves per icon. Both go with their
   // subtrees, as the shared parser does.
   const skip = isSystemChrome(attrs) || isNoisyUiAutomatorClass(attrs.class ?? "");
+  const kids = childNodes(node);
+
+  // An app that hosts its own WebView reaches the dump twice, nested: the app's
+  // view, and Chromium's root web area under the same class name. The describe
+  // trim merges the pair into one landmark; emitting both here gives two leaves
+  // at the same frame, each carrying the page's whole subtree text, so a
+  // `role: WebView` an author copies out of describe matches twice and a `text`
+  // assert against the page counts double.
+  //
+  // Drop the outer half and let the inner one stand for the pair. It is the
+  // half that carries the page title and, when the page scrolls, the
+  // `scrollable` flag — measured across four live API 35 captures, the app's
+  // view carries neither. Its bounds run a few px past the screen on some
+  // builds and clip back to the same rect, so the surviving leaf's frame is the
+  // one describe reports. Only an only-child pair merges, exactly as the trim
+  // requires, so a control an app adds beside the web content keeps both nodes.
+  const isOuterWebViewHalf =
+    isUiAutomatorWebView(attrs.class ?? "") &&
+    kids.length === 1 &&
+    isUiAutomatorWebView(kids[0]!.attrs.class ?? "");
 
   const identifier = (attrs["resource-id"] ?? "").trim();
   const isPassword = attrs.password === "true";
@@ -113,7 +133,7 @@ function projectAndroidNode(
   const role = deriveUiAutomatorRoleInContext(className, attrs, {
     inWebView,
     label,
-    hasChildren: childNodes(node).length > 0,
+    hasChildren: kids.length > 0,
   });
   // Every non-layout class is a role target, including controls whose role is
   // only the class-name fallback (SeekBar, Spinner, ProgressBar).
@@ -133,7 +153,7 @@ function projectAndroidNode(
   // concrete role — plus the focused view, which the type directive's focus
   // wait needs even for an anonymous EditText. Scaffolding is dropped but still
   // walked, so a testID nested under it survives.
-  if (!skip && (identifier || label || hasSemanticRole || isFocused)) {
+  if (!skip && !isOuterWebViewHalf && (identifier || label || hasSemanticRole || isFocused)) {
     frame = rect ? normalizeRect(rect, screenW, screenH) : null;
     if (frame) {
       leaf = { role, frame, children: [] };

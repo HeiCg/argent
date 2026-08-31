@@ -520,6 +520,48 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
 
     expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
   });
+  // describe merges the doubled WebView pair into one landmark. Emitting both
+  // halves here gave two leaves at the same frame, each carrying the page's
+  // whole subtree text: a `role: WebView` copied out of describe matched twice,
+  // and a `text` assert against the page counted double.
+  it("emits one WebView leaf for the doubled pair, as describe does", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" bounds="[0,0][1080,1920]">
+      <node index="0" class="android.webkit.WebView" package="com.acme.app" text="Login Page" scrollable="true" bounds="[0,0][1084,1922]">
+        <node index="0" class="android.widget.TextView" package="com.acme.app" text="Username" bounds="[20,100][400,160]" />
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const flow = adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H);
+    const leaves = findAll(flow, { role: "WebView" });
+    expect(leaves).toHaveLength(1);
+    // The half that carries the page title and the scroll flag is the one kept,
+    // and its bounds clip back to the frame describe reports for the landmark.
+    expect(leaves[0]!.label).toBe("Login Page");
+    expect(leaves[0]!.scrollable).toBe(true);
+    const landmark = findAll(parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H), { role: "WebView" });
+    expect(landmark).toHaveLength(1);
+    expect(leaves[0]!.frame).toEqual(landmark[0]!.frame);
+  });
+
+  it("keeps a control an app adds beside the web content", () => {
+    // Only an only-child pair merges. A WebView that publishes a control of its
+    // own alongside the web root is not a doubled host, and both nodes stay.
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.webkit.WebView" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" text="Login Page" bounds="[0,0][1084,1922]" />
+    <node index="1" class="com.acme.player.MyWebViewOverlay" package="com.acme.app" resource-id="com.acme:id/player" content-desc="Video player" clickable="true" bounds="[0,20][200,140]" />
+  </node>
+</hierarchy>`;
+    const flow = adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H);
+    expect(findAll(flow, { role: "WebView" }).length).toBeGreaterThan(1);
+    expect(findAll(flow, { identifier: "com.acme:id/player" })).toHaveLength(1);
+  });
+
   // The clip guard's flow-tree half. A zero-height window makes
   // `rectFullyOutside` true for everything, so a scroller whose own box is
   // unusable must clip nothing — otherwise this tree drops a page describe
