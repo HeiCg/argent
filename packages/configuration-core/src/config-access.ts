@@ -132,10 +132,6 @@ export class ConfigManagedElsewhereError extends Error {
  * pre-parsed JSON value (the CLI coerces its string argument first). Returns the
  * normalized value written, so callers can report what landed on disk rather
  * than the raw input.
- *
- * `validateWrite` where an entry has one: a key whose `parse` deliberately
- * keeps a wrong value — so its own reader can name it rather than read it as an
- * absent key — still refuses one being typed in here.
  */
 export function setConfigValue(
   key: string,

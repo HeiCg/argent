@@ -27,7 +27,6 @@ export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const SCRIPT_MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
 export const SCRIPT_MAX_FAILURE_STACK_CHARS = 16 * 1024;
 
-/** Which of the runner's two modes a request asks for. */
 type ScriptInterpreter = "node" | "bash";
 
 interface ScriptExecuteCommon {
@@ -65,10 +64,6 @@ export interface ScriptExecuteBashRequest extends ScriptExecuteCommon {
   reasonFile: string;
 }
 
-/**
- * The runner never inspects an extension — it runs what the request names,
- * which is what lets a test drive bash mode with any file name.
- */
 export type ScriptExecuteRequest = ScriptExecuteNodeRequest | ScriptExecuteBashRequest;
 
 export type ScriptFailureType =

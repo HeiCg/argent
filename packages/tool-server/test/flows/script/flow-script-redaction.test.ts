@@ -122,7 +122,6 @@ describe("flow script executor — redaction of a bash step", () => {
     for (let n = SECRET.value.length; n > 3; n -= 1) {
       expect(message).not.toContain(SECRET.value.slice(0, n));
     }
-    // And the marker still says how much of the reason the report carries.
     expect(message).toMatch(/this report keeps the first \d+ characters]$/);
   }, 30_000);
 });

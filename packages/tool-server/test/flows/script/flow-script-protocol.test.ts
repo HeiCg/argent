@@ -95,8 +95,6 @@ describe("script response parsing", () => {
     ).toEqual({ type: "failure", failureType: "runtime", message: "x" });
   });
 
-  // Both arise only in bash mode, where the runner spawns its own child and so
-  // is the side that learns bash could not start or was killed.
   it.each(["spawn", "signal"] as const)("accepts the bash-mode failure type %s", (failureType) => {
     expect(parseScriptResponse({ type: "failure", failureType, message: "x" }, "bash")).toEqual({
       type: "failure",

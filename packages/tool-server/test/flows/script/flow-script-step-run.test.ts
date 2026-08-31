@@ -120,11 +120,6 @@ async function until(predicate: () => boolean, label: string, timeoutMs = 15_000
   throw new Error(`timed out waiting for ${label}`);
 }
 
-/**
- * The bash cases skip where there is none, and FAIL rather than skip on CI:
- * {@link resolveHostBash} is the one probe that draws that line, and the one
- * that reads past a bash a developer pinned in their own `~/.argent`.
- */
 let noBash: string | undefined;
 
 beforeAll(async () => {
@@ -430,8 +425,6 @@ describe("a script path is checked at its own step", () => {
     expect(result.steps[0]!.reason).toContain('write it as "../../scripts/createUser.mjs"');
   });
 
-  // The casing check takes the widened pattern, so the recovery it quotes has
-  // to name both extensions rather than the one it named before bash.
   it("refuses a mis-cased .sh the same way, quoting the widened pattern", async () => {
     await write("scripts/createUser.sh", `exit 0\n`);
     await flow("cased-sh", "steps:\n  - script: { path: ../../scripts/CreateUser.sh }\n");

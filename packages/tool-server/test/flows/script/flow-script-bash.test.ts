@@ -26,7 +26,6 @@ import { resolveHostBash } from "../../helpers/host-bash";
  */
 let noBash: string | undefined;
 
-/** The interpreter the steps below run under, for the one case that spawns the runner itself. */
 let hostBash: string;
 
 /**
@@ -188,9 +187,6 @@ describe("a bash step that passes", () => {
     expect(result.output).toEqual({ given: 41 });
   }, 30_000);
 
-  // The whole reason the parent pre-populates `$ARGENT_OUTPUT` rather than
-  // handing bash an empty file: a script that wants to ADD a key reads what it
-  // was given first, out of the same file it writes back.
   it("hands the script the flow's own document to read", async () => {
     const ws = workspace();
     const result = await runBash(
@@ -212,8 +208,6 @@ describe("a bash step that passes", () => {
   it("takes one queue slot per step, whichever language runs", async () => {
     const ws = workspace();
     const shared = executor({ concurrency: 1 });
-    // One log both steps append to, and no clock: each brackets a second of
-    // work, so an interleaved pair of lines is two steps holding one slot.
     const log = ws.resolve("slot.log");
     const sh = ws.write(
       "slot.sh",
@@ -264,8 +258,6 @@ describe("the document a bash step returns", () => {
     expect(result.failure?.message).toContain("mv");
   }, 30_000);
 
-  // The kind alone is the same for all three, so each one's own message is what
-  // separates "it parsed and was the wrong shape" from "it did not parse".
   it("refuses a document that is not a JSON object, saying which it was", async () => {
     const ws = workspace();
     for (const [name, written, says] of [
@@ -283,8 +275,6 @@ describe("the document a bash step returns", () => {
     }
   }, 60_000);
 
-  // The other half of "cannot be read", beside the kind checks above: a file
-  // that is regular and that the runner is refused by the filesystem.
   onPosix(
     "refuses a document the runner may not read, naming why",
     async () => {
@@ -357,7 +347,6 @@ describe("the document a bash step returns", () => {
     30_000
   );
 
-  // Same block, on the other file: the reason is read on every non-zero exit.
   it("reports the exit code when $ARGENT_REASON is a named pipe, at once", async () => {
     const ws = workspace();
     const startedAt = Date.now();
@@ -529,10 +518,6 @@ describe("what a failing bash step says", () => {
     expect(result.failure?.message).toContain("CRLF");
   }, 30_000);
 
-  // The check explains a document that is the one Argent seeded, and nothing
-  // else. A script that writes `$ARGENT_OUTPUT` correctly and also happens to
-  // leave a sibling one carriage return away is not a CRLF script, and its
-  // document is not the runner's to throw away.
   it("keeps the document of a script that also left a stray sibling", async () => {
     const ws = workspace();
     const result = await runBash(
@@ -1193,10 +1178,6 @@ describe("what a step reports before anything is forked", () => {
     expect(fs.readdirSync(markers)).toEqual([]);
   }, 60_000);
 
-  // `beforeFork` is what tells a caller the script left nothing behind. Both
-  // paths below return a full result without ever starting a process, and the
-  // flag is the only thing separating them from a cancellation that stopped a
-  // running one.
   it("marks an unusable scripts.bash as a failure from before the fork", async () => {
     const ws = workspace();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "argent-nobash-"));

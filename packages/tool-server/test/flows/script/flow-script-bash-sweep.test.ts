@@ -82,8 +82,6 @@ describe("a bash step's sweep of the exchange root", () => {
 
       expect(result.ok).toBe(true);
       expect(fs.existsSync(finishedElsewhere)).toBe(false);
-      // A directory a concurrent step still owns, and one whose owner cannot be
-      // read: the sweep may take neither out from under a correct script.
       expect(fs.existsSync(unstamped)).toBe(true);
       expect(fs.existsSync(liveElsewhere)).toBe(true);
     } finally {

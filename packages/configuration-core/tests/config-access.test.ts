@@ -335,11 +335,6 @@ describe("every schema entry can describe itself", () => {
   it("offers examples that are actually accepted", () => {
     // An example that its own validator rejects would hand the user a command
     // reproducing the error it exists to fix.
-    //
-    // Through `validateWrite` where there is one, because that is the gate the
-    // suggested command meets. A key whose `parse` deliberately keeps a wrong
-    // value — so its own reader can name it — confirms every example against
-    // `parse` and none of them against what `argent config set` accepts.
     for (const def of CONFIG_SCHEMA) {
       if (!def.example) continue;
       expect(

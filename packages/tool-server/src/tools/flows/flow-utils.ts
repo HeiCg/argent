@@ -2582,33 +2582,12 @@ export function parseScriptPath(raw: unknown, value: unknown): string {
   return value;
 }
 
-/**
- * Which interpreter runs a `script` step's file, keyed on the extension
- * {@link SCRIPT_FILE_NAME_PATTERN} accepted. There is no `language:` key to
- * disagree with it: the extension already carries the language fact, and a
- * second spelling of it would be a second thing for an author to get wrong and
- * a second thing every refusal would have to print.
- *
- * `.mjs` runs under the tool server's own Node; `.sh` under the bash the
- * executor resolves per step. Pinned against the pattern by one test, so
- * widening either without the other fails a test rather than a flow.
- */
 export function scriptInterpreter(scriptPath: string): "node" | "bash" {
   return scriptPath.endsWith(".sh") ? "bash" : "node";
 }
 
 const SCRIPT_EXTENSIONS = [".mjs", ".sh"] as const;
 
-/**
- * Whether a path carries an extension {@link scriptInterpreter} keys on, rather
- * than falling through to its `node` default.
- *
- * The caller reads the interpreter off the CANONICAL path, and a symlink target
- * carries whatever name it was given — `seed.sh -> ../tools/seed` resolves to a
- * name with no extension at all. Answering `node` for that hands a shell script
- * to Node, which reports `Unexpected string` and names neither the file nor the
- * interpreter that read it.
- */
 export function hasScriptExtension(scriptPath: string): boolean {
   return SCRIPT_EXTENSIONS.some((extension) => scriptPath.endsWith(extension));
 }

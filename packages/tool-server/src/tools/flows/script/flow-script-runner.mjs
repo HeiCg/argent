@@ -163,11 +163,6 @@ async function prepare() {
   maxOutputBytes = request.maxOutputBytes;
   startWatchdogs(request.deadlineMs);
 
-  // The whole node-mode apparatus below — the `uncaughtException` claim, the
-  // `beforeExit` settle probe, `closeChannelToScript`, `reportOnScriptExit`,
-  // the idle-resource snapshot and the entry re-import — guards script code
-  // running INSIDE this process. In bash mode none of it does: the script is a
-  // child, and its verdict is an exit status.
   if (request.interpreter === "bash") return runBash(request);
 
   try {
@@ -316,8 +311,6 @@ function runBash(request) {
     }
   }
 
-  // The only thing that lets the parent tell "the runner never began the
-  // script" apart from "the script stopped its own process".
   child.on("error", (err) => finish(spawnFailure(request, err)));
   child.on("exit", (code, signal) => {
     // One of the two is always non-null for a process that really ran, so both
@@ -385,8 +378,6 @@ function holdGroupSignals() {
  * leaves `heldSignals` correct for the report this hands off to.
  */
 function whenGroupSignalHeld(signal, report) {
-  // Nothing to wait for: already held, or a signal this process never holds —
-  // a SIGKILL from the host or from either watchdog.
   if (heldSignals.has(signal) || !GROUP_SIGNALS.includes(signal)) {
     report();
     return;
@@ -524,11 +515,6 @@ function carriageReturnProblem(request) {
   return null;
 }
 
-/**
- * The two statuses that carry a meaning of bash's own rather than the script's.
- * In a terminal the author would see the line that caused either; here the
- * report is all there is, and both are the cases a missing tool produces.
- */
 function exitCodeHint(status) {
   if (status === 127) {
     return (
@@ -640,7 +626,6 @@ function readReasonFile(file) {
   }
 }
 
-/** What the whole file holds, for a report that carries part of it. */
 function reasonSize(fd) {
   try {
     return `$ARGENT_REASON holds ${fs.fstatSync(fd).size} bytes`;
@@ -674,7 +659,6 @@ function irregularFileKind(file) {
   return "a device";
 }
 
-/** Reads until the buffer is full or the file ends; a short read is not an end. */
 function readInto(fd, buffer, cap) {
   let read = 0;
   while (read < cap) {

@@ -109,11 +109,6 @@ function parseError(scriptYaml: string): string {
   throw new Error(`expected parseFlow to reject "${scriptYaml}"`);
 }
 
-/**
- * The bash cases skip where there is none, and FAIL rather than skip on CI:
- * {@link resolveHostBash} is the one probe that draws that line, and the one
- * that reads past a bash a developer pinned in their own `~/.argent`.
- */
 let noBash: string | undefined;
 
 beforeAll(async () => {

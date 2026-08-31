@@ -96,12 +96,6 @@ const EXCHANGE_REASON_FILE = "reason.txt";
  */
 const EXCHANGE_FILE_MODE = 0o600;
 
-/**
- * How often a process re-reads the exchange root for directories nobody owns
- * any more. Once per process was not enough: a directory abandoned by a crashed
- * server carries a stamp in the FUTURE, so the next server's first bash step
- * reads it as live and, with a latch, never looked again.
- */
 const EXCHANGE_SWEEP_INTERVAL_MS = 60_000;
 
 /**
@@ -243,12 +237,6 @@ export interface FlowScriptSecret {
 
 export interface FlowScriptRequest {
   scriptPath: string;
-  /**
-   * Which interpreter runs the file. Optional with a `node` default, so every
-   * call site written before bash mode existed still means what it did.
-   * `scriptInterpreter` in `flow-utils.ts` is what derives it from a step's
-   * path; the executor never inspects an extension itself.
-   */
   interpreter?: "node" | "bash";
   output?: Record<string, unknown>;
   env?: Record<string, string>;
@@ -339,14 +327,6 @@ interface ExchangeFiles {
   reasonFile: string;
 }
 
-/**
- * Everything the fork-and-classify half of a step needs, so the setup half can
- * own the exchange directory's `finally` without threading it through.
- *
- * A union on the interpreter rather than two optional fields: an interpreter
- * path and an exchange directory exist together or not at all, and the type is
- * what says so at each use.
- */
 type ChildRun = {
   request: FlowScriptRequest;
   bounds: ResolvedBounds;
@@ -576,10 +556,6 @@ export class FlowScriptExecutor {
     const scriptPath = realPathOrSelf(path.resolve(cwd, request.scriptPath));
     const interpreter = request.interpreter ?? "node";
 
-    // Both before the fork, and both bash-only. The interpreter lookup is one
-    // spawn of its own; the exchange directory is the only channel a bash
-    // script has for the document and for a failure reason, and the parent owns
-    // it end to end — the runner reads, and never creates.
     let interpreterPath: string | undefined;
     let exchange: ExchangeFiles | undefined;
     if (interpreter === "bash") {
@@ -1370,7 +1346,6 @@ function sweepStaleExchanges(root: string, sweepIntervalMs: number): void {
   }
 }
 
-/** The moment in a directory's own name, or `undefined` for a name Argent never wrote. */
 function exchangeOwnedUntil(entry: string): number | undefined {
   const stamped = /^(\d+)-/.exec(entry.slice(EXCHANGE_DIR_PREFIX.length));
   if (!stamped) return undefined;

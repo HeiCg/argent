@@ -263,9 +263,6 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     // the value and refuses the step, naming the key. `asString` was not that:
     // it maps an empty, whitespace-only or non-string value to `undefined`.
     parse: asPresentText,
-    // What `argent config set scripts.bash` accepts, which is not what the
-    // reader keeps: `parse` above holds on to a wrong value so the resolver can
-    // name it, and there is no reason to let one be typed in.
     validateWrite: asAbsolutePath,
     expected:
       "an absolute path to a bash executable, spelled the way the host running the tool server " +

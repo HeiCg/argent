@@ -74,7 +74,6 @@ function projectWith(config: Record<string, unknown> | undefined): string {
   return root;
 }
 
-/** An executable file that is not bash: it runs, and answers with no version. */
 function notBash(dir: string, name = "bash"): string {
   const file = path.join(dir, name);
   fs.writeFileSync(file, "#!/bin/sh\nexit 0\n");
@@ -485,7 +484,6 @@ describe("bash on PATH", () => {
     // would resolve against the runner's own working directory.
     execFileMock.mockReturnValue({ stdout: "bin/bash\n", stderr: "" });
 
-    // The fixed locations decide instead, and they are absolute.
     expect(await resolveBashInterpreter(root)).toEqual({ path: hostBash() });
   });
 
@@ -605,8 +603,6 @@ describe("no bash anywhere", () => {
     expect(problem).toContain("No bash was found");
     expect(problem).toContain("Git for Windows");
     expect(problem).toContain("scripts.bash");
-    // The PATH the tool server searched is a snapshot from when it started, so
-    // a bash a terminal finds may still be absent here.
     expect(problem).toContain("snapshot");
   });
 });

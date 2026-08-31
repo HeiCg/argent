@@ -56,10 +56,8 @@ const BASH_PROBE_FORCE_GRACE_MS = 1_000;
  */
 const BASH_PROBE_SETTLE_MS = 250;
 
-/** Enough for the marker line; a candidate that streams is cut off, not kept. */
 const BASH_PROBE_MAX_CHARS = 4 * 1024;
 
-/** POSIX hosts that answer with a short login PATH still have one of these. */
 const POSIX_FIXED_LOCATIONS = ["/bin/bash", "/usr/bin/bash"];
 
 /**
@@ -412,11 +410,6 @@ async function fixedLocations(): Promise<string[]> {
   return candidates;
 }
 
-/**
- * The tool server's PATH is a snapshot taken when it started, so a bash a
- * terminal finds may still be absent here — the remedy an author needs first,
- * and the one nothing else in the report would say.
- */
 function notFoundMessage(): string {
   const looked =
     process.platform === "win32"
