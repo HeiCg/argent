@@ -128,6 +128,22 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
     if (sel) sel.removeAllRanges();
     return { cleared: false, focus: focus, reason: "delete-refused" };
   }
+  // Hand the read-back the element by IDENTITY, not by the label above. Two
+  // fields of the same kind produce the same label ("input type=text"), so a
+  // page that moves focus in its own \`input\` handler — an auto-advancing OTP /
+  // PIN / card-segment form is the common shape — had the NEXT field's contents
+  // attributed to the one that was just cleared, and a correct clear was
+  // reported as a hard failure.
+  //
+  // \`evaluate\` returns by value, so nothing else survives between the two
+  // calls; a global in the page's own main world does, and unlike a marker
+  // attribute it reaches neither the DOM, nor CSS, nor a screenshot. The
+  // read-back deletes it.
+  try {
+    window.__argentClearTarget = el;
+  } catch (e) {
+    /* a page may seal \`window\`; the read-back then simply has no identity */
+  }
   return { cleared: true, focus: focus };
   } catch (err) {
     // A page can replace or delete \`document.execCommand\` — editors and
@@ -147,13 +163,25 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
 // returns by value, so nothing survives between the two calls — and re-deriving
 // is also what detects a page that moved focus in its own `input` handler.
 const CLEAR_READBACK_SCRIPT = `(() => {
+  // The element the clear actually ran against, by identity. Read and dropped
+  // in one go, so a later clear cannot inherit a stale target.
+  let target;
+  try {
+    target = window.__argentClearTarget;
+    delete window.__argentClearTarget;
+  } catch (e) {
+    target = undefined;
+  }
   let el = document.activeElement;
   while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
   const tag = el ? String(el.tagName).toLowerCase() : null;
   const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
   const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
+  // Only a read of the SAME element can contradict the delete, and "same" is
+  // identity: the label collides between any two fields of one kind.
+  const same = target !== undefined && target !== null && el === target;
   if (tag === "input" || tag === "textarea") {
-    return { focus: focus, remaining: String(el.value == null ? "" : el.value).length };
+    return { focus: focus, same: same, remaining: String(el.value == null ? "" : el.value).length };
   }
   if (el && el.isContentEditable === true) {
     // A cleared contenteditable keeps a placeholder <br> or an empty <p>, and an
@@ -161,11 +189,11 @@ const CLEAR_READBACK_SCRIPT = `(() => {
     // Trimmed at the ends only: interior whitespace is part of the text, and the
     // count is quoted back to the caller.
     const text = String(el.textContent == null ? "" : el.textContent).replace(/[\\u200b\\ufeff]/g, "").trim();
-    return { focus: focus, remaining: text.length };
+    return { focus: focus, same: same, remaining: text.length };
   }
   // Nothing readable holds focus any more. The delete already reported success,
   // so there is nothing here to contradict it.
-  return { focus: focus, remaining: null };
+  return { focus: focus, same: same, remaining: null };
 })()`;
 
 // The renderer answers the scripts above. Nothing else in the tool depends on
@@ -179,6 +207,8 @@ interface ClearOutcome {
 
 interface ReadbackOutcome {
   focus?: string | null;
+  /** Whether the element read back is the very one the clear ran against. */
+  same?: boolean;
   remaining?: number | null;
 }
 
@@ -345,11 +375,14 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
     // is what the field holds now, not whether anything happened.
     "keyboard_clear_chromium_readback_timeout"
   )) as ReadbackOutcome | null;
-  // Only a field that is still the focused one, and still readable, can
-  // contradict the delete. `remaining: null` means focus moved to something with
-  // no value to read, which is not evidence of anything.
+  // Only a read of the element the clear RAN AGAINST can contradict the delete,
+  // and `same` decides that by identity — the label collides between any two
+  // fields of one kind, so an auto-advancing OTP form used to have the next
+  // field's contents attributed to the one that was cleared. `remaining: null`
+  // means what holds focus now has no value to read, which is not evidence of
+  // anything.
   const remaining = readback?.remaining;
-  if (typeof remaining === "number" && remaining > 0 && readback?.focus === focus) {
+  if (typeof remaining === "number" && remaining > 0 && readback?.same === true) {
     // The KIND of field again, not focus: a retry of this same call reaches the
     // same editor and is restored the same way.
     throw new InvalidToolInputError(

@@ -382,7 +382,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     // and the caller's next `text` is appended to the old value.
     const tool = toolWithChromiumEvaluate([
       { cleared: true, focus: "div" },
-      { focus: "div", remaining: 11 },
+      { focus: "div", same: true, remaining: 11 },
     ]);
     await expectInvalidInput(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined),
@@ -396,7 +396,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     // strict `remaining === 0` would still pass that test and fail this one.
     const tool = toolWithChromiumEvaluate([
       { cleared: true, focus: "input type=text" },
-      { focus: "input type=text", remaining: 0 },
+      { focus: "input type=text", same: true, remaining: 0 },
     ]);
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
@@ -407,9 +407,15 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     // The page moved focus in its own `input` handler. The value read there
     // belongs to another field, so it is no evidence about the one that was
     // cleared — treating it as evidence would fail every app that blurs on edit.
+    //
+    // The labels here are IDENTICAL on purpose: two fields of one kind both
+    // report "input type=text", which is the auto-advancing OTP / PIN /
+    // card-segment shape and the common case. Deciding this by label reported a
+    // correct clear as `KEYBOARD_CLEAR_UNSUPPORTED_FIELD` quoting the NEXT
+    // field's character (measured on Chrome 151); `same` decides it by identity.
     const tool = toolWithChromiumEvaluate([
       { cleared: true, focus: "input type=text" },
-      { focus: "input type=search", remaining: 9 },
+      { focus: "input type=text", same: false, remaining: 1 },
     ]);
     await expect(
       tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
@@ -425,7 +431,7 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     const evaluate = vi
       .fn()
       .mockResolvedValueOnce({ cleared: true, focus: "div" })
-      .mockResolvedValueOnce({ focus: "div", remaining: 0 });
+      .mockResolvedValueOnce({ focus: "div", same: true, remaining: 0 });
     vi.spyOn(registry, "resolveService").mockResolvedValue({ evaluate } as never);
     await expect(
       makeChromiumImpl(registry).handler(

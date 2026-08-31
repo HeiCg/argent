@@ -244,7 +244,7 @@ describe("keyboard classifications", () => {
       await captureError(
         withEvaluate([
           { cleared: true, focus: "div" },
-          { focus: "div", remaining: 11 },
+          { focus: "div", same: true, remaining: 11 },
         ])({}, { udid: device.id, clear: true }, device)
       ),
       FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD

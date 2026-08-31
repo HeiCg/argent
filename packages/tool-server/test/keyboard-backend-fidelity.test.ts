@@ -524,7 +524,7 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       const evaluate = vi.fn(async (_expr: string, _opts?: unknown) =>
         _expr === CLEAR_FOCUSED_EDITABLE_SCRIPT
           ? { cleared: true, focus: "input type=text" }
-          : { focus: "input type=text", remaining: 0 }
+          : { focus: "input type=text", same: true, remaining: 0 }
       );
 
       const result = await makeChromiumImpl(registryWith({ ...api, evaluate })).handler(
