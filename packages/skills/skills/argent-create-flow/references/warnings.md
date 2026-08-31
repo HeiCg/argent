@@ -34,4 +34,4 @@ One result stops the run: the runner could not read the tree at all. The step is
 
 ## Selector-less gesture warning
 
-A coordinate `tap` or `long-press`, or a `pinch` or `rotate` without `on:`, passes with a warning when the tree is unreadable. The runner sent the gesture, but there is no proof that it touched the element. Repair the tree source, usually with a relaunch of the app. Accept the warning only for an app with no tree ([iOS: System apps](platforms/ios.md#system-apps)). Put a `wait:` before a gesture that follows a screen change.
+A coordinate `tap`, `long-press`, or `swipe`, or a `pinch` or `rotate` without `on:`, passes with a warning when the tree is unreadable. The runner sent the gesture, but there is no proof that it touched the element. Repair the tree source, usually with a relaunch of the app. Accept the warning only for an app with no tree ([iOS: System apps](platforms/ios.md#system-apps)). Put a `wait:` before a gesture that follows a screen change.

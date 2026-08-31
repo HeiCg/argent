@@ -26,7 +26,8 @@ Read this file after `flow-finish-recording`. Convert the recorded steps without
 - If the recorder wrote `text:` for an element that has a stable id, change the selector to the id. The replay proves it.
 - Convert `textMatch: equals` to `equals:`. Convert other text checks to `contains:`.
 - A focus tap plus one text-only `keyboard` call becomes `type:` with `submit: false`.
-- If the conversion changes the behavior, keep the raw tool step. Examples are a point-anchored pinch, a system edge swipe, and a rotation with a tested start angle. A wait with `pollIntervalMs` or `bundleId` also stays raw.
+- In a `swipe:`, anchor `from` on the subject of the gesture, such as the card that you dismiss. Do not anchor it on the content below the finger.
+- If the conversion changes the behavior, keep the raw tool step. Examples are a point-anchored pinch, a system edge swipe, a multi-touch `gesture-custom`, and a rotation with a tested start angle. A wait with `pollIntervalMs` or `bundleId` also stays raw.
 - Keep screenshots as evidence for a person. Use `snapshot:` when the runner must compare the screens.
 - Replay the full flow after the conversion ([Replay](replay.md)).
 

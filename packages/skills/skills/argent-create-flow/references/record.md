@@ -49,7 +49,7 @@ For a weak step, go back to the source screen with direct MCP calls. Record a be
 
 ### Text entry
 
-Record the focus tap. Then record `keyboard` with `text` (`text` or `key`, not the two). To submit, record a second `keyboard` with `key: "enter"`. Make sure that the field has the full value. Then record a check on the committed value, with a `text` condition or a validation marker. `type:` also passes when its focus was not confirmed. If the field does not show all the characters, correct it with direct calls. Do not record a second `keyboard` step.
+Record the focus tap. Then record `keyboard` with `text` (`text` or `key`, not the two). To submit, record a second `keyboard` with `key: "enter"`. Make sure that the field has the full value. Then record a check on the committed value, with a `text` condition or a validation marker. `type:` also passes when its focus was not confirmed. If the field does not show all the characters, correct it with direct calls.
 
 Write a credential as `{{secret:NAME}}`, not as a literal. Do not `describe` or `screenshot` a plain text field that you filled from a secret. Go to the next screen first.
 

@@ -27,7 +27,7 @@ Each `launch:` step boots one instance. A subsequent launch boots a new instance
 ## Directives and discovery
 
 - The runner rejects `pinch` and `rotate`. Use the zoom or rotate controls of the app.
-- Scroll with `gesture-scroll`, not `gesture-swipe`.
+- Scroll with `gesture-scroll`, not `gesture-swipe`. Record a `swipe:` gesture with `gesture-drag`.
 - The platform discovery tool is `describe`. It walks the DOM and does not always show runner nodes. Do a test of a candidate in a scratch fragment ([Record](../record.md#coordinate-fallback-gate)).
 - A password field is `[password]` in the runner tree. Select it by id or role.
 - `describe` reports `focused` on Chromium. Read it before you record `keyboard`.
