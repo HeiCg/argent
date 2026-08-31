@@ -8,7 +8,11 @@ import {
   parseUiAutomatorXml,
   parseUiAutomatorBounds,
 } from "../src/tools/describe/platforms/android/uiautomator-parser";
-import { parseDescribeResult, type DescribeNode } from "../src/tools/describe/contract";
+import {
+  getDescribeTapPoint,
+  parseDescribeResult,
+  type DescribeNode,
+} from "../src/tools/describe/contract";
 
 function flatten(tree: DescribeNode): DescribeNode[] {
   const out: DescribeNode[] = [];
@@ -575,6 +579,44 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(all.map((n) => n.label)).toContain("Row 1");
     expect(all.some((n) => n.label === "Row 2" || n.label === "Row 3")).toBe(false);
     expect(all.find((n) => n.role === "ScrollView")?.scrollHidden).toBe(2);
+  });
+
+  it("gives a node with an unusable box the region its children cover", () => {
+    // Chromium reports a WebView at negative height while the page it holds is
+    // on screen. Published as-is that is a zero-height frame, and the tap point
+    // for a zero-height frame is a point on its top edge — off the content, and
+    // with nothing in the rendering to say the frame is unusable.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,128][1084,-1174]" text="FIXED">
+    <node class="android.widget.TextView" bounds="[20,200][1060,290]" text="Section three"/>
+    <node class="android.widget.TextView" bounds="[20,300][1060,360]" text="Ut enim ad minim veniam."/>
+  </node>
+</hierarchy>`;
+    const webview = flatten(parseUiAutomatorDump(xml, 1080, 2400)).find(
+      (n) => n.role === "WebView"
+    )!;
+    // The union of the two rows: [20,200][1060,360] on a 1080x2400 screen.
+    expect(webview.frame.y).toBeCloseTo(200 / 2400, 5);
+    expect(webview.frame.height).toBeCloseTo(160 / 2400, 5);
+    // ...so a tap on the landmark lands on a row rather than on its top edge.
+    const tap = getDescribeTapPoint(webview.frame);
+    const row = webview.children[0]!.frame;
+    expect(tap.y).toBeGreaterThan(row.y);
+  });
+
+  it("leaves a usable box alone even when a child sticks out of it", () => {
+    // The substitution is only for a box that cannot be used. A normal node
+    // keeps the bounds the dump reported, overhanging child or not.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.FrameLayout" bounds="[0,100][200,200]" content-desc="card">
+    <node class="android.widget.TextView" bounds="[0,100][200,400]" text="Overflowing"/>
+  </node>
+</hierarchy>`;
+    const card = flatten(parseUiAutomatorDump(xml, 200, 600)).find((n) => n.label === "card")!;
+    expect(card.frame.y).toBeCloseTo(100 / 600, 5);
+    expect(card.frame.height).toBeCloseTo(100 / 600, 5);
   });
 
   it("does not let a scroller with an unusable box clip its own content away", () => {

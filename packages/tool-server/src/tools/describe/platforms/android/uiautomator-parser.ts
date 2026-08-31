@@ -543,6 +543,37 @@ function scrollClipOf(
   return bounds;
 }
 
+/**
+ * The box to publish for a node whose own one is unusable — clipped to zero or
+ * negative area — while children of it are still on screen. The dump's numbers
+ * render as a zero-height frame, and `getDescribeTapPoint` on that returns a
+ * point on the frame's top edge rather than on anything the node covers. The
+ * union of the children that survived is the region it does cover.
+ *
+ * Chromium reports a loaded WebView this way under load, so the node this hits
+ * is the landmark covering the whole page.
+ */
+function boundsOverChildren(children: UiNode[]): PixelRect | null {
+  let out: PixelRect | null = null;
+  for (const c of children) {
+    const b = c.pixelBounds;
+    if (!b || b.w <= 0 || b.h <= 0) continue;
+    if (!out) {
+      out = { ...b };
+      continue;
+    }
+    const x = Math.min(out.x, b.x);
+    const y = Math.min(out.y, b.y);
+    out = {
+      x,
+      y,
+      w: Math.max(out.x + out.w, b.x + b.w) - x,
+      h: Math.max(out.y + out.h, b.y + b.h) - y,
+    };
+  }
+  return out;
+}
+
 function computeNodeOutput(
   parsed: ParsedXmlNode,
   scrollClip: PixelRect | null,
@@ -624,7 +655,13 @@ function computeNodeOutput(
       webChildren = inner.children;
       if (!webLabel && inner.label) webLabel = inner.label;
     }
-    const webView = makeUiNode(attrs, "WebView", bounds, webLabel, webChildren);
+    const webView = makeUiNode(
+      attrs,
+      "WebView",
+      visible ? bounds : (boundsOverChildren(webChildren) ?? bounds),
+      webLabel,
+      webChildren
+    );
     webView.hostsWebContent = true;
     if (inner) {
       // Either half of the pair can be the one the framework marked, and which
@@ -731,7 +768,13 @@ function computeNodeOutput(
     hasChildren: parsed.children.some((c) => c.tag === "node"),
   });
 
-  const node = makeUiNode(attrs, role, bounds, label, keptChildren);
+  const node = makeUiNode(
+    attrs,
+    role,
+    visible ? bounds : (boundsOverChildren(keptChildren) ?? bounds),
+    label,
+    keptChildren
+  );
   if (hiddenInScroll > 0) node.scrollHidden = hiddenInScroll;
   return [node];
 }
