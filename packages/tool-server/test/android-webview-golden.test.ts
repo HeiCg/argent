@@ -1,29 +1,38 @@
-// Golden coverage over two real `getHierarchy` captures taken on an Android 14
-// emulator (1080x2400): an in-app `android.webkit.WebView` and a Chrome tab,
-// both on the same login form. Both dumps used to collapse to a single opaque
-// `WebView` line; they are checked in so a future trim rule cannot silently
-// re-hide the web DOM.
+// Golden coverage over two real `getHierarchy` captures taken on an Android
+// emulator at 1080x2400: an in-app `android.webkit.WebView` and a Chrome tab.
+// Both dumps used to collapse to a single opaque `WebView` line; they are
+// checked in so a future trim rule cannot silently re-hide the web DOM.
 //
-// To refresh a capture:
-//   1. Serve this page from the host on port 8765 (`python3 -m http.server`) —
-//      a local copy of https://the-internet.herokuapp.com/login, which the
-//      Chrome capture was taken against directly:
-//        <!doctype html><html><head><title>Login Page</title></head><body>
-//        <h2>Login Page</h2>
-//        <p>This is where you can log into the secure area.</p>
-//        <form id="login"><label for="username">Username</label>
-//        <input type="text" id="username" name="username">
-//        <label for="password">Password</label>
-//        <input type="password" id="password" name="password">
-//        <button type="submit" id="login">Login</button></form>
-//        <div id="footer">Powered by Elemental Selenium</div></body></html>
-//   2. Chrome capture: `adb shell am start -a android.intent.action.VIEW
-//      -d http://10.0.2.2:8765/login.html com.android.chrome`.
-//      In-app capture: any app whose `setContentView` is a `WebView` loading
-//      the same URL — a bare Activity with `new WebView(this)` is enough.
-//   3. Wait for the renderer to publish its DOM (`describe` shows a childless
-//      `WebView` until then), then save `getHierarchy().xml` from the
-//      android-devtools helper here verbatim.
+// The two captures are of DIFFERENT pages, and the WebView build decides how
+// much of a page reaches the tree — whether an HTML `id` arrives at all, for
+// one. So a refreshed capture needs its expectation refreshed with it.
+//
+// To refresh the in-app capture, serve this page from the host on port 8765
+// (`python3 -m http.server`):
+//
+//   <!doctype html><html><head><title>Login Page</title></head><body>
+//   <h2>Login Page</h2>
+//   <p>This is where you can log into the secure area.</p>
+//   <form><label for="username">Username</label>
+//   <input type="text" id="username" name="username">
+//   <label for="password">Password</label>
+//   <input type="password" id="password" name="password">
+//   <button type="submit" id="login">Login</button></form>
+//   <div id="flash"></div>
+//   <div>Powered by Elemental Selenium</div></body></html>
+//
+// then load `http://10.0.2.2:8765/login.html` in any app whose `setContentView`
+// is a `WebView` — a bare Activity with `new WebView(this)` is enough. Wait for
+// the renderer to publish its DOM (`describe` shows a childless `WebView` until
+// then), then save `getHierarchy().xml` from the android-devtools helper here
+// verbatim.
+//
+// The Chrome capture came from the live site, not from that copy: its `url_bar`
+// reads `the-internet.herokuapp.com/login`, and the page carries a flash-message
+// bar, a "Fork me on GitHub" ribbon and a page footer the copy has no counterpart
+// for. Refresh it with `adb shell am start -a android.intent.action.VIEW -d
+// https://the-internet.herokuapp.com/login com.android.chrome`, then capture the
+// same way.
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
