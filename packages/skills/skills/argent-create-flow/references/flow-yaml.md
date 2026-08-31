@@ -14,6 +14,7 @@ Read this reference when polishing, composing, or manually reviewing a flow.
   - [Optional divergences](#optional-divergences)
   - [Composition and platform limits](#composition-and-platform-limits)
   - [Local scripts](#local-scripts)
+    - [Bash scripts](#bash-scripts)
   - [Snapshots and standalone runs](#snapshots-and-standalone-runs)
   - [YAML safety](#yaml-safety)
 
@@ -211,7 +212,7 @@ A `script:` step runs a local script file and uses no device. **Add one only whe
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-The extension picks the interpreter: `.mjs` runs under Node, `.sh` under bash. There is no `language` key. Lowercase only; `.bash` and `.js` are refused.
+The extension selects the interpreter: `.mjs` runs under Node, and `.sh` runs under bash. There is no `language` key. Write the extension in lowercase. Argent refuses `.bash` and `.js`.
 
 Record the step live with `flow-add-script`. Do not write it by hand. See [Live authoring](live-authoring.md#recorder-contract).
 
@@ -222,21 +223,20 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
 Argent runs the script from the project root, not from the directory of the script file. Thus `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. In a `.sh`, `"$(dirname "${BASH_SOURCE[0]}")"` is the directory of the script file.
 
-Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file. A `.sh` resolves `curl`, `jq`, `adb` and `gh` against the PATH the tool-server started with, which an editor may have set to a short login PATH; the symptom is exit code 127. On Windows that PATH is not the whole story: Git for Windows' `bash.exe` is a wrapper that puts its own `mingw64\bin`, `usr\bin` and `%HOME%\bin` in front, so those tools resolve to Git's own copies.
+Argent does not give the script your shell environment. Argent does not read a project `.env` file. There is no `env` key. Let the script read a secret or a URL from a file. A `.sh` resolves `curl`, `jq`, `adb`, and `gh` against the PATH of the tool-server, not against the PATH of your shell. The tool-server inherits that PATH from the program that starts Argent, usually your editor. An editor opened from the desktop has a short login PATH, without the additions from your shell profile. A command that is absent from that PATH exits 127. On Windows, the bash of Git for Windows puts its own directories first on that PATH, so those commands resolve to its copies.
 
 The failure verdict names the side at fault: **failed** names the script, and **errored** names the host that ran it.
 
 On Chromium the leading `launch:` boots before step 1, so a `script:` above it runs while the app is already running.
 
-### A `.sh` step
+### Bash scripts
 
-- The exit code is the verdict. 0 passes.
-- `$ARGENT_OUTPUT` names a file holding the output document as JSON. Argent puts the input document there before the script starts and reads the file again after exit 0, so a script that never touches it passes with what it was given, and `>>` appends after a document that is already there. A plain `printf '{"id":"7"}' > "$ARGENT_OUTPUT"` passes. Two shapes do not: a command that READS the file inside its own redirection (`jq . "$ARGENT_OUTPUT" > "$ARGENT_OUTPUT"` reads a file the shell already emptied, and Argent refuses an empty one), and a background job that writes it after bash exits (Argent reads the file at that moment and returns the wrong document, without failing). Write a sibling and `mv` it into place: that shape is safe in both.
-- `$ARGENT_REASON` names an empty file for the failure text, so `>>` is safe there. Argent reads about 7000 characters of it after a non-zero exit and puts them in the step's reason. A failing script that writes nothing there reports only its exit code.
-- Argent runs `bash <file>`: no execute bit needed, the `#!` line is a comment, no arguments, stdin is empty. Nothing the script prints is reported. A file bash cannot READ exits 126, the same code as a command that is not executable.
-- Argent finds bash from `scripts.bash`, then PATH, then `/bin/bash` and `/usr/bin/bash` (Git for Windows on Windows, Scoop's copy included; the WSL launcher under `%SystemRoot%` is skipped). Each candidate is run once and has to answer with a `$BASH_VERSION`; one that does not is not a bash, and a `scripts.bash` that fails it errors the step. macOS ships bash 3.2 at `/bin/bash`; pin `scripts.bash` for bash 4 features.
-- Check the file out with LF line endings. CRLF puts the carriage return in the last word of each line: in a command name it gives `$'\r': command not found` and exit 127, in a redirection target it writes a file one carriage return past the one you named, which Argent fails the step for. Add `*.sh text eol=lf` to `.gitattributes`.
-- A background job dies with the step's process group unless it `setsid`s, and one that writes `$ARGENT_OUTPUT` after bash exits writes to a file nobody reads. Do not reap jobs with `trap 'kill 0' EXIT`: `kill 0` signals the step's whole process group, so it kills bash itself and the step loses its document. Signal the pid of the job.
+- The exit code is the verdict. Exit 0 passes the step.
+- `$ARGENT_REASON` names an empty file for the failure text. Argent reads about 7000 characters of it after a non-zero exit, and puts them in the step's reason. A script that writes nothing there reports only its exit code.
+- Argent runs the file as `bash <file>`. The file needs no execute bit, and the `#!` line is a comment. The script gets no arguments, and its standard input is empty. Argent does not report what the script prints. Exit 126 means that bash cannot read the file, or that a command in the file is not executable.
+- Argent finds bash from `scripts.bash`, then from PATH, then from `/bin/bash` and `/usr/bin/bash`. On Windows, the fallback is the bash of Git for Windows, never the WSL launcher. A `scripts.bash` that is not a bash errors the step. macOS ships bash 3.2 at `/bin/bash`, so set `scripts.bash` to use bash 4 features.
+- Check the file out with LF line endings, and add `*.sh text eol=lf` to `.gitattributes`. The usual CRLF symptom is `$'\r': command not found` and exit 127.
+- Argent stops the process group of the step when bash exits, so a background job dies with the step. A job survives only after `setsid`. Argent never stops a `setsid` job: it runs on after the flow ends, and you must stop it yourself. Do not stop jobs with `trap 'kill 0' EXIT`: `kill 0` also kills bash, and the step fails. Signal the pid of the job.
 
 ## Snapshots and standalone runs
 
