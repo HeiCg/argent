@@ -66,8 +66,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   },
   {
     name: "ios-physical-devices",
-    description:
-      "Physical iPhone/iPad support (CoreDevice/devicectl control plane + XCUITest runner). Experimental; off by default while the backend stabilizes.",
+    description: "Experimental physical iPhone support.",
   },
 ];
 

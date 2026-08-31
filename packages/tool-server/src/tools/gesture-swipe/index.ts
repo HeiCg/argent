@@ -66,9 +66,11 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
   capability,
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
+
     if (isIosPhysicalDevice(device)) {
       return { iosDeviceRunner: iosDeviceRunnerRef(device) };
     }
+
     return { simulatorServer: simulatorServerRef(device) };
   },
   async execute(services, params) {
@@ -76,11 +78,13 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     const settle = params.settle ?? false;
     const timestampMs = Date.now();
     const device = resolveDevice(params.udid);
+
     if (isIosPhysicalDevice(device)) {
       // XCTest is one planned drag. settle holds at the destination. Release velocity is then zero.
       const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const viewport = await getViewport(runner, bundleId);
+
       await dragBetween(
         runner,
         bundleId,
@@ -89,8 +93,13 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
         duration,
         settle
       );
-      return { swiped: true, timestampMs };
+
+      return {
+        swiped: true,
+        timestampMs,
+      };
     }
+
     const api = services.simulatorServer as SimulatorServerApi;
     const steps = Math.max(1, Math.round(duration / 16));
 
@@ -104,6 +113,7 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
       const x = params.fromX + (params.toX - params.fromX) * progress;
       const y = params.fromY + (params.toY - params.fromY) * progress;
       const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
+
       sendCommand(api, {
         cmd: "touch",
         type,
@@ -112,7 +122,10 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
         second_x: null,
         second_y: null,
       });
-      if (i < steps) await sleep(16);
+
+      if (i < steps) {
+        await sleep(16);
+      }
     }
 
     return { swiped: true, timestampMs };

@@ -23,14 +23,14 @@ const USBMUXD_SOCKET_PATH = "/var/run/usbmuxd";
 const USBMUX_DEFAULT_TIMEOUT_MS = 5_000;
 
 /**
- * usbmuxd `Connect` result codes.
- * Unknown DeviceID is 2. Closed port on an attached device is 3.
+ * usbmuxd `Connect` result codes. BAD_DEVICE means the DeviceID is unknown.
+ * CONNECTION_REFUSED means the device is attached but the port is closed.
  */
 const USBMUX_RESULT_OK = 0;
 const USBMUX_RESULT_BAD_DEVICE = 2;
 const USBMUX_RESULT_CONNECTION_REFUSED = 3;
 
-/** Folded into `.message` by the `IosDeviceTransportError` constructor. */
+/** Recovery hints. The `IosDeviceTransportError` constructor folds the hint into `.message`. */
 const DEVICE_UNATTACHED_HINT =
   "Connect the device by cable, trust this Mac, keep it unlocked, and retry.";
 const RUNNER_NOT_LISTENING_HINT =
@@ -57,6 +57,7 @@ export async function openUsbmuxRunnerSocket(
 ): Promise<net.Socket> {
   const socketPath = options.socketPath ?? USBMUXD_SOCKET_PATH;
   const deadline = createDeadline(options.timeoutMs ?? USBMUX_DEFAULT_TIMEOUT_MS);
+
   // ListDevices on a throwaway socket resolves the mux DeviceID.
   const deviceId = await resolveUsbmuxDeviceId(socketPath, options.udid, deadline);
 
@@ -96,6 +97,10 @@ export function buildUsbmuxConnectError(
   );
 }
 
+/**
+ * Resolve the mux DeviceID that `Connect` requires for the given UDID.
+ * Throws `device-unattached` when the device is missing from `ListDevices`.
+ */
 async function resolveUsbmuxDeviceId(
   socketPath: string,
   udid: string,
@@ -123,6 +128,10 @@ async function resolveUsbmuxDeviceId(
   }
 }
 
+/**
+ * Run the `Connect` exchange. On success the same socket stops speaking the
+ * plist protocol and becomes the raw byte pipe to `device:port`.
+ */
 async function connectToDevicePort(
   socketPath: string,
   udid: string,
@@ -154,6 +163,7 @@ async function connectToDevicePort(
   }
 }
 
+/** Open a unix socket to the usbmuxd daemon within the remaining deadline. */
 async function connectToUsbmuxd(socketPath: string, deadline: Deadline): Promise<net.Socket> {
   const timeoutMs = deadline.remainingMs();
 
@@ -361,7 +371,7 @@ async function readOnePacket(socket: net.Socket, deadline: Deadline): Promise<Bu
 }
 
 /**
- * Decreasing budget shared by every stage of a send.
+ * Decreasing time budget shared by every stage of one operation.
  */
 export interface Deadline {
   remainingMs(): number;

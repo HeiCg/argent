@@ -16,6 +16,7 @@ const execFileAsync = promisify(execFile);
 const DEVICECTL_TIMEOUT_MS = 20_000;
 const DEVICECTL_INSTALL_TIMEOUT_MS = 120_000;
 const DEVICECTL_LIST_TIMEOUT_MS = 8_000;
+const DEVICECTL_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 interface IosPhysicalDevice {
   /** Dashed hardware UDID (e.g. `00008110-000978540290401E`). */
@@ -106,7 +107,7 @@ async function runDevicectl(
     const { stdout, stderr } = await execFileAsync("xcrun", argv, {
       timeout: timeoutMs,
       killSignal: "SIGKILL",
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: DEVICECTL_MAX_OUTPUT_BYTES,
     });
 
     let json: unknown | null = null;

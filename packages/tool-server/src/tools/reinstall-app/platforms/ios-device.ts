@@ -26,11 +26,17 @@ export const iosDeviceImpl: PlatformImpl<
           "Use launch-app to put it under automation."
       );
     }
+
     await ensureDeviceReady(params.udid);
     await uninstallApp(params.udid, params.bundleId);
+
     // Uninstall killed the process. Clear the session even if install fails.
     clearCurrentIosDeviceApp(params.udid, params.bundleId);
     await installApp(params.udid, resolvePath(params.appPath));
-    return { reinstalled: true, bundleId: params.bundleId };
+
+    return {
+      reinstalled: true,
+      bundleId: params.bundleId,
+    };
   },
 };

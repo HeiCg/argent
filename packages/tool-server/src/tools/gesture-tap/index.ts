@@ -50,6 +50,7 @@ function tapDescription(params: Params, tense: "present" | "past"): string {
           ? "Double-tapping"
           : "Double-tapped"
         : `${tense === "present" ? "Tapping" : "Tapped"} ${count} times`;
+
   return `${action} at (${Math.round(params.x * 100)}%, ${Math.round(params.y * 100)}%)`;
 }
 

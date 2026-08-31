@@ -18,6 +18,7 @@ export function makeIosDeviceImpl(
     requires: ["xcrun"],
     handler: async (_services, params, device) => {
       const key = params.key?.trim().toLowerCase();
+
       // Gate on the raw key. A whitespace-only name would otherwise succeed as a no-op.
       if (params.key && key !== "enter") {
         throw new InvalidToolInputError(
@@ -30,23 +31,33 @@ export function makeIosDeviceImpl(
           }
         );
       }
+
       // Empty request is a documented no-op. Return before resolving the runner.
-      if (!params.text && !key) return { typed: "", keys: 0 };
+      if (!params.text && !key) {
+        return {
+          typed: "",
+          keys: 0,
+        };
+      }
+
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const ref = iosDeviceRunnerRef(device);
       const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
 
       // XCTest types whole strings and has no per-keycode HID surface. delayMs is ignored.
       let keys = 0;
+
       if (params.text) {
         // Secret placeholders are already resolved by the execute wrapper.
         await typeText(api, bundleId, params.text);
         keys += params.text.length;
       }
+
       if (key === "enter") {
         await pressKeyboardReturn(api, bundleId);
         keys += 1;
       }
+
       return { typed: params.text ?? params.key ?? "", keys };
     },
   };

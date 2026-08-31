@@ -17,11 +17,17 @@ export const iosDeviceImpl: PlatformImpl<
   requires: ["xcrun"],
   handler: async (_services, params) => {
     await ensureDeviceReady(params.udid);
+
     // System UI is always running. Register the session only. Do not launch.
     if (!isSessionOnlySystemUi(params.bundleId)) {
       await launchApp(params.udid, params.bundleId);
     }
+
     setCurrentIosDeviceApp(params.udid, params.bundleId);
-    return { launched: true, bundleId: params.bundleId };
+
+    return {
+      launched: true,
+      bundleId: params.bundleId,
+    };
   },
 };

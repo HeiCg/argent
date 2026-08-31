@@ -89,11 +89,14 @@ async function iosPhysicalScreenshot(
     os.tmpdir(),
     `argent-ios-device-screenshot-${device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
+
   const ref = iosDeviceRunnerRef(device);
   const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
+
   // Client timeout must exceed the runner screenshot budget. A shorter window turns COMMAND_TIMED_OUT into a transport timeout.
   await fs.writeFile(file, await captureRunnerScreenshotPng(runner, RUNNER_COMMAND_TIMEOUT_MS));
   await downscalePngInPlace(file, scale);
+
   return file;
 }
 
@@ -114,9 +117,11 @@ export async function tvScreenshot(
     os.tmpdir(),
     `argent-tv-screenshot-${udid.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
+
   await execFileAsync("xcrun", await simctlArgsForUdid(udid, ["io", udid, "screenshot", file]), {
     signal,
   });
+
   // `sips -Z` caps the longest *actual* side, and capture size isn't fixed (4K
   // sim is 3840 wide, non-4K is 1920), so scale against the real dimensions — a
   // hardcoded 3840 would double the scale on a 1920 capture.
@@ -127,6 +132,7 @@ export async function tvScreenshot(
       // Best-effort: keep the full-resolution capture if sips fails.
     });
   }
+
   return file;
 }
 
@@ -134,16 +140,19 @@ export async function tvScreenshot(
 // dimension probe fails.
 export async function tvTargetLongSide(file: string, scale: number): Promise<number> {
   let longSide = 3840;
+
   try {
     const { stdout } = await execFileAsync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
     const width = Number(/pixelWidth:\s*(\d+)/.exec(stdout)?.[1]);
     const height = Number(/pixelHeight:\s*(\d+)/.exec(stdout)?.[1]);
+
     if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
       longSide = Math.max(width, height);
     }
   } catch {
     /* probe failed — keep the 4K fallback */
   }
+
   return Math.round(longSide * scale);
 }
 
@@ -155,7 +164,10 @@ export async function downscalePngInPlace(
   scale: number,
   signal?: AbortSignal
 ): Promise<void> {
-  if (scale >= 1.0) return;
+  if (scale >= 1.0) {
+    return;
+  }
+
   await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, scale)), file], {
     signal,
   }).catch(() => {

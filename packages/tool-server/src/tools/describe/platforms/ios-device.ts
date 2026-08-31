@@ -18,13 +18,17 @@ export async function describeIosDevice(
   const bundleId = requireCurrentIosDeviceApp(device.id);
   const ref = iosDeviceRunnerRef(device);
   const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
+
   let { nodes, quality } = await captureSnapshot(api, bundleId);
+
   // XCTest can attach before the UI is built and report a root-only tree. One retry recovers the common case.
   if (nodes.length <= 1) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     ({ nodes, quality } = await captureSnapshot(api, bundleId));
   }
+
   const data = adaptRunnerSnapshot(nodes);
+
   if (quality?.state && quality.state !== "healthy") {
     data.hint =
       `Snapshot quality: ${quality.state} (backend ${quality.backend ?? "?"}, ` +
@@ -36,6 +40,7 @@ export async function describeIosDevice(
       "The runner returned an empty or root-only accessibility tree. The app may still " +
       "be launching, or this screen exposes no accessibility elements.";
   }
+
   return data;
 }
 
@@ -79,15 +84,18 @@ function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
       source: "xcuitest-runner",
     };
   }
+
   // Normalize against the Application frame. Clamp because XCTest can report children a point outside the root.
   const root = nodes.reduce((a, b) => (b.depth < a.depth ? b : a));
   const refW = root.rect.width > 0 ? root.rect.width : 1;
   const refH = root.rect.height > 0 ? root.rect.height : 1;
 
   const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
+
   const toDescribe = (node: RunnerSnapshotNode): DescribeNode => {
     const x = clamp01((node.rect.x - root.rect.x) / refW);
     const y = clamp01((node.rect.y - root.rect.y) / refH);
+
     return {
       role: RUNNER_TYPE_TO_ROLE[node.type] ?? node.type,
       frame: {
@@ -108,19 +116,31 @@ function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
   };
 
   const describeByIndex = new Map<number, DescribeNode>();
-  for (const node of nodes) describeByIndex.set(node.index, toDescribe(node));
-  const rootDescribe = describeByIndex.get(root.index)!;
+
   for (const node of nodes) {
-    if (node.index === root.index) continue;
+    describeByIndex.set(node.index, toDescribe(node));
+  }
+
+  const rootDescribe = describeByIndex.get(root.index)!;
+
+  for (const node of nodes) {
+    if (node.index === root.index) {
+      continue;
+    }
+
     const parent =
       (node.parentIndex != null ? describeByIndex.get(node.parentIndex) : undefined) ??
       rootDescribe;
+
     parent.children.push(describeByIndex.get(node.index)!);
   }
 
   return {
     tree: rootDescribe,
     source: "xcuitest-runner",
-    screen: { width: refW, height: refH },
+    screen: {
+      width: refW,
+      height: refH,
+    },
   };
 }

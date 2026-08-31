@@ -124,7 +124,9 @@ export function resolveDevice(udid: string): DeviceInfo {
       }
     );
   }
+
   const platform = classifyDevice(udid);
+
   const kind: DeviceKind =
     platform === "ios"
       ? isIosPhysicalUdid(udid)
@@ -139,6 +141,7 @@ export function resolveDevice(udid: string): DeviceInfo {
               ? "emulator"
               : "device"
             : "app";
+
   return { id: udid, platform, kind };
 }
 

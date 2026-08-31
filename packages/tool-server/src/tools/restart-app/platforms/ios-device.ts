@@ -25,9 +25,15 @@ export const iosDeviceImpl: PlatformImpl<
           "Use launch-app to put it under automation."
       );
     }
+
     await ensureDeviceReady(params.udid);
     await launchApp(params.udid, params.bundleId, { terminateExisting: true });
+
     setCurrentIosDeviceApp(params.udid, params.bundleId);
-    return { restarted: true, bundleId: params.bundleId };
+
+    return {
+      restarted: true,
+      bundleId: params.bundleId,
+    };
   },
 };

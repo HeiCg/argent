@@ -53,7 +53,9 @@ export function createUsbmuxCommandSender(
       if (!sendOptions.readOnly) {
         return sendViaUsbmux(udid, port, body, createDeadline(sendOptions.timeoutMs));
       }
+
       let lastError: unknown;
+
       for (let attempt = 1; attempt <= READ_ONLY_MAX_ATTEMPTS; attempt += 1) {
         try {
           // Fresh deadline per attempt. Backoff sleeps do not spend from timeoutMs.
@@ -61,10 +63,15 @@ export function createUsbmuxCommandSender(
         } catch (error) {
           lastError = error;
           const retryable = isIosDeviceTransportError(error) && error.retryable;
-          if (!retryable || attempt === READ_ONLY_MAX_ATTEMPTS) throw error;
+
+          if (!retryable || attempt === READ_ONLY_MAX_ATTEMPTS) {
+            throw error;
+          }
+
           await sleep(Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS));
         }
       }
+
       // Unreachable: the loop always returns or throws. Kept for the type checker.
       throw lastError;
     },

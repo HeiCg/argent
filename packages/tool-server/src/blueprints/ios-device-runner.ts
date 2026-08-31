@@ -22,6 +22,7 @@ import {
   XctestrunFormatError,
   type LaunchedRunner,
   type RunnerArtifact,
+  type RunnerSigningConfig,
 } from "../utils/ios-device/runner-build";
 import * as fs from "node:fs/promises";
 import { createUsbmuxCommandSender } from "../utils/ios-device/runner-route";
@@ -100,6 +101,7 @@ async function explainRunnerDeath(options: {
   const bundleId = typeof command.appBundleId === "string" ? command.appBundleId : null;
   const deaths = bundleId ? recordAppCrash(udid, bundleId) : 0;
   const crash = await readRunnerCrashSummary(options.resultBundlePath);
+
   const recovery =
     deaths >= 2 && bundleId
       ? ` Runner death #${deaths} for ${bundleId} in the last ` +
@@ -154,6 +156,122 @@ export function iosDeviceRunnerRef(device: DeviceInfo): {
 /** Startup budget for install, launch, and the first ready envelope. */
 const RUNNER_READY_TIMEOUT_MS = 120_000;
 
+/**
+ * Launch the runner from a built artifact and wait for its first ready envelope.
+ * On failure the child is killed and the error carries `runnerLogText` so the
+ * caller can inspect the launch log.
+ */
+async function startRunner(
+  udid: string,
+  artifact: RunnerArtifact
+): Promise<{ launched: LaunchedRunner; client: RunnerClient }> {
+  await assertXctestrunParses(artifact.xctestrunPath);
+
+  const port = await pickFreePort();
+
+  const launched = await launchRunner({
+    udid,
+    xctestrunPath: artifact.xctestrunPath,
+    derivedDataPath: artifact.derivedDataPath,
+    port,
+  });
+
+  const sender = createUsbmuxCommandSender();
+
+  const client = createRunnerClient({
+    udid,
+    port,
+    send: sender.sendCommand,
+  });
+
+  // The factory exit listener is not attached yet. Race ready against exit so a dead child does not burn the full ready budget.
+  let onExit!: (code: number | null) => void;
+
+  const exited = new Promise<never>((_resolve, reject) => {
+    onExit = (code) =>
+      reject(new Error(`xcodebuild exited (code ${code}) before the runner became ready`));
+  });
+
+  // Swallow the losing race. A post-kill exit on the timeout path still fires onExit.
+  exited.catch(() => {});
+
+  launched.child.once("exit", onExit);
+
+  try {
+    await Promise.race([
+      waitForRunnerReady(client, { timeoutMs: RUNNER_READY_TIMEOUT_MS }),
+      exited,
+    ]);
+  } catch (error) {
+    killRunnerProcess(launched.child);
+
+    const logText = await fs.readFile(launched.logPath, "utf8").catch(() => "");
+
+    throw Object.assign(
+      withFailureSignal(
+        new Error(
+          `The on-device runner did not become ready: ${String((error as Error).message)}. ` +
+            `Check the log at ${launched.logPath}. If this is the first run, unlock the ` +
+            `device and trust the developer app under Settings > General > VPN & Device ` +
+            `Management.`,
+          { cause: error }
+        ),
+        {
+          error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
+          failure_stage: "ios_device_runner_ready",
+          failure_area: "tool_server",
+          error_kind: "timeout",
+        }
+      ),
+      { runnerExited: true, runnerLogText: logText }
+    );
+  } finally {
+    // Drop this listener. The factory listener owns exits after ready. terminated then fires once.
+    launched.child.removeListener("exit", onExit);
+  }
+
+  return {
+    launched,
+    client,
+  };
+}
+
+/**
+ * Build the runner artifact and start it. Retries once per known recoverable
+ * failure: a poisoned cache and a profile that is missing this device.
+ */
+async function buildAndStartRunner(
+  udid: string,
+  signing: RunnerSigningConfig
+): Promise<{ launched: LaunchedRunner; client: RunnerClient }> {
+  let artifact: RunnerArtifact;
+
+  try {
+    artifact = await ensureRunnerArtifact(signing);
+  } catch (error) {
+    // A new team cannot mint a profile from the generic build. Rebuild against this device to register it.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isProfileMissingDeviceFailure(message)) throw error;
+    artifact = await rebuildRunnerArtifactForDevice(udid, signing);
+  }
+
+  try {
+    return await startRunner(udid, artifact);
+  } catch (error) {
+    if (error instanceof XctestrunFormatError && artifact.fromCache) {
+      // A cached xctestrun that does not parse is a poisoned cache. Wipe it and rebuild once.
+      // A fresh artifact with the same error is a real build failure. Do not loop.
+      await fs.rm(artifact.derivedDataPath, { recursive: true, force: true });
+      return await startRunner(udid, await ensureRunnerArtifact(signing, { force: true }));
+    }
+
+    const logText = (error as { runnerLogText?: string }).runnerLogText ?? "";
+    if (!isProfileMissingDeviceFailure(logText)) throw error;
+    // This device is not in the local profile. Rebuild against it. Signing then adds it. Retry once.
+    return await startRunner(udid, await rebuildRunnerArtifactForDevice(udid, signing));
+  }
+}
+
 /** Registry blueprint that builds, launches, and recycles the on-device runner. */
 export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, DeviceInfo> = {
   namespace: IOS_DEVICE_RUNNER_NAMESPACE,
@@ -180,105 +298,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
     await ensureDeviceReady(udid);
     await killStaleRunnersForDevice(udid);
 
-    const signing = resolveRunnerSigningConfig();
-
-    const startRunner = async (
-      artifact: RunnerArtifact
-    ): Promise<{ launched: LaunchedRunner; client: RunnerClient }> => {
-      const port = await pickFreePort();
-
-      await assertXctestrunParses(artifact.xctestrunPath);
-
-      const launched = await launchRunner({
-        udid,
-        xctestrunPath: artifact.xctestrunPath,
-        derivedDataPath: artifact.derivedDataPath,
-        port,
-      });
-
-      const sender = createUsbmuxCommandSender();
-      const client = createRunnerClient({
-        udid,
-        port,
-        send: sender.sendCommand,
-      });
-
-      // The factory exit listener is not attached yet. Race ready against exit so a dead child does not burn the full ready budget.
-      let onExit!: (code: number | null) => void;
-
-      const exited = new Promise<never>((_resolve, reject) => {
-        onExit = (code) =>
-          reject(new Error(`xcodebuild exited (code ${code}) before the runner became ready`));
-      });
-
-      // Swallow the losing race. A post-kill exit on the timeout path still fires onExit.
-      exited.catch(() => {});
-
-      launched.child.once("exit", onExit);
-
-      try {
-        await Promise.race([
-          waitForRunnerReady(client, { timeoutMs: RUNNER_READY_TIMEOUT_MS }),
-          exited,
-        ]);
-      } catch (error) {
-        killRunnerProcess(launched.child);
-        const logText = await fs.readFile(launched.logPath, "utf8").catch(() => "");
-
-        throw Object.assign(
-          withFailureSignal(
-            new Error(
-              `The on-device runner did not become ready: ${String((error as Error).message)}. ` +
-                `Check the log at ${launched.logPath}. If this is the first run, unlock the ` +
-                `device and trust the developer app under Settings > General > VPN & Device ` +
-                `Management.`,
-              { cause: error }
-            ),
-            {
-              error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
-              failure_stage: "ios_device_runner_ready",
-              failure_area: "tool_server",
-              error_kind: "timeout",
-            }
-          ),
-          { runnerExited: true, runnerLogText: logText }
-        );
-      } finally {
-        // Drop this listener. The factory listener owns exits after ready. terminated then fires once.
-        launched.child.removeListener("exit", onExit);
-      }
-      return { launched, client };
-    };
-
-    let started: Awaited<ReturnType<typeof startRunner>>;
-    let artifact: RunnerArtifact;
-
-    try {
-      artifact = await ensureRunnerArtifact(signing);
-    } catch (error) {
-      // A new team cannot mint a profile from the generic build. Rebuild against this device to register it.
-      const message = error instanceof Error ? error.message : String(error);
-      if (!isProfileMissingDeviceFailure(message)) throw error;
-      artifact = await rebuildRunnerArtifactForDevice(udid, signing);
-    }
-
-    try {
-      started = await startRunner(artifact);
-    } catch (error) {
-      if (error instanceof XctestrunFormatError && artifact.fromCache) {
-        // A cached xctestrun that does not parse is a poisoned cache. Wipe it and rebuild once.
-        // A fresh artifact with the same error is a real build failure. Do not loop.
-        await fs.rm(artifact.derivedDataPath, { recursive: true, force: true });
-        started = await startRunner(await ensureRunnerArtifact(signing, { force: true }));
-      } else {
-        const logText = (error as { runnerLogText?: string }).runnerLogText ?? "";
-        if (!isProfileMissingDeviceFailure(logText)) throw error;
-        // This device is not in the local profile. Rebuild against it. Signing then adds it. Retry once.
-        started = await startRunner(await rebuildRunnerArtifactForDevice(udid, signing));
-      }
-    }
-
-    const { launched, client } = started;
+    const { launched, client } = await buildAndStartRunner(udid, resolveRunnerSigningConfig());
 
     const events = new TypedEventEmitter<ServiceEvents>();
     let disposed = false;
@@ -288,7 +308,11 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
 
     launched.child.on("exit", (code) => {
       exitCode = code;
-      for (const wake of exitWaiters.splice(0)) wake();
+
+      for (const wake of exitWaiters.splice(0)) {
+        wake();
+      }
+
       if (!disposed) {
         events.emit(
           "terminated",
@@ -308,6 +332,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         ? Promise.resolve()
         : new Promise((resolve) => {
             const timer = setTimeout(resolve, ms);
+
             exitWaiters.push(() => {
               clearTimeout(timer);
               resolve();

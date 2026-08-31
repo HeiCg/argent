@@ -8,6 +8,9 @@ const execFileAsync = promisify(execFile);
  * Crash post-mortem from the runner's `.xcresult` bundle.
  */
 
+const XCRESULTTOOL_TIMEOUT_MS = 15_000;
+const XCRESULTTOOL_MAX_JSON_BYTES = 32 * 1024 * 1024;
+
 /**
  * Pull the crash line out of `xcresulttool get test-results summary` JSON.
  */
@@ -42,7 +45,7 @@ export async function readRunnerCrashSummary(resultBundlePath: string): Promise<
     const { stdout } = await execFileAsync(
       "xcrun",
       ["xcresulttool", "get", "test-results", "summary", "--path", resultBundlePath],
-      { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }
+      { timeout: XCRESULTTOOL_TIMEOUT_MS, maxBuffer: XCRESULTTOOL_MAX_JSON_BYTES }
     );
 
     return extractCrashFailureText(JSON.parse(stdout));

@@ -255,6 +255,8 @@ export function resolveSigningHint(output: string): string | null {
 }
 
 const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
+// A full xcodebuild log; the failure summary needs the whole output to find error lines.
+const BUILD_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 /**
  * Static xcodebuild arguments for a runner build.
@@ -403,7 +405,7 @@ async function buildRunnerArtifact(
     await execFileAsync("xcodebuild", args, {
       timeout: BUILD_TIMEOUT_MS,
       killSignal: "SIGKILL",
-      maxBuffer: 64 * 1024 * 1024,
+      maxBuffer: BUILD_MAX_OUTPUT_BYTES,
     });
   } catch (error) {
     const e = error as { stdout?: string; stderr?: string; message?: string };
@@ -630,12 +632,15 @@ export async function killStaleRunnersForDevice(
  */
 export const PROCESS_TABLE_ARGV = [PS_BIN, "-ax", "-o", "pid=,ppid=,command="] as const;
 
+// A busy Mac's full process table with command lines.
+const PROCESS_TABLE_MAX_BYTES = 16 * 1024 * 1024;
+
 /** Real process-table snapshot behind `killStaleRunnersForDevice`'s seam. */
 async function listProcessTable(): Promise<string> {
   const [bin, ...args] = PROCESS_TABLE_ARGV;
 
   const { stdout } = await execFileAsync(bin, args, {
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: PROCESS_TABLE_MAX_BYTES,
   });
 
   return stdout;

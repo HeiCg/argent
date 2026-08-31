@@ -106,13 +106,18 @@ async function runOnIosDevice(
   events: Params["events"]
 ): Promise<Result> {
   const plan = planIosDeviceGesture(events);
-  if (plan.kind === "unsupported") throw new InvalidToolInputError(plan.reason);
+
+  if (plan.kind === "unsupported") {
+    throw new InvalidToolInputError(plan.reason);
+  }
+
   const { down, up } = plan;
   const bundleId = requireCurrentIosDeviceApp(udid);
   const viewport = await getViewport(runner, bundleId);
   const durationMs = up.delayMs ?? 16;
   const isSamePoint =
     Math.abs(up.x - down.x) <= SAME_POINT_EPSILON && Math.abs(up.y - down.y) <= SAME_POINT_EPSILON;
+
   if (isSamePoint) {
     await longPressAt(runner, bundleId, toPoints(viewport, down.x, down.y), durationMs);
   } else {
@@ -124,6 +129,7 @@ async function runOnIosDevice(
       durationMs
     );
   }
+
   return { events: 2 };
 }
 
