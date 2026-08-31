@@ -525,11 +525,13 @@ function computeNodeOutput(
   // at all, and then only text and frames identify a control). Keep the WebView
   // as a landmark and let the normal trim rules run over the DOM underneath.
   //
-  // The landmark is often unlabelled: some builds put the page <title> in the
-  // node's `text`, current ones leave `text` and `content-desc` empty. The
-  // renderer keeps the node in the describe output either way — "WebView" is
-  // one of its content roles — so an unlabelled landmark still reports its
-  // bounds instead of vanishing.
+  // The landmark can be unlabelled. The page <title> arrives as the `text` of
+  // Chromium's root web area — the single node of a browser tab, and the inner
+  // half of an in-app pair. The app's own WebView view, the outer half, never
+  // carries it, so a WebView whose renderer has published nothing yet has no
+  // label at all. The renderer keeps the node in the describe output either
+  // way — "WebView" is one of its content roles — so an unlabelled landmark
+  // still reports its bounds instead of vanishing.
   //
   // The visibility guard matches every other branch: a WebView clipped to zero
   // area whose children are still on screen must not take the subtree down
