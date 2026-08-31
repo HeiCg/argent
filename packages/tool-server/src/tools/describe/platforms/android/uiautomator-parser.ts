@@ -475,6 +475,10 @@ function pruneSubtree(root: ParsedXmlNode, opts: PruneOptions): UiNode[] {
   };
   const stack: Frame[] = [{ parsed: root, scrollClip: null, inWebView: false, visited: false }];
   const outputs = new Map<ParsedXmlNode, UiNode[]>();
+  // Hidden-child counts belonging to nodes that hand their children up and
+  // disappear. Their `scrollHidden` has nowhere to live, so the parent adds it
+  // to its own — see `passUp` in `computeNodeOutput`.
+  const orphanHidden = new Map<ParsedXmlNode, number>();
 
   while (stack.length > 0) {
     const top = stack[stack.length - 1]!;
@@ -503,7 +507,7 @@ function pruneSubtree(root: ParsedXmlNode, opts: PruneOptions): UiNode[] {
     } else {
       outputs.set(
         top.parsed,
-        computeNodeOutput(top.parsed, top.scrollClip, top.inWebView, outputs, opts)
+        computeNodeOutput(top.parsed, top.scrollClip, top.inWebView, outputs, orphanHidden, opts)
       );
       stack.pop();
     }
@@ -516,6 +520,7 @@ function computeNodeOutput(
   scrollClip: PixelRect | null,
   inWebView: boolean,
   outputs: Map<ParsedXmlNode, UiNode[]>,
+  orphanHidden: Map<ParsedXmlNode, number>,
   opts: PruneOptions
 ): UiNode[] {
   const attrs = parsed.attrs;
@@ -533,6 +538,9 @@ function computeNodeOutput(
     if (c.tag !== "node") continue;
     const kids = outputs.get(c);
     if (!kids) continue;
+    // A child that handed its own children up counted what its clip hid before
+    // it disappeared. Adopt the count, or it is lost with the node.
+    hiddenInScroll += orphanHidden.get(c) ?? 0;
     for (const kid of kids) {
       if (scrollClip && kid.pixelBounds && rectFullyOutside(kid.pixelBounds, scrollClip)) {
         hiddenInScroll += 1;
@@ -605,6 +613,17 @@ function computeNodeOutput(
     return [webView];
   }
 
+  // Every path that discards this node but keeps its children routes through
+  // here: the count of what this node's clip hid has no node left to sit on, so
+  // it moves to the nearest surviving ancestor. An unnamed wrapper `<div>` — or
+  // the `<ScrollView><View>{rows}</View></ScrollView>` a React Native screen
+  // dumps as — is exactly such a node, so without this the "swipe before you
+  // tap" signal disappears on the most ordinary layout there is.
+  const passUp = (out: UiNode[]): UiNode[] => {
+    if (hiddenInScroll > 0) orphanHidden.set(parsed, hiddenInScroll);
+    return out;
+  };
+
   const interactive = isInteractive(attrs);
   let label = labelOf(attrs);
 
@@ -617,13 +636,13 @@ function computeNodeOutput(
 
   // Decorative ImageView — drop it, passing surviving descendants through.
   if (cls.endsWith(".ImageView") && !interactive && !label) {
-    return keptChildren;
+    return passUp(keptChildren);
   }
 
   // Layout container with no own info — pass children through, flattening the
   // FrameLayout > LinearLayout > ConstraintLayout chains --compressed leaves.
   if (LAYOUT_CONTAINERS.has(cls) && !interactive && !label) {
-    return keptChildren;
+    return passUp(keptChildren);
   }
 
   if (!visible && keptChildren.length === 0) return [];
@@ -650,7 +669,7 @@ function computeNodeOutput(
       if (!c.label && label) c.label = label;
       const rid = attrs["resource-id"];
       if (!c.identifier && rid) c.identifier = rid;
-      return [c];
+      return passUp([c]);
     }
   }
 

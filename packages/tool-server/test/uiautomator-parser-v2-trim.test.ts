@@ -559,6 +559,54 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(row?.scrollHidden).toBe(1);
   });
 
+  it("keeps the hidden-child count when the node that counted is dropped", () => {
+    // `<ScrollView><View>{rows}</View></ScrollView>` is the ordinary React
+    // Native (and Compose, and web `<div>`) shape: the wrapper carries no label
+    // and no gesture flag, so the trim hands its children up and discards it —
+    // and used to discard the count it had just made with it. The scroller is
+    // then the nearest survivor and has to say how much is scrolled away.
+    const rows = (extra: string) => `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.ScrollView" bounds="[0,0][200,200]" scrollable="true">
+    <node class="android.widget.LinearLayout" bounds="[0,0][200,900]"${extra}>
+      <node class="android.widget.TextView" bounds="[0,10][200,60]" text="Row 1"/>
+      <node class="android.widget.TextView" bounds="[0,300][200,350]" text="Row 2"/>
+      <node class="android.widget.TextView" bounds="[0,400][200,450]" text="Row 3"/>
+    </node>
+  </node>
+</hierarchy>`;
+
+    const unnamed = flatten(parseUiAutomatorDump(rows(""), 200, 600));
+    expect(unnamed.map((n) => n.label)).toContain("Row 1");
+    expect(unnamed.some((n) => n.label === "Row 2" || n.label === "Row 3")).toBe(false);
+    expect(unnamed.find((n) => n.role === "ScrollView")?.scrollHidden).toBe(2);
+
+    // Naming the wrapper keeps it, and then the count belongs to the wrapper —
+    // it must not also be added to the scroller above.
+    const named = flatten(parseUiAutomatorDump(rows(' content-desc="rows"'), 200, 600));
+    expect(named.find((n) => n.label === "rows")?.scrollHidden).toBe(2);
+    expect(named.find((n) => n.role === "ScrollView")?.scrollHidden).toBeUndefined();
+  });
+
+  it("keeps the hidden-child count through a chain of dropped wrappers", () => {
+    // Two passthrough levels and a decorative ImageView, so the count travels
+    // more than one step to reach the nearest survivor.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.ScrollView" bounds="[0,0][200,200]" scrollable="true">
+    <node class="android.widget.FrameLayout" bounds="[0,0][200,900]">
+      <node class="android.widget.ImageView" bounds="[0,0][200,900]">
+        <node class="android.widget.TextView" bounds="[0,10][200,60]" text="Row 1"/>
+        <node class="android.widget.TextView" bounds="[0,400][200,450]" text="Row 2"/>
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const all = flatten(parseUiAutomatorDump(xml, 200, 600));
+    expect(all.map((n) => n.label)).toContain("Row 1");
+    expect(all.find((n) => n.role === "ScrollView")?.scrollHidden).toBe(1);
+  });
+
   it("strips React Native SVG sub-paths entirely", () => {
     // com.horcrux.svg.{Path,Group,Svg}View are dump-side noise — the icon's
     // content-desc lives on the parent ImageView/Button, not these leaves.
