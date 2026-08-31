@@ -364,7 +364,8 @@ const UNCLEARABLE_FIELD_MESSAGES: Record<string, string> = {
 };
 
 /**
- * Run one of the two clear scripts, re-stating a CDP wait that ran out.
+ * Run one of the two clear scripts, re-stating a CDP request whose answer never
+ * arrived.
  *
  * `clear` is the only `keyboard` operation that waits on the renderer main
  * thread: `text` and `key` go through `Input.dispatchKeyEvent`, which the
@@ -379,27 +380,51 @@ const UNCLEARABLE_FIELD_MESSAGES: Record<string, string> = {
  * a retry lands a SECOND delete on a field the first one may already have
  * emptied. Re-stated as `KEYBOARD_CLEAR_UNCONFIRMED`, whose whole content is
  * "read the field back before doing anything else".
+ *
+ * A dropped socket (`DEBUGGER_CDP_CONNECTION_CLOSED`, `error_kind: "network"`)
+ * is the same unknown reached a different way, and the cdp-client's own comment
+ * at that rejection site makes the point: "A request rejected here was already
+ * delivered and may have taken effect - callers must not blindly retry
+ * side-effectful sends." So it is re-stated too rather than carrying the
+ * debugger taxonomy's restart-and-retry advice.
  */
 async function evaluateClearStep(
   api: ChromiumCdpApi,
   script: string,
-  stage: string
+  stage: string,
+  /** What is unknown at this stage — the two differ, see `clearChromium`. */
+  unknown: string
 ): Promise<unknown> {
   try {
     return await api.evaluate(script, { returnByValue: true });
   } catch (err) {
-    if (getFailureSignal(err)?.error_kind !== "timeout") throw err;
+    const signal = getFailureSignal(err);
+    // Two failures, one unknown: the request reached the renderer and its answer
+    // did not come back. A socket that was ALREADY down (
+    // `DEBUGGER_CDP_NOT_CONNECTED`) is not one of them — nothing was delivered
+    // there, so it keeps its own code and its own repair.
+    const dropped = signal?.error_code === FAILURE_CODES.DEBUGGER_CDP_CONNECTION_CLOSED;
+    const kind = signal?.error_kind;
+    if (kind !== "timeout" && !dropped) throw err;
     throw new FailureError(
-      "the renderer did not answer the clear in time, so whether the field was emptied is unknown — " +
-        "the delete is NOT cancelled by the timeout and can still land once the renderer is free. Do " +
-        "not retry blind and do not type into the field: read it back first (`describe`), then clear " +
-        "or type according to what it actually holds. A renderer this busy is ordinary during QA; it " +
-        "is not a reason to restart the app.",
+      (kind === "timeout"
+        ? "the renderer did not answer the clear in time"
+        : "the connection to the renderer dropped before it answered the clear") +
+        `, so ${unknown} — the request is NOT cancelled by ` +
+        (kind === "timeout" ? "the timeout" : "the drop") +
+        " and had already been delivered. Do not retry blind and do not type into the field: read it " +
+        "back first (`describe`), then clear or type according to what it actually holds. " +
+        (kind === "timeout"
+          ? "A renderer this busy is ordinary during QA; it is not a reason to restart the app."
+          : "Reconnect if the next call needs it, but a restart is not a repair for this and a " +
+            "second delete is not either."),
       {
         error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED,
         failure_stage: stage,
         failure_area: "tool_server",
-        error_kind: "timeout",
+        // Narrowed by the guard above: `dropped` implies a signal, and the
+        // only other way past it is `kind === "timeout"`.
+        error_kind: kind ?? "network",
         failure_command: "cdp",
       },
       { cause: err instanceof Error ? err : undefined }
@@ -427,7 +452,8 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   const outcome = (await evaluateClearStep(
     api,
     CLEAR_FOCUSED_EDITABLE_SCRIPT,
-    "keyboard_clear_chromium_timeout"
+    "keyboard_clear_chromium_timeout",
+    "whether the field was emptied is unknown"
   )) as ClearOutcome | null;
   const focus = outcome?.focus;
   if (outcome?.cleared !== true) {
@@ -523,9 +549,13 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   const readback = (await evaluateClearStep(
     api,
     CLEAR_READBACK_SCRIPT,
-    // Its own stage: here the delete has ALREADY been accepted, so the unknown
-    // is what the field holds now, not whether anything happened.
-    "keyboard_clear_chromium_readback_timeout"
+    // Its own stage AND its own wording: here the delete has already been
+    // accepted, so the unknown is whether the value survived it — not whether
+    // anything happened. The clear-stage sentence ("the delete can still land
+    // once the renderer is free") is false by this point.
+    "keyboard_clear_chromium_readback_timeout",
+    "the delete was accepted but the field could not be read back, and an editor that restores its " +
+      "own value would not have been caught"
   )) as ReadbackOutcome | null;
   // Only a read of the element the clear RAN AGAINST can contradict the delete,
   // and `same` decides that by identity — the label collides between any two

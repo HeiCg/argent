@@ -574,6 +574,70 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
+  it("a CDP socket that DROPS is KEYBOARD_CLEAR_UNCONFIRMED too, not a dead runtime", async () => {
+    // A connection close rejects with DEBUGGER_CDP_CONNECTION_CLOSED
+    // (`error_kind: "network"`) and used to be rethrown raw, carrying the
+    // debugger taxonomy's "restart the app, then reconnect and retry once".
+    // The cdp-client's own comment at that rejection site is the argument
+    // against it: "A request rejected here was already delivered and may have
+    // taken effect - callers must not blindly retry side-effectful sends."
+    // Reproduced by killing the browser mid-read-back on Chrome 151, which
+    // answered `DEBUGGER_CDP_CONNECTION_CLOSED` / "CDP connection closed".
+    const registry = new Registry();
+    vi.spyOn(registry, "resolveService").mockResolvedValue({
+      evaluate: vi.fn(async () => {
+        throw new FailureError("CDP connection closed", {
+          error_code: FAILURE_CODES.DEBUGGER_CDP_CONNECTION_CLOSED,
+          failure_stage: "debugger_cdp_lifecycle",
+          failure_area: "tool_server",
+          error_kind: "network",
+        });
+      }),
+    } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    const signal = getFailureSignal(err);
+    expect(signal?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED);
+    expect(signal?.error_kind).toBe("network");
+    expect(err?.message).toMatch(/read it back first/);
+    expect(err?.message).not.toMatch(/restart the app, then reconnect/);
+  });
+
+  it("words a read-back timeout for the read-back, not for the delete", async () => {
+    // The two stages share `evaluateClearStep`, so the read-back used to be told
+    // "the delete is NOT cancelled by the timeout and can still land once the
+    // renderer is free" — by which point `delete` has already returned true and
+    // the field is already empty. The repair is right; the claim was not.
+    const registry = new Registry();
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({ cleared: true, focus: "input type=text" })
+      .mockRejectedValueOnce(
+        new FailureError("timed out", {
+          error_code: FAILURE_CODES.DEBUGGER_CDP_TIMEOUT,
+          failure_stage: "debugger_cdp_request",
+          failure_area: "tool_server",
+          error_kind: "timeout",
+        })
+      );
+    vi.spyOn(registry, "resolveService").mockResolvedValue({ evaluate } as never);
+    const err = await makeChromiumImpl(registry)
+      .handler({}, { udid: chromiumDevice.id, clear: true }, chromiumDevice)
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    const signal = getFailureSignal(err);
+    expect(signal?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED);
+    // The stage that was asserted nowhere before.
+    expect(signal?.failure_stage).toBe("keyboard_clear_chromium_readback_timeout");
+    expect(err?.message).toMatch(/the delete was accepted but the field could not be read back/);
+  });
+
   it("a CDP wait that runs out is KEYBOARD_CLEAR_UNCONFIRMED, not a debugger failure", async () => {
     // The timeout does not cancel the evaluate, so the delete can still land
     // after the caller has been told it failed. The debugger taxonomy's own
@@ -605,10 +669,13 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     expect(err.message).not.toMatch(/restart the app, then reconnect/);
   });
 
-  it("a non-timeout evaluate failure is passed through untouched", async () => {
-    // Only the timeout carries the "it may still land" hazard. A dropped socket
-    // is an ordinary transport failure and must keep its own code, or every CDP
-    // fault would be reported as an unconfirmed clear.
+  it("an evaluate that never reached the renderer is passed through untouched", async () => {
+    // `DEBUGGER_CDP_NOT_CONNECTED` means the socket was already down when the
+    // send was attempted, so nothing was delivered and there is no "it may
+    // still land" hazard to re-state. It keeps its own code and its own repair
+    // — the re-statement is for the two failures where the request DID reach
+    // the renderer (a timeout, and a socket that dropped after delivery), not
+    // for every CDP fault.
     const registry = new Registry();
     vi.spyOn(registry, "resolveService").mockResolvedValue({
       evaluate: vi.fn(async () => {
