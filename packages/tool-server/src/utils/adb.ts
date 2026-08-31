@@ -126,6 +126,23 @@ function describeAdbFailure(args: string[], err: unknown): Error {
 }
 
 /**
+ * `timeoutMs` bounds a hung child; `signal` cancels a live one. They answer
+ * different questions and both are needed: an `input keyevent` burst has a
+ * budget measured in tens of seconds, and a caller that has gone away should
+ * not have to wait it out while the guest keeps deleting. `execFile` kills the
+ * child on either.
+ */
+export interface AdbRunOptions {
+  timeoutMs?: number;
+  /**
+   * The request's own abort — the HTTP layer fires it on client disconnect, and
+   * run-sequence and a flow run pass theirs down. Optional everywhere: a call
+   * that does not pass one behaves exactly as before.
+   */
+  signal?: AbortSignal;
+}
+
+/**
  * Run `adb` directly. Callers that target a single device must pass `-s <serial>`
  * themselves via `args` — `runAdb` does not inject it, so a serial-less call
  * will hit whichever device `ANDROID_SERIAL` / the default heuristic picks.
@@ -133,14 +150,12 @@ function describeAdbFailure(args: string[], err: unknown): Error {
  * On non-zero exit or timeout, throws with adb's own stderr (or stdout) in the
  * message.
  */
-export async function runAdb(
-  args: string[],
-  options: { timeoutMs?: number } = {}
-): Promise<AdbRunResult> {
+export async function runAdb(args: string[], options: AdbRunOptions = {}): Promise<AdbRunResult> {
   const adbPath = await resolveAdbOrThrow();
   try {
     const { stdout, stderr } = await execFileAsync(adbPath, args, {
       timeout: options.timeoutMs ?? 30_000,
+      signal: options.signal,
       killSignal: ADB_KILL_SIGNAL,
       maxBuffer: 64 * 1024 * 1024,
       encoding: "utf-8",
@@ -183,7 +198,7 @@ export function shellQuote(value: string): string {
 export async function adbShell(
   serial: string,
   shellCommand: string,
-  options: { timeoutMs?: number } = {}
+  options: AdbRunOptions = {}
 ): Promise<string> {
   const { stdout } = await runAdb(["-s", serial, "shell", shellCommand], options);
   return stdout;

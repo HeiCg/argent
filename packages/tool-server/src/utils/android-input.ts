@@ -162,13 +162,28 @@ const ADB_CLEAR_TIMEOUT_MS = 90_000;
  * emulator, depending on the app's per-keystroke cost) instead of 200
  * round-trips.
  */
-export async function injectAndroidClear(serial: string): Promise<void> {
+export async function injectAndroidClear(serial: string, signal?: AbortSignal): Promise<void> {
   const codes: number[] = [];
   const backspace = ANDROID_NAMED_KEYCODES.backspace!;
   for (let i = 0; i < CLEAR_KEY_PAIRS; i++) codes.push(backspace, KEYCODE_FORWARD_DEL);
   try {
+    // `signal` is the request's own abort — without it this call blocked for its
+    // whole 90s budget after the caller had gone, and nothing killed the adb
+    // child either.
+    //
+    // What it does and does NOT stop, measured on an API 36 emulator against a
+    // native EditText holding 100 characters, with the client gone at 150ms and
+    // at 1s: at 150ms the field is byte-identical afterwards (the command had
+    // not reached the guest), at 1s the guest completed all 100 deletions. So
+    // the abort kills the host-side adb client and stops the wait, and it
+    // prevents the injection only while the command is still in flight — once
+    // on-device `input` is running, nothing here reaches it. The iOS burst
+    // (../tools/keyboard/simulator-server-keys.ts) writes key by key and can be
+    // stopped mid-way; this one cannot, because the whole burst is a single
+    // command by design.
     await adbShell(serial, `input keyevent ${codes.join(" ")}`, {
       timeoutMs: ADB_CLEAR_TIMEOUT_MS,
+      signal,
     });
   } catch (err) {
     // Re-stated because the adb failure says nothing about a clear, and the

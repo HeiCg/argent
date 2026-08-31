@@ -585,6 +585,24 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     expect(adbShell.mock.calls.map((c) => c[1].split(" ")[1])).toEqual(["keyevent"]);
   });
 
+  it("hands the request's abort signal to the clear burst", async () => {
+    // The burst is ONE `adb shell input keyevent <200 codes>` under a 90s
+    // budget, so without a signal an abandoned call blocked for that whole
+    // budget and nothing killed the adb child. Measured on an API 36 emulator
+    // against a 100-character native EditText: a client gone at 150ms now
+    // leaves the field byte-identical (the command had not reached the guest).
+    // Once on-device `input` is running the guest finishes it — the abort kills
+    // the host-side client, not the injection — which is why the wording says
+    // "may be PARTIALLY emptied".
+    adbShell.mockClear();
+    const controller = new AbortController();
+    await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone, {
+      signal: controller.signal,
+    });
+    const opts = adbShell.mock.calls[0]![2] as { signal?: AbortSignal } | undefined;
+    expect(opts?.signal).toBe(controller.signal);
+  });
+
   it("clears without a `text`/`key` value present, and does not fall through to typing", async () => {
     // The clear branch returns early. Without that early return the `typed`
     // arithmetic below it runs on an empty request and answers

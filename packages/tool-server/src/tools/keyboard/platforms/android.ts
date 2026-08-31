@@ -16,14 +16,15 @@ import { typeTv } from "./tv";
 // (#449). `device.id` is the adb serial.
 async function typeAndroidPhone(
   device: DeviceInfo,
-  params: KeyboardParams
+  params: KeyboardParams,
+  signal?: AbortSignal
 ): Promise<KeyboardResult> {
   // `clear` empties the field with a fixed key burst rather than typing, so it
   // returns before the `typed`/`keys` arithmetic below: there is nothing typed
   // to count and nothing to echo. `cleared` reports that the burst was SENT —
   // the field is never read back.
   if (params.clear === true) {
-    await injectAndroidClear(device.id);
+    await injectAndroidClear(device.id, signal);
     return { typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true };
   }
   let keysPressed = 0;
@@ -53,9 +54,9 @@ export function makeAndroidImpl(
     // either way), so declaring it makes a missing binary fail with
     // `dispatchByPlatform`'s 424 install hint instead of from inside the probe.
     requires: ["adb"],
-    handler: async (_services, params, device) =>
+    handler: async (_services, params, device, options) =>
       (await isAndroidTv(device.id))
         ? typeTv(registry, device, params)
-        : typeAndroidPhone(device, params),
+        : typeAndroidPhone(device, params, options?.signal),
   };
 }
