@@ -71,7 +71,14 @@ const textInput = () => el("INPUT", { type: "text" });
  */
 function run(
   active: unknown,
-  /** What the renderer's `execCommand` answers, per command name. */
+  /**
+   * What the renderer's `execCommand` answers, per command name — the PAGE-wide
+   * fallback. Chrome's own answer depends on the ELEMENT (a date input refuses
+   * the delete, a text input accepts it), so an element can override it with
+   * `deleteAnswer` / `selectAllAnswer`; a mock that answered by command name
+   * alone could not express the case the refusal exists for, and would pass a
+   * script that ignored the focused element entirely.
+   */
   answers: Record<string, boolean> = {},
   /**
    * Extra `document` members. `body` / `documentElement` let a test point
@@ -98,10 +105,23 @@ function run(
   const g = globalThis as Record<string, unknown>;
   const had = Object.hasOwn(g, "document");
   const saved = g.document;
+  // The element the script is about to act on, found by the same shadow descent
+  // it does — so a per-element answer follows focus into a shadow root.
+  const focusedElement = (): Record<string, unknown> | undefined => {
+    let node = active as Record<string, unknown> | undefined;
+    while (node && node.shadowRoot) {
+      const inner = (node.shadowRoot as Record<string, unknown>).activeElement;
+      if (!inner) break;
+      node = inner as Record<string, unknown>;
+    }
+    return node;
+  };
   g.document = {
     activeElement: active,
     execCommand(name: string) {
       commands.push(name);
+      const perElement = focusedElement()?.[`${name}Answer`];
+      if (typeof perElement === "boolean") return perElement;
       return answers[name] ?? true;
     },
     // A refusal reached AFTER `selectAll` has to undo it: on a field Chrome then
@@ -293,8 +313,11 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — what it agrees to clear", () => {
 // replacement INTO the retained value. That is the exact data bug clearing
 // exists to prevent, so it is a refusal, with its own code and its own repair.
 describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () => {
-  it.each(DATE_TIME_TYPES)("refuses <input type=%s> when delete answers false", (type) => {
-    const { outcome, commands } = run(el("INPUT", { type }), { delete: false });
+  it.each(DATE_TIME_TYPES)("refuses <input type=%s>, whose delete Chrome answers false", (type) => {
+    // The refusal is declared on the ELEMENT, not on the document: that is where
+    // Chrome's answer comes from, and a mock that answered by command name alone
+    // would pass a script that never looked at the focused element.
+    const { outcome, commands } = run(el("INPUT", { type, deleteAnswer: false }));
     expect(outcome).toEqual({
       cleared: false,
       focus: `input type=${type}`,
@@ -334,16 +357,42 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     //
     // The mock answers `selectAll: false`, so a script that still routed a text
     // control through `execCommand` would take the delete-refused branch.
-    const { outcome, commands } = run(textInput(), { selectAll: false, delete: true });
+    const { outcome, commands } = run(
+      el("INPUT", { type: "text", selectAllAnswer: false, deleteAnswer: true })
+    );
     expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["select", "delete"]);
+  });
+
+  it("takes the delete's answer from the FOCUSED element, not from the page", () => {
+    // Chrome answers `delete` per element: on one page a text input accepts it
+    // and a date input refuses it. A script that read a page-wide answer — or a
+    // test whose mock supplied one — could not tell those apart, which is the
+    // whole basis of the delete-refused classification. Same page, same
+    // document-level answer, opposite verdicts.
+    const refuses = el("INPUT", { type: "date", deleteAnswer: false });
+    const accepts = el("INPUT", { type: "text", deleteAnswer: true });
+    expect(run(refuses, { delete: true }).outcome.reason).toBe("delete-refused");
+    expect(run(accepts, { delete: false }).outcome.cleared).toBe(true);
+  });
+
+  it("follows the per-element answer into an open shadow root", () => {
+    // The descent decides which element the commands act on, so the answer has
+    // to come from the element the descent lands on, not from the host.
+    const inner = el("INPUT", { type: "date", deleteAnswer: false });
+    const host = el("MY-FIELD", { shadowRoot: { activeElement: inner }, deleteAnswer: true });
+    expect(run(host).outcome).toEqual({
+      cleared: false,
+      focus: "input type=date",
+      reason: "delete-refused",
+    });
   });
 
   it("separates the two refusals by `reason`, not only by wording", () => {
     // The backend branches on `reason` to pick the code and the repair — tap
     // the field, versus press backspace on the field you already focused.
     expect(run(el("BUTTON", {})).outcome.reason).toBe("not-editable");
-    expect(run(el("INPUT", { type: "date" }), { delete: false }).outcome.reason).toBe(
+    expect(run(el("INPUT", { type: "date", deleteAnswer: false })).outcome.reason).toBe(
       "delete-refused"
     );
   });
@@ -353,7 +402,7 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — a delete the element refuses", () =>
     // nothing to select) and `delete: true`. Reading the wrong one of the two
     // would turn every clear of an empty field into a spurious failure — and an
     // empty field is the ordinary state of a field a flow just cleared.
-    const { outcome, commands } = run(textInput(), { selectAll: false });
+    const { outcome, commands } = run(el("INPUT", { type: "text", selectAllAnswer: false }));
     expect(outcome).toEqual({ cleared: true, focus: "input type=text" });
     expect(commands).toEqual(["select", "delete"]);
   });
@@ -547,9 +596,9 @@ describe("CLEAR_FOCUSED_EDITABLE_SCRIPT — it leaves nothing behind", () => {
     // cleared" and still takes the page from one highlighted range to none has
     // changed visible state. Measured on Chrome 151 against the standard
     // copy-to-clipboard shape, `rangeCount` went 1 -> 0.
-    const { outcome, selectionsDropped, selection } = run(el("INPUT", { type: "date" }), {
-      delete: false,
-    });
+    const { outcome, selectionsDropped, selection } = run(
+      el("INPUT", { type: "date", deleteAnswer: false })
+    );
     expect(outcome.reason).toBe("delete-refused");
     expect(selectionsDropped).toBe(1);
     expect(selection()).toEqual([{ id: "page-selection" }]);
