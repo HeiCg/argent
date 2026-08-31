@@ -520,6 +520,29 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
 
     expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
   });
+  // Both trees clip a scroller's own children now, so they list the same rows.
+  // A step recorded off a row describe showed used to resolve at record time and
+  // match nothing at replay, because only this tree had dropped it.
+  it("agrees with describe on which rows a scroller has scrolled away", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.ScrollView" package="com.acme.app" scrollable="true" bounds="[0,300][1080,700]">
+      <node index="0" class="android.widget.TextView" package="com.acme.app" text="Row 1" bounds="[0,310][1080,380]" />
+      <node index="1" class="android.widget.TextView" package="com.acme.app" text="Row 2" bounds="[0,900][1080,970]" />
+      <node index="2" class="android.widget.TextView" package="com.acme.app" text="Row 3" bounds="[0,1000][1080,1070]" />
+    </node>
+  </node>
+</hierarchy>`;
+    const rowsIn = (tree: DescribeNode) =>
+      ["Row 1", "Row 2", "Row 3"].filter((t) => findAll(tree, { text: t }).length > 0);
+
+    expect(rowsIn(adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H))).toEqual([
+      "Row 1",
+    ]);
+    expect(rowsIn(parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H))).toEqual(["Row 1"]);
+  });
+
   // Both trees read the role through the same contextual rule, so a web list
   // that the framework says does not scroll reports the same non-scrolling role
   // in each — otherwise a `role` copied out of describe misses at replay, and

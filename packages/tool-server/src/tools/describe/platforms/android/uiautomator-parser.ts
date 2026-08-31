@@ -486,9 +486,8 @@ function pruneSubtree(root: ParsedXmlNode, opts: PruneOptions): UiNode[] {
       top.visited = true;
       const attrs = top.parsed.attrs;
       const myBounds = parseUiAutomatorBounds(attrs.bounds ?? "");
-      const isScroll = isUiAutomatorScrollable(attrs, top.inWebView);
       // Children inherit my bounds if I scroll, else the clip I was handed.
-      const childClip = isScroll && myBounds ? myBounds : top.scrollClip;
+      const childClip = scrollClipOf(attrs, myBounds, top.inWebView, opts, top.scrollClip);
       // Everything below a WebView is web DOM, not native widgets — the flag
       // rides down the frame the same way `scrollClip` does, so the contextual
       // role remap needs no second walk.
@@ -515,6 +514,35 @@ function pruneSubtree(root: ParsedXmlNode, opts: PruneOptions): UiNode[] {
   return outputs.get(root) ?? [];
 }
 
+/**
+ * The clip window a node's children live under: the node's own box if it
+ * scrolls, else the one it was handed.
+ *
+ * Both `pruneSubtree` (for the level below) and `computeNodeOutput` (for the
+ * node's own children) call this. Filtering at BOTH levels is what makes a
+ * scroller's own children obey its clip: the walk otherwise first bit at a
+ * scroller's grandchildren, so a row the layout puts outside the viewport —
+ * where a scrolled-away row sits — survived as on-screen and tappable with
+ * nothing to say it had to be scrolled to. The flow selector tree has always
+ * clipped at this level.
+ *
+ * A scroller whose own box is unusable clips nothing. `rectFullyOutside` reads
+ * a zero-height window as "everything is outside", so trusting a degenerate box
+ * would delete the whole subtree — and Chromium does report a WebView at
+ * negative height while its content is still on screen.
+ */
+function scrollClipOf(
+  attrs: Record<string, string>,
+  bounds: PixelRect | null,
+  inWebView: boolean,
+  opts: PruneOptions,
+  inherited: PixelRect | null
+): PixelRect | null {
+  if (!isUiAutomatorScrollable(attrs, inWebView)) return inherited;
+  if (!bounds || !isVisibleRect(bounds, opts.screenW, opts.screenH)) return inherited;
+  return bounds;
+}
+
 function computeNodeOutput(
   parsed: ParsedXmlNode,
   scrollClip: PixelRect | null,
@@ -532,6 +560,10 @@ function computeNodeOutput(
   const bounds = parseUiAutomatorBounds(attrs.bounds ?? "");
   const visible = isVisibleRect(bounds, opts.screenW, opts.screenH);
 
+  // The clip my children live under, computed exactly as `pruneSubtree` computes
+  // it for the level below, so the two levels cannot drift apart.
+  const childClip = scrollClipOf(attrs, bounds, inWebView, opts, scrollClip);
+
   let keptChildren: UiNode[] = [];
   let hiddenInScroll = 0;
   for (const c of parsed.children) {
@@ -542,7 +574,7 @@ function computeNodeOutput(
     // it disappeared. Adopt the count, or it is lost with the node.
     hiddenInScroll += orphanHidden.get(c) ?? 0;
     for (const kid of kids) {
-      if (scrollClip && kid.pixelBounds && rectFullyOutside(kid.pixelBounds, scrollClip)) {
+      if (childClip && kid.pixelBounds && rectFullyOutside(kid.pixelBounds, childClip)) {
         hiddenInScroll += 1;
         continue;
       }

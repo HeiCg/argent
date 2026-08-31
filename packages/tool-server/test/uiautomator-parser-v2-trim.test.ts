@@ -559,6 +559,59 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(row?.scrollHidden).toBe(1);
   });
 
+  it("clips a scroller's own children, not only its grandchildren", () => {
+    // A scrolled-away row sits outside the scroller's box, and it is just as
+    // often a direct child as a grandchild. Reporting it as on-screen tells the
+    // agent to tap a point the row is not at, with no signal to swipe first.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.ScrollView" bounds="[0,0][200,200]" scrollable="true">
+    <node class="android.widget.TextView" bounds="[0,10][200,60]" text="Row 1"/>
+    <node class="android.widget.TextView" bounds="[0,300][200,350]" text="Row 2"/>
+    <node class="android.widget.TextView" bounds="[0,400][200,450]" text="Row 3"/>
+  </node>
+</hierarchy>`;
+    const all = flatten(parseUiAutomatorDump(xml, 200, 600));
+    expect(all.map((n) => n.label)).toContain("Row 1");
+    expect(all.some((n) => n.label === "Row 2" || n.label === "Row 3")).toBe(false);
+    expect(all.find((n) => n.role === "ScrollView")?.scrollHidden).toBe(2);
+  });
+
+  it("does not let a scroller with an unusable box clip its own content away", () => {
+    // Chromium reports a WebView at negative height while its content is still
+    // on screen. `rectFullyOutside` reads a zero-height window as "everything
+    // is outside", so a scroller whose own box is unusable has to clip nothing —
+    // otherwise the clip deletes the whole page.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,128][1084,-1174]" scrollable="true" text="FIXED">
+    <node class="android.widget.TextView" bounds="[20,200][1060,290]" text="Section three"/>
+    <node class="android.widget.Button" bounds="[0,128][420,-1174]" text="BOT" clickable="true"/>
+  </node>
+</hierarchy>`;
+    const all = flatten(parseUiAutomatorDump(xml, 1080, 2400));
+    expect(all.map((n) => n.label)).toContain("Section three");
+    expect(all.find((n) => n.role === "WebView")?.scrollHidden).toBeUndefined();
+  });
+
+  it("keeps a content container taller than the scroller that holds it", () => {
+    // The ordinary React Native shape: the direct child is the content view,
+    // which is taller than the viewport and therefore overlaps rather than
+    // sits outside it. Only what is FULLY outside is scrolled away.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.ScrollView" bounds="[0,0][200,200]" scrollable="true">
+    <node class="android.view.ViewGroup" bounds="[0,0][200,900]" content-desc="content">
+      <node class="android.widget.TextView" bounds="[0,10][200,60]" text="Row 1"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const all = flatten(parseUiAutomatorDump(xml, 200, 600));
+    expect(all.some((n) => n.label === "content")).toBe(true);
+    expect(all.map((n) => n.label)).toContain("Row 1");
+    expect(all.find((n) => n.role === "ScrollView")?.scrollHidden).toBeUndefined();
+  });
+
   it("keeps the hidden-child count when the node that counted is dropped", () => {
     // `<ScrollView><View>{rows}</View></ScrollView>` is the ordinary React
     // Native (and Compose, and web `<div>`) shape: the wrapper carries no label
