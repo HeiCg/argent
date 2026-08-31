@@ -9,7 +9,12 @@
  * of `hw.keyboard`, and a non-zero exit surfaces as a thrown error. Touch
  * injection stays on the simulator-server.
  */
-import { FAILURE_CODES, FailureError, getFailureSignal } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  subprocessFailureMetadata,
+} from "@argent/registry";
 import { adbShell, shellQuote } from "./adb";
 import { InvalidToolInputError } from "./capability";
 import { CLEAR_KEY_PAIRS } from "../tools/keyboard/key-codes";
@@ -203,8 +208,19 @@ export async function injectAndroidClear(serial: string, signal?: AbortSignal): 
         failure_stage: "keyboard_clear_android_burst",
         failure_area: "tool_server",
         error_kind: getFailureSignal(err)?.error_kind ?? "subprocess",
-        failure_command: "adb",
+        // The spread, not a bare `failure_command`, exactly as the 24 other adb
+        // re-statements do it: hand-building the signal dropped
+        // `failure_exit_code` and `failure_signal`, so the SIGKILL from the 90s
+        // cap — the failure this budget exists to bound — was unrecoverable for
+        // every Android clear failure.
+        ...subprocessFailureMetadata(err, "adb"),
       }
+      // Deliberately NO `cause`: the message chain is rendered into agent
+      // context, and the adb error quotes the whole `input keyevent` command
+      // line — 200 keycodes, twice over (`formatSubprocessFailure` and node's
+      // own nested "Command failed:"). `firstLine` below exists to strip it, and
+      // a cause would put it straight back. The metadata spread is what makes
+      // the exit code and signal recoverable.
     );
   }
 }

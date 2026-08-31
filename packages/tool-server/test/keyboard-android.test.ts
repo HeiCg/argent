@@ -632,6 +632,30 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     ).rejects.toThrow(/device offline/);
   });
 
+  it("keeps the subprocess telemetry every other adb re-statement keeps", async () => {
+    // The signal was hand-built with only `failure_command: "adb"`, dropping the
+    // `...subprocessFailureMetadata(err, "adb")` spread the 24 other adb sites
+    // use — so `failure_exit_code` and `failure_signal` were unrecoverable for
+    // every Android clear failure, including the SIGKILL from the 90s cap that
+    // this budget exists to bound.
+    adbShell.mockClear();
+    const killed = Object.assign(new Error("adb: killed"), { code: null, signal: "SIGKILL" });
+    adbShell.mockRejectedValueOnce(killed);
+    const err = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    const signal = getFailureSignal(err);
+    expect(signal?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED);
+    expect(signal?.failure_command).toBe("adb");
+    expect(signal?.failure_signal).toBe("SIGKILL");
+    // And still no `cause`: the message chain reaches agent context, and the adb
+    // error quotes the whole 200-keycode command line that `firstLine` exists to
+    // strip. The metadata is what carries the diagnosis.
+    expect((err as Error & { cause?: Error }).cause).toBeUndefined();
+    expect(err?.message).not.toMatch(/67 112 67 112/);
+  });
+
   it("presses the key it was asked for, not a hardcoded Enter", async () => {
     // Every other named-key assertion on this backend uses `key:"enter"`, so a
     // path that ignored `params.key` and always pressed Enter would pass them
