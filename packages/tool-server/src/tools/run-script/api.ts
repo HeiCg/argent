@@ -1,5 +1,6 @@
 import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
 import { invokeSubTool } from "../../utils/sub-invoke";
+import { SECRET_PLACEHOLDER_MARKER } from "../../utils/secrets";
 import { sleepOrAbort } from "../../utils/timing";
 import {
   fetchTree,
@@ -46,6 +47,14 @@ export interface FacadeEnv {
   subCtx: ToolContext | undefined;
   /** Called once at the start of every facade method, to count steps. */
   onStep: () => void;
+  /**
+   * Called when the facade forwards a `{{secret:…}}` placeholder to a text-entry
+   * sub-tool. A script can build that marker dynamically, so the original
+   * `params.script` carries no placeholder — this is the only place the use is
+   * observable, and it drives the `secretsUsed` flag that tells the MCP layer to
+   * skip the auto-capture that would otherwise leak the resolved plaintext.
+   */
+  onSecretUsed?: () => void;
 }
 
 function toSelector(selector: FacadeSelector): Selector {
@@ -78,7 +87,7 @@ function scrollVector(direction: ScrollDirection): { from: FacadePoint; to: Faca
 }
 
 export function buildUiFacade(env: FacadeEnv): Ui {
-  const { registry, device, signal, subCtx, onStep } = env;
+  const { registry, device, signal, subCtx, onStep, onSecretUsed } = env;
 
   const checkAbort = (): void => {
     if (signal.aborted) throw new ScriptAbortError();
@@ -101,6 +110,15 @@ export function buildUiFacade(env: FacadeEnv): Ui {
     step: string
   ): Promise<T> => {
     checkAbort();
+    // The text-entry sub-tools resolve `{{secret:…}}` before typing; flag the
+    // run so the auto-capture that would render the plaintext back is skipped.
+    if (
+      (tool === "keyboard" || tool === "paste") &&
+      typeof args.text === "string" &&
+      args.text.includes(SECRET_PLACEHOLDER_MARKER)
+    ) {
+      onSecretUsed?.();
+    }
     try {
       return await invokeSubTool<T>(registry, subCtx, tool, { ...args, udid: device.id });
     } catch (err) {

@@ -121,6 +121,21 @@ export function containsSecretPlaceholder(args: unknown): boolean {
   }
 }
 
+/**
+ * True when a tool result flags that it typed a secret. `containsSecretPlaceholder`
+ * only sees the request args, so it misses a placeholder a script built
+ * dynamically (e.g. `run-script` composing `"{{se" + "cret:X}}"`); the
+ * tool-server sets `secretsUsed: true` on the result in that case. Kept generic:
+ * any tool result may carry the flag.
+ */
+export function resultUsedSecret(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { secretsUsed?: unknown }).secretsUsed === true
+  );
+}
+
 export function getUdidFromArgs(args: unknown): string | undefined {
   if (
     args &&

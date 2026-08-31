@@ -76,6 +76,13 @@ export interface RunScriptResult {
   completed: true;
   logs: string;
   steps: number;
+  /**
+   * Set when the script forwarded a `{{secret:…}}` placeholder to a text-entry
+   * step. The MCP auto-capture layer reads it to skip the screenshot and element
+   * tree that would otherwise render the resolved secret back into context.
+   * Omitted (rather than `false`) when no secret was used.
+   */
+  secretsUsed?: boolean;
 }
 
 /**
