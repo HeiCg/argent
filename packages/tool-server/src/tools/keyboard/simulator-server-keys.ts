@@ -1,4 +1,4 @@
-import { FAILURE_CODES } from "@argent/registry";
+import { FAILURE_CODES, FailureError, getFailureSignal } from "@argent/registry";
 import type { DeviceInfo, Registry } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import {
@@ -115,16 +115,40 @@ export async function clearSimulatorServer(
 ): Promise<KeyboardResult> {
   const ref = simulatorServerRef(device);
   const api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
-  for (let i = 0; i < CLEAR_KEY_PAIRS; i++) {
-    api.pressKey("Down", NAMED_KEYS.backspace);
-    api.pressKey("Up", NAMED_KEYS.backspace);
-    await sleep(CLEAR_KEY_CADENCE_MS);
-    api.pressKey("Down", FORWARD_DELETE_KEYCODE);
-    api.pressKey("Up", FORWARD_DELETE_KEYCODE);
-    await sleep(CLEAR_KEY_CADENCE_MS);
+  try {
+    for (let i = 0; i < CLEAR_KEY_PAIRS; i++) {
+      api.pressKey("Down", NAMED_KEYS.backspace);
+      api.pressKey("Up", NAMED_KEYS.backspace);
+      await sleep(CLEAR_KEY_CADENCE_MS);
+      api.pressKey("Down", FORWARD_DELETE_KEYCODE);
+      api.pressKey("Up", FORWARD_DELETE_KEYCODE);
+      await sleep(CLEAR_KEY_CADENCE_MS);
+    }
+  } catch (err) {
+    // Re-stated for the same reason the Android burst is (utils/android-input.ts
+    // `injectAndroidClear`): the burst is not atomic, so a transport that dies
+    // partway leaves the field emptied by however many keys got through, and an
+    // agent told only "the helper process is gone" reads that as "nothing
+    // happened" and types over a field that is now shorter. Measured on a booted
+    // sim: `kill -9` of the simulator-server 50ms in delivered 9 of 200 keys.
+    throw new FailureError(
+      `the clear burst did not finish on ${device.id}, and the focused field may be PARTIALLY ` +
+        `emptied — the ${CLEAR_KEY_PAIRS * 2} delete keys are written one at a time and the ` +
+        "transport stopped accepting them partway. Read the field back (`describe`) before " +
+        "clearing or typing again. Underlying failure: " +
+        (err instanceof Error ? err.message.split("\n")[0] : String(err)),
+      {
+        error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED,
+        failure_stage: "keyboard_clear_simulator_burst",
+        failure_area: "tool_server",
+        error_kind: getFailureSignal(err)?.error_kind ?? "subprocess",
+      },
+      { cause: err instanceof Error ? err : undefined }
+    );
   }
   await sleep(CLEAR_SETTLE_MS);
   // `keys` counts what was SENT — the field is never read back, so the result
-  // says nothing about what it now holds.
+  // says nothing about what it now holds. It IS now evidence that every key
+  // reached the transport: a burst cut short throws above.
   return { typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true };
 }

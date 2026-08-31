@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import type { DeviceInfo } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import { toSimulatorNetworkError } from "../src/utils/format-error";
 
 // ─── Mocks ───────────────────────────────────────────────────────────
@@ -236,6 +236,43 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
     // which every agent session on the machine shares.
     expect(fakeProc.stdin.listenerCount("error")).toBe(1);
     expect(() => fakeProc.stdin.emit("error", new Error("write EPIPE"))).not.toThrow();
+  });
+
+  it.each([
+    ["an EPIPE", (p: ReturnType<typeof makeFakeProc>) => p.stdin.emit("error", new Error("EPIPE"))],
+    ["the pipe closing", (p: ReturnType<typeof makeFakeProc>) => p.stdin.emit("close")],
+  ])("refuses every later pressKey after %s", async (_label, kill) => {
+    // Swallowing the EPIPE is right — an unhandled one crash-shuts down the
+    // whole tool-server, which every agent session on the machine shares. But
+    // swallowing it must not swallow the FACT: `terminated` reaches the next
+    // `resolveService`, not the call already holding this `api`, which is the
+    // one about to report `cleared: true`. Measured on a booted simulator:
+    // `kill -9` 50ms into a clear delivered 9 of 200 keys and the tool answered
+    // `{ keys: 200, cleared: true }` with the field almost untouched.
+    const fakeProc = makeFakeProc();
+    spawnMock.mockReturnValue(fakeProc);
+    const { simulatorServerBlueprint } = await import("../src/blueprints/simulator-server");
+
+    const device = androidDevice("emulator-5554");
+    const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
+    signalReady(fakeProc, 55558);
+    const instance = await factoryPromise;
+
+    instance.api.pressKey("Down", 0x29);
+    expect(fakeProc.stdin.write).toHaveBeenCalledTimes(1);
+
+    kill(fakeProc);
+
+    let thrown: unknown;
+    try {
+      instance.api.pressKey("Up", 0x29);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(getFailureSignal(thrown)?.error_code).toBe(FAILURE_CODES.SIMULATOR_SERVER_TERMINATED);
+    // And nothing further was written: a burst that keeps going after the pipe
+    // is gone is exactly what produced the silent success.
+    expect(fakeProc.stdin.write).toHaveBeenCalledTimes(1);
   });
 
   it("rejects when the caller forgets to pass DeviceInfo via options", async () => {

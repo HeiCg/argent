@@ -370,16 +370,51 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
     // session on the machine. The race is ordinary: every session is told to
     // call `stop-simulator-server` when it ends, and a `clear` writes 400 lines
     // at a 2ms cadence. Same listener as the repo's two other stdin-writing
-    // spawn sites (screen-recording/capture.ts, utils/window-shake.ts); the
-    // death itself already reaches callers through `terminated` above.
-    proc.stdin?.on("error", () => {});
+    // spawn sites (screen-recording/capture.ts, utils/window-shake.ts).
+    //
+    // Swallowing it is right, but it must not swallow the FACT: `terminated`
+    // reaches the next `resolveService`, not the call already holding this
+    // `api` — which is the one about to report `cleared: true`. Measured on a
+    // booted sim: `kill -9` 50ms into a clear left 9 of 200 keys delivered and
+    // the tool answered `{ keys: 200, cleared: true }`. So the death is
+    // recorded here and `pressKey` refuses afterwards.
+    let pipeDead: Error | null = null;
+    proc.stdin?.on("error", (err) => {
+      pipeDead ??= err;
+    });
+    proc.stdin?.on("close", () => {
+      pipeDead ??= new Error("the simulator-server input pipe closed");
+    });
 
     const instance: ServiceInstance<SimulatorServerApi> = {
       api: {
         apiUrl,
         streamUrl,
         pressKey: (direction: "Down" | "Up", keyCode: number) => {
-          proc.stdin?.write(`key ${direction} ${keyCode}\n`);
+          // Both halves are needed and neither is redundant. `writable` turns
+          // false the moment the stream is destroyed, which covers a `dispose`
+          // on this side; the recorded EPIPE covers the child dying under a
+          // still-open pipe, where the first writes after the death are
+          // accepted and only the async error says they went nowhere.
+          const stdin = proc.stdin;
+          if (pipeDead !== null || !stdin || stdin.writable === false) {
+            throw new FailureError(
+              `the simulator-server for ${device.id} is no longer accepting key events, so this key ` +
+                "press and any that follow it in the same burst were NOT delivered. The device is fine; " +
+                "the helper process is gone (a `stop-simulator-server`, a simulator shutdown, or a " +
+                "crash). " +
+                "Read the field back before typing or clearing again — it may hold whatever the keys " +
+                "that DID land left.",
+              {
+                error_code: FAILURE_CODES.SIMULATOR_SERVER_TERMINATED,
+                failure_stage: "simulator_server_key_write",
+                failure_area: "tool_server",
+                error_kind: "subprocess",
+              },
+              { cause: pipeDead ?? undefined }
+            );
+          }
+          stdin.write(`key ${direction} ${keyCode}\n`);
         },
       },
       dispose: async () => {

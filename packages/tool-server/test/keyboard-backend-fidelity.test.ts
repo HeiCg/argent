@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { DeviceInfo } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import {
   clearSimulatorServer,
   typeSimulatorServer,
@@ -293,6 +293,38 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       const result = await clearSimulatorServer(registryWith(api), IOS_SIM);
       expect(result.keys).toBe(200);
       expect(events.length).toBe(400);
+    });
+
+    it("a burst the transport stops accepting is NOT reported as a clear", async () => {
+      // `pressKey` is fire-and-forget over the simulator-server's stdin pipe, so
+      // a helper process that dies mid-burst (a concurrent
+      // `stop-simulator-server`, a simulator shutdown, a crash) used to leave
+      // the loop writing into nothing and the tool answering
+      // `{ keys: 200, cleared: true }`. Measured on a booted simulator: `kill -9`
+      // 50ms in delivered 9 of 200 keys against a 250-character field.
+      //
+      // Re-stated like the Android sibling, because the burst is not atomic: an
+      // agent told only "the helper process is gone" reads that as "nothing
+      // happened" and types over a field that is now shorter.
+      const { events, api } = hidRecorder();
+      let sent = 0;
+      const dying = {
+        ...api,
+        pressKey: (direction: "Down" | "Up", keyCode: number) => {
+          if (++sent > 20) throw new Error("the simulator-server input pipe closed");
+          api.pressKey(direction, keyCode);
+        },
+      };
+      const err = await clearSimulatorServer(registryWith(dying), IOS_SIM).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      const signal = getFailureSignal(err);
+      expect(signal?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED);
+      expect(signal?.failure_stage).toBe("keyboard_clear_simulator_burst");
+      expect(err?.message).toMatch(/PARTIALLY emptied/);
+      // It stopped where the transport did rather than writing the rest.
+      expect(events.length).toBe(20);
     });
 
     it("settles after the burst, so the auto-screenshot cannot race the deletions", async () => {
