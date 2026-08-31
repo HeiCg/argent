@@ -421,6 +421,58 @@ describe("keyboard backends — emit exactly the action they were given", () => 
     });
   });
 
+  // The LOCAL Apple TV route, which no test reached: `makeIosImpl` appeared in
+  // none, and `isTvOsSimulator` was pinned false everywhere — so hoisting
+  // `params.clear === true` above the probe would have aimed the 400-event burst
+  // at a tvOS simulator with the whole suite green. (The route itself is
+  // correct: on a real tvOS 26.5 simulator `clear` and `key` are both refused
+  // with TOOL_CAPABILITY_UNSUPPORTED_OPERATION while `text` types.)
+  describe("ios — the local Apple TV route", () => {
+    const APPLE_TV: DeviceInfo = { id: "TVOS-UDID", platform: "ios", kind: "simulator" };
+
+    it("refuses a clear on a tvOS simulator instead of bursting at it", async () => {
+      isTvOsSimulator.mockResolvedValueOnce(true);
+      const { events, api } = hidRecorder();
+      await expect(
+        makeIosImpl(registryWith(api)).handler({}, { udid: APPLE_TV.id, clear: true }, APPLE_TV)
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(events).toEqual([]);
+    });
+
+    it("refuses a named key on one too", async () => {
+      isTvOsSimulator.mockResolvedValueOnce(true);
+      const { events, api } = hidRecorder();
+      await expect(
+        makeIosImpl(registryWith(api)).handler({}, { udid: APPLE_TV.id, key: "enter" }, APPLE_TV)
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(events).toEqual([]);
+    });
+
+    it("probes the kind BEFORE it looks at `clear`", async () => {
+      // The ordering is the whole guard: `clear` routed above the probe reaches
+      // `clearSimulatorServer`, which resolves the simulator-server for a device
+      // it cannot drive and bursts at it.
+      isTvOsSimulator.mockClear();
+      isTvOsSimulator.mockResolvedValue(false);
+      const { api } = hidRecorder();
+      await makeIosImpl(registryWith(api)).handler({}, { udid: IOS_SIM.id, clear: true }, IOS_SIM);
+      expect(isTvOsSimulator).toHaveBeenCalledWith(IOS_SIM.id);
+    });
+
+    it("still types on a non-TV simulator", async () => {
+      // The positive control: a probe that answered `true` for everything would
+      // satisfy the two refusals above on its own.
+      const { events, api } = hidRecorder();
+      const result = await makeIosImpl(registryWith(api)).handler(
+        {},
+        { udid: IOS_SIM.id, text: "hi", delayMs: 0 },
+        IOS_SIM
+      );
+      expect(result).toEqual({ typed: "hi", keys: 2 });
+      expect(events.length).toBeGreaterThan(0);
+    });
+  });
+
   // The ios and ios-remote impls share one `runSimulatorServer`, and the remote
   // one is reached by no other test in the suite: reverting it to
   // `typeSimulatorServer` — deleting the clear routing for every remote sim —
