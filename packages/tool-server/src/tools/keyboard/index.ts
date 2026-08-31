@@ -246,9 +246,10 @@ One call does one action: pass text, key OR clear, never two of them. \`text\` a
                 (params.key !== undefined
                   ? 'a separate { key: "enter" } call carries no placeholder — its screenshot is ' +
                     "taken after the key lands and can capture the still-visible secret."
-                  : "a separate { clear: true } call carries none either — its screenshot is taken " +
-                    "before the replacement is typed, with the field still showing whatever it " +
-                    "held, which on a re-run is the secret the previous pass typed.")
+                  : "a separate { clear: true } call carries none either, so its screenshot is " +
+                    "taken — and on iOS and Android the burst is bounded at 100 characters per " +
+                    "side of the caret, so a field that held a longer secret is captured with " +
+                    "the remainder still in it.")
               : ""),
           {
             error_code: FAILURE_CODES.KEYBOARD_TEXT_AND_KEY_COMBINED,
