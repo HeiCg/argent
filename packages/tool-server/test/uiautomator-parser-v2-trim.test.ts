@@ -173,17 +173,18 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(ids).toContain("login");
   });
 
-  // Chromium emits the host WebView twice, nested. Both shapes occur in the
-  // wild: the checked-in in-app fixture has the pair at identical bounds, and a
-  // current WebView on Android 15 reports the inner node a few pixels larger
-  // (measured: [0,0][1080,2400] outer, [0,0][1084,2402] inner). Neither reaches
-  // the generic duplicate-wrapper collapse further down — the WebView branch
-  // returns first — so both need the merge here.
+  // An app that hosts its own WebView reaches the dump twice, nested: the app's
+  // own view, plus Chromium's root web area under the same class name. Both
+  // bound shapes occur in the wild: the checked-in in-app fixture has the pair
+  // at identical bounds, and a current WebView on Android 15 reports the inner
+  // node a few pixels larger (measured: [0,0][1080,2400] outer, [0,0][1084,2402]
+  // inner). Neither reaches the generic duplicate-wrapper collapse further down
+  // — the WebView branch returns first — so both need the merge here.
   for (const [shape, innerBounds] of [
     ["identical bounds", "[0,220][1080,2154]"],
     ["bounds that drift by a few px", "[0,220][1084,2156]"],
   ] as const) {
-    it(`collapses the doubled WebView Chromium emits with ${shape}`, () => {
+    it(`collapses the doubled WebView an in-app host emits with ${shape}`, () => {
       const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy>
   <node class="android.webkit.WebView" bounds="[0,220][1080,2154]">

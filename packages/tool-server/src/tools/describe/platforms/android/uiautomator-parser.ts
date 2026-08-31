@@ -537,13 +537,20 @@ function computeNodeOutput(
   if (WEBVIEW_CLASSES.has(cls)) {
     if (!visible && keptChildren.length === 0) return [];
     const own = labelOf(attrs);
-    // Chromium emits the host WebView twice, nested, so without a merge the
-    // tree reads `WebView > WebView > ...`. The generic duplicate-wrapper
-    // collapse further down cannot help: this branch returns before reaching
-    // it, and the pair is rarely clickable anyway. The two nodes sit at
-    // identical bounds on some builds and a few pixels apart on others, so the
-    // merge must not depend on the bounds matching. Keep the outer node's
-    // on-screen bounds and whichever of the two carries a label.
+    // An app that hosts its own WebView reaches the dump twice, nested: the
+    // app's `android.webkit.WebView` view, and Chromium's root web area, which
+    // reports the same class name. The second node appears only when the
+    // renderer publishes the page, which is what identifies it — before that
+    // the app's view stands alone. A browser has no WebView view of its own,
+    // so a Chrome tab arrives as one node; the checked-in captures show both
+    // shapes (in-app two, Chrome one).
+    //
+    // Without a merge the in-app tree reads `WebView > WebView > ...`. The
+    // generic duplicate-wrapper collapse further down cannot help: this branch
+    // returns before reaching it, and the pair is rarely clickable anyway. The
+    // two nodes sit at identical bounds on some builds and a few pixels apart
+    // on others, so the merge must not depend on the bounds matching. Keep the
+    // outer node's on-screen bounds and whichever of the two carries a label.
     let webChildren = keptChildren;
     let webLabel = own;
     let inner: UiNode | undefined;

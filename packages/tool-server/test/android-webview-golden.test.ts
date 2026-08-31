@@ -71,8 +71,9 @@ function countWebViewNodes(xml: string): number {
 describe("Android WebView describe — real captures", () => {
   it("surfaces the in-app WebView login form", () => {
     const xml = read("android-webview-inapp.xml");
-    // This capture is the doubled-node shape: Chromium published two nested
-    // WebView nodes, which the merge collapses into one landmark.
+    // This capture is the doubled-node shape: the app's own WebView view plus
+    // Chromium's root web area, nested and under the same class name, which the
+    // merge collapses into one landmark.
     expect(countWebViewNodes(xml)).toBe(2);
 
     const tree = parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H);
@@ -109,8 +110,9 @@ describe("Android WebView describe — real captures", () => {
 
   it("surfaces the Chrome tab's web DOM alongside Chrome's own toolbar", () => {
     const xml = read("android-webview-chrome.xml");
-    // Chrome publishes a single WebView node, so this capture covers the
-    // un-doubled shape — the merge is exercised by the in-app fixture above.
+    // Chrome has no WebView view of its own, so only the root web area carries
+    // the class name and this capture covers the un-doubled shape — the merge is
+    // exercised by the in-app fixture above.
     expect(countWebViewNodes(xml)).toBe(1);
 
     const tree = parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H);
