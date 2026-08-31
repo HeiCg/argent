@@ -346,6 +346,23 @@ describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => 
 // indistinguishable from a real press, while the tool description promises a
 // failure for an unsupported key name, which `""` is. It is now rejected in
 // `execute`, above the dispatch, so one guard covers every backend.
+describe("keyboard — the MCP adapter must not re-send a slow call", () => {
+  it("is declared longRunning, so a call outrunning 30s is not aborted and retried", () => {
+    // Without this the adapter caps each `keyboard` fetch at 30s and
+    // `fetchWithReconnect` retries on ANY error — its own AbortError included —
+    // so ONE slow call became up to five CONCURRENT invocations at the same
+    // device. Measured through the real stdio adapter against a 40s call: five
+    // overlapping `toolInvoked keyboard` entries, `isError: true` /
+    // "This operation was aborted" after 154s, and a field holding what the
+    // surplus attempts left rather than what the caller asked for.
+    //
+    // Two shapes of this tool reach 30s: an Android `clear` (200
+    // `input keyevent` injections under a 90s budget — 14.9s measured against a
+    // debug Flutter field) and any `text` paced with `delayMs`.
+    expect(createKeyboardTool(registry()).longRunning).toBe(true);
+  });
+});
+
 describe("keyboard — an empty `key` names no key", () => {
   beforeEach(() => {
     vi.clearAllMocks();

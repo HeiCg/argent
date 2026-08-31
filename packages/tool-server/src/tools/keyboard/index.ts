@@ -161,6 +161,22 @@ On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field f
 One call does one action: pass text, key OR clear, never two of them. \`text\` and \`key\` count by presence (so { text: "", key: "enter" } is rejected too) while \`clear\` counts only when true, so { clear: false } never collides. To do two in a row, send two \`keyboard\` steps in one \`run-sequence\` — { text: "hello" } then { key: "enter" } to type and submit, or { clear: true } then { text: "hello" } to replace a value — which also keeps it to a single round-trip.`,
     zodSchema,
     capability,
+    // A `keyboard` call can legitimately outrun the MCP adapter's 30s fetch
+    // timeout, and that timeout is not a cancellation: `fetchWithReconnect`
+    // retries on ANY error including its own AbortError, so a slow call was
+    // re-sent up to five times, CONCURRENTLY, at the same device — measured
+    // through the real stdio adapter at five overlapping invocations and
+    // "This operation was aborted" after 154s, with the field holding what the
+    // surplus attempts left rather than what the caller asked for.
+    //
+    // Both slow shapes belong to this tool: an Android `clear` carries 200
+    // `input keyevent` injections under a 90s budget (14.9s measured against a
+    // debug Flutter field, 16.3s under guest load), and `text` paced with
+    // `delayMs` is unbounded by construction. `run-sequence`, which is where
+    // the description sends a caller to combine two steps, has been
+    // `longRunning` for the same reason — a bare `keyboard` call was the one
+    // exposed path.
+    longRunning: true,
     searchHint:
       "type text keyboard input named key enter escape arrow tv vega fire tv search field hid leanback",
     services: () => ({}),
