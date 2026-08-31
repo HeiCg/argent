@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAILURE_CODES, getFailureSignal, Registry } from "@argent/registry";
 import { InvalidToolInputError } from "../src/utils/capability";
 import { CLIENT_UNSAFE_TOP_LEVEL_KEYWORDS, advertisedSchema } from "./helpers/catalog";
+import { CLEAR_KEY_PAIRS } from "../src/tools/keyboard/key-codes";
 
 // Every backend's transport is stubbed, so "did anything reach the device" is
 // observable per platform: `pressKey` (simulator-server HID), `adbShell`
@@ -356,6 +357,38 @@ describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => 
 // indistinguishable from a real press, while the tool description promises a
 // failure for an unsupported key name, which `""` is. It is now rejected in
 // `execute`, above the dispatch, so one guard covers every backend.
+describe("keyboard — the burst size an agent is told about", () => {
+  it("quotes the same numbers the constant produces, in every caller-facing string", () => {
+    // `CLEAR_KEY_PAIRS` reaches callers as a LITERAL in the tool description, the
+    // `clear` parameter description, two runtime failure messages, the
+    // device-interact skill and the docs — changing the constant makes all of
+    // them lie, and only keyboard-backend-fidelity.test.ts pins the number
+    // itself. This is the check that the prose agrees with the code: the two
+    // runtime messages now interpolate it, and the descriptions are asserted
+    // against it here.
+    const tool = createKeyboardTool(registry());
+    const pairs = String(CLEAR_KEY_PAIRS);
+    const total = String(CLEAR_KEY_PAIRS * 2);
+    const description = tool.description ?? "";
+    const properties = (advertisedSchema(tool)?.properties ?? {}) as Record<
+      string,
+      { description?: string }
+    >;
+    const clearParam = properties.clear?.description ?? "";
+
+    for (const [label, text] of [
+      ["tool description", description],
+      ["`clear` parameter", clearParam],
+    ] as const) {
+      // "100 backspaces interleaved with 100 forward-deletes" and "`keys` is 200"
+      // are the two claims; both numbers have to be the constant's.
+      expect(text, label).toContain(`${pairs} backspaces`);
+      expect(text, label).toContain(`${pairs} forward-deletes`);
+      expect(text, label).toContain(total);
+    }
+  });
+});
+
 describe("keyboard — the exclusivity message's platform caveats", () => {
   it("names Vega, whose `clear` half of the prescribed split is rejected outright", () => {
     // The message prescribes splitting into `{ clear: true }` then `{ text }`,

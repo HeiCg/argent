@@ -81,7 +81,8 @@ export function makeAndroidImpl(
           `whether ${device.id} is a phone/tablet or an Android TV could not be determined, and ` +
             (params.clear === true ? "`clear`" : "`key`") +
             " means different things on the two — nothing was sent. It is refused rather than " +
-            "guessed: on a TV this would have burst 200 delete keys at the focus engine. The probe " +
+            `guessed: on a TV this would have burst ${CLEAR_KEY_PAIRS * 2} delete keys at the ` +
+            "focus engine. The probe " +
             "reads `pm list features` and `ro.build.characteristics`; a device still booting, or one " +
             "under enough load to miss the 5s budget, answers neither. Check `list-devices` reports " +
             "it in the `device` state and retry — or, if it IS a TV, drive the field with `tv-remote` " +

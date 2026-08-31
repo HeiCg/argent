@@ -209,7 +209,8 @@ export async function injectAndroidClear(serial: string, signal?: AbortSignal): 
     throw new FailureError(
       (delivered
         ? `the clear burst did not finish on ${serial}, and the focused field may be PARTIALLY ` +
-          "emptied — the 200 delete keys are sent as one `adb shell input keyevent`, which is not " +
+          `emptied — the ${CLEAR_KEY_PAIRS * 2} delete keys are sent as one ` +
+          "`adb shell input keyevent`, which is not " +
           "atomic. Read the field back (`describe`) before clearing or typing again. "
         : `the clear burst never reached ${serial}: adb rejected the command before delivering it, ` +
           "so NO delete key was sent and the focused field is unchanged. This is a device " +
