@@ -18,10 +18,15 @@
 #
 # Usage:
 #   run-e2e.sh [--tgz PATH] [--phase a,b,c] [--skip-install] [--system]
-#              [--android-serial S | --android-avd NAME] [--keep] [-h]
+#              [--android-serial S | --android-avd NAME] [--ios-udid UDID]
+#              [--keep] [-h]
 #
-# Phases: install introspection validation android chromium rn
-#   (default: all that apply to this OS; iOS/tvOS/Vega are intentionally omitted)
+# Phases: install introspection validation android ios chromium rn
+#   (default: all that apply to this OS; tvOS/Vega are intentionally omitted)
+#   The ios tier drives ONLY the simulator named by --ios-udid / E2E_IOS_UDID,
+#   booting it if it is not already running, and skips when none is named — it
+#   never picks a booted device for you, because on a developer machine that is
+#   somebody else's.
 set -uo pipefail
 
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +39,7 @@ SYSTEM_INSTALL=0
 KEEP=0
 export E2E_ANDROID_SERIAL="${E2E_ANDROID_SERIAL:-}"
 export E2E_ANDROID_AVD="${E2E_ANDROID_AVD:-}"
+export E2E_IOS_UDID="${E2E_IOS_UDID:-}"
 
 # Help text is the header block above. Stopping at the first non-comment line
 # means it can never drift into printing code, the way a pinned range would.
@@ -51,6 +57,7 @@ while [ $# -gt 0 ]; do
     --system) SYSTEM_INSTALL=1; shift;;
     --android-serial) need_val $# "$1"; E2E_ANDROID_SERIAL="$2"; shift 2;;
     --android-avd) need_val $# "$1"; E2E_ANDROID_AVD="$2"; shift 2;;
+    --ios-udid) need_val $# "$1"; E2E_IOS_UDID="$2"; shift 2;;
     --keep) KEEP=1; shift;;
     -h|--help) usage 0;;
     *) echo "unknown arg: $1" >&2; usage 1;;
