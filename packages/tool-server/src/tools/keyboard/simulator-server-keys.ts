@@ -90,12 +90,15 @@ export async function typeSimulatorServer(
 // to 10s. The simulator-server delivers a 200-key burst written with no delay at
 // all, in order and without drops; 2ms keeps that margin on a loaded host and
 // still finishes the burst in under a second.
-const CLEAR_KEY_CADENCE_MS = 2;
+// Exported so the two constants are pinned SEPARATELY: the timed test below
+// bounds only their sum, where a cadence of 5 and a settle of 1000 both stay
+// green and a settle-named case goes red for a cadence change.
+export const CLEAR_KEY_CADENCE_MS = 2;
 
 // `pressKey` is fire-and-forget, so the burst returns before the app has drained
 // it. Without a settle the tool's auto-screenshot races the deletions and hands
 // back a picture of the field mid-clear.
-const CLEAR_SETTLE_MS = 300;
+export const CLEAR_SETTLE_MS = 300;
 
 /**
  * Empty the focused text field over HID: `CLEAR_KEY_PAIRS` backspaces

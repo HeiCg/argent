@@ -132,7 +132,7 @@ function describeAdbFailure(args: string[], err: unknown): Error {
  * not have to wait it out while the guest keeps deleting. `execFile` kills the
  * child on either.
  */
-export interface AdbRunOptions {
+interface AdbRunOptions {
   timeoutMs?: number;
   /**
    * The request's own abort — the HTTP layer fires it on client disconnect, and

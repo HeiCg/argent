@@ -147,7 +147,7 @@ const KEYCODE_FORWARD_DEL = 112;
 // single-injection cap, and 16.3s with four busy loops on the guest, where adb
 // was SIGKILLed with the field emptied from 300 characters to 200. 90s keeps a
 // hung adb child bounded while leaving that margin.
-const ADB_CLEAR_TIMEOUT_MS = 90_000;
+export const ADB_CLEAR_TIMEOUT_MS = 90_000;
 
 /**
  * Empty the focused text field: `CLEAR_KEY_PAIRS` backspaces interleaved with

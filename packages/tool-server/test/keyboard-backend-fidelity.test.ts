@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import {
+  CLEAR_KEY_CADENCE_MS,
+  CLEAR_SETTLE_MS,
   clearSimulatorServer,
   typeSimulatorServer,
 } from "../src/tools/keyboard/simulator-server-keys";
@@ -373,6 +375,16 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       // their SUM, so dropping either one goes red: without the settle the burst
       // finishes in ~400ms, and without the cadence in ~300ms.
       expect(elapsed).toBeGreaterThanOrEqual(650);
+      // The sum alone cannot separate them: a cadence of 5 and a settle of 1000
+      // each keep it green, and this settle-named case would go red for a
+      // cadence change. Both values are their own decision — the cadence is what
+      // keeps a 400-line write in order on a loaded host, the settle is what
+      // keeps the auto-screenshot off a field still emptying — so both are
+      // pinned outright.
+      expect(CLEAR_KEY_CADENCE_MS).toBe(2);
+      expect(CLEAR_SETTLE_MS).toBe(300);
+      // And it is their sum this measured: 200 gaps plus one settle.
+      expect(CLEAR_KEY_PAIRS * 2 * CLEAR_KEY_CADENCE_MS + CLEAR_SETTLE_MS).toBe(700);
     });
   });
 

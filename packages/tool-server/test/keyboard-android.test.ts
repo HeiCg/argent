@@ -28,8 +28,17 @@ vi.mock("../src/utils/adb", async (importOriginal) => ({
 
 // Stub the TV backend so the routing test can prove a TV target goes here and a
 // phone target does not, without driving the real focus daemon.
+// Typed params, so `typeTv.mock.calls[0]` is a `[registry, device, params]`
+// tuple — an untyped `vi.fn(async () => …)` infers a zero-arg call and TS2493s
+// on the index (vitest transforms tests with esbuild, so only `tsc` catches it).
 const { typeTv } = vi.hoisted(() => ({
-  typeTv: vi.fn(async (): Promise<{ typed: string; keys: number }> => ({ typed: "TV", keys: 0 })),
+  typeTv: vi.fn(
+    async (
+      _registry: unknown,
+      _device: unknown,
+      _params: Record<string, unknown>
+    ): Promise<{ typed: string; keys: number }> => ({ typed: "TV", keys: 0 })
+  ),
 }));
 vi.mock("../src/tools/keyboard/platforms/tv", () => ({ typeTv }));
 
@@ -50,6 +59,7 @@ import {
   ANDROID_NAMED_KEYCODES,
   ANDROID_BUTTON_KEYCODES,
   assertTypeableAndroidText,
+  ADB_CLEAR_TIMEOUT_MS,
   injectAndroidClear,
   injectAndroidText,
   injectAndroidNamedKey,
@@ -364,6 +374,11 @@ describe("android-input — the `clear` key burst", () => {
     adbShell.mockClear();
     await injectAndroidClear(SERIAL);
     const opts = adbShell.mock.calls[0]![2] as { timeoutMs?: number } | undefined;
+    // Pinned outright, not just bracketed: a range of 60s-300s admits every
+    // value anyone would plausibly set, so it could only ever catch a wholesale
+    // mistake. The number is a measured decision.
+    expect(ADB_CLEAR_TIMEOUT_MS).toBe(90_000);
+    expect(opts?.timeoutMs).toBe(ADB_CLEAR_TIMEOUT_MS);
     expect(opts?.timeoutMs).toBeGreaterThanOrEqual(60_000);
     // ...and still bounded, so a hung adb child cannot wedge the tool-server.
     expect(opts?.timeoutMs).toBeLessThanOrEqual(300_000);
