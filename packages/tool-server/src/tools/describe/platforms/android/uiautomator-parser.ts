@@ -244,10 +244,17 @@ interface UiNode {
   children: UiNode[];
   // Set only on the landmark emitted for a real `WEBVIEW_CLASSES` host, so the
   // doubled-WebView merge can recognise its own kind. The role cannot: any
-  // class whose name contains "webview" derives the role "WebView", including
-  // an app's own `MyWebView` subclass, which is a separate control. Internal to
-  // this module — `finalizeUiNode` copies named fields only, so it never
-  // reaches the public tree.
+  // class whose name contains "webview" derives the role "WebView". A WebView
+  // subclass is not the shape that reaches this — `getAccessibilityClassName`
+  // hard-codes `android.webkit.WebView`, so a subclass dumps under the base
+  // name. An app's own control does: a view that is no WebView at all but
+  // overrides `getAccessibilityClassName()` to a name containing "webview".
+  // A WebView publishes such a child for as long as it holds no document
+  // (measured on API 35 / WebView 124: the child is in the dump until a page
+  // loads and the render process supplies its own node provider, and stays
+  // there for good if the app never loads one). Internal to this module —
+  // `finalizeUiNode` copies named fields only, so it never reaches the public
+  // tree.
   hostsWebContent?: boolean;
 }
 

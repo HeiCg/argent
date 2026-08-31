@@ -202,16 +202,17 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     });
   }
 
-  it("leaves an app's own WebView subclass beside the host, not merged into it", () => {
+  it("leaves a control merely named like a WebView beside the host, not merged into it", () => {
     // `deriveUiAutomatorRole` maps every class whose name contains "webview" to
-    // the role "WebView", so a role test cannot tell the doubled host apart
-    // from an unrelated native subclass a page embeds as a control. Merging
-    // that child would delete a tappable element and move its id and label onto
-    // the landmark, pointing a tap at the whole page instead.
+    // the role "WebView", so a role test cannot tell the host's own landmark
+    // apart from a control an app adds into the WebView under a `*WebView*`
+    // class name. Measured on API 35: a WebView publishes such a child until it
+    // loads a document. Merging it would delete a tappable element and move its
+    // id and label onto the landmark, pointing a tap at the whole page instead.
     const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy>
   <node class="android.webkit.WebView" bounds="[0,0][200,400]">
-    <node class="com.acme.player.MyWebView" bounds="[0,20][200,140]" resource-id="com.acme:id/player" content-desc="Video player" clickable="true"/>
+    <node class="com.acme.player.MyWebViewOverlay" bounds="[0,20][200,140]" resource-id="com.acme:id/player" content-desc="Video player" clickable="true"/>
   </node>
 </hierarchy>`;
     const tree = parseUiAutomatorDump(xml, 200, 400);
