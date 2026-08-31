@@ -520,6 +520,26 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
 
     expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
   });
+  // The clip guard's flow-tree half. A zero-height window makes
+  // `rectFullyOutside` true for everything, so a scroller whose own box is
+  // unusable must clip nothing — otherwise this tree drops a page describe
+  // still shows.
+  it("keeps content under a scroller whose own box is unusable", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" text="FIXED" scrollable="true" bounds="[0,128][1084,-1174]">
+      <node index="0" class="android.widget.TextView" package="com.acme.app" text="Section three" bounds="[20,200][1060,290]" />
+    </node>
+  </node>
+</hierarchy>`;
+    const flow = adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H);
+    expect(findAll(flow, { text: "Section three" })).toHaveLength(1);
+    expect(
+      findAll(parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H), { text: "Section three" })
+    ).toHaveLength(1);
+  });
+
   // Both trees clip a scroller's own children now, so they list the same rows.
   // A step recorded off a row describe showed used to resolve at record time and
   // match nothing at replay, because only this tree had dropped it.

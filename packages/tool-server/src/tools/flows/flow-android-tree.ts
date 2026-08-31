@@ -166,7 +166,14 @@ function projectAndroidNode(
     // its subtree, so a row scrolled out of view — but still on the device
     // screen — is dropped, matching the describe path's prune.
     rect,
-    scrolls: isUiAutomatorScrollable(attrs, inWebView),
+    // A scroller whose own box is unusable clips nothing. `rectFullyOutside`
+    // reads a zero-height window as "everything is outside", so trusting a
+    // degenerate box drops the whole subtree — and Chromium reports a WebView
+    // at negative height while its content is still on screen. The describe
+    // trim applies the same guard, so the two trees agree on the shape.
+    scrolls:
+      isUiAutomatorScrollable(attrs, inWebView) &&
+      Boolean(rect && normalizeRect(rect, screenW, screenH)),
   };
 }
 
