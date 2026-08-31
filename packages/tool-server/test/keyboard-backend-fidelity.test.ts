@@ -18,8 +18,8 @@ vi.mock("../src/utils/vega-input", async (importOriginal) => ({
   injectVegaNamedKey: vi.fn(async () => {}),
 }));
 
-// The ios-remote branch probes the remote runtime kind through the orchestrator's
-// device list; stub it so the routing tests below are not host-dependent.
+// Both ios branches probe the runtime kind by shelling out; stub them so the
+// routing tests below are not host-dependent.
 const { isRemoteTvOsSimulator } = vi.hoisted(() => ({
   isRemoteTvOsSimulator: vi.fn(async (_udid: string): Promise<boolean> => false),
 }));
@@ -27,9 +27,16 @@ vi.mock("../src/utils/sim-remote", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/sim-remote")>()),
   isRemoteTvOsSimulator,
 }));
+const { isTvOsSimulator } = vi.hoisted(() => ({
+  isTvOsSimulator: vi.fn(async (_udid: string): Promise<boolean> => false),
+}));
+vi.mock("../src/utils/ios-devices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/ios-devices")>()),
+  isTvOsSimulator,
+}));
 
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
-import { makeIosRemoteImpl } from "../src/tools/keyboard/platforms/ios";
+import { makeIosImpl, makeIosRemoteImpl } from "../src/tools/keyboard/platforms/ios";
 
 const IOS_SIM: DeviceInfo = { id: "TEST-UDID", platform: "ios", kind: "simulator" };
 const CHROMIUM: DeviceInfo = { id: "chromium-cdp-9222", platform: "chromium", kind: "app" };
@@ -390,11 +397,18 @@ describe("keyboard backends — emit exactly the action they were given", () => 
     });
 
     it("iOS simulator: presses no key", async () => {
+      // Through `.handler`, not through `typeSimulatorServer`: that function
+      // never reads `params.clear` at all (the decision lives in
+      // platforms/ios.ts `runSimulatorServer`), so calling it directly proved
+      // nothing — make the widening this block names and it stays green while
+      // `{ clear: false }` fires a 200-key burst at a simulator. The chromium
+      // and ios-remote siblings already go through their handlers.
       const { events, api } = hidRecorder();
-      const result = await typeSimulatorServer(registryWith(api), IOS_SIM, {
-        udid: IOS_SIM.id,
-        clear: false,
-      });
+      const result = await makeIosImpl(registryWith(api)).handler(
+        {},
+        { udid: IOS_SIM.id, clear: false },
+        IOS_SIM
+      );
       expect(result).toEqual({ typed: "", keys: 0 });
       expect(events).toEqual([]);
     });
