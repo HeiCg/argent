@@ -400,7 +400,7 @@ Stops on the first error (or unmet `await-ui-element` condition) and returns par
 
 ### The `ui` API (authoring reference)
 
-Selectors are `{ text?, identifier?, role? }` and every provided field must match; `text` and `identifier` are the portable fields (`role` values differ per platform: Android class-derived vs iOS `AX*`).
+Selectors are `{ text?, identifier?, role? }` and every provided field must match; `text` and `identifier` are the portable fields (`role` values differ per platform: Android class-derived vs iOS `AX*`). Each field is the same shape `await-ui-element` accepts: a plain string (per-field case-insensitive semantics) **or** an object `{ equals?, contains?, regex?, caseInsensitive? }` of AND-ed constraints (case-sensitive by default), so `ui.tap({ text: { contains: 'Batt', caseInsensitive: true } })` works. The relational extensions (`containsDescendant`, `index`) are not surfaced here — express those with the script's own control flow.
 
 ```ts
 interface Ui {

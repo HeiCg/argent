@@ -1,4 +1,5 @@
 import type { DescribeNode } from "../describe/contract";
+import type { StringMatch } from "../../utils/ui-tree-match";
 
 /**
  * The portable subset of a selector the `ui` facade exposes to a script:
@@ -7,11 +8,18 @@ import type { DescribeNode } from "../describe/contract";
  * class-derived vs iOS AX*), so `text` and `identifier` are the fields that
  * carry across both. The relational / flow-only extensions are deliberately not
  * surfaced — a script expresses those with its own control flow instead.
+ *
+ * Each field is a {@link StringMatch}: a bare string keeps its legacy per-field
+ * semantics (text/role case-insensitive substring, identifier exact/resource-id),
+ * or an object `{ equals?, contains?, regex?, caseInsensitive? }` of AND-ed
+ * constraints for precision. The facade resolves selectors through the same
+ * `ui-tree-match` matchers `await-ui-element` uses, so the object form works here
+ * unchanged (`ui.tap({ text: { contains: 'Batt', caseInsensitive: true } })`).
  */
 export interface FacadeSelector {
-  text?: string;
-  identifier?: string;
-  role?: string;
+  text?: StringMatch;
+  identifier?: StringMatch;
+  role?: StringMatch;
 }
 
 export type ScrollDirection = "down" | "up" | "left" | "right";

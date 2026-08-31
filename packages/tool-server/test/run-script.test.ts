@@ -400,6 +400,28 @@ describe("run-script ui facade", () => {
     await ui.sleep(1);
     expect(steps).toBe(3);
   });
+
+  // Integration point: the facade selector now takes the rich StringMatch object
+  // form (widened on the integration branch), and resolving it through the shared
+  // ui-tree-match matchers honours equals/contains/regex + caseInsensitive. The
+  // object literals below double as a compile-time check that FacadeSelector is no
+  // longer `text: string`-only.
+  it("resolves a rich object selector through the shared matcher", async () => {
+    fetchTreeMock.mockResolvedValue(treeWith([leaf("Battery Saver")]) as any);
+    const registry = mockRegistry();
+    const ui = buildUiFacade(facadeEnv(registry));
+
+    // Case-insensitive substring: lowercase probe still matches "Battery Saver".
+    const hit = await ui.find({ text: { contains: "batt", caseInsensitive: true } });
+    expect(hit?.label).toBe("Battery Saver");
+
+    // The object form is case-SENSITIVE by default, so the same probe misses.
+    expect(await ui.exists({ text: { contains: "batt" } })).toBe(false);
+
+    // equals is whole-value, not substring.
+    expect(await ui.exists({ text: { equals: "Battery" } })).toBe(false);
+    expect(await ui.exists({ text: { equals: "Battery Saver" } })).toBe(true);
+  });
 });
 
 describe("createRunScriptTool", () => {
