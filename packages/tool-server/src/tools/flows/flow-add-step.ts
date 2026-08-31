@@ -41,7 +41,6 @@ import {
   deriveSelector,
   selectorToFrame,
   frameContains,
-  type Selector,
   type TextMatchMode,
   type WaitCondition,
 } from "../../utils/ui-tree-match";
@@ -606,7 +605,7 @@ async function captureTapSelector(
   session: RecordingSession,
   udid: string,
   point: { x: number; y: number }
-): Promise<{ selector?: Selector; warning?: string }> {
+): Promise<{ selector?: FlowSelector; warning?: string }> {
   try {
     const device = resolveDevice(udid);
     const launched = recordedLaunchedApp(session, device.platform);
@@ -1188,7 +1187,7 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         typeof args.x === "number" &&
         typeof args.y === "number";
 
-      let captured: { selector?: Selector; warning?: string } | undefined;
+      let captured: { selector?: FlowSelector; warning?: string } | undefined;
       if (isTap) {
         captured = await captureTapSelector(registry, session, args.udid as string, {
           x: args.x as number,

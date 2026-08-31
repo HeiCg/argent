@@ -620,7 +620,19 @@ export type GestureTarget = { selector: FlowSelector } | { x: number; y: number 
  * on this flow-side type and is dropped before the engine sees the selector
  * (see `selectorAlternatives`).
  */
-export type FlowSelector = Omit<Selector, "within" | "after" | "next"> & {
+// Flows stay on the string-only selector: `text`/`identifier`/`role` are
+// re-narrowed to plain strings (flow YAML has no spelling for the StringMatch
+// object form), and the tool-only `containsDescendant`/`index` are dropped
+// (parseSelector's SELECTOR_KEYS allowlist already refuses them in YAML). Only
+// the engine-side `Selector` carries the rich forms, which `await-ui-element`
+// exposes; the flow layer neither builds nor serializes them.
+export type FlowSelector = Omit<
+  Selector,
+  "within" | "after" | "next" | "containsDescendant" | "index" | "text" | "identifier" | "role"
+> & {
+  text?: string;
+  identifier?: string;
+  role?: string;
   loose?: boolean;
   any?: boolean;
   within?: FlowSelector;

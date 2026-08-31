@@ -6,6 +6,7 @@ import {
   createAwaitUiElementTool,
   evaluateMatches,
   unmetUiWaitCause,
+  nearMissNote,
 } from "../src/tools/await-ui-element";
 import { findAll } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
@@ -1353,5 +1354,78 @@ describe("await-ui-element tool", () => {
         true
       );
     });
+  });
+});
+
+describe("nearMissNote", () => {
+  const mk = (p: Partial<DescribeNode> & { frame: DescribeNode["frame"] }): DescribeNode => ({
+    role: "AXOther",
+    children: [],
+    ...p,
+  });
+  const tree = mk({
+    role: "AXWindow",
+    frame: { x: 0, y: 0, width: 1, height: 1 },
+    children: [
+      mk({ role: "AXButton", label: "Log In", identifier: "login", frame: { x: 0.1, y: 0.1, width: 0.2, height: 0.05 } }),
+      mk({ role: "AXButton", label: "Sign Up", identifier: "signup", frame: { x: 0.1, y: 0.2, width: 0.2, height: 0.05 } }),
+    ],
+  });
+
+  it("lists the closest candidates in describe's line format when nothing matched", () => {
+    const note = nearMissNote(tree, { text: { equals: "Login" }, role: "AXButton" });
+    expect(note).toBeDefined();
+    expect(note).toContain("no exact match");
+    // The header plus at least the best candidate, rendered as a describe line.
+    expect(note).toContain('AXButton "Log In" id="login"');
+  });
+
+  it("returns undefined when nothing comes close", () => {
+    expect(nearMissNote(tree, { text: "wholly-unrelated-xyzzy" })).toBeUndefined();
+  });
+
+  it("caps the block near the char budget and reports how many were dropped", () => {
+    // Labels long enough that fewer than the top-10 fit under the 2000-char
+    // budget, forcing the char cap (not just the count limit) to drop some.
+    const many = mk({
+      role: "AXWindow",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: Array.from({ length: 200 }, (_, i) =>
+        mk({
+          role: "AXButton",
+          label: `Item ${i} ${"x".repeat(400)}`,
+          identifier: `item-${i}`,
+          frame: { x: 0.1, y: (i % 30) * 0.03, width: 0.2, height: 0.02 },
+        })
+      ),
+    });
+    const note = nearMissNote(many, { text: "Item", role: "AXButton" });
+    expect(note).toBeDefined();
+    expect(note!.length).toBeLessThanOrEqual(2000);
+    expect(note).toMatch(/… and \d+ more/);
+  });
+});
+
+describe("timeout note near-miss integration", () => {
+  it("attaches near-miss candidates on an unmet `exists` wait through the real tool", async () => {
+    // `equals: "Log"` never equals the on-screen "Log In", so the wait is unmet —
+    // but "Log" is a substring near-miss, so the note points at the real element.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Log In", frame: FRAME, traits: ["button"] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "exists",
+        selector: { text: { equals: "Log" } },
+        timeoutMs: 40,
+        pollIntervalMs: 10,
+      }
+    );
+    expect(result.success).toBe(false);
+    expect(result.note).toContain("no exact match");
+    expect(result.note).toContain("Log In");
   });
 });
