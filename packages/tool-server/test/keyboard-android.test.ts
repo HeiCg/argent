@@ -5,17 +5,25 @@ import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@arg
 // Keep `shellQuote` real (android-input relies on it) — only stub the transport
 // and the `isAndroidTv` runtime probe (so the phone/TV branch is deterministic).
 // `vi.hoisted` so the mock fns exist when the hoisted `vi.mock` factory runs.
-const { adbShell, isAndroidTv } = vi.hoisted(() => ({
+const { adbShell, isAndroidTv, getAndroidRuntimeKind } = vi.hoisted(() => ({
   // Typed params so `adbShell.mock.calls[0]` is a `[serial, cmd, opts?]` tuple
   // (an untyped `vi.fn(async () => "")` infers a zero-arg call and TS2493s on
   // destructuring — vitest transforms tests with esbuild, so only `tsc` catches it).
   adbShell: vi.fn(async (_serial: string, _cmd: string, _opts?: unknown): Promise<string> => ""),
   isAndroidTv: vi.fn(async (_serial: string): Promise<boolean> => false),
+  // The keyboard branch reads the kind three-valued (`undefined` = "could not
+  // tell"), so an indeterminate probe cannot fall through to the phone path and
+  // burst 200 delete keys at a TV. Kept in step with `isAndroidTv` so the
+  // existing cases still say what they meant.
+  getAndroidRuntimeKind: vi.fn(
+    async (_serial: string): Promise<"mobile" | "tv" | undefined> => "mobile"
+  ),
 }));
 vi.mock("../src/utils/adb", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/adb")>()),
   adbShell,
   isAndroidTv,
+  getAndroidRuntimeKind,
 }));
 
 // Stub the TV backend so the routing test can prove a TV target goes here and a
@@ -484,7 +492,9 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     adbShell.mockReset();
     typeTv.mockClear();
     isAndroidTv.mockReset();
+    getAndroidRuntimeKind.mockReset();
     isAndroidTv.mockResolvedValue(false);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   it("routes a non-TV android target to the adb phone path (not typeTv)", async () => {
@@ -497,6 +507,7 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
 
   it("routes an android TV target to typeTv (focus daemon), never the phone path", async () => {
     isAndroidTv.mockResolvedValue(true);
+    getAndroidRuntimeKind.mockResolvedValue("tv");
     const sentinel = { typed: "TV", keys: 0 };
     typeTv.mockResolvedValue(sentinel);
     const res = await impl.handler({}, { udid: SERIAL, text: "hi" } as KeyboardParams, phone);
@@ -512,6 +523,7 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     // TV with the whole suite green. `typeTv` is module-mocked here, so its own
     // refusal cannot stand in for the routing.
     isAndroidTv.mockResolvedValue(true);
+    getAndroidRuntimeKind.mockResolvedValue("tv");
     typeTv.mockRejectedValue(new Error("clear is not supported on a TV target"));
     await expect(
       impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone)
@@ -583,6 +595,45 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     expect(res).toEqual({ typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true });
     // One `input keyevent`, and no `input text` — a clear must never type.
     expect(adbShell.mock.calls.map((c) => c[1].split(" ")[1])).toEqual(["keyevent"]);
+  });
+
+  it.each([
+    ["clear", { clear: true }],
+    ["key", { key: "backspace" }],
+  ])("refuses %s when the form factor could not be determined", async (_label, extra) => {
+    // `readRuntimeKind` answers undefined when `pm list features` misses its 5s
+    // budget and `ro.build.characteristics` carries no `tv` token — which is
+    // what the Google ATV emulator reports (`emulator`). Collapsed to `false` by
+    // `isAndroidTv`, that aimed the 200-key burst at a TV, the one thing
+    // platforms/tv.ts exists to refuse, and `undefined` is never cached so every
+    // call was exposed.
+    adbShell.mockClear();
+    getAndroidRuntimeKind.mockResolvedValue(undefined);
+    const err = await impl.handler({}, { udid: SERIAL, ...extra } as KeyboardParams, phone).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_TARGET_KIND_UNKNOWN);
+    // Nothing reached the device.
+    expect(adbShell).not.toHaveBeenCalled();
+    // It re-probes once first: an indeterminate verdict is not cached, so a
+    // probe that timed out under a load spike usually resolves on the retry.
+    expect(getAndroidRuntimeKind).toHaveBeenCalledTimes(2);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
+  });
+
+  it("still types `text` when the form factor could not be determined", async () => {
+    // The positive control, and the reason the guard is per shape: on Android TV
+    // `TvControlApi.type` IS `adb shell input text`, the same channel the phone
+    // path uses, so an unknown kind changes nothing for `text`.
+    adbShell.mockClear();
+    getAndroidRuntimeKind.mockResolvedValue(undefined);
+    const res = await impl.handler({}, { udid: SERIAL, text: "hi" } as KeyboardParams, phone);
+    expect(res).toEqual({ typed: "hi", keys: 2 });
+    expect(adbShell.mock.calls.map((c) => c[1])).toEqual(["input text 'hi'"]);
+    // And no re-probe was paid for a shape that does not need the answer.
+    expect(getAndroidRuntimeKind).toHaveBeenCalledTimes(1);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   it("hands the request's abort signal to the clear burst", async () => {
@@ -746,7 +797,9 @@ describe("keyboard tool — android adb preflight (via dispatchByPlatform)", () 
     ensureDeps.mockClear();
     ensureDeps.mockResolvedValue(undefined);
     isAndroidTv.mockReset();
+    getAndroidRuntimeKind.mockReset();
     isAndroidTv.mockResolvedValue(false);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   it("preflights `adb` before the handler; a missing binary fails closed as a DependencyMissingError", async () => {

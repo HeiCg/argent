@@ -6,14 +6,22 @@ import { CLIENT_UNSAFE_TOP_LEVEL_KEYWORDS, advertisedSchema } from "./helpers/ca
 // Every backend's transport is stubbed, so "did anything reach the device" is
 // observable per platform: `pressKey` (simulator-server HID), `adbShell`
 // (`adb input`), `dispatchKeyEvent` / `evaluate` (CDP), and the vega injectors.
-const { adbShell, isAndroidTv } = vi.hoisted(() => ({
+const { adbShell, isAndroidTv, getAndroidRuntimeKind } = vi.hoisted(() => ({
   adbShell: vi.fn(async (_serial: string, _cmd: string, _opts?: unknown): Promise<string> => ""),
   isAndroidTv: vi.fn(async (_serial: string): Promise<boolean> => false),
+  // The keyboard branch reads the kind three-valued (`undefined` = "could not
+  // tell"), so an indeterminate probe cannot fall through to the phone path and
+  // burst 200 delete keys at a TV. Kept in step with `isAndroidTv` so the
+  // existing cases still say what they meant.
+  getAndroidRuntimeKind: vi.fn(
+    async (_serial: string): Promise<"mobile" | "tv" | undefined> => "mobile"
+  ),
 }));
 vi.mock("../src/utils/adb", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/adb")>()),
   adbShell,
   isAndroidTv,
+  getAndroidRuntimeKind,
 }));
 
 // The android and vega branches declare `requires: ["adb"]`; stub the preflight
@@ -161,6 +169,7 @@ describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => 
   beforeEach(() => {
     vi.clearAllMocks();
     isAndroidTv.mockResolvedValue(false);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   for (const { platform, udid, injections, pressedBackspace, clears } of BACKENDS) {
@@ -334,6 +343,7 @@ describe("keyboard — `text`, `key` and `clear` are mutually exclusive", () => 
     // udid too; what it pins is that the sentence survives edits to the message.
     // The TV target is driven here because it is the shape that needs it.
     isAndroidTv.mockResolvedValue(true);
+    getAndroidRuntimeKind.mockResolvedValue("tv");
     const err = await combinedError({ text: "hi", key: "enter" });
     expect(err.message).toMatch(/TV target/);
     expect(err.message).toMatch(/tv-remote/);
@@ -368,6 +378,7 @@ describe("keyboard — one device is driven by one call at a time", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isAndroidTv.mockResolvedValue(false);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   afterEach(() => {
@@ -448,6 +459,7 @@ describe("keyboard — an empty `key` names no key", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isAndroidTv.mockResolvedValue(false);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   for (const { platform, udid, injections } of BACKENDS) {
@@ -464,6 +476,7 @@ describe("keyboard — an empty `key` names no key", () => {
     // empty one by truthiness as well, so it typed `""` and reported success
     // instead. Its own rejection can therefore never be what covers this shape.
     isAndroidTv.mockResolvedValue(true);
+    getAndroidRuntimeKind.mockResolvedValue("tv");
     await expectUnsupportedKey(
       createKeyboardTool(registry()).execute({}, { udid: "emulator-5554", key: "" })
     );
@@ -503,6 +516,7 @@ describe("keyboard — how the constraint reaches a client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isAndroidTv.mockResolvedValue(false);
+    getAndroidRuntimeKind.mockResolvedValue("mobile");
   });
 
   it("leaves both halves optional in the advertised schema", () => {
