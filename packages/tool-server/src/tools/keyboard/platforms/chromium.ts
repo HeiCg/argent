@@ -159,12 +159,15 @@ export const CLEAR_FOCUSED_EDITABLE_SCRIPT = `(() => {
 // against CKEditor's shape: a read-back inside the clear script itself sees the
 // emptied field and is fooled; this one sees the restored value.)
 //
-// Re-derives the focused element rather than holding a reference: `evaluate`
-// returns by value, so nothing survives between the two calls — and re-deriving
-// is also what detects a page that moved focus in its own `input` handler.
+// Reads the element the clear RAN AGAINST, held by identity on the page's own
+// main world (`evaluate` returns by value, so nothing else survives between the
+// two calls). Reading whatever holds focus instead misses the two commonest
+// restoring-editor shapes outright: an editor that hands focus to a hidden IME
+// buffer on every edit (the ProseMirror / Slate / Quill shape) and a field that
+// blurs on change both leave focus somewhere with nothing to read, and the
+// restored value was then reported as `cleared: true`.
 const CLEAR_READBACK_SCRIPT = `(() => {
-  // The element the clear actually ran against, by identity. Read and dropped
-  // in one go, so a later clear cannot inherit a stale target.
+  // Read and dropped in one go, so a later clear cannot inherit a stale target.
   let target;
   try {
     target = window.__argentClearTarget;
@@ -172,16 +175,20 @@ const CLEAR_READBACK_SCRIPT = `(() => {
   } catch (e) {
     target = undefined;
   }
-  let el = document.activeElement;
-  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  let focused = document.activeElement;
+  while (focused && focused.shadowRoot && focused.shadowRoot.activeElement) {
+    focused = focused.shadowRoot.activeElement;
+  }
+  // \`isConnected\`: a page that REPLACED the field rather than restoring it
+  // leaves a detached node still holding the old value, which is no evidence
+  // about what is on screen now. Only a live target can contradict the delete.
+  const el = target && target.isConnected === true ? target : focused;
+  const same = !!target && target.isConnected === true;
   const tag = el ? String(el.tagName).toLowerCase() : null;
   const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
   const focus = tag === null ? null : type === null ? tag : tag + " type=" + type;
-  // Only a read of the SAME element can contradict the delete, and "same" is
-  // identity: the label collides between any two fields of one kind.
-  const same = target !== undefined && target !== null && el === target;
   if (tag === "input" || tag === "textarea") {
-    return { focus: focus, same: same, remaining: String(el.value == null ? "" : el.value).length };
+    return { focus: focus, same: same, remaining: String(el.value == null ? "" : el.value).length, embeds: 0 };
   }
   if (el && el.isContentEditable === true) {
     // A cleared contenteditable keeps a placeholder <br> or an empty <p>, and an
@@ -189,11 +196,19 @@ const CLEAR_READBACK_SCRIPT = `(() => {
     // Trimmed at the ends only: interior whitespace is part of the text, and the
     // count is quoted back to the caller.
     const text = String(el.textContent == null ? "" : el.textContent).replace(/[\\u200b\\ufeff]/g, "").trim();
-    return { focus: focus, same: same, remaining: text.length };
+    // Text alone cannot see the content that has none: an inline image, an
+    // attachment chip, an embed or a table survives the delete with
+    // \`textContent.length\` 0 before AND after, so a restored one read as an
+    // emptied field. <br> is excluded — it is the placeholder a cleared
+    // contenteditable keeps.
+    const embedded = el.querySelectorAll
+      ? el.querySelectorAll("img,video,audio,canvas,svg,iframe,object,embed,input,textarea,select,table")
+      : null;
+    return { focus: focus, same: same, remaining: text.length, embeds: embedded ? embedded.length : 0 };
   }
-  // Nothing readable holds focus any more. The delete already reported success,
-  // so there is nothing here to contradict it.
-  return { focus: focus, same: same, remaining: null };
+  // Nothing readable to look at. The delete already reported success, so there
+  // is nothing here to contradict it.
+  return { focus: focus, same: same, remaining: null, embeds: 0 };
 })()`;
 
 // The renderer answers the scripts above. Nothing else in the tool depends on
@@ -210,6 +225,8 @@ interface ReadbackOutcome {
   /** Whether the element read back is the very one the clear ran against. */
   same?: boolean;
   remaining?: number | null;
+  /** Content with no text of its own — an image, embed, table or form control. */
+  embeds?: number;
 }
 
 /**
@@ -379,14 +396,25 @@ async function clearChromium(api: ChromiumCdpApi): Promise<KeyboardResult> {
   // and `same` decides that by identity — the label collides between any two
   // fields of one kind, so an auto-advancing OTP form used to have the next
   // field's contents attributed to the one that was cleared. `remaining: null`
-  // means what holds focus now has no value to read, which is not evidence of
+  // means there was nothing with a value to read, which is not evidence of
   // anything.
   const remaining = readback?.remaining;
-  if (typeof remaining === "number" && remaining > 0 && readback?.same === true) {
+  const embeds = readback?.embeds ?? 0;
+  const survived = (typeof remaining === "number" ? remaining : 0) + embeds;
+  if (survived > 0 && readback?.same === true) {
+    // What survived, in the caller's own terms: an inline image or attachment
+    // has no characters to count, and "0 characters" would read as an empty
+    // field.
+    const held =
+      typeof remaining === "number" && remaining > 0
+        ? `${remaining} character${remaining === 1 ? "" : "s"}`
+        : `${embeds} embedded element${embeds === 1 ? "" : "s"} (an image, table or attachment)`;
     // The KIND of field again, not focus: a retry of this same call reaches the
-    // same editor and is restored the same way.
+    // same editor and is restored the same way. Worded off the element the clear
+    // RAN AGAINST rather than "the focused" one, because a restoring editor
+    // routinely moves focus away before this read.
     throw new InvalidToolInputError(
-      `the focused <${focus ?? "element"}> still holds ${remaining} character${remaining === 1 ? "" : "s"} ` +
+      `the <${focus ?? "element"}> this clear ran against still holds ${held} ` +
         "after the delete — nothing was cleared. A rich-text editor that keeps its own document model " +
         "(Lexical, CKEditor) accepts the delete and then restores the text from that model, and a page can " +
         "do the same from an `input` listener. Typing now would APPEND to the value the field still holds: " +

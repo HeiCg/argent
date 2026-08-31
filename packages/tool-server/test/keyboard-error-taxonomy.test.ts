@@ -422,6 +422,52 @@ describe("keyboard `clear` — the refusals reach a caller through the tool", ()
     ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
   });
 
+  it("contradicts the delete even when the restoring editor moved focus away", async () => {
+    // The two commonest restoring shapes both leave focus somewhere with nothing
+    // to read: an editor that hands focus to a hidden IME buffer on every edit
+    // (ProseMirror / Slate / Quill), and a field that blurs on change. Reading
+    // whatever holds focus reported both as `cleared: true` with the value
+    // intact (measured on Chrome 151). The read-back reads the element the clear
+    // RAN AGAINST, so `focus` naming a different element is no longer an escape.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "div" },
+      { focus: "div", same: true, remaining: 20, embeds: 0 },
+    ]);
+    await expectInvalidInput(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined),
+      FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD
+    );
+  });
+
+  it("contradicts the delete for content that has no text at all", async () => {
+    // An inline image, attachment chip or table reads `textContent.length` 0
+    // before AND after, so a restored one could never contradict a delete that
+    // counted characters alone. The message has to name what survived — "still
+    // holds 0 characters" reads as an empty field.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "div" },
+      { focus: "div", same: true, remaining: 0, embeds: 1 },
+    ]);
+    const err = await tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_FIELD);
+    expect(err?.message).toMatch(/1 embedded element \(an image, table or attachment\)/);
+  });
+
+  it("a target the page REPLACED cannot contradict the delete", async () => {
+    // A detached node keeps the old value while the live field on screen is
+    // empty, so `same` is false there and the delete stands.
+    const tool = toolWithChromiumEvaluate([
+      { cleared: true, focus: "input type=text" },
+      { focus: "input type=text", same: false, remaining: 11, embeds: 0 },
+    ]);
+    await expect(
+      tool.execute({}, { udid: chromiumDevice.id, clear: true }, undefined)
+    ).resolves.toEqual({ typed: "", keys: 0, cleared: true });
+  });
+
   it("reads EVERY accepted clear back — there is no delete's-word-alone path", async () => {
     // `delete` answers true whether or not it removed anything (measured on
     // Chrome 151), so its return value is never the evidence `cleared` reports.
