@@ -198,10 +198,24 @@ export async function injectAndroidClear(serial: string, signal?: AbortSignal): 
     // a field that is now half its old length. The keycode list is dropped from
     // the message too — 200 numbers, which `formatSubprocessFailure` and Node's
     // own nested `Command failed:` each repeat into agent context.
+    //
+    // But "may be PARTIALLY emptied" must not be asserted for a failure where
+    // nothing was sent. The adb CLIENT rejects an unreachable device before it
+    // delivers anything (measured: `adb: device 'emulator-9999' not found`,
+    // exit 1), and the leading sentence is the authoritative one — an agent
+    // that believes it re-reads a field that never changed, with a `describe`
+    // that fails on the same dead device.
+    const delivered = reachedTheDevice(err);
     throw new FailureError(
-      `the clear burst did not finish on ${serial}, and the focused field may be PARTIALLY emptied — ` +
-        "the 200 delete keys are sent as one `adb shell input keyevent`, which is not atomic. Read the " +
-        "field back (`describe`) before clearing or typing again. Underlying failure: " +
+      (delivered
+        ? `the clear burst did not finish on ${serial}, and the focused field may be PARTIALLY ` +
+          "emptied — the 200 delete keys are sent as one `adb shell input keyevent`, which is not " +
+          "atomic. Read the field back (`describe`) before clearing or typing again. "
+        : `the clear burst never reached ${serial}: adb rejected the command before delivering it, ` +
+          "so NO delete key was sent and the focused field is unchanged. This is a device " +
+          "connection problem, not a field problem — check `list-devices` and retry the clear once " +
+          "the device is back. ") +
+        "Underlying failure: " +
         firstLine(err),
       {
         error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNCONFIRMED,
@@ -223,6 +237,24 @@ export async function injectAndroidClear(serial: string, signal?: AbortSignal): 
       // the exit code and signal recoverable.
     );
   }
+}
+
+/**
+ * Whether the burst could have reached the guest at all.
+ *
+ * These are the adb CLIENT's own refusals, printed before any command is
+ * delivered — so nothing was injected and the field is untouched. Everything
+ * else (a non-zero exit from `input` itself, a timeout, the 90s cap's SIGKILL)
+ * may have injected some of the 200 keys before it stopped.
+ */
+const ADB_NEVER_DELIVERED =
+  /device '[^']*' not found|device offline|device unauthorized|no devices\/emulators found|more than one device|device still (?:connecting|authorizing)/i;
+
+function reachedTheDevice(err: unknown): boolean {
+  // A spawn failure means the adb binary itself never ran.
+  if (getFailureSignal(err)?.failure_spawn_code !== undefined) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  return !ADB_NEVER_DELIVERED.test(message);
 }
 
 /** The adb failure's own first line, without the 200-keycode command it quotes. */

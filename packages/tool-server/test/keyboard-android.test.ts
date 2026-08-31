@@ -632,6 +632,46 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     ).rejects.toThrow(/device offline/);
   });
 
+  it.each([
+    ["a device adb cannot reach", "adb: device 'emulator-5554' not found"],
+    ["a device that went offline", "adb: device offline"],
+    ["an unauthorized device", "adb: device unauthorized"],
+  ])("does not claim a partial clear for %s", async (_label, adbMessage) => {
+    // The adb CLIENT prints these before it delivers anything, so no event
+    // reached the guest and the field is untouched. "may be PARTIALLY emptied"
+    // is the leading, authoritative sentence — an agent that believes it
+    // re-reads a field that never changed, with a `describe` that fails on the
+    // same dead device.
+    adbShell.mockClear();
+    adbShell.mockRejectedValueOnce(new Error(adbMessage));
+    const err = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err?.message).toMatch(/NO delete key was sent/);
+    expect(err?.message).not.toMatch(/PARTIALLY emptied/);
+    // And the repair points at the device, not at a field read that would fail
+    // on the same device.
+    expect(err?.message).toMatch(/list-devices/);
+    expect(err?.message).not.toMatch(/Read the field back/);
+  });
+
+  it("still claims a partial clear for a burst that was cut short", async () => {
+    // The positive control: `input` was running on the guest and stopped
+    // partway, which is what the 90s cap's SIGKILL produces. Measured on an API
+    // 36 emulator by killing the adb child 700ms in.
+    adbShell.mockClear();
+    adbShell.mockRejectedValueOnce(
+      Object.assign(new Error("adb: killed by signal"), { signal: "SIGKILL" })
+    );
+    const err = await impl.handler({}, { udid: SERIAL, clear: true } as KeyboardParams, phone).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err?.message).toMatch(/PARTIALLY emptied/);
+    expect(err?.message).toMatch(/Read the field back/);
+  });
+
   it("keeps the subprocess telemetry every other adb re-statement keeps", async () => {
     // The signal was hand-built with only `failure_command: "adb"`, dropping the
     // `...subprocessFailureMetadata(err, "adb")` spread the 24 other adb sites
