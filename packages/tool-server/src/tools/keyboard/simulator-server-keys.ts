@@ -11,6 +11,8 @@ import {
 import { InvalidToolInputError } from "../../utils/capability";
 import type { KeyboardParams, KeyboardResult } from "./types";
 
+import { sleepOrAbort } from "../../utils/timing";
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Android phones/tablets do not use this HID transport — they inject over
@@ -108,21 +110,32 @@ const CLEAR_SETTLE_MS = 300;
  * Bidirectional for the same reason as there: the caret sits wherever the focus
  * tap left it, both keys join lines at a boundary, and pressing either on an
  * empty side is a no-op.
+ *
+ * `signal` is the request's own abort — the HTTP layer fires it when the client
+ * disconnects, and run-sequence and a flow run pass theirs down. Honoured on
+ * every cadence gap, for the reason `gesture-swipe` gives for the same shape:
+ * without it a cancelled call keeps driving the device for the rest of the
+ * burst, its deletions landing in whatever is sent to that device next.
  */
 export async function clearSimulatorServer(
   registry: Registry,
-  device: DeviceInfo
+  device: DeviceInfo,
+  signal?: AbortSignal
 ): Promise<KeyboardResult> {
   const ref = simulatorServerRef(device);
   const api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
+  let keysSent = 0;
   try {
     for (let i = 0; i < CLEAR_KEY_PAIRS; i++) {
+      if (signal?.aborted === true) break;
       api.pressKey("Down", NAMED_KEYS.backspace);
       api.pressKey("Up", NAMED_KEYS.backspace);
-      await sleep(CLEAR_KEY_CADENCE_MS);
+      keysSent++;
+      if (!(await sleepOrAbort(CLEAR_KEY_CADENCE_MS, signal))) break;
       api.pressKey("Down", FORWARD_DELETE_KEYCODE);
       api.pressKey("Up", FORWARD_DELETE_KEYCODE);
-      await sleep(CLEAR_KEY_CADENCE_MS);
+      keysSent++;
+      if (!(await sleepOrAbort(CLEAR_KEY_CADENCE_MS, signal))) break;
     }
   } catch (err) {
     // Re-stated for the same reason the Android burst is (utils/android-input.ts
@@ -146,9 +159,14 @@ export async function clearSimulatorServer(
       { cause: err instanceof Error ? err : undefined }
     );
   }
+  // A burst the caller abandoned reports what it actually sent, and drops
+  // `cleared`: the field is emptied by however many keys got through, which is
+  // exactly the state `cleared` must not be claimed for. No settle either —
+  // there is no auto-screenshot to protect once the request is gone.
+  if (keysSent < CLEAR_KEY_PAIRS * 2) return { typed: "", keys: keysSent };
   await sleep(CLEAR_SETTLE_MS);
   // `keys` counts what was SENT — the field is never read back, so the result
   // says nothing about what it now holds. It IS now evidence that every key
-  // reached the transport: a burst cut short throws above.
+  // reached the transport: a burst cut short throws or returns short above.
   return { typed: "", keys: CLEAR_KEY_PAIRS * 2, cleared: true };
 }

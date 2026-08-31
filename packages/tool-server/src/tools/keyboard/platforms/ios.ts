@@ -14,10 +14,11 @@ import { typeTv } from "./tv";
 function runSimulatorServer(
   registry: Registry,
   device: DeviceInfo,
-  params: KeyboardParams
+  params: KeyboardParams,
+  signal?: AbortSignal
 ): Promise<KeyboardResult> {
   return params.clear === true
-    ? clearSimulatorServer(registry, device)
+    ? clearSimulatorServer(registry, device, signal)
     : typeSimulatorServer(registry, device, params);
 }
 
@@ -27,10 +28,10 @@ export function makeIosImpl(
   registry: Registry
 ): PlatformImpl<Record<string, unknown>, KeyboardParams, KeyboardResult> {
   return {
-    handler: async (_services, params, device) =>
+    handler: async (_services, params, device, options) =>
       (await isTvOsSimulator(device.id))
         ? typeTv(registry, device, params)
-        : runSimulatorServer(registry, device, params),
+        : runSimulatorServer(registry, device, params, options?.signal),
   };
 }
 
@@ -48,10 +49,10 @@ export function makeIosRemoteImpl(
   registry: Registry
 ): PlatformImpl<Record<string, unknown>, KeyboardParams, KeyboardResult> {
   return {
-    handler: async (_services, params, device) =>
+    handler: async (_services, params, device, options) =>
       (params.key !== undefined || params.clear === true) &&
       (await isRemoteTvOsSimulator(device.id))
         ? typeTv(registry, device, params)
-        : runSimulatorServer(registry, device, params),
+        : runSimulatorServer(registry, device, params, options?.signal),
   };
 }

@@ -295,6 +295,30 @@ describe("keyboard backends — emit exactly the action they were given", () => 
       expect(events.length).toBe(400);
     });
 
+    it("stops the burst when the request is aborted, and does not claim a clear", async () => {
+      // The HTTP layer aborts on client disconnect, and run-sequence and a flow
+      // run pass their own signal down. `gesture-swipe` already honours it for
+      // the same shape, and for the reason quoted there: without it a cancelled
+      // call keeps driving the device for the rest of the burst, its deletions
+      // landing in whatever is sent to that device next. Measured on a booted
+      // simulator against a 250-character field: a client gone at 150ms left the
+      // full 100 deletions running, and now leaves 34.
+      const { events, api } = hidRecorder();
+      const controller = new AbortController();
+      const pending = clearSimulatorServer(registryWith(api), IOS_SIM, controller.signal);
+      await new Promise((r) => setTimeout(r, 25));
+      controller.abort();
+      const result = await pending;
+
+      expect(events.length).toBeGreaterThan(0);
+      expect(events.length).toBeLessThan(400);
+      // `keys` reports what was actually sent, and `cleared` is absent: the
+      // field is emptied by however many keys got through, which is exactly the
+      // state that claim must not be made for.
+      expect(result.keys).toBe(events.length / 2);
+      expect(result.cleared).toBeUndefined();
+    });
+
     it("a burst the transport stops accepting is NOT reported as a clear", async () => {
       // `pressKey` is fire-and-forget over the simulator-server's stdin pipe, so
       // a helper process that dies mid-burst (a concurrent
