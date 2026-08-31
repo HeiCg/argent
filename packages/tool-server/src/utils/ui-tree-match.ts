@@ -63,7 +63,148 @@ export const selectorSchema = selectorFieldsSchema.refine(
   }
 );
 
-export type Selector = z.infer<typeof selectorSchema> & {
+/**
+ * A per-field constraint: either a bare string — matched with that field's OWN
+ * legacy semantics (text/role case-insensitive substring, identifier
+ * exact/resource-id) so the entire installed base behaves byte-for-byte as
+ * before — or an object of AND-ed constraints for precise control.
+ * `caseInsensitive` (default false, i.e. case-SENSITIVE) applies to all three
+ * of `equals` / `contains` / `regex`.
+ *
+ * The object form is deliberately case-sensitive by default: it exists for the
+ * caller who needs precision the bare string can't give, and `caseInsensitive`
+ * is the opt-in back to fuzzy matching.
+ */
+type StringMatchObject = {
+  equals?: string;
+  contains?: string;
+  regex?: string;
+  caseInsensitive?: boolean;
+};
+export type StringMatch = string | StringMatchObject;
+
+// The object arm of a StringMatch, shared by every rich field. `.strict()` so a
+// typo (`equal:` for `equals:`) is rejected rather than silently ignored, and a
+// refine so `{}` — which would match everything — is refused.
+const stringMatchObjectSchema = z
+  .object({
+    equals: z.string().min(1).optional().describe("Whole-value equality."),
+    contains: z.string().min(1).optional().describe("Substring the value must contain."),
+    regex: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("JS regular expression, tested unanchored against the value."),
+    caseInsensitive: z
+      .boolean()
+      .optional()
+      .describe("Apply equals/contains/regex case-insensitively (default false)."),
+  })
+  .strict()
+  .refine((m) => m.equals !== undefined || m.contains !== undefined || m.regex !== undefined, {
+    message: "a selector field matcher needs at least one of equals, contains, or regex",
+  });
+
+// `text` keeps its visible-character guard on the bare-string arm (icon-font
+// Private Use Area glyphs and zero-width characters render as nothing); the
+// object arm is exempt — an explicit regex/equals author owns their pattern.
+const richTextSchema = z.union([
+  z.string().min(1).refine(hasVisibleText, {
+    message:
+      "text must contain at least one visible character (icon-font/private-use and " +
+      "zero-width characters render as nothing) — select by identifier or role instead",
+  }),
+  stringMatchObjectSchema,
+]);
+const richPlainSchema = z.union([z.string().min(1), stringMatchObjectSchema]);
+
+/**
+ * The rich selector the `await-ui-element` tool advertises: each of
+ * text/identifier/role accepts the {@link StringMatch} object form, plus
+ * `containsDescendant` (a nested selector some element inside the match must
+ * satisfy) and `index` (pick the Nth match). Recursive via `containsDescendant`,
+ * which zod emits as a `$defs`/`$ref` pair — nested, so the client-schema gate
+ * (no TOP-LEVEL combinator) is unaffected.
+ *
+ * Separate from {@link selectorSchema}: the flow layer keeps the string-only
+ * schema, so flow YAML neither gains nor has to serialize the rich forms.
+ */
+export const richSelectorSchema: z.ZodType<Selector> = z.lazy(() =>
+  z
+    .object({
+      text: richTextSchema
+        .optional()
+        .describe(
+          "Case-insensitive substring of the element's visible label or value, or an object " +
+            "{ equals?, contains?, regex?, caseInsensitive? } of AND-ed constraints (case-sensitive by default)."
+        ),
+      identifier: richPlainSchema
+        .optional()
+        .describe(
+          "The element's identifier (accessibilityIdentifier / resource-id / testid). A bare string matches " +
+            "case-insensitively as the exact identifier or the unqualified resource-id name ('submit' matches " +
+            "'com.example.app:id/submit'); the object form { equals?, contains?, regex?, caseInsensitive? } matches " +
+            "the raw identifier verbatim (no resource-id shortcut)."
+        ),
+      role: richPlainSchema
+        .optional()
+        .describe(
+          "Case-insensitive substring of the element's role (e.g. AXButton, button, TextView), or an object " +
+            "{ equals?, contains?, regex?, caseInsensitive? } of AND-ed constraints."
+        ),
+      containsDescendant: richSelectorSchema
+        .optional()
+        .describe(
+          "Keep only elements whose on-screen frame contains a DISTINCT element matching this nested selector " +
+            "(e.g. the card that holds a given Delete button). Recursive."
+        ),
+      index: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe(
+          "Pick the Nth match (0-based) in pre-order tree flatten, overriding the default best-match ranking. " +
+            "Use when several elements match and you want a specific one by position."
+        ),
+    })
+    .strict()
+    .refine((s) => Boolean(s.text || s.identifier || s.role || s.containsDescendant), {
+      message: "selector needs at least one of text, identifier, role, or containsDescendant",
+    })
+);
+
+export type Selector = {
+  /**
+   * The element's visible label/value constraint. A bare string is a
+   * case-insensitive substring (against label OR value); the object form gives
+   * AND-ed equals/contains/regex with an opt-in `caseInsensitive`.
+   */
+  text?: StringMatch;
+  /**
+   * The element's identifier constraint. A bare string is case-insensitive
+   * exact match or unqualified resource-id name; the object form matches the
+   * raw identifier verbatim.
+   */
+  identifier?: StringMatch;
+  /** The element's role constraint. Bare string = CI substring; object form as above. */
+  role?: StringMatch;
+  /**
+   * Recursive containment: the match's frame must contain a DISTINCT element
+   * satisfying this selector. The geometric DUAL of {@link within} — `within`
+   * keeps a target inside a container, `containsDescendant` keeps the container
+   * that holds a target — so it works on the flow adapters' flattened trees
+   * too, where tree ancestry does not survive. Resolved by {@link findAll};
+   * {@link matchNode} (own-fields only) ignores it, as it does the scopes.
+   */
+  containsDescendant?: Selector;
+  /**
+   * Pick the Nth match (0-based) over the pre-order flatten, applied by
+   * {@link findAll} AFTER every other filter and scope. When given it overrides
+   * {@link selectorToFrame}'s best-match ranking; out of range yields no match.
+   * A top-level narrowing only — ignored inside a scope or `containsDescendant`.
+   */
+  index?: number;
   /**
    * Flow-only regex text locator (`{ text: { matches: '<pattern>' } }` in flow
    * YAML), tested unanchored and case-sensitive against the node's OWN
@@ -141,8 +282,8 @@ export function identifierMatches(actual: string | undefined, needle: string): b
 
 /** @internal Seam for asserting regex compilation lifetime in tests. */
 export const uiTreeMatchInternals = {
-  createRegExp(pattern: string): RegExp {
-    return new RegExp(pattern);
+  createRegExp(pattern: string, flags?: string): RegExp {
+    return new RegExp(pattern, flags);
   },
 };
 
@@ -174,56 +315,121 @@ function hasOwnConstraint(selector: Selector): boolean {
     selector.text !== undefined ||
     selector.textMatches !== undefined ||
     selector.identifier !== undefined ||
-    selector.role !== undefined
+    selector.role !== undefined ||
+    selector.containsDescendant !== undefined
   );
 }
 
-function matchNodeWithRegex(
+// Every regex a selector needs, compiled ONCE up front so a tree walk that
+// tests thousands of nodes (and re-runs on every poll) compiles each pattern a
+// single time: the flow-only `textMatches` locator, plus any `regex` inside a
+// StringMatch object on text/identifier/role. Built through
+// {@link uiTreeMatchInternals.createRegExp} so tests can observe compile counts.
+interface CompiledSelector {
+  textMatchesRe?: RegExp;
+  textFieldRe?: RegExp;
+  identifierFieldRe?: RegExp;
+  roleFieldRe?: RegExp;
+}
+
+// The compiled regex for a StringMatch object's `regex` constraint, honoring
+// `caseInsensitive`. Bare strings and objects without `regex` compile nothing.
+function fieldRegex(m: StringMatch | undefined): RegExp | undefined {
+  if (m === undefined || typeof m === "string" || m.regex === undefined) return undefined;
+  return uiTreeMatchInternals.createRegExp(m.regex, m.caseInsensitive === true ? "i" : undefined);
+}
+
+function compileSelector(selector: Selector): CompiledSelector {
+  return {
+    textMatchesRe:
+      selector.textMatches === undefined
+        ? undefined
+        : uiTreeMatchInternals.createRegExp(selector.textMatches),
+    textFieldRe: fieldRegex(selector.text),
+    identifierFieldRe: fieldRegex(selector.identifier),
+    roleFieldRe: fieldRegex(selector.role),
+  };
+}
+
+// Match one string value against a StringMatch object's AND-ed constraints.
+// Absent/empty values are never a haystack (mirrors includesCI /
+// regexMatchesNonEmpty), and `regex` needs its precompiled RegExp.
+function matchStringObject(
+  value: string | undefined,
+  m: StringMatchObject,
+  re: RegExp | undefined
+): boolean {
+  if (!value) return false;
+  const ci = m.caseInsensitive === true;
+  const hay = ci ? value.toLowerCase() : value;
+  if (m.equals !== undefined && hay !== (ci ? m.equals.toLowerCase() : m.equals)) return false;
+  if (m.contains !== undefined && !hay.includes(ci ? m.contains.toLowerCase() : m.contains)) {
+    return false;
+  }
+  if (m.regex !== undefined && (re === undefined || !re.test(value))) return false;
+  return true;
+}
+
+// `text`: a bare string keeps its case-insensitive substring over label OR
+// value; the object form tests its constraints against label OR value.
+function matchTextField(node: DescribeNode, m: StringMatch, re: RegExp | undefined): boolean {
+  if (typeof m === "string") return includesCI(node.label, m) || includesCI(node.value, m);
+  return matchStringObject(node.label, m, re) || matchStringObject(node.value, m, re);
+}
+
+// `identifier`: a bare string keeps its exact / resource-id semantics; the
+// object form matches the raw identifier verbatim (no resource-id shortcut).
+function matchIdentifierField(node: DescribeNode, m: StringMatch, re: RegExp | undefined): boolean {
+  if (typeof m === "string") return identifierMatches(node.identifier, m);
+  return matchStringObject(node.identifier, m, re);
+}
+
+// `role`: a bare string keeps its case-insensitive substring; the object form
+// tests its constraints against the role.
+function matchRoleField(node: DescribeNode, m: StringMatch, re: RegExp | undefined): boolean {
+  if (typeof m === "string") return includesCI(node.role, m);
+  return matchStringObject(node.role, m, re);
+}
+
+function matchNodeCompiled(
   node: DescribeNode,
   selector: Selector,
-  textRegex: RegExp | undefined
+  compiled: CompiledSelector
 ): boolean {
-  if (selector.text !== undefined) {
-    if (!includesCI(node.label, selector.text) && !includesCI(node.value, selector.text)) {
-      return false;
-    }
+  if (selector.text !== undefined && !matchTextField(node, selector.text, compiled.textFieldRe)) {
+    return false;
   }
-  if (textRegex !== undefined) {
+  if (compiled.textMatchesRe !== undefined) {
     if (
-      !regexMatchesNonEmpty(textRegex, node.label) &&
-      !regexMatchesNonEmpty(textRegex, node.value)
+      !regexMatchesNonEmpty(compiled.textMatchesRe, node.label) &&
+      !regexMatchesNonEmpty(compiled.textMatchesRe, node.value)
     ) {
       return false;
     }
   }
   if (
     selector.identifier !== undefined &&
-    !identifierMatches(node.identifier, selector.identifier)
+    !matchIdentifierField(node, selector.identifier, compiled.identifierFieldRe)
   ) {
     return false;
   }
-  if (selector.role !== undefined && !includesCI(node.role, selector.role)) {
+  if (selector.role !== undefined && !matchRoleField(node, selector.role, compiled.roleFieldRe)) {
     return false;
   }
   return true;
 }
 
-function selectorTextRegex(selector: Selector): RegExp | undefined {
-  return selector.textMatches === undefined
-    ? undefined
-    : uiTreeMatchInternals.createRegExp(selector.textMatches);
-}
-
 /**
  * Single-node predicate over the selector's OWN fields. The relational scopes
- * need the tree and are resolved by {@link findAll}; they are ignored here.
+ * and `containsDescendant` need the tree and are resolved by {@link findAll};
+ * they are ignored here, as is `index`.
  *
  * A selector with no own fields matches EVERY node — the universal selector
  * (CSS `*`, `any: true` in flow YAML), which `selectorSchema` and the flow
  * parser only admit behind an explicit `any: true` paired with a relation.
  */
 export function matchNode(node: DescribeNode, selector: Selector): boolean {
-  return matchNodeWithRegex(node, selector, selectorTextRegex(selector));
+  return matchNodeCompiled(node, selector, compileSelector(selector));
 }
 
 // Frame-comparison tolerance (normalized units): a hair of overhang — a border,
@@ -430,7 +636,15 @@ export function findAll(root: DescribeNode, selector: Selector): DescribeNode[] 
     for (const child of node.children) collect(child);
   };
   for (const child of root.children) collect(child);
-  return resolveSelector(all, selector);
+  const matches = resolveSelector(all, selector);
+  // `index` is the LAST narrowing: pick the Nth of the fully filtered, scoped
+  // set in pre-order (the order `all` — and so `matches` — is built in). A
+  // top-level pick only; a scope / `containsDescendant` sub-selector's own
+  // `index` is ignored, since it selects nothing on its own. Out of range → no
+  // match, so a caller asking for the 4th of three gets an honest miss.
+  if (selector.index === undefined) return matches;
+  const picked = matches[selector.index];
+  return picked === undefined ? [] : [picked];
 }
 
 /**
@@ -461,14 +675,28 @@ const RELATION_RESOLVERS: Record<
   next: (matches, scope) => nearestAfter(matches, scope),
 };
 
+// A node CONTAINS a descendant when a DISTINCT element in `descendants` sits
+// inside its frame — the geometric inverse of `containmentTester`. A direct
+// scan, like `afterTester`: the `some` short-circuits on the first descendant a
+// node contains, so an index buys nothing the early exit doesn't already give.
+function containsTester(descendants: DescribeNode[]): (node: DescribeNode) => boolean {
+  return (node) => descendants.some((d) => d !== node && frameWithin(d.frame, node.frame));
+}
+
 /** Own-field matches from `all`, narrowed by every scope the selector carries. */
 function resolveSelector(all: DescribeNode[], selector: Selector): DescribeNode[] {
-  const regex = selectorTextRegex(selector);
-  let matches = all.filter((n) => matchNodeWithRegex(n, selector, regex));
+  const compiled = compileSelector(selector);
+  let matches = all.filter((n) => matchNodeCompiled(n, selector, compiled));
   for (const relation of SELECTOR_RELATIONS) {
     const scope = selector[relation];
     if (scope === undefined) continue;
     matches = RELATION_RESOLVERS[relation](matches, resolveSelector(all, scope));
+  }
+  // `containsDescendant` is resolved after the scopes and — unlike them — kept
+  // off SELECTOR_RELATIONS on purpose: the flow layer enumerates that list for
+  // its YAML parser/serializer, and this locator lives only on the tool schema.
+  if (selector.containsDescendant !== undefined) {
+    matches = matches.filter(containsTester(resolveSelector(all, selector.containsDescendant)));
   }
   return matches;
 }
@@ -601,20 +829,29 @@ function fullConsumptionRegex(selector: Selector): RegExp | undefined {
     : uiTreeMatchInternals.createRegExp(`^(?:${selector.textMatches})$`);
 }
 
+// Whether a field matches this node EXACTLY (not merely as a substring), for
+// ranking. A bare string is exact by whole-value equality; a StringMatch object
+// counts exact iff it carries an `equals` constraint — since exactFieldCount
+// runs only over nodes that already matched the selector, a present `equals`
+// necessarily held, so the field is an exact hit. `contains` / `regex`-only
+// objects are substring-tier, like a bare substring.
+function fieldIsExact(node: DescribeNode, field: "text" | "identifier" | "role", m: StringMatch): boolean {
+  if (typeof m !== "string") return m.equals !== undefined;
+  if (field === "identifier") return equalsCI(node.identifier, m);
+  if (field === "role") return equalsCI(node.role, m);
+  return equalsCI(node.label, m) || equalsCI(node.value, m);
+}
+
 // How many of the selector's provided fields this node matches exactly rather
-// than merely as a substring.
+// than merely as a substring. Called only on already-matched nodes (see
+// {@link fieldIsExact}).
 function exactFieldCount(
   node: DescribeNode,
   selector: Selector,
   fullTextRegex: RegExp | undefined
 ): number {
   let count = 0;
-  if (
-    selector.text !== undefined &&
-    (equalsCI(node.label, selector.text) || equalsCI(node.value, selector.text))
-  ) {
-    count++;
-  }
+  if (selector.text !== undefined && fieldIsExact(node, "text", selector.text)) count++;
   if (
     fullTextRegex !== undefined &&
     (regexMatchesNonEmpty(fullTextRegex, node.label) ||
@@ -622,8 +859,10 @@ function exactFieldCount(
   ) {
     count++;
   }
-  if (selector.identifier !== undefined && equalsCI(node.identifier, selector.identifier)) count++;
-  if (selector.role !== undefined && equalsCI(node.role, selector.role)) count++;
+  if (selector.identifier !== undefined && fieldIsExact(node, "identifier", selector.identifier)) {
+    count++;
+  }
+  if (selector.role !== undefined && fieldIsExact(node, "role", selector.role)) count++;
   return count;
 }
 
@@ -681,6 +920,106 @@ export function selectorToFrame(root: DescribeNode, selector: Selector): Describ
   return best?.frame;
 }
 
+// The literal a StringMatch is "looking for", for the near-miss almost-match
+// tier. A bare string is itself; an object offers its `equals` then `contains`;
+// a regex-only object has no literal to compare loosely against.
+function stringMatchLiteral(m: StringMatch): string | undefined {
+  if (typeof m === "string") return m;
+  return m.equals ?? m.contains;
+}
+
+// Score one selector field against a node: +2 when it truly matches, +1 for an
+// "almost" hit (the field's literal equals / is a substring of / contains one of
+// the candidate values, case-insensitively), 0 otherwise. `matched` is the real
+// per-field verdict, so an exact match always outscores a near one.
+function stringFieldScore(
+  matched: boolean,
+  values: (string | undefined)[],
+  m: StringMatch
+): number {
+  if (matched) return 2;
+  const literal = stringMatchLiteral(m);
+  if (literal === undefined) return 0;
+  const t = literal.toLowerCase();
+  for (const v of values) {
+    if (!v) continue;
+    const lv = v.toLowerCase();
+    if (lv === t || lv.includes(t) || t.includes(lv)) return 1;
+  }
+  return 0;
+}
+
+function scoreElementCompiled(
+  node: DescribeNode,
+  selector: Selector,
+  compiled: CompiledSelector
+): number {
+  let score = 0;
+  if (selector.text !== undefined) {
+    score += stringFieldScore(
+      matchTextField(node, selector.text, compiled.textFieldRe),
+      [node.label, node.value],
+      selector.text
+    );
+  }
+  if (selector.identifier !== undefined) {
+    score += stringFieldScore(
+      matchIdentifierField(node, selector.identifier, compiled.identifierFieldRe),
+      [node.identifier],
+      selector.identifier
+    );
+  }
+  if (selector.role !== undefined) {
+    score += stringFieldScore(
+      matchRoleField(node, selector.role, compiled.roleFieldRe),
+      [node.role],
+      selector.role
+    );
+  }
+  if (
+    compiled.textMatchesRe !== undefined &&
+    (regexMatchesNonEmpty(compiled.textMatchesRe, node.label) ||
+      regexMatchesNonEmpty(compiled.textMatchesRe, node.value))
+  ) {
+    score += 2;
+  }
+  return score;
+}
+
+/**
+ * Near-miss score of a node against a selector: how close it comes to matching,
+ * higher is closer. Only the identity fields (text / identifier / role /
+ * textMatches) count — `index`, `containsDescendant` and the scopes are ignored,
+ * since a diagnostic wants "what almost matched by its own attributes", not
+ * "what a relation excluded". Pure; the tree is never touched.
+ */
+export function scoreElement(node: DescribeNode, selector: Selector): number {
+  return scoreElementCompiled(node, selector, compileSelector(selector));
+}
+
+/**
+ * The closest non-matching candidates to a selector, best first, for a
+ * not-found diagnostic. Ranks every node under `root` (the synthetic root
+ * itself excluded, as {@link findAll} does) by {@link scoreElement}, keeps those
+ * scoring above zero, and returns the top `limit`. Stable on ties (pre-order
+ * tree order). Pure — it reads the tree already fetched, never the device.
+ */
+export function rankNearMisses(root: DescribeNode, selector: Selector, limit = 10): DescribeNode[] {
+  const compiled = compileSelector(selector);
+  const all: DescribeNode[] = [];
+  const collect = (node: DescribeNode): void => {
+    all.push(node);
+    for (const child of node.children) collect(child);
+  };
+  for (const child of root.children) collect(child);
+  return all
+    .map((el, i) => ({ el, i, score: scoreElementCompiled(el, selector, compiled) }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .slice(0, limit)
+    .map((s) => s.el);
+}
+
 const GENERIC_ROLES = new Set([
   "axgroup",
   "group",
@@ -694,12 +1033,21 @@ const GENERIC_ROLES = new Set([
 ]);
 
 /**
+ * The three plain-string shapes {@link deriveSelector} can produce. Narrower
+ * than {@link Selector} on purpose: the recorder only ever emits a bare-string
+ * field, so its output stays assignable to the flow layer's string-only
+ * selector (it never carries a StringMatch object, `containsDescendant`, or
+ * `index`).
+ */
+type DerivedSelector = { identifier: string } | { text: string } | { role: string };
+
+/**
  * The most stable selector identifying a node, used by the recorder to turn a
  * tapped element into a `tap: { selector }` step. Prefers identifier, then
  * text, then a non-generic role. Null when the node has nothing stable to match
  * on — the caller then keeps coordinates.
  */
-export function deriveSelector(node: DescribeNode): Selector | null {
+export function deriveSelector(node: DescribeNode): DerivedSelector | null {
   if (node.identifier && node.identifier.trim()) return { identifier: node.identifier };
   // Label OR value individually — never nodeText's joined form: matchNode
   // compares a text selector against label and value separately, so a joined

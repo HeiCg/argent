@@ -20,13 +20,15 @@ import { describeAndroid, androidRequires } from "../describe/platforms/android"
 import { describeChromium } from "../describe/platforms/chromium";
 import { describeVega, vegaRequires } from "../describe/platforms/vega";
 import {
-  selectorSchema,
+  richSelectorSchema,
   nodeText,
   findAll,
   isVisible,
   firstInReadingOrder,
   evaluateCondition,
+  rankNearMisses,
 } from "../../utils/ui-tree-match";
+import { formatNodeLine } from "../describe/format-tree";
 
 // Exported so run-sequence can allowlist this tool without repeating the string.
 export const AWAIT_UI_ELEMENT_TOOL_ID = "await-ui-element";
@@ -105,7 +107,12 @@ const zodSchema = z
           "contains (or, with textMatch `equals`, exactly matches) " +
           "expectedText — if a loose selector hits several elements, only that one is checked, so narrow it to target the intended element."
       ),
-    selector: selectorSchema.describe("Element to match (text / identifier / role)."),
+    selector: richSelectorSchema.describe(
+      "Element to match. Each of text / identifier / role takes a plain string (text/role: case-insensitive " +
+        "substring; identifier: exact or unqualified resource-id) or an object { equals?, contains?, regex?, " +
+        "caseInsensitive? } of AND-ed constraints. Optional containsDescendant (a nested selector some element " +
+        "inside the match must satisfy) and index (pick the Nth match) narrow further."
+    ),
     expectedText: z
       .string()
       .min(1)
@@ -281,6 +288,38 @@ function appendDiagnostics(base: string, lastData: DescribeTreeData | null): str
   return extras.length === 0 ? base : `${base} (${extras.join("; ")})`;
 }
 
+// How much of the timeout note the near-miss block may add. A handful of lines
+// is enough to point at the element the selector nearly hit; past this the note
+// would bury the base cause and bloat the agent's context.
+const NEAR_MISS_MAX_CHARS = 2000;
+
+/**
+ * A not-found diagnostic: the closest candidates in the LAST tree the loop
+ * already fetched (no extra device round-trip), each rendered in describe's own
+ * line format, best first, capped at {@link NEAR_MISS_MAX_CHARS}. Undefined when
+ * nothing comes even close, so the caller appends nothing. Exported for tests.
+ */
+export function nearMissNote(tree: DescribeNode, selector: Params["selector"]): string | undefined {
+  const candidates = rankNearMisses(tree, selector);
+  if (candidates.length === 0) return undefined;
+  const header = "no exact match — closest elements in the last tree (by attribute similarity):";
+  const lines: string[] = [];
+  let used = header.length;
+  let dropped = 0;
+  for (const node of candidates) {
+    const line = `  ${formatNodeLine(node)}`;
+    if (used + line.length + 1 > NEAR_MISS_MAX_CHARS) {
+      dropped = candidates.length - lines.length;
+      break;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  if (lines.length === 0) return undefined;
+  if (dropped > 0) lines.push(`  … and ${dropped} more`);
+  return [header, ...lines].join("\n");
+}
+
 function timeoutNote(
   params: Params,
   lastTree: DescribeNode | null,
@@ -315,7 +354,16 @@ function timeoutNote(
     default:
       base = "no element matched the selector before timeout";
   }
-  return appendDiagnostics(base, lastData);
+  const note = appendDiagnostics(base, lastData);
+  // Attach near-miss candidates only when the selector matched NOTHING — the
+  // case where "which element did I nearly mean" helps. `hidden` is excluded: it
+  // PASSES on no match, so a timeout there means something stayed visible, not
+  // that the selector missed. Uses the tree already in hand.
+  if (lastTree && matches.length === 0 && params.condition !== "hidden") {
+    const nearMiss = nearMissNote(lastTree, params.selector);
+    if (nearMiss) return `${note}\n${nearMiss}`;
+  }
+  return note;
 }
 
 // A factory (like `describe`) because the iOS / Android tree fetch resolves the
@@ -363,17 +411,21 @@ Conditions:
              inspected, so if a different match is the one holding the text the wait still reports failure —
              narrow the selector to target it.
 
-The selector is { text?, identifier?, role? }; every provided field must match. text and role match as
-case-insensitive substrings of the element's label/value and role; identifier matches exactly (case-insensitive),
-also accepting the unqualified Android resource-id name ('submit' matches 'com.example.app:id/submit').
-It polls the same accessibility / DOM tree as \`describe\`
+The selector is { text?, identifier?, role?, containsDescendant?, index? }; every provided field must match. A field
+is a plain string — text/role a case-insensitive substring of the element's label/value and role, identifier an exact
+(case-insensitive) match also accepting the unqualified Android resource-id name ('submit' matches
+'com.example.app:id/submit') — or an object { equals?, contains?, regex?, caseInsensitive? } whose constraints are
+AND-ed (case-sensitive unless caseInsensitive is true) for precise matching. containsDescendant keeps only elements
+whose frame contains a DISTINCT element matching a nested selector (e.g. the card holding a given button); index picks
+the Nth match (0-based) instead of the best-ranked one. It polls the same accessibility / DOM tree as \`describe\`
 (iOS AXRuntime, Android uiautomator, Chromium CDP, Vega automation toolkit) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
 Returns { success: boolean, elapsed: number, note?, cause? } — success=false means the wait ended without the
 condition holding, which is not always a verdict on the condition: \`cause\` says which it was — \`unmet\` (the tree
 was read and the condition was false there), \`unreadable\` (no trustworthy read, so nothing was judged) or
-\`cancelled\` — and \`note\` describes what was seen. Only \`unmet\` licenses rewriting the check. Use this after a
+\`cancelled\` — and \`note\` describes what was seen; when nothing matched, \`note\` also lists the closest elements in
+the last tree so you can fix the selector. Only \`unmet\` licenses rewriting the check. Use this after a
 tap/navigation to wait for the next screen, or before tapping an element that appears asynchronously.`,
     alwaysLoad: true,
     searchHint:

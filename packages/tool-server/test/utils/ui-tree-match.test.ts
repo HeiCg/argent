@@ -11,6 +11,9 @@ import {
   textMatches,
   treeFingerprint,
   uiTreeMatchInternals,
+  richSelectorSchema,
+  scoreElement,
+  rankNearMisses,
   type Selector,
 } from "../../src/utils/ui-tree-match";
 
@@ -1665,5 +1668,316 @@ describe("after / next (sibling) scoping", () => {
     expect(ids(findAll(tree, { text: "leaf", next: { role: "AXAnchor" } }))).toEqual(
       ids([...picked])
     );
+  });
+});
+
+describe("StringMatch object form", () => {
+  const tree = node({
+    role: "AXWindow",
+    frame: { x: 0, y: 0, width: 1, height: 1 },
+    children: [
+      node({ role: "AXButton", label: "Save Changes", identifier: "save-btn", frame: { x: 0.1, y: 0.1, width: 0.3, height: 0.05 } }),
+      node({ role: "AXStaticText", label: "save changes", frame: { x: 0.1, y: 0.2, width: 0.3, height: 0.03 } }),
+      node({ role: "AXButton", label: "Autosave", identifier: "com.example.app:id/autosave", frame: { x: 0.1, y: 0.3, width: 0.3, height: 0.05 } }),
+      node({ role: "AXTextField", value: "hello@world.com", frame: { x: 0.1, y: 0.4, width: 0.3, height: 0.05 } }),
+    ],
+  });
+  const labels = (sel: Selector): (string | undefined)[] =>
+    findAll(tree, sel).map((n) => n.label ?? n.value ?? n.identifier);
+
+  it("text.equals is a whole-value match, case-sensitive by default", () => {
+    // Two nodes read "Save Changes"/"save changes"; equals pins the exact case.
+    expect(labels({ text: { equals: "Save Changes" } })).toEqual(["Save Changes"]);
+    expect(labels({ text: { equals: "save changes" } })).toEqual(["save changes"]);
+    // A bare-string plain selector would match BOTH (case-insensitive substring).
+    expect(labels({ text: "save changes" }).sort()).toEqual(["Save Changes", "save changes"]);
+  });
+
+  it("text.caseInsensitive relaxes equals/contains to fold case", () => {
+    expect(labels({ text: { equals: "save changes", caseInsensitive: true } }).sort()).toEqual([
+      "Save Changes",
+      "save changes",
+    ]);
+    expect(labels({ text: { contains: "CHANGES", caseInsensitive: true } }).sort()).toEqual([
+      "Save Changes",
+      "save changes",
+    ]);
+    // Without the flag, contains is case-sensitive and matches neither casing.
+    expect(labels({ text: { contains: "CHANGES" } })).toEqual([]);
+  });
+
+  it("text.regex matches label or value, honoring caseInsensitive", () => {
+    expect(labels({ text: { regex: "\\w+@\\w+\\.com" } })).toEqual(["hello@world.com"]);
+    expect(labels({ text: { regex: "^SAVE", caseInsensitive: true } }).sort()).toEqual([
+      "Save Changes",
+      "save changes",
+    ]);
+    expect(labels({ text: { regex: "^SAVE" } })).toEqual([]);
+  });
+
+  it("object constraints AND together", () => {
+    expect(labels({ text: { contains: "Save", equals: "Save Changes" } })).toEqual(["Save Changes"]);
+    // contains holds but equals does not → no match.
+    expect(labels({ text: { contains: "Save", equals: "Save" } })).toEqual([]);
+  });
+
+  it("identifier object form matches the raw id verbatim — no resource-id shortcut", () => {
+    // Bare string 'autosave' matches the unqualified resource-id name...
+    expect(labels({ identifier: "autosave" })).toEqual(["Autosave"]);
+    // ...but the object equals form needs the full raw identifier.
+    expect(labels({ identifier: { equals: "autosave" } })).toEqual([]);
+    expect(labels({ identifier: { equals: "com.example.app:id/autosave" } })).toEqual(["Autosave"]);
+    expect(labels({ identifier: { contains: "autosave" } })).toEqual(["Autosave"]);
+  });
+
+  it("role object form matches the role by equals/contains", () => {
+    expect(labels({ role: { equals: "AXTextField" } })).toEqual(["hello@world.com"]);
+    expect(labels({ role: { contains: "Button", caseInsensitive: true } }).sort()).toEqual([
+      "Autosave",
+      "Save Changes",
+    ]);
+  });
+
+  it("compiles a StringMatch object regex once per tree walk", () => {
+    const nested = node({
+      role: "AXWindow",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node({ label: "Order #1", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.1 }, children: [
+          node({ label: "Order #2", frame: { x: 0.1, y: 0.2, width: 0.8, height: 0.1 } }),
+        ] }),
+        node({ label: "Nope", frame: { x: 0.1, y: 0.3, width: 0.8, height: 0.1 } }),
+      ],
+    });
+    const createRegExp = vi.spyOn(uiTreeMatchInternals, "createRegExp");
+    try {
+      expect(findAll(nested, { text: { regex: "Order #\\d+" } })).toHaveLength(2);
+      expect(createRegExp).toHaveBeenCalledOnce();
+      expect(createRegExp).toHaveBeenLastCalledWith("Order #\\d+", undefined);
+      createRegExp.mockClear();
+      expect(findAll(nested, { text: { regex: "order #\\d+", caseInsensitive: true } })).toHaveLength(2);
+      expect(createRegExp).toHaveBeenCalledOnce();
+      expect(createRegExp).toHaveBeenLastCalledWith("order #\\d+", "i");
+    } finally {
+      createRegExp.mockRestore();
+    }
+  });
+
+  it("selectorToFrame ranks an equals object as an exact match over a substring container", () => {
+    const aggregated = node({
+      role: "AXWindow",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node({ role: "AXGroup", label: "Save Changes now", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.5 } }),
+        node({ role: "AXStaticText", label: "Save Changes", frame: { x: 0.2, y: 0.2, width: 0.2, height: 0.03 } }),
+      ],
+    });
+    expect(selectorToFrame(aggregated, { text: { equals: "Save Changes" } })).toMatchObject({ y: 0.2 });
+  });
+});
+
+describe("containsDescendant scoping", () => {
+  const cards = node({
+    role: "AXWindow",
+    frame: { x: 0, y: 0, width: 1, height: 1 },
+    children: [
+      node({
+        role: "AXGroup",
+        identifier: "profile-card",
+        frame: { x: 0, y: 0.1, width: 1, height: 0.3 },
+        children: [node({ role: "AXButton", label: "Delete", frame: { x: 0.1, y: 0.2, width: 0.2, height: 0.05 } })],
+      }),
+      node({
+        role: "AXGroup",
+        identifier: "billing-card",
+        frame: { x: 0, y: 0.5, width: 1, height: 0.3 },
+        children: [node({ role: "AXButton", label: "Edit", frame: { x: 0.1, y: 0.6, width: 0.2, height: 0.05 } })],
+      }),
+    ],
+  });
+  const ids = (ns: DescribeNode[]): (string | undefined)[] => ns.map((n) => n.identifier);
+
+  it("keeps only elements whose frame contains a matching descendant", () => {
+    expect(ids(findAll(cards, { role: "AXGroup", containsDescendant: { text: "Delete" } }))).toEqual([
+      "profile-card",
+    ]);
+    expect(ids(findAll(cards, { role: "AXGroup", containsDescendant: { text: "Edit" } }))).toEqual([
+      "billing-card",
+    ]);
+  });
+
+  it("is the geometric dual of within — it works on the flattened flow tree shape", () => {
+    const flat = node({
+      role: "Screen",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node({ identifier: "billing-card", role: "AXGroup", frame: { x: 0, y: 0.5, width: 1, height: 0.3 } }),
+        node({ label: "Delete", frame: { x: 0.1, y: 0.2, width: 0.2, height: 0.05 } }),
+        node({ label: "Delete", frame: { x: 0.1, y: 0.6, width: 0.2, height: 0.05 } }),
+      ],
+    });
+    expect(ids(findAll(flat, { role: "AXGroup", containsDescendant: { text: "Delete" } }))).toEqual([
+      "billing-card",
+    ]);
+  });
+
+  it("requires a DISTINCT descendant — a node cannot contain itself", () => {
+    expect(findAll(cards, { role: "AXGroup", containsDescendant: { role: "AXGroup" } })).toEqual([]);
+  });
+
+  it("a missing descendant yields no matches", () => {
+    expect(findAll(cards, { role: "AXGroup", containsDescendant: { text: "no-such" } })).toEqual([]);
+  });
+
+  it("nests recursively — a container holding a container that holds a leaf", () => {
+    const nested = node({
+      role: "Screen",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node({
+          identifier: "outer",
+          role: "AXGroup",
+          frame: { x: 0, y: 0, width: 1, height: 0.5 },
+          children: [
+            node({
+              identifier: "inner",
+              role: "AXGroup",
+              frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.3 },
+              children: [node({ label: "Target", frame: { x: 0.2, y: 0.2, width: 0.2, height: 0.05 } })],
+            }),
+          ],
+        }),
+        node({ identifier: "lonely", role: "AXGroup", frame: { x: 0, y: 0.6, width: 1, height: 0.3 } }),
+      ],
+    });
+    expect(
+      ids(
+        findAll(nested, {
+          identifier: "outer",
+          containsDescendant: { role: "AXGroup", containsDescendant: { text: "Target" } },
+        })
+      )
+    ).toEqual(["outer"]);
+  });
+});
+
+describe("index selection", () => {
+  const rows = node({
+    role: "AXWindow",
+    frame: { x: 0, y: 0, width: 1, height: 1 },
+    children: [
+      node({ role: "AXButton", label: "Row", identifier: "r0", frame: { x: 0.1, y: 0.1, width: 0.2, height: 0.05 } }),
+      node({ role: "AXButton", label: "Row", identifier: "r1", frame: { x: 0.1, y: 0.2, width: 0.2, height: 0.05 } }),
+      node({ role: "AXButton", label: "Row", identifier: "r2", frame: { x: 0.1, y: 0.3, width: 0.2, height: 0.05 } }),
+    ],
+  });
+
+  it("picks the Nth match in pre-order flatten", () => {
+    expect(findAll(rows, { text: "Row" }).map((n) => n.identifier)).toEqual(["r0", "r1", "r2"]);
+    expect(findAll(rows, { text: "Row", index: 0 }).map((n) => n.identifier)).toEqual(["r0"]);
+    expect(findAll(rows, { text: "Row", index: 2 }).map((n) => n.identifier)).toEqual(["r2"]);
+  });
+
+  it("an out-of-range index yields no match", () => {
+    expect(findAll(rows, { text: "Row", index: 5 })).toEqual([]);
+  });
+
+  it("index overrides selectorToFrame's default best-match ranking", () => {
+    // Default ranking would pick the smallest/topmost; index: 1 forces the middle row.
+    expect(selectorToFrame(rows, { text: "Row", index: 1 })).toMatchObject({ y: 0.2 });
+  });
+
+  it("applies AFTER scopes and containsDescendant", () => {
+    const tree = node({
+      role: "AXWindow",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node({ role: "AXGroup", identifier: "card", frame: { x: 0, y: 0.4, width: 1, height: 0.5 }, children: [
+          node({ role: "AXButton", label: "Go", identifier: "in-a", frame: { x: 0.1, y: 0.5, width: 0.2, height: 0.05 } }),
+          node({ role: "AXButton", label: "Go", identifier: "in-b", frame: { x: 0.1, y: 0.6, width: 0.2, height: 0.05 } }),
+        ] }),
+        node({ role: "AXButton", label: "Go", identifier: "out", frame: { x: 0.1, y: 0.1, width: 0.2, height: 0.05 } }),
+      ],
+    });
+    expect(findAll(tree, { text: "Go", within: { identifier: "card" } }).map((n) => n.identifier)).toEqual(["in-a", "in-b"]);
+    expect(findAll(tree, { text: "Go", within: { identifier: "card" }, index: 1 }).map((n) => n.identifier)).toEqual(["in-b"]);
+  });
+});
+
+describe("near-miss scorer", () => {
+  const tree = node({
+    role: "AXWindow",
+    frame: { x: 0, y: 0, width: 1, height: 1 },
+    children: [
+      node({ role: "AXButton", label: "Log In", identifier: "login", frame: { x: 0.1, y: 0.1, width: 0.2, height: 0.05 } }),
+      node({ role: "AXButton", label: "Log Out", identifier: "logout", frame: { x: 0.1, y: 0.2, width: 0.2, height: 0.05 } }),
+      node({ role: "AXStaticText", label: "Welcome", frame: { x: 0.1, y: 0.3, width: 0.2, height: 0.03 } }),
+    ],
+  });
+
+  it("scores an exact field match higher than an almost-match, absent fields zero", () => {
+    const login = tree.children[0];
+    const logout = tree.children[1];
+    const welcome = tree.children[2];
+    // Selector wants label "Log In" and role AXButton.
+    const sel: Selector = { text: { equals: "Log In" }, role: "AXButton" };
+    // login matches both fields exactly → 2 + 2 = 4.
+    expect(scoreElement(login, sel)).toBe(4);
+    // logout: role matches (2); "Log Out" is neither substring of "Log In" nor
+    // vice-versa, so the label adds nothing → 2. It still ranks as a near-miss.
+    expect(scoreElement(logout, sel)).toBe(2);
+    // welcome: role not AXButton (0), label unrelated (0) = 0.
+    expect(scoreElement(welcome, sel)).toBe(0);
+    // A substring near-miss earns the +1 tier: role exact (2) + "Login" is a
+    // substring of "Login Button" (1) = 3, even though equals did not hold.
+    const nearLabel = node({ role: "AXButton", label: "Login Button", frame: { x: 0, y: 0, width: 0.1, height: 0.1 } });
+    expect(scoreElement(nearLabel, { text: { equals: "Login" }, role: "AXButton" })).toBe(3);
+  });
+
+  it("ignores index / containsDescendant / scopes — only identity fields score", () => {
+    const login = tree.children[0];
+    expect(scoreElement(login, { text: "Log In", index: 2, within: { role: "AXWindow" } })).toBe(
+      scoreElement(login, { text: "Log In" })
+    );
+  });
+
+  it("rankNearMisses returns closest first, drops zero-score, is stable on ties", () => {
+    const ranked = rankNearMisses(tree, { text: { equals: "Log In" }, role: "AXButton" });
+    expect(ranked.map((n) => n.identifier)).toEqual(["login", "logout"]);
+    // Welcome scores 0 and is excluded.
+    expect(ranked.every((n) => n.label !== "Welcome")).toBe(true);
+  });
+
+  it("rankNearMisses caps at the limit", () => {
+    const many = node({
+      role: "AXWindow",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: Array.from({ length: 30 }, (_, i) =>
+        node({ role: "AXButton", label: `Item ${i}`, frame: { x: 0.1, y: i * 0.03, width: 0.2, height: 0.02 } })
+      ),
+    });
+    expect(rankNearMisses(many, { text: "Item", role: "AXButton" }, 10)).toHaveLength(10);
+  });
+});
+
+describe("richSelectorSchema", () => {
+  it("accepts plain strings, object matchers, containsDescendant, and index", () => {
+    expect(richSelectorSchema.safeParse({ text: "Login" }).success).toBe(true);
+    expect(richSelectorSchema.safeParse({ text: { contains: "Log", caseInsensitive: true } }).success).toBe(true);
+    expect(richSelectorSchema.safeParse({ identifier: { equals: "x" }, index: 1 }).success).toBe(true);
+    expect(richSelectorSchema.safeParse({ role: "AXGroup", containsDescendant: { text: "Delete" } }).success).toBe(true);
+  });
+
+  it("rejects an empty selector, an index-only selector, and unknown keys", () => {
+    expect(richSelectorSchema.safeParse({}).success).toBe(false);
+    expect(richSelectorSchema.safeParse({ index: 0 }).success).toBe(false);
+    expect(richSelectorSchema.safeParse({ text: { equal: "typo" } }).success).toBe(false);
+    // Flow-only relations are not part of the tool schema.
+    expect(richSelectorSchema.safeParse({ text: "x", within: { text: "y" } }).success).toBe(false);
+  });
+
+  it("rejects an object matcher with no constraint", () => {
+    expect(richSelectorSchema.safeParse({ text: {} }).success).toBe(false);
+    expect(richSelectorSchema.safeParse({ text: { caseInsensitive: true } }).success).toBe(false);
   });
 });

@@ -105,6 +105,15 @@ function formatLine(n: DescribeNode, indent: number): string {
   return `${pad}${n.role}${annotated}  ${fmtFrame(n.frame)}`;
 }
 
+/**
+ * One node rendered in the describe tree's line format, unindented. Used by
+ * `await-ui-element`'s not-found diagnostics so a near-miss candidate reads
+ * exactly as `describe` would print it (role, label/value/id, flags, frame).
+ */
+export function formatNodeLine(node: DescribeNode): string {
+  return formatLine(node, 0);
+}
+
 function renderFlat(root: DescribeNode, contentRoles: ReadonlySet<string>): string[] {
   return root.children
     .filter((n) => shouldEmit(n, contentRoles))
