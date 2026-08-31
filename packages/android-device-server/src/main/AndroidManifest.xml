@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Loopback ServerSocket bind; reached from the host via `adb forward`. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Argent Device Control"
+        android:allowBackup="false" />
+
+    <!--
+      Custom Instrumentation launched by the host with:
+        adb shell am instrument -w com.argent.devicecontrol/.DeviceControlInstrumentation
+      Self-targeting (single APK), mirroring argent's SnapshotInstrumentation pattern.
+    -->
+    <instrumentation
+        android:name=".DeviceControlInstrumentation"
+        android:targetPackage="com.argent.devicecontrol"
+        android:handleProfiling="false"
+        android:label="Argent Device Control Server" />
+
+</manifest>

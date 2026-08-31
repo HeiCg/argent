@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { FAILURE_CODES, FailureError, getFailureSignal } from "@argent/registry";
-import { gestureTapTool } from "../src/tools/gesture-tap";
+import { FAILURE_CODES, FailureError, getFailureSignal, Registry } from "@argent/registry";
+import { createGestureTapTool } from "../src/tools/gesture-tap";
+
+const gestureTapTool = createGestureTapTool(new Registry());
 import { gestureDragTool } from "../src/tools/gesture-drag";
 import { gestureScrollTool } from "../src/tools/gesture-scroll";
 

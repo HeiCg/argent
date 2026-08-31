@@ -15,6 +15,7 @@
     "build:ios-binaries": "bash packages/native-devtools-ios/scripts/build.sh dev",
     "build:ios-binaries:tcp": "bash packages/native-devtools-ios/scripts/build.sh dev --transport tcp",
     "build:android-binaries": "bash packages/native-devtools-android/scripts/build.sh",
+    "build:android-device-server": "bash packages/android-device-server/scripts/build.sh",
     "pack": "node scripts/pack-mcp.cjs",
     "pack:mcp": "node scripts/pack-mcp.cjs",
     "pack:mcp:local": "npm run download:simulator-server && npm run build:ios-binaries && npm run build:ios-binaries:tcp && npm run build:android-binaries && npm run download:trace-processor && npm run build && npm run build -w @swmansion/argent && npm pack -w @swmansion/argent --pack-destination .",

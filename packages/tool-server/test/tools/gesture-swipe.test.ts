@@ -21,7 +21,10 @@ vi.mock("../../src/utils/simulator-client", () => ({
   },
 }));
 
-import { gestureSwipeTool } from "../../src/tools/gesture-swipe";
+import { createGestureSwipeTool } from "../../src/tools/gesture-swipe";
+
+// open-device-server flag is off by default here, so the bound registry is unused.
+const gestureSwipeTool = createGestureSwipeTool(new Registry());
 
 const services = { simulatorServer: {} } as never;
 // Platform is classified from the id's shape, so an iOS-shaped id is what proves

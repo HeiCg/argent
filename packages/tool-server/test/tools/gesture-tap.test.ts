@@ -15,7 +15,12 @@ vi.mock("../../src/utils/simulator-client", () => ({
   },
 }));
 
-import { gestureTapTool } from "../../src/tools/gesture-tap";
+import { Registry } from "@argent/registry";
+import { createGestureTapTool } from "../../src/tools/gesture-tap";
+
+// The open-device-server flag is off by default, so `registry` is never touched
+// here; a bare Registry is enough to build the tool.
+const gestureTapTool = createGestureTapTool(new Registry());
 
 const touchServices = { simulatorServer: {} } as never;
 

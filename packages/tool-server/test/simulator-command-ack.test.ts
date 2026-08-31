@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, Registry } from "@argent/registry";
 import { sendCommand } from "../src/utils/simulator-client";
 import type { SimulatorServerApi } from "../src/blueprints/simulator-server";
-import { gestureTapTool } from "../src/tools/gesture-tap";
-import { gestureSwipeTool } from "../src/tools/gesture-swipe";
+import { createGestureTapTool } from "../src/tools/gesture-tap";
+import { createGestureSwipeTool } from "../src/tools/gesture-swipe";
+
+const gestureTapTool = createGestureTapTool(new Registry());
+const gestureSwipeTool = createGestureSwipeTool(new Registry());
 
 type Reply = "ok" | "error" | "silent" | "withhold";
 

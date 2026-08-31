@@ -1,0 +1,7 @@
+{
+  "packageName": "com.argent.devicecontrol",
+  "instrumentationRunner": "com.argent.devicecontrol/.DeviceControlInstrumentation",
+  "versionName": "0.1.0",
+  "versionCode": 1,
+  "installFlags": ["-r", "-t"]
+}

@@ -19,7 +19,7 @@ import { FAILURE_CODES, Registry, getFailureSignal } from "@argent/registry";
 
 import { createRunFlowTool } from "../../src/tools/flows/flow-run";
 import { serializeFlow, type FlowStep } from "../../src/tools/flows/flow-utils";
-import { gestureSwipeTool } from "../../src/tools/gesture-swipe";
+import { createGestureSwipeTool } from "../../src/tools/gesture-swipe";
 import { gestureDragTool } from "../../src/tools/gesture-drag";
 import { createRunSequenceTool } from "../../src/tools/run-sequence";
 
@@ -43,7 +43,7 @@ let tmpDir: string;
 
 function buildRegistry(): Registry {
   const registry = new Registry();
-  registry.registerTool(gestureSwipeTool);
+  registry.registerTool(createGestureSwipeTool(registry));
   registry.registerTool(gestureDragTool);
   // The real batching tool, built as setup-registry builds it: it is the
   // recorded shape that carries a gesture's args one level down.

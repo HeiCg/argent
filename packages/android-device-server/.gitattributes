@@ -1,0 +1,2 @@
+bin/*.apk binary
+gradle/wrapper/gradle-wrapper.jar binary

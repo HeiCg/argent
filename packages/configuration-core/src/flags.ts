@@ -73,6 +73,11 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "Overlay the argent corner watermark on recorded screen videos. On by default; turn it off with `argent disable video-watermark`.",
     defaultEnabled: true,
   },
+  {
+    name: "open-device-server",
+    description:
+      "Route Android describe and touch/type input through the open-source on-device control server (`@argent/android-device-server`) instead of the uiautomator dump and the proprietary simulator-server. When on and the server is reachable, `describe` reads its accessibility tree (source: open-device-server) and gesture-tap / gesture-swipe / keyboard fall back to the current path only if the server is unavailable. Off by default; requires the built server APK.",
+  },
 ];
 
 export function getFlagDefinition(
