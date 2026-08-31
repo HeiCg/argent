@@ -241,33 +241,11 @@ function adaptFullHierarchy(raw: unknown): {
 }
 
 /**
- * Depth ceiling for the flow selector tree. It counts raw UIView nesting, and
- * React Native wrappers alone (nested RNSScreenStackView/RNSScreenView plus a
- * root or drawer wrapper) run 40 to 60 levels deep. Under the old cap of 40, the
- * device truncated visible elements of a production app at depths 41 to 62, so
- * `id:` and `text:` selectors did not resolve and only coordinate taps worked.
- * Truncation is silent, so this cap keeps headroom.
- *
- * A deeper tree also moves `text` verdicts. A `text` check on an identified
- * container reads that container's hoisted `subtreeText`, and deeper descendants
- * now hoist into it. `contains` still passes, but `equals` can flip to a
- * failure: the fallback in `evaluateCondition` (`ui-tree-match.ts`) also tries
- * the node's own `label`/`value`, which a testID'd wrapper does not have. Move
- * such a check to the leaf that holds the text, or relax it to `contains`.
- *
- * The cap also makes failure reasons longer. The tree itself never reaches a
- * tool result, but text derived from it does: `assertReason`
- * (`flow-actions.ts`) quotes the matched node's hoisted `subtreeText` verbatim,
- * and nothing truncates it. On a testID'd collection view of 60 rows, a failing
- * `assert { text }` grew from 87 to 466 characters. `compatibilityMissNote`
- * adds a fixed sentence on top of that and quotes no tree text of its own: on
- * the arm a `text` condition reaches it leaves the quote to `assertReason`, and
- * its `exists`/`visible` arm reads `label` and `value` only. So a near-miss
- * grows at the same rate as the plain failure, not at twice it.
- *
- * The last cost is the getFullHierarchy payload, which is field-limited
- * ({@link FULL_HIERARCHY_FIELDS}): about 11KB at depth 40 and 15KB at depth 48.
- * Past the real depth of the tree, a higher cap costs nothing.
+ * Depth ceiling for the flow selector tree, counting raw UIView nesting. React
+ * Native wrappers alone run 40 to 60 levels deep, so the old cap of 40 silently
+ * truncated a production app's visible elements and left `id:` and `text:`
+ * selectors unresolvable. Headroom past a tree's real depth is free: the
+ * payload is field-limited (see {@link FULL_HIERARCHY_FIELDS}).
  */
 const FLOW_TREE_MAX_DEPTH = 100;
 
@@ -599,8 +577,8 @@ async function explainTargetingFailure(
   device: DeviceInfo
 ): Promise<Error> {
   const failureCode = getFailureSignal(err)?.error_code;
-  const terminate = await terminateCommand(device);
   if (failureCode === FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS) {
+    const terminate = await terminateCommand(device);
     // The reason does not offer to background the other apps. They stay
     // connected, so the set stays ambiguous, and iOS then suspends one until it
     // no longer answers the state probe. That turns this failure into the
@@ -642,18 +620,20 @@ async function explainTargetingFailure(
   // cannot help when another app is the stale one.
   const stillConnected = nativeApi.listConnectedBundleIds();
   if (stillConnected.length > 0) {
+    // Say this only when another connection exists to clear, and name a command
+    // that exists: argent has no terminate tool, and restart-app would bring the
+    // other app to the front.
+    const clearOthers =
+      stillConnected.length > 1
+        ? ` To clear the others use \`${await terminateCommand(device)}\` — argent ` +
+          `exposes no terminate tool, and restart-app would bring that app to the front instead.`
+        : ``;
     return wrapPreservingFailure(
       `could not read the state of the native-devtools-connected apps, so none could be ` +
         `auto-targeted (${firstClause(err)}). Connected: ${cappedList(stillConnected)}. ` +
         `They are instrumented — do not relaunch. A suspended app stops answering: foreground ` +
         `the app the flow drives with launch-app (it does not terminate), then retry.` +
-        // Say this only when another connection exists to clear, and name a
-        // command that exists: argent has no terminate tool, and restart-app
-        // would bring the other app to the front.
-        (stillConnected.length > 1
-          ? ` To clear the others use \`${terminate}\` — argent ` +
-            `exposes no terminate tool, and restart-app would bring that app to the front instead.`
-          : ``),
+        clearOthers,
       err
     );
   }
@@ -688,6 +668,11 @@ async function explainTargetingFailure(
  * knows its device and picks the app to clear. A default-set device gets the
  * plain command, so its reason keeps the same size budget (see
  * {@link MAX_TARGETING_REASON_CHARS}).
+ *
+ * Call this only from a branch that interpolates the result. With additional
+ * sets configured, a default-set UDID matches none of them, so `deviceSetForUdid`
+ * caches nothing and re-runs the whole `simctl list devices` sweep on every
+ * call - seconds, and a failing `await:` rebuilds its reason once per poll.
  */
 async function terminateCommand(device: DeviceInfo): Promise<string> {
   const prefix = simctlPrefix(await deviceSetForUdid(device.id));

@@ -11,6 +11,7 @@ import {
   identifierMatches,
   quoteScreenText,
   includesCI,
+  selectorMissNote,
   selectorToFrame,
   ignorableTextNote,
   textMatches,
@@ -181,27 +182,56 @@ describe("foldText", () => {
     expect(foldText("PLN 42.00")).not.toBe(foldText("PLN 42.0"));
   });
 
-  it("clears at its cap, and keeps folding correctly afterwards", () => {
-    // The cache clears completely at FOLD_CACHE_MAX entries. The loop finds the
-    // cap, so a change to the cap cannot make the test miss the clear.
+  it("bounds itself at its cap, and keeps folding correctly afterwards", () => {
+    // The cache rotates its young generation at FOLD_CACHE_MAX entries. The
+    // loop finds the bound, so a change to the cap cannot make the test miss it.
     const probe = `Amount, PLN${NBSP}42.00`;
     const before = foldText(probe);
     const LIMIT = 200_000; // far above any plausible cap; a bound, not a target
-    let cleared = false;
+    let peak = 0;
+    let rotated = false;
     let previous = uiTreeMatchInternals.foldCacheSize();
-    for (let i = 0; i < LIMIT && !cleared; i++) {
+    for (let i = 0; i < LIMIT; i++) {
       foldText(`filler-${i}`);
       const size = uiTreeMatchInternals.foldCacheSize();
-      // The cache grows by one for each distinct key, so a drop is the clear.
-      cleared = size < previous;
+      // Two generations, so the total falls only when the older one is dropped.
+      rotated = rotated || size < previous;
+      peak = Math.max(peak, size);
       previous = size;
     }
-    expect(cleared).toBe(true);
-    expect(uiTreeMatchInternals.foldCacheSize()).toBeLessThan(LIMIT);
+    expect(rotated).toBe(true);
+    expect(peak).toBeLessThan(LIMIT / 2);
     expect(foldText(probe)).toBe(before);
     expect(equalsCI(probe, "Amount, PLN 42.00")).toBe(true);
-    // A bidi-sensitive string still takes the conditional path after a clear.
+    // A bidi-sensitive string still takes the conditional path after a rotation.
     expect(equalsCI("5‏-3", "5-3")).toBe(false);
+  });
+
+  it("keeps a warm entry through a wave of keys that never repeat", () => {
+    // A screen with a ticking relative time on every row emits more distinct
+    // strings per pass than the cap. One map cleared wholesale lost every stable
+    // label beside them, and the next pass refolded the whole tree cold - every
+    // pass, since each wave wiped the map again.
+    const stable = `Amount, PLN${NBSP}42.00 warm-probe`;
+    const expected = foldText(stable);
+    const WAVE = 40_000; // more than the cap, so each pass rotates at least once
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < WAVE; i++) foldText(`row ${pass}-${i} - 2 minutes ago`);
+      const folded = uiTreeMatchInternals.foldCacheMisses();
+      expect(foldText(stable)).toBe(expected);
+      // Read from the cache, not folded again.
+      expect(uiTreeMatchInternals.foldCacheMisses()).toBe(folded);
+    }
+  });
+
+  it("bounds itself by CHARACTERS as well, because a key holds the original string", () => {
+    // An entry is not a fixed size: the key retains the string that was folded,
+    // and one card's label has reached 11,532 characters. Counting entries alone
+    // let the map hold megabytes of dead originals for the process's lifetime.
+    const LONG = 12_000;
+    const ENTRIES = 300; // far below the entry cap, far above the character cap
+    for (let i = 0; i < ENTRIES; i++) foldText(`${i}`.padEnd(LONG, "x"));
+    expect(uiTreeMatchInternals.foldCacheSize()).toBeLessThan(ENTRIES);
   });
 });
 
@@ -355,6 +385,19 @@ describe("bidi wrappers", () => {
       expect(equalsCI(`${LRE}${HEB}${PDF}`, HEB)).toBe(false);
     });
 
+    it("matches a wrapper half only where the label carries that half", () => {
+      // What the skill reference states about a needle copied out of a wrapped
+      // label. A half at the label's own edge matches; the same half anywhere
+      // else does not, and the bare text always does.
+      const HEB = "שלום";
+      const label = `${LRE}@alice ${HEB}${PDF}`;
+      expect(includesCI(label, `${LRE}@alice`)).toBe(true);
+      expect(includesCI(label, `${HEB}${PDF}`)).toBe(true);
+      expect(includesCI(label, `alice ${PDF}`)).toBe(false);
+      expect(includesCI(label, `${LRE}alice`)).toBe(false);
+      expect(includesCI(label, "@alice")).toBe(true);
+    });
+
     it("still folds an LTR wrapper around text that merely LOOKS exotic", () => {
       // No strong RTL character anywhere, so the wrapper is inert.
       expect(equalsCI(`${LRE}Ελένη Παπαδοπούλου${PDF}`, "Ελένη Παπαδοπούλου")).toBe(true);
@@ -376,6 +419,90 @@ describe("compatibilityVariantOf", () => {
   it("says nothing when the strings already fold together, or genuinely differ", () => {
     expect(compatibilityVariantOf(`PLN${NBSP}42`, "PLN 42")).toBe(false);
     expect(compatibilityVariantOf("Save", "Saved")).toBe(false);
+  });
+});
+
+describe("a miss with BOTH causes is explained by both", () => {
+  // The two questions used to partition the misses: a never-folded invisible
+  // survives NFKC and defeats the typographic gate, while the rendered `…`
+  // outlives the ignorable strip and defeats the codepoint gate. Hyphenation
+  // and truncation are plausible together, so the pair reached a bare reason.
+  const SHY = "­";
+  const RLM = "‏";
+
+  it("names the code points AND the typographic variant, in that order", () => {
+    const note = confusableTextNote(`Load${SHY}ing…`, "Loading...")!;
+    expect(note).toBeDefined();
+    expect(note).toContain("U+00AD");
+    expect(note).toContain("typographic variant");
+    expect(note.indexOf("U+00AD")).toBeLessThan(note.indexOf("typographic variant"));
+  });
+
+  it("does the same for the substring comparator, which is the default", () => {
+    const note = confusableTextNoteIn(`${RLM}Loa${RLM}ding…`, "Loading...")!;
+    expect(note).toContain("U+200F");
+    expect(note).toContain("typographic variant");
+  });
+
+  it("names the character that blocks, not every ignorable in the label", () => {
+    // With the variant left out of the necessity test, no single character was
+    // ever found to block and the note fell back to listing them all.
+    const note = confusableTextNote(`${RLM}Load${SHY}ing…`, `${RLM}Loading...`)!;
+    expect(note).toContain("U+00AD");
+    expect(note).toContain("changes what IS drawn");
+  });
+
+  it("still explains a selector miss that carries both", () => {
+    const nodes: DescribeNode[] = [
+      {
+        role: "button",
+        label: `Load${SHY}ing…`,
+        frame: { x: 0, y: 0, width: 0.4, height: 0.08 },
+        children: [],
+      },
+    ];
+    const note = selectorMissNote(nodes, "Loading...")!;
+    expect(note).toContain("U+00AD");
+    expect(note).toContain("typographic variant");
+  });
+
+  it("lets the variant clause account for the rest, not the case/spacing one", () => {
+    // What is left of the pair IS the typographic variant, so the two clauses
+    // would contradict each other.
+    const note = confusableTextNote(`Load${SHY}ing…`, "Loading...")!;
+    expect(note).toContain("typographic variant");
+    expect(note).not.toContain("what is left differs");
+  });
+
+  it("asks the invisible question of every candidate before the typographic one", () => {
+    // The rationale promises the codepoint answer first, because it names exact
+    // characters. Nothing enforced it: swapping the two loops in
+    // selectorMissNote left the whole selector suite green, while an author
+    // whose screen holds both kinds of near-miss got the vaguer answer.
+    const CGJ = "\u034F";
+    const leaf = (label: string, identifier: string): DescribeNode => ({
+      role: "button",
+      label,
+      identifier,
+      frame: { x: 0, y: 0, width: 0.4, height: 0.08 },
+      children: [],
+    });
+    const variantOnly = leaf("Ｓave changes", "fullwidth"); // a typographic variant
+    const invisibleOnly = leaf(`Save${CGJ} changes`, "cgj"); // a blocking invisible
+    for (const candidates of [
+      [variantOnly, invisibleOnly],
+      [invisibleOnly, variantOnly],
+    ]) {
+      const note = selectorMissNote(candidates, "Save changes")!;
+      expect(note).toContain("U+034F");
+      expect(note).not.toContain("typographic");
+    }
+  });
+
+  it("leaves a single-cause miss with its single explanation", () => {
+    expect(confusableTextNote(`Load${SHY}ing`, "Loading")).not.toContain("typographic variant");
+    expect(confusableTextNote("Loading…", "Loading...")).toBeUndefined();
+    expect(compatibilityVariantOf("Loading…", "Loading...")).toBe(true);
   });
 });
 
@@ -587,6 +714,31 @@ describe("confusableTextNote", () => {
     expect(confusableTextNote("ﬁle", "file")).toBeUndefined();
   });
 
+  it("drops the word ONLY when a case difference stands beside the invisible one", () => {
+    // The gate accepts a pair the COMPARATOR equates, so case can differ too -
+    // and the dumps print it. Claiming the strings differ only in invisible
+    // characters is then false against the two lists in the same sentence.
+    const note = confusableTextNote(`Home${CGJ}`, "home");
+    expect(note).toContain("U+0048");
+    expect(note).toContain("U+0068");
+    expect(note).not.toContain("differ only in invisible characters");
+    expect(note).toContain("differ in invisible characters");
+    expect(note).toContain("what is left differs in case, spacing or composition");
+  });
+
+  it("keeps ONLY when nothing but the invisible characters differs", () => {
+    const note = confusableTextNote(`home${CGJ}`, "home");
+    expect(note).toContain("differ only in invisible characters");
+    expect(note).not.toContain("what is left differs");
+  });
+
+  it("drops the word ONLY from the DIRECTIONAL lead on the same grounds", () => {
+    const note = confusableTextNote(`Home${RLM}`, "home");
+    expect(note).toContain("differ in directional formatting");
+    expect(note).not.toContain("differ only in directional formatting");
+    expect(note).toContain("what is left differs in case, spacing or composition");
+  });
+
   it("says nothing for a difference the fold already absorbs", () => {
     expect(equalsCI(`PLN${NBSP}42`, "PLN 42")).toBe(true);
     expect(confusableTextNote(`PLN${NBSP}42`, "PLN 42")).toBeUndefined();
@@ -783,6 +935,37 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
     expect(selectorToFrame(screen([suffixId, exactId]), selector)).toMatchObject({ width: 0.4 });
   });
 
+  it("keeps ONE literal field below TWO folded ones, which decides the tap centre", () => {
+    // The existing grade tests all catch a DEMOTION. Raising EXACT_LITERAL
+    // instead survived every one of them, yet it moves what an action targets:
+    // at the sum boundary the large container beats the small leaf outright
+    // rather than tying with it and losing the smallest-frame tiebreak.
+    const WORD_JOINER = "\u2060";
+    const container: DescribeNode = {
+      role: "gridcell", // matches `cell` as a substring only, so it grades zero
+      label: "Settings",
+      identifier: "container",
+      frame: { x: 0, y: 0, width: 0.9, height: 0.5 },
+      children: [],
+    };
+    const leaf: DescribeNode = {
+      role: `ce${ZWSP}ll`, // folds to `cell`
+      label: `${WORD_JOINER}Settings`, // folds to `settings`
+      identifier: "leaf",
+      frame: { x: 0.4, y: 0.2, width: 0.08, height: 0.05 },
+      children: [],
+    };
+    const selector = { text: "Settings", role: "cell" };
+    // 2 for the container's one literal field, 1 + 1 for the leaf's two folded
+    // ones: a tie, which the smallest frame then settles.
+    expect(selectorToFrame(screen([container, leaf]), selector)).toMatchObject({
+      width: 0.08,
+    });
+    expect(selectorToFrame(screen([leaf, container]), selector)).toMatchObject({
+      width: 0.08,
+    });
+  });
+
   it("grades a literal role above one only the fold equates", () => {
     // `role` is a folded substring test, so both roles match and only the grade
     // separates them. The literal node is again the larger one.
@@ -895,6 +1078,31 @@ describe("the character sets are pinned member by member, not by a representativ
       expect(quoteScreenText(`شارع${ch}b`), cp).toBe(`شارع<${cp}>b`);
     }
     expect(quoteScreenText("Add more languages…")).toBe("Add more languages…");
+  });
+
+  it("names a control character rather than putting a raw byte in the reply", () => {
+    // Cc is not Default_Ignorable_Code_Point, so DEL and the C0 controls fell
+    // outside every question here - and the quote passed them through into the
+    // tool's JSON and the log line beside it. A copy-paste out of a log or a
+    // PDF is the usual source, and DEL is legal in HTML text.
+    const DEL = "\u007F";
+    const NUL = "\u0000";
+    expect(quoteScreenText(`Sign${DEL} in`)).toBe("Sign<U+007F> in");
+    expect(quoteScreenText(`Save${NUL} file`)).toBe("Save<U+0000> file");
+    expect(quoteScreenText("Save\u001B[0m")).toBe("Save<U+001B>[0m");
+    // The whitespace members fold to a space or a break, so they stay as they
+    // are: naming one would print ASCII the comparison does not want back.
+    expect(quoteScreenText("a\tb\nc")).toBe("a\tb\nc");
+  });
+
+  it("names a control character in the codepoint note as well", () => {
+    const DEL = "\u007F";
+    expect(equalsCI(`Sign${DEL} in`, "sign in")).toBe(false);
+    const note = confusableTextNote(`Sign${DEL} in`, "sign in")!;
+    expect(note).toContain("U+007F");
+    expect(note).toContain("invisible characters");
+    // And it stays silent when the control is not the only thing in the way.
+    expect(confusableTextNote(`Sign${DEL}in`, "sign in")).toBeUndefined();
   });
 
   it("DROPS an LTR wrapper the fold strips, rather than naming it", () => {
