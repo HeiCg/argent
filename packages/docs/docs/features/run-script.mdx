@@ -47,11 +47,13 @@ for (let i = 0; i < 20; i++) {
 await ui.tap({ text: "Settings" });
 ```
 
-Use a secret placeholder to type a credential. Argent fills the value from your environment. The value does not enter the context of the agent:
+Use a secret placeholder to type a credential. Argent fills the value from your environment. The placeholder keeps the value out of the `fill` call itself:
 
 ```js
 await ui.fill({ identifier: "password" }, "{{secret:APP_PASSWORD}}");
 ```
+
+The protection covers only that call. A later `ui.describe` can read the typed value from a visible field, and `console.log` can print it. Do not read or log a field that holds a secret.
 
 ## Isolation
 
@@ -70,6 +72,6 @@ On success, the tool returns `{ completed: true, logs, steps }`. On failure, the
 - `RUN_SCRIPT_TIMEOUT` — the run exceeded `timeout_ms`, and Argent terminated the process.
 - `RUN_SCRIPT_STEP_FAILED` — a `ui.*` call could not act on the current screen.
 
-Argent captures one screenshot and one element tree after the whole run, the same as for `run-sequence`. When the script types a secret, Argent skips this capture. Thus the resolved value does not return into the context of the agent.
+After the whole run, Argent captures one screenshot and one element tree, the same as for `run-sequence`. Each capture occurs only when your automatic-capture settings enable it. When the script types a secret, Argent skips the enabled captures for that run. Thus the resolved value does not return into the context of the agent through the final capture.
 
 The [tools reference](/docs/reference/tools) lists `run-script` with the other interaction tools.
