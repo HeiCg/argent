@@ -279,6 +279,58 @@ describe("run-script runtime", () => {
     expect(result.logs.startsWith("…")).toBe(true);
   }, 15000);
 
+  it("carries the console tail into the timeout failure", async () => {
+    // The marker is logged before the child blocks its own event loop, so only a
+    // record streamed to the parent as it is produced can survive the kill — the
+    // child never gets to send its final logs.
+    const registry = mockRegistry();
+    const marker = "before-the-loop-marker-42";
+    const err = await runScript({
+      registry,
+      device: resolveDevice(IOS),
+      script: `console.log(${JSON.stringify(marker)}); while (true) {}`,
+      timeoutMs: 300,
+      ctx: undefined,
+    }).catch((e) => e);
+    expect(getFailureSignal(err)?.error_code).toBe("RUN_SCRIPT_TIMEOUT");
+    expect((err as Error).message).toContain(marker);
+  }, 15000);
+
+  it("rejects an inherited-member ui call (constructor / hasOwnProperty) as unknown", async () => {
+    // A compromised child could name an inherited member to have the parent invoke
+    // it; the own-property guard makes those the same clean unknown-method error a
+    // typo would get, and no sub-tool ever runs.
+    const registry = mockRegistry();
+    for (const method of ["constructor", "hasOwnProperty"]) {
+      const err = await runScript({
+        registry,
+        device: resolveDevice(IOS),
+        script: `await ui.${method}();`,
+        timeoutMs: 5000,
+        ctx: undefined,
+      }).catch((e) => e);
+      expect(getFailureSignal(err)?.error_code).toBe("RUN_SCRIPT_THREW");
+      expect((err as Error).message).toContain(`ui.${method} is not a function`);
+    }
+    expect(registry.invokeTool).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("bounds a single giant log line with a truncation marker", async () => {
+    const registry = mockRegistry();
+    const result = await runScript({
+      registry,
+      device: resolveDevice(IOS),
+      script: 'console.log("X".repeat(50000));',
+      timeoutMs: 5000,
+      ctx: undefined,
+    });
+    expect(result.completed).toBe(true);
+    // Capped at record time so one huge line can't be retained whole, then the
+    // final tail-cap applies as usual.
+    expect(result.logs.length).toBeLessThanOrEqual(4001);
+    expect(result.logs).toContain("…");
+  }, 15000);
+
   it("flags secretsUsed when a script types a dynamically built placeholder", async () => {
     fetchTreeMock.mockResolvedValue(treeWith([leaf("PW")]) as any);
     const registry = mockRegistry();
