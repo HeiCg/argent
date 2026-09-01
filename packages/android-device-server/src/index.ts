@@ -30,11 +30,31 @@ export interface DeviceServerManifest {
 
 let cachedManifest: DeviceServerManifest | null = null;
 
-/** Read (and cache) the committed version contract from `assets/manifest.json`. */
+/**
+ * Resolve the committed manifest across both trees. In dev `__dirname/..` is this
+ * package, so `assets/manifest.json` is our own contract. Once this code is
+ * inlined into the `@swmansion/argent` tool-server bundle, `__dirname/..`
+ * collapses onto the argent package, where `assets/manifest.json` already belongs
+ * to `@argent/native-devtools-android`'s helper — reading it there spawned the
+ * WRONG instrumentation (the open server answered `Unknown method:
+ * getAccessibilityTree` and describe fell back silently). `bundle-tools.cjs`
+ * therefore copies our manifest to a dedicated `assets/android-device-server/`
+ * subdir; prefer it, and only fall back to the sibling in the dev tree. Order
+ * matters: in a correctly-built bundle the subdir always wins, and the sibling is
+ * reached only in dev (where it is our own, correct, manifest).
+ */
+export function resolveServerManifestPath(baseDir: string = path.join(__dirname, "..")): string {
+  const bundled = path.join(baseDir, "assets", "android-device-server", "manifest.json");
+  if (fs.existsSync(bundled)) return bundled;
+  return path.join(baseDir, "assets", "manifest.json");
+}
+
+/** Read (and cache) the committed version contract. */
 export function serverManifest(): DeviceServerManifest {
   if (cachedManifest) return cachedManifest;
-  const manifestPath = path.join(__dirname, "..", "assets", "manifest.json");
-  cachedManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as DeviceServerManifest;
+  cachedManifest = JSON.parse(
+    fs.readFileSync(resolveServerManifestPath(), "utf-8")
+  ) as DeviceServerManifest;
   return cachedManifest;
 }
 
