@@ -19,6 +19,10 @@ const NATIVE_DEVTOOLS_ANDROID_ENTRY = path.resolve(
   WORKSPACE_ROOT,
   "packages/native-devtools-android/src/index.ts"
 );
+const ANDROID_DEVICE_SERVER_ENTRY = path.resolve(
+  WORKSPACE_ROOT,
+  "packages/android-device-server/src/index.ts"
+);
 const TOOLS_CLIENT_ENTRY = path.resolve(
   WORKSPACE_ROOT,
   "packages/argent-tools-client/src/index.ts"
@@ -44,6 +48,7 @@ const ALIASES = {
   "@argent/registry": REGISTRY_ENTRY,
   "@argent/native-devtools-ios": NATIVE_DEVTOOLS_IOS_ENTRY,
   "@argent/native-devtools-android": NATIVE_DEVTOOLS_ANDROID_ENTRY,
+  "@argent/android-device-server": ANDROID_DEVICE_SERVER_ENTRY,
   "@argent/tools-client": TOOLS_CLIENT_ENTRY,
   "@argent/installer": INSTALLER_ENTRY,
   "@argent/mcp": MCP_ENTRY,
@@ -138,6 +143,22 @@ const ANDROID_PKG_DIR = path.resolve(WORKSPACE_ROOT, "packages/native-devtools-a
 const ANDROID_MANIFEST_SRC = path.join(ANDROID_PKG_DIR, "assets/manifest.json");
 const ANDROID_MANIFEST_DEST = path.resolve(__dirname, "../assets/manifest.json");
 const ANDROID_APK_SRC_DIR = path.join(ANDROID_PKG_DIR, "bin");
+// Open-source on-device control server (@argent/android-device-server). Its
+// manifest MUST land in its own subdir, not assets/manifest.json: once the
+// package is inlined into this bundle its serverManifest() resolves __dirname/..
+// onto this argent tree, where assets/manifest.json is already the native-devtools
+// helper manifest — sharing it made the open server spawn the wrong
+// instrumentation. resolveServerManifestPath() in @argent/android-device-server
+// prefers this subdir. The APK filename is version-stamped and distinct from the
+// helper APK, so both coexist in bin/; unlike the helper it is optional (the
+// feature is behind a default-off flag and the APK is built/installed separately).
+const DEVICE_SERVER_PKG_DIR = path.resolve(WORKSPACE_ROOT, "packages/android-device-server");
+const DEVICE_SERVER_MANIFEST_SRC = path.join(DEVICE_SERVER_PKG_DIR, "assets/manifest.json");
+const DEVICE_SERVER_MANIFEST_DEST = path.resolve(
+  __dirname,
+  "../assets/android-device-server/manifest.json"
+);
+const DEVICE_SERVER_APK_SRC_DIR = path.join(DEVICE_SERVER_PKG_DIR, "bin");
 const UI_SRC = path.resolve(WORKSPACE_ROOT, "packages/ui/index.html");
 const UI_DEST = path.resolve(__dirname, "../dist/preview-ui/index.html");
 const UI_THEME_SRC = path.resolve(WORKSPACE_ROOT, "packages/ui/theme.css");
@@ -256,6 +277,17 @@ const ASSETS = [
     copiedLabel: "Android manifest",
     missLabel: "Android manifest",
     hint: "Run: bash scripts/download-native-binaries.sh (fetches from argent-private-releases)",
+  },
+  // Open-device-server manifest.json → its own subdir (see DEVICE_SERVER_* above).
+  // serverManifest()/bundledServerApkPath() in @argent/android-device-server read
+  // it; the version-stamped APK is copied by the block after the copy loop.
+  {
+    kind: "file",
+    src: DEVICE_SERVER_MANIFEST_SRC,
+    dest: DEVICE_SERVER_MANIFEST_DEST,
+    required: true,
+    copiedLabel: "open-device-server manifest",
+    missLabel: "open-device-server manifest",
   },
   // Preview UI (@argent/ui) next to the bundled tool-server, where the /preview/
   // endpoint finds it via __dirname. The externalised theme.css must ship with
@@ -601,5 +633,25 @@ if (fs.existsSync(apkSrc)) {
     `Android helper APK not found at ${apkSrc}.\n` +
       `Run: bash scripts/download-native-binaries.sh (fetches from argent-private-releases)\n` +
       `or: bash packages/native-devtools-android/scripts/build.sh`
+  );
+}
+
+// Open-device-server APK. Optional: the open-device-server flag is off by default
+// and the Gradle-built APK is installed separately, so a bundle without it is
+// valid — bundledServerApkPath() throws a clear build hint at runtime if the flag
+// is enabled without the APK present. The filename is version-stamped from the
+// device-server manifest and distinct from the helper APK, so both live in bin/.
+const deviceServerManifest = JSON.parse(fs.readFileSync(DEVICE_SERVER_MANIFEST_SRC, "utf8"));
+const deviceServerApkName = `argent-device-control-${deviceServerManifest.versionName}.apk`;
+const deviceServerApkSrc = path.join(DEVICE_SERVER_APK_SRC_DIR, deviceServerApkName);
+if (fs.existsSync(deviceServerApkSrc)) {
+  fs.copyFileSync(deviceServerApkSrc, path.join(BIN_DIR, deviceServerApkName));
+  console.log(
+    `✓ Copied open-device-server APK → ${path.relative(process.cwd(), BIN_DIR)}/${deviceServerApkName}`
+  );
+} else {
+  console.warn(
+    `⚠ open-device-server APK not found at ${deviceServerApkSrc} — skipping ` +
+      `(build with: bash packages/android-device-server/scripts/build.sh)`
   );
 }
