@@ -6,38 +6,38 @@ sidebar_custom_props:
   icon: braces
 ---
 
-`run-script` runs an agent-authored JavaScript program that drives the device through many steps in a single call. The agent decides what to do next from what it observes on screen. Reach for it when a task needs conditionals, loops, retries, or waits _between_ steps — the case a fixed sequence does not cover.
+`run-script` runs a JavaScript program that the agent writes. The program drives the device through many steps in one call. The agent branches on what it observes on the screen. Use `run-script` when a task needs conditionals, loops, retries, or waits between steps.
 
 ## When to use it
 
-- `run-script` — the steps are not all known in advance. The script observes the screen and branches: "keep scrolling until a row appears, then open it", "dismiss the cookie banner if present, otherwise continue", or filling a form whose fields vary.
-- `run-sequence` — the steps _are_ all known in advance and nothing between them needs examining. One call replaces several round trips, with no logic in between.
-- `flow-execute` — there is a saved, versioned `.yaml` flow to replay. `run-script` is throwaway logic the agent authors inline right now.
+| Tool           | Use when                                                                                                                                     |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run-script`   | The steps are not all known in advance. The script observes the screen and branches. Example: scroll until a row appears, then open the row. |
+| `run-sequence` | All steps are known in advance. The agent does not examine the screen between the steps. One call replaces several round trips.              |
+| `flow-execute` | A saved, versioned `.yaml` flow exists. The agent replays the flow. A `run-script` body is throwaway logic that the agent writes inline.     |
 
 ## Opt-in
 
-The tool is hidden unless you enable the feature flag:
+Argent hides `run-script` by default, because the tool runs model-written code on your machine. Enable the feature flag to use the tool:
 
 ```bash
 argent enable run-script
 ```
 
-It runs model-written code locally, so it is off by default.
-
 ## The `ui` facade
 
-The script body is plain JavaScript — an async function body, not TypeScript. The only injected globals are `ui` (the device facade) and `console`. Every `ui.*` call is async, so `await` each one. The facade covers the same interactions as the individual tools:
+The script body is plain JavaScript, not TypeScript. Argent runs the body as one async function. Argent injects two globals: `ui` and `console`. Every `ui.*` call is async. Await each call. The facade covers the same interactions as the individual tools:
 
-- read the screen: `describe`, `find`, `findAll`, `exists`, `visible`
-- act: `tap`, `tapPoint`, `fill`, `pressKey`, `button`, `swipe`, `scrollUntilVisible`
-- wait: `await`, `awaitIdle`, `sleep`
-- apps: `launchApp`, `openUrl`
+- Read the screen: `describe`, `find`, `findAll`, `exists`, `visible`
+- Act: `tap`, `tapPoint`, `fill`, `pressKey`, `button`, `swipe`, `scrollUntilVisible`
+- Wait: `await`, `awaitIdle`, `sleep`
+- Apps: `launchApp`, `openUrl`
 
-Use `console.log(...)` to surface values; the output is captured (tail-capped) in the result's `logs`. The full typings and worked examples live in the `argent-device-interact` skill.
+Use `console.log(...)` to record values. Argent captures the output in the `logs` field of the result and keeps the tail. The `argent-device-interact` skill contains the full typings and worked examples.
 
 ## Example
 
-Scroll a list until a row is on screen, then open it:
+Scroll a list until a row is on the screen, then open the row:
 
 ```js
 for (let i = 0; i < 20; i++) {
@@ -47,7 +47,7 @@ for (let i = 0; i < 20; i++) {
 await ui.tap({ text: "Settings" });
 ```
 
-To type a credential, use a secret placeholder — Argent fills the value from your environment and it never enters the agent's context:
+Use a secret placeholder to type a credential. Argent fills the value from your environment. The value does not enter the context of the agent:
 
 ```js
 await ui.fill({ identifier: "password" }, "{{secret:APP_PASSWORD}}");
@@ -55,19 +55,21 @@ await ui.fill({ identifier: "password" }, "{{secret:APP_PASSWORD}}");
 
 ## Isolation
 
-The script runs in a separate, disposable Node.js process that Argent spawns for the call, with an empty environment and a temporary working directory. Each `ui.*` call crosses an IPC boundary back to the tool-server, where the real device work happens. This is process isolation, not a security jail: the child has no access to the tool-server's memory, environment variables, or in-process state, and it is thrown away when the run ends. It is not a boundary against hostile code, so a run-script body should be treated as trusted input.
+Argent spawns a separate, disposable Node.js process for each call. The process has an empty environment and a temporary working directory. Each `ui.*` call crosses an IPC boundary back to the tool-server. The tool-server does the real device work.
 
-The run has an overall deadline (`timeout_ms`, default 120000, max 600000). On expiry Argent terminates the process — this also stops a script stuck in a synchronous loop.
+This is process isolation, not a security jail. The child process cannot read the memory, the environment variables, or the in-process state of the tool-server. Argent discards the process when the run ends. The boundary does not stop hostile code. Treat a script body as trusted input.
+
+The run has one deadline: `timeout_ms` (default 120000, maximum 600000). On expiry, Argent terminates the process. This also stops a script that is stuck in a synchronous loop.
 
 ## Result and failures
 
-On success the tool returns `{ completed: true, logs, steps }`. It fails with one of:
+On success, the tool returns `{ completed: true, logs, steps }`. On failure, the tool returns one of these codes:
 
-- `RUN_SCRIPT_SYNTAX_ERROR` — the body would not compile.
-- `RUN_SCRIPT_THREW` — the script's own logic threw.
-- `RUN_SCRIPT_TIMEOUT` — the run exceeded `timeout_ms` and the process was terminated.
-- `RUN_SCRIPT_STEP_FAILED` — a `ui.*` call's underlying tool could not act on the current screen.
+- `RUN_SCRIPT_SYNTAX_ERROR` — the body did not compile.
+- `RUN_SCRIPT_THREW` — the script threw an error.
+- `RUN_SCRIPT_TIMEOUT` — the run exceeded `timeout_ms`, and Argent terminated the process.
+- `RUN_SCRIPT_STEP_FAILED` — a `ui.*` call could not act on the current screen.
 
-One screenshot and element tree are captured automatically after the whole run, the same as `run-sequence`. When the script types a secret, that capture is skipped so the resolved value is not rendered back into context.
+Argent captures one screenshot and one element tree after the whole run, the same as for `run-sequence`. When the script types a secret, Argent skips this capture. Thus the resolved value does not return into the context of the agent.
 
-The [tools reference](/docs/reference/tools) lists `run-script` alongside the other interaction tools.
+The [tools reference](/docs/reference/tools) lists `run-script` with the other interaction tools.
