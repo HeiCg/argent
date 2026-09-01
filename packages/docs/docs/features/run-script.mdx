@@ -55,7 +55,7 @@ await ui.fill({ identifier: "password" }, "{{secret:APP_PASSWORD}}");
 
 ## Isolation
 
-The script runs in a separate, disposable Node.js process that Argent spawns for the call, with an empty environment and a temporary working directory. Each `ui.*` call crosses an IPC boundary back to the tool-server, where the real device work happens. This is process isolation, not a jail: the script cannot reach the tool-server's own state, secrets, or auth token, and the process is thrown away when the run ends.
+The script runs in a separate, disposable Node.js process that Argent spawns for the call, with an empty environment and a temporary working directory. Each `ui.*` call crosses an IPC boundary back to the tool-server, where the real device work happens. This is process isolation, not a security jail: the child has no access to the tool-server's memory, environment variables, or in-process state, and it is thrown away when the run ends. It is not a boundary against hostile code, so a run-script body should be treated as trusted input.
 
 The run has an overall deadline (`timeout_ms`, default 120000, max 600000). On expiry Argent terminates the process — this also stops a script stuck in a synchronous loop.
 

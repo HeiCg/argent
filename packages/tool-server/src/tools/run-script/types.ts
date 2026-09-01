@@ -22,7 +22,7 @@ export interface FacadePoint {
 }
 
 /**
- * The device-control surface injected into a run-script sandbox as the global
+ * The device-control surface injected into the run-script child process as the global
  * `ui`. Every method is async and honours the run's deadline: a call made after
  * the deadline (or an external cancel) rejects instead of touching the device.
  * The full typed signature is mirrored in the `argent-device-interact` skill so

@@ -33,7 +33,7 @@ Returns { completed: true, logs, steps }: logs is captured console output (tail-
 Choose this over \`run-sequence\` when the steps are NOT all known in advance: run-sequence executes a fixed list with no logic between steps and observes nothing mid-sequence, whereas run-script observes and branches. Choose this over \`flow-execute\` when there is no authored .yaml flow to replay: flow-execute replays a saved, versioned flow file, whereas run-script runs throwaway exploratory logic you author inline right now.
 Disabled unless the \`run-script\` feature flag is enabled (\`argent enable run-script\`) — it executes model-written code locally, so it is opt-in.`,
     searchHint:
-      "run-script javascript program sandbox vm exploratory multi-step conditional loop retry wait branch scriptable interaction decision",
+      "run-script javascript program exploratory multi-step conditional loop retry wait branch scriptable interaction decision",
     longRunning: true,
     featureFlag: RUN_SCRIPT_FLAG,
     zodSchema: runScriptZodSchema,
