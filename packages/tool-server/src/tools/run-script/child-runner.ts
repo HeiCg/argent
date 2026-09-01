@@ -15,7 +15,9 @@
 // This is process isolation, not a jail.
 
 // Combined console output cap; older lines are dropped so the newest survive.
-const LOG_CAP = 4000;
+// Exported so the parent (runtime.ts) can size its own mirror of the buffer with
+// the same policy when it replays streamed logs on the timeout / exit paths.
+export const LOG_CAP = 4000;
 
 // The vm filename the script's syntax errors and stack frames are reported
 // under, so the agent never sees the internal wrapper or a host path. Mirrored
@@ -26,7 +28,7 @@ export const SCRIPT_FILENAME = "<script>";
 // still prefix "…" and slice the exact tail, while memory stays bounded (fixes
 // the unbounded-log retention finding: the cap is enforced on every write, not
 // only at the end).
-const LOG_BUFFER_CAP = LOG_CAP * 2;
+export const LOG_BUFFER_CAP = LOG_CAP * 2;
 
 export const RUNNER_SOURCE = `"use strict";
 const vm = require("node:vm");
@@ -51,11 +53,23 @@ function formatArg(value) {
 function record(level) {
   return function () {
     const args = Array.prototype.slice.call(arguments);
-    const line = "[" + level + "] " + args.map(formatArg).join(" ");
+    let line = "[" + level + "] " + args.map(formatArg).join(" ");
+    // Cap each record: one giant line (console.log("X".repeat(1e8))) must not be
+    // retained whole — the length-only trim loop below would keep it because it
+    // never drops the last remaining line.
+    if (line.length > LOG_BUFFER_CAP) line = line.slice(0, LOG_BUFFER_CAP - 1) + "…";
     lines.push(line);
     bufLen += line.length + 1;
     while (bufLen > LOG_BUFFER_CAP && lines.length > 1) {
       bufLen -= lines.shift().length + 1;
+    }
+    // Stream the record to the parent as it is produced so the console tail
+    // survives the paths where the child is killed before it can send its final
+    // result (timeout / interrupt / unexpected exit). Fire-and-forget.
+    try {
+      process.send({ t: "log", line: line });
+    } catch (_e) {
+      /* channel closed — parent is tearing the child down */
     }
   };
 }

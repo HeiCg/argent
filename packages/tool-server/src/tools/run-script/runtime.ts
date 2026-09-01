@@ -11,7 +11,7 @@ import {
   type ToolContext,
 } from "@argent/registry";
 import { buildUiFacade, type FacadeEnv } from "./api";
-import { RUNNER_SOURCE, SCRIPT_FILENAME } from "./child-runner";
+import { LOG_BUFFER_CAP, LOG_CAP, RUNNER_SOURCE, SCRIPT_FILENAME } from "./child-runner";
 import { ScriptAbortError, StepFailedError, type RunScriptResult } from "./types";
 
 // Stack frames kept when rendering a thrown error.
@@ -92,6 +92,34 @@ function logsTail(logs: string): string {
   return logs ? `\nConsole output:\n${logs}` : "";
 }
 
+/**
+ * Parent-side mirror of the child's rolling console buffer. The child streams
+ * every log record over IPC as it produces it ({@link LogRecord}); on the
+ * success and script-error paths the child's own final `logs` are authoritative,
+ * but on the timeout / interrupt / unexpected-exit paths the child dies before
+ * it can send them, so the parent replays what it buffered here instead. Same cap
+ * policy as `child-runner.ts`'s `record()` / `collect()` so both tails agree.
+ */
+class LogBuffer {
+  private lines: string[] = [];
+  private bufLen = 0;
+
+  add(line: string): void {
+    let l = line;
+    if (l.length > LOG_BUFFER_CAP) l = l.slice(0, LOG_BUFFER_CAP - 1) + "…";
+    this.lines.push(l);
+    this.bufLen += l.length + 1;
+    while (this.bufLen > LOG_BUFFER_CAP && this.lines.length > 1) {
+      this.bufLen -= (this.lines.shift() as string).length + 1;
+    }
+  }
+
+  collect(): string {
+    const text = this.lines.join("\n");
+    return text.length > LOG_CAP ? "…" + text.slice(text.length - LOG_CAP) : text;
+  }
+}
+
 function timeoutFail(steps: number, timeoutMs: number, logs: string): FailureError {
   return fail(
     FAILURE_CODES.RUN_SCRIPT_TIMEOUT,
@@ -132,6 +160,12 @@ interface UiRequest {
   args: unknown[];
 }
 
+/** A single console record streamed from the child as it is produced. */
+interface LogRecord {
+  t: "log";
+  line: string;
+}
+
 /**
  * Run the agent-authored script in a separate, disposable Node.js child process.
  *
@@ -159,6 +193,9 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
 
   let steps = 0;
   let secretsUsed = false;
+  // Mirrors the child's console buffer from streamed records; replayed only when
+  // the child dies before sending its final logs (timeout / interrupt / exit).
+  const logBuffer = new LogBuffer();
   const env: FacadeEnv = {
     registry,
     device,
@@ -189,6 +226,10 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
     // process.stdout write in the script can't corrupt the protocol.
     stdio: ["ignore", "ignore", "ignore", "ipc"],
     serialization: "json",
+    // Make the child its own process-group leader so `killChild` can signal the
+    // whole group (`-pid`) and take down any detached grandchildren an escaped
+    // script spawned, not just the direct child.
+    detached: true,
   });
 
   let settled = false;
@@ -203,18 +244,43 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
   });
 
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
-  const killChild = (): void => {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      graceTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-      }, KILL_GRACE_MS);
-      graceTimer.unref?.();
+  // `killing`: a SIGTERM→SIGKILL escalation is already in flight, so a second
+  // killChild() (e.g. the defensive one at cleanup) must not re-signal or install
+  // a second grace timer. `childExiting`: the child settled on its own (it sent a
+  // terminal message or already exited), so no signal is needed at all — this is
+  // what keeps the normal completion path free of a stray SIGTERM + timer.
+  let killing = false;
+  let childExiting = false;
+
+  // Signal the child's whole process group so grandchildren die too; fall back to
+  // signalling just the child if the group signal is unavailable (e.g. Windows)
+  // or the pid is already gone.
+  const signalChild = (sig: NodeJS.Signals): void => {
+    const pid = child.pid;
+    if (pid !== undefined) {
+      try {
+        process.kill(-pid, sig);
+        return;
+      } catch {
+        /* group signal unsupported or group already gone — fall through */
+      }
     }
+    try {
+      child.kill(sig);
+    } catch {
+      /* already gone */
+    }
+  };
+
+  const killChild = (): void => {
+    if (killing || childExiting) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    killing = true;
+    signalChild("SIGTERM");
+    graceTimer = setTimeout(() => {
+      signalChild("SIGKILL");
+    }, KILL_GRACE_MS);
+    graceTimer.unref?.();
   };
 
   const send = (msg: unknown): void => {
@@ -227,7 +293,11 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
 
   const handleUi = async (msg: UiRequest): Promise<void> => {
     if (settled) return;
-    const method = (facade as unknown as Record<string, unknown>)[msg.method];
+    // Only own methods of the facade are callable: a compromised child must not
+    // reach inherited members (`constructor`, `hasOwnProperty`, …) by name.
+    const method = Object.prototype.hasOwnProperty.call(facade, msg.method)
+      ? (facade as unknown as Record<string, unknown>)[msg.method]
+      : undefined;
     if (typeof method !== "function") {
       send({
         t: "ui-res",
@@ -257,10 +327,16 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
       case "ui":
         void handleUi(msg as unknown as UiRequest);
         return;
+      case "log":
+        logBuffer.add(String((msg as unknown as LogRecord).line ?? ""));
+        return;
       case "done":
+        // The child self-exits after a terminal message; no kill signal needed.
+        childExiting = true;
         resolveOutcome({ kind: "value", logs: String(msg.logs ?? "") });
         return;
       case "err":
+        childExiting = true;
         resolveOutcome({
           kind: "error",
           error: serializeError(msg.error),
@@ -269,12 +345,16 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
         });
         return;
       case "compile-err":
+        childExiting = true;
         resolveOutcome({ kind: "compile", message: String(msg.message ?? "") });
         return;
     }
   });
   child.on("error", (err) => resolveOutcome({ kind: "spawn-error", error: err }));
-  child.on("exit", (code, signal) => resolveOutcome({ kind: "exit", code, signal }));
+  child.on("exit", (code, signal) => {
+    childExiting = true;
+    resolveOutcome({ kind: "exit", code, signal });
+  });
 
   const timer = setTimeout(() => {
     timedOut = true;
@@ -298,8 +378,11 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
   const outcome = await outcomePromise;
 
   clearTimeout(timer);
-  if (graceTimer) clearTimeout(graceTimer);
   externalSignal?.removeEventListener("abort", onExternalAbort);
+  // Defensive: a no-op on the normal completion path (the child is already
+  // exiting) and when a kill is already in flight; only acts if the child somehow
+  // outlived its outcome. A grace timer from a real kill is left to fire (it is
+  // unref'd, so it never keeps the event loop alive).
   killChild();
   void fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
 
@@ -334,19 +417,19 @@ export async function runScript(args: RunScriptRuntimeArgs): Promise<RunScriptRe
       );
 
     case "interrupted":
-      throw timeoutFail(steps, timeoutMs, "");
+      throw timeoutFail(steps, timeoutMs, logBuffer.collect());
 
     case "abort":
       throw new ScriptAbortError();
 
     case "exit":
-      if (timedOut) throw timeoutFail(steps, timeoutMs, "");
+      if (timedOut) throw timeoutFail(steps, timeoutMs, logBuffer.collect());
       if (aborted) throw new ScriptAbortError();
       throw fail(
         FAILURE_CODES.RUN_SCRIPT_THREW,
         "run_script_execution",
         "crash",
-        `run-script's execution process exited unexpectedly (code ${outcome.code ?? "null"}, signal ${outcome.signal ?? "null"}) after ${steps} step(s).`
+        `run-script's execution process exited unexpectedly (code ${outcome.code ?? "null"}, signal ${outcome.signal ?? "null"}) after ${steps} step(s).${logsTail(logBuffer.collect())}`
       );
 
     case "spawn-error":
