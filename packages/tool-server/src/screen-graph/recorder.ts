@@ -12,6 +12,8 @@ import type { CanonicalAction, ScreenNode } from "./types";
 export interface FetchedScreen {
   compact: string;
   stateHash: string;
+  /** Device AX version clock the screen was captured at (Phase B leftover B1). */
+  version?: number;
   index: ScreenNode["index"];
   label?: string;
   /** A secret was on screen — the store will redact the compact text. */
@@ -56,6 +58,7 @@ export async function recordObservation(ctx: ObserveContext): Promise<void> {
       hash: after.hash,
       compact: screen.compact,
       stateHash: screen.stateHash,
+      ...(screen.version !== undefined ? { version: screen.version } : {}),
       index: screen.index,
       ...(screen.label !== undefined ? { label: screen.label } : {}),
       ...(screen.secret ? { secret: true } : {}),

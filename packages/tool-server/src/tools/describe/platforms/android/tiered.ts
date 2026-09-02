@@ -53,18 +53,21 @@ export async function describeAndroidTiered(
       const stateHash = state.stateHash ?? "";
       const info = await server.getInfo();
 
+      const version = state.version;
       const renderFresh = (): string => {
         const payload = buildScreenPayload(
           state.tree,
           state.info.screenWidth,
           state.info.screenHeight,
           info.currentActivity,
-          stateHash
+          stateHash,
+          version
         );
         store.upsertNode({
           hash,
           compact: payload.compact,
           stateHash: payload.stateHash,
+          ...(payload.version !== undefined ? { version: payload.version } : {}),
           index: payload.index,
           ...(payload.label !== undefined ? { label: payload.label } : {}),
         });
@@ -74,7 +77,23 @@ export async function describeAndroidTiered(
       if (tier === "summary") {
         if (!store.hasNode(hash)) renderFresh();
         const node = store.getNode(hash)!;
-        const summary = buildSummary(node, store.outgoingEdges(hash), store.nodes);
+        // Phase B leftover B1: when this screen was last rendered at a known
+        // version but its state has since moved, report how many fields changed.
+        // The device diff is prev→current (one retained snapshot), so this is the
+        // delta of the most recent transition — exactly a summary shown on
+        // arrival wants.
+        let changedSince: number | undefined;
+        if (node.version !== undefined && node.stateHash !== undefined && node.stateHash !== stateHash) {
+          try {
+            const d = await server.diff(node.version);
+            changedSince = d.added.length + d.removed.length + d.changed.length;
+          } catch {
+            /* diff unavailable — omit changedSince rather than guess */
+          }
+        }
+        const summary = buildSummary(node, store.outgoingEdges(hash), store.nodes, {
+          ...(changedSince !== undefined ? { changedSince } : {}),
+        });
         return { description: renderSummary(summary), source: "open-device-server" as const };
       }
 
@@ -87,8 +106,11 @@ export async function describeAndroidTiered(
         node,
         { hash, stateHash },
         {
-          // The keyed device `diff` needs a stored version to patch against
-          // (Phase C); until then the "only text changed" case refreshes too.
+          // `node.version` is now stored (B1), so the "only text changed" path
+          // could serve from a keyed device `diff(node.version)`. This tier
+          // already fetched the full tree above (for the hash), so there is no
+          // round-trip to save by patching HERE — both render from the in-hand
+          // tree. The token-saving hash-only-fetch + diff-patch serve is Phase C.
           patch: async () => renderFresh(),
           refresh: async () => renderFresh(),
         }

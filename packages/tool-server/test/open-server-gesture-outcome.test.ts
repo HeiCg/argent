@@ -16,12 +16,15 @@ import { createGestureTapTool } from "../src/tools/gesture-tap";
 
 const ANDROID_SERIAL = "emulator-5554";
 
-// Screen-graph Phase A: the tap's before/after fingerprint delta.
+// Screen-graph Phase A: the tap's before/after fingerprint delta. Phase A.1 adds
+// the two-phase settle report (`settled`, `firstEventMs`).
 const OUTCOME = {
   before: { version: 1, hash: "aaaa", stateHash: "aaaa" },
   after: { version: 2, hash: "bbbb", stateHash: "cccc" },
   changed: true,
   newScreen: true,
+  settled: "quiet",
+  firstEventMs: 12,
   idleMs: 15,
 };
 
@@ -89,5 +92,8 @@ describe("gesture-tap → open-device-server outcome (Screen-graph Phase A)", ()
     expect(openApi.tapWithOutcome).toHaveBeenCalledTimes(1);
     expect(result.outcome?.before.hash).toBe("aaaa"); // from the pre-gesture getState
     expect(result.outcome?.after.hash).toBe("bbbb");
+    // The settle report is threaded from the final outcome-bearing tap.
+    expect(result.outcome?.settled).toBe("quiet");
+    expect(result.outcome?.firstEventMs).toBe(12);
   });
 });

@@ -24,6 +24,12 @@ export interface OpenServerElement {
   enabled?: boolean;
   checked?: boolean;
   selected?: boolean;
+  /**
+   * The node is a password field (`AccessibilityNodeInfo.isPassword`). Emitted by
+   * android-device-server 0.2.0+ (Phase B leftover B1) so the host redacts a
+   * screen carrying one before persisting it to the graph.
+   */
+  isPassword?: boolean;
 }
 
 /**

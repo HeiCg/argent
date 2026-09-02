@@ -18,6 +18,7 @@ import {
   FLAG_FOCUSED,
   FLAG_SCROLLABLE,
 } from "./screen-hash";
+import { FLAG_PASSWORD } from "../screen-graph/types";
 import { openServerElementsToDescribeNode } from "../tools/describe/platforms/android/open-server-tree";
 import { formatDescribeTree } from "../tools/describe/format-tree";
 import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
@@ -91,6 +92,9 @@ function flagsOfElement(el: OpenServerElement): number {
   if (el.scrollable) f |= FLAG_SCROLLABLE;
   if (el.enabled) f |= FLAG_ENABLED;
   if (el.focused) f |= FLAG_FOCUSED;
+  // Phase B leftover B1: honour the device's password bit so a node carrying a
+  // password field is redacted on persist (nodeHoldsSecret).
+  if (el.isPassword) f |= FLAG_PASSWORD;
   return f;
 }
 
@@ -112,7 +116,8 @@ export function buildScreenPayload(
   screenW: number,
   screenH: number,
   activity: string | undefined,
-  stateHash: string
+  stateHash: string,
+  version?: number
 ): FetchedScreen {
   const tree = openServerElementsToDescribeNode(elements, screenW, screenH);
   const compact = formatDescribeTree(tree, { source: "open-device-server" });
@@ -125,6 +130,7 @@ export function buildScreenPayload(
   return {
     compact,
     stateHash,
+    ...(version !== undefined ? { version } : {}),
     index,
     ...(label !== undefined ? { label } : {}),
   };
@@ -141,7 +147,8 @@ async function fetchScreen(server: OpenDeviceServerApi): Promise<FetchedScreen> 
     state.info.screenWidth,
     state.info.screenHeight,
     info.currentActivity,
-    state.stateHash ?? ""
+    state.stateHash ?? "",
+    state.version
   );
 }
 

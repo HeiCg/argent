@@ -9,6 +9,8 @@ import {
   type GesturePointerPath,
   type OpenDeviceServerApi,
   type OpenServerActionOutcome,
+  type OpenServerAwaitChangeResult,
+  type OpenServerSelector,
 } from "../blueprints/android-open-server";
 import { openDeviceServerMutex } from "./device-mutex";
 import {
@@ -30,6 +32,8 @@ function toOutcome(r: OpenServerActionOutcome & { success?: unknown }): OpenServ
     after: r.after,
     changed: r.changed,
     newScreen: r.newScreen,
+    settled: r.settled,
+    firstEventMs: r.firstEventMs,
     idleMs: r.idleMs,
   };
 }
@@ -53,6 +57,32 @@ export function shouldUseOpenServer(device: DeviceInfo): boolean {
 // Re-export the reset seam so existing importers keep working; the cache itself
 // now lives in `open-server-screen-cache` (see F21).
 export { __resetOpenServerScreenSizeCache };
+
+/**
+ * Screen-graph Phase A.1: block on the device's AX-event clock until the tree
+ * changes (and, with `until`, until that selector matches), settling on the next
+ * stable state when `settle` is set. Lets `await-ui-element` wait on-device
+ * instead of host-polling `describe`. Serialized under the device mutex like the
+ * other open paths; throws on any RPC failure so the caller can fall back to the
+ * poll loop.
+ */
+export function openServerAwaitChange(
+  registry: Registry,
+  device: DeviceInfo,
+  opts: {
+    fromVersion: number;
+    timeoutMs: number;
+    until?: OpenServerSelector;
+    settle?: boolean;
+    quietMs?: number;
+  }
+): Promise<OpenServerAwaitChangeResult> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    return server.awaitChange(opts);
+  });
+}
 
 async function withServer<T>(
   registry: Registry,
@@ -180,6 +210,8 @@ export function openServerTapWithOutcome(
         after: last.after,
         changed: b.hash !== last.after.hash || b.stateHash !== last.after.stateHash,
         newScreen: b.hash !== last.after.hash,
+        settled: last.settled,
+        firstEventMs: last.firstEventMs,
         idleMs: last.idleMs,
       };
     }
@@ -262,25 +294,32 @@ export function openServerTypeText(
   });
 }
 
-/** Screen-graph Phase A: type text and report the before/after fingerprint delta. */
+/**
+ * Screen-graph Phase A: type text and report the before/after fingerprint delta.
+ * `opts.secretsUsed` (Phase B leftover B1) marks the observation as holding a
+ * secret so the recorded target node is redacted live, even when the field is
+ * not flagged password on-device — the paste tool sets it when the typed text
+ * came from a `{{secret:…}}` placeholder.
+ */
 export function openServerTypeTextWithOutcome(
   registry: Registry,
   device: DeviceInfo,
   text: string,
-  idleTimeoutMs?: number
+  opts: { secretsUsed?: boolean; idleTimeoutMs?: number } = {}
 ): Promise<OpenServerActionOutcome> {
   const ref = openDeviceServerRef(device);
-  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
+  const outcomeOpts = opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : undefined;
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const outcome = toOutcome(await server.typeTextWithOutcome(text, opts));
+    const outcome = toOutcome(await server.typeTextWithOutcome(text, outcomeOpts));
     // No coordinates for typeText, so bucketing is irrelevant — pass a 0 size.
     await recordOpenServerObservation(
       device,
       server,
       { width: 0, height: 0 },
       { kind: "typeText" },
-      outcome
+      outcome,
+      opts.secretsUsed ? { secret: true } : {}
     );
     return outcome;
   });

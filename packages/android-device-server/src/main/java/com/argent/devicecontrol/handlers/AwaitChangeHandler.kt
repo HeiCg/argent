@@ -6,10 +6,16 @@ import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * `awaitChange { fromVersion, timeoutMs, until? }` — block on the AX-event clock
- * and return as soon as `version > fromVersion` (and, when `until` selector is
- * given, when it matches, re-checked on each event). Returns `{ version, hash,
- * stateHash, changed, timedOut }`.
+ * `awaitChange { fromVersion, timeoutMs, until?, settle?, quietMs? }` — block on
+ * the AX-event clock and return as soon as `version > fromVersion` (and, when
+ * `until` selector is given, when it matches, re-checked on each event). Returns
+ * `{ version, hash, stateHash, changed, timedOut }`.
+ *
+ * With `settle: true` (ticket §3), after the first event (or the matching event)
+ * it ALSO waits for the AX clock to go quiet — no event for `quietMs` (default
+ * 80), bounded by the remaining await budget — then re-hashes, so a caller that
+ * wants the "next stable state" gets it in one call. Default (`settle` absent)
+ * is unchanged: return on the first event.
  *
  * The TCP server runs one thread per connection, so a blocking await only holds
  * ITS connection — other clients are unaffected. As a safety valve against a
@@ -27,6 +33,8 @@ class AwaitChangeHandler {
         val fromVersion = params.optLong("fromVersion", TreeStore.version)
         val timeoutMs = params.optLong("timeoutMs", 5_000L)
         val until = params.optJSONObject("until")
+        val settle = params.optBoolean("settle", false)
+        val quietMs = params.optLong("quietMs", 80L)
 
         if (!tryAcquire()) {
             throw IllegalStateException("too many concurrent awaitChange (max $MAX_CONCURRENT)")
@@ -43,9 +51,9 @@ class AwaitChangeHandler {
 
                 // Version advanced. With no `until`, that's the answer.
                 val snap = TreeStore.ensure()
-                if (until == null) return result(snap.version, snap.hash, snap.stateHash, changed = true, timedOut = false)
+                if (until == null) return settled(snap, settle, quietMs, deadline)
                 if (ScreenSelector.matchesAny(snap.roots, until)) {
-                    return result(snap.version, snap.hash, snap.stateHash, changed = true, timedOut = false)
+                    return settled(snap, settle, quietMs, deadline)
                 }
                 // Matched nothing yet: wait for the next event past this version.
                 baseline = v
@@ -53,6 +61,21 @@ class AwaitChangeHandler {
         } finally {
             active.decrementAndGet()
         }
+    }
+
+    /**
+     * Finish an await hit. When [doSettle], wait for quiet (no event for
+     * [quietMs], bounded by the await [deadline]) then re-hash the settled tree
+     * so the result reflects the next stable state rather than the first frame.
+     */
+    private fun settled(snap: TreeStore.Snapshot, doSettle: Boolean, quietMs: Long, deadline: Long): JSONObject {
+        if (!doSettle) {
+            return result(snap.version, snap.hash, snap.stateHash, changed = true, timedOut = false)
+        }
+        val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(0L)
+        TreeStore.waitForQuiet(quietMs, remaining)
+        val stable = TreeStore.ensure()
+        return result(stable.version, stable.hash, stable.stateHash, changed = true, timedOut = false)
     }
 
     private fun timedOut(fromVersion: Long): JSONObject {

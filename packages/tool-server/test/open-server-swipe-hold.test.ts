@@ -23,6 +23,8 @@ const OUTCOME = {
   after: { version: 2, hash: "bbbb", stateHash: "cccc" },
   changed: true,
   newScreen: true,
+  settled: "quiet",
+  firstEventMs: 18,
   idleMs: 20,
 };
 

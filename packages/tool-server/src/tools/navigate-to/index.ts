@@ -17,15 +17,19 @@ import {
 } from "../../blueprints/android-open-server";
 import { resolveStoreForCurrentApp } from "../../utils/screen-graph-open-wiring";
 import {
+  GRID,
   buildSummary,
   hash8,
+  parseSelectorKey,
   plan,
   planToSelector,
   renderSummary,
   runNavigation,
   type CanonicalAction,
+  type GraphSelector,
   type PlanResult,
   type ScreenGraphStore,
+  type ScreenNode,
 } from "../../screen-graph";
 
 export const NAVIGATE_TO_TOOL_ID = "navigate-to";
@@ -80,16 +84,59 @@ function toOpenSelector(target: { id?: string; text?: string }): OpenServerSelec
   return sel;
 }
 
+/**
+ * Which 1/16 grid cell a point falls in (mirrors `canonical.ts` bucketing), so a
+ * stored index entry can be matched back to a bucketed tap.
+ */
+function bucketAxis(value: number, dim: number): number {
+  if (dim <= 0) return 0;
+  return Math.min(GRID - 1, Math.max(0, Math.floor((value * GRID) / dim)));
+}
+
+/**
+ * The selector of the FROM node's index entry whose bounds centre falls in
+ * `bucket` (Phase B leftover B1). A bucketed tap has no stored id/text, so before
+ * tapping the bare coordinate we recover the selector that was there last time to
+ * `query` for it on the live screen. Returns null when nothing was indexed in
+ * that cell.
+ */
+export function indexEntryForBucket(
+  index: ScreenNode["index"],
+  bucket: { x: number; y: number },
+  size: { width: number; height: number }
+): GraphSelector | null {
+  for (const [key, entry] of Object.entries(index)) {
+    const cx = (entry.bounds.x1 + entry.bounds.x2) / 2;
+    const cy = (entry.bounds.y1 + entry.bounds.y2) / 2;
+    if (bucketAxis(cx, size.width) === bucket.x && bucketAxis(cy, size.height) === bucket.y) {
+      const sel = parseSelectorKey(key);
+      if (sel) return sel;
+    }
+  }
+  return null;
+}
+
+/** A resolved tap point, or a signal to diverge (the stored element is gone). */
+type TapResolution = { cx: number; cy: number } | { diverge: true };
+
 /** Execute one canonical action on the device, returning the resulting hash. */
 async function executeCanonicalAction(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
-  action: CanonicalAction
+  action: CanonicalAction,
+  fromIndex?: ScreenNode["index"]
 ): Promise<string> {
   switch (action.kind) {
     case "tap":
     case "longPress": {
-      const { cx, cy } = await resolveTapPoint(server, size, action);
+      const point = await resolveTapPoint(server, size, action, fromIndex);
+      if ("diverge" in point) {
+        // The bucketed target is no longer on screen: don't tap blindly. Report
+        // the current hash so runNavigation records a divergence and stops.
+        const state = await server.getState({ includeScreenshot: false });
+        return state.hash ?? "";
+      }
+      const { cx, cy } = point;
       const res =
         action.kind === "tap"
           ? await server.tapWithOutcome(cx, cy)
@@ -121,11 +168,12 @@ async function executeCanonicalAction(
   }
 }
 
-async function resolveTapPoint(
+export async function resolveTapPoint(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
-  action: CanonicalAction
-): Promise<{ cx: number; cy: number }> {
+  action: CanonicalAction,
+  fromIndex?: ScreenNode["index"]
+): Promise<TapResolution> {
   if (action.target) {
     const q = await server.query(toOpenSelector(action.target), { limit: 1 });
     const node = q.nodes[0];
@@ -137,8 +185,24 @@ async function resolveTapPoint(
     }
   }
   if (action.bucket) {
-    const cellW = size.width / 16;
-    const cellH = size.height / 16;
+    // Phase B leftover B1: a bucketed tap has no id/text. If the FROM node's
+    // index recorded something in that cell, `query` for it and tap its LIVE
+    // position (robust to layout shift); diverge when it — or nothing indexed
+    // there — is no longer present, rather than tapping empty space.
+    if (fromIndex) {
+      const sel = indexEntryForBucket(fromIndex, action.bucket, size);
+      if (!sel) return { diverge: true };
+      const q = await server.query(toOpenSelector(sel), { limit: 1 });
+      const node = q.nodes[0];
+      if (!node) return { diverge: true };
+      return {
+        cx: Math.round((node.bounds.x1 + node.bounds.x2) / 2),
+        cy: Math.round((node.bounds.y1 + node.bounds.y2) / 2),
+      };
+    }
+    // No stored index for the from-screen (cold graph): tap the bucket centre.
+    const cellW = size.width / GRID;
+    const cellH = size.height / GRID;
     return {
       cx: Math.round((action.bucket.x + 0.5) * cellW),
       cy: Math.round((action.bucket.y + 0.5) * cellH),
@@ -231,8 +295,18 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         };
       }
 
+      // Track the from-screen per step so a bucketed tap can consult that node's
+      // stored index (B1). The first step starts on the current screen; each
+      // later step starts on the previous step's planned target (runNavigation
+      // only advances when the observed hash matched it).
+      let stepFrom = currentHash;
       const nav = await runNavigation(currentHash, planned.steps, {
-        execute: (action) => executeCanonicalAction(server, size, action).then((afterHash) => ({ afterHash })),
+        execute: async (action, step) => {
+          const fromIndex = store.getNode(stepFrom)?.index;
+          const afterHash = await executeCanonicalAction(server, size, action, fromIndex);
+          stepFrom = step.to;
+          return { afterHash };
+        },
       });
 
       const { name, summary } = finalSummary(store, nav.finalHash);

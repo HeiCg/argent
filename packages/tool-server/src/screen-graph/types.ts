@@ -72,6 +72,14 @@ export interface ScreenNode {
    * list; the compact-cache contract needs it. Documented in the report.
    */
   stateHash?: string;
+  /**
+   * Device AX version clock at the time `compact`/`stateHash` were captured
+   * (Phase B leftover B1). Lets the compact tier's "only text changed" path ask
+   * the device for `diff(sinceVersion = version)` — a keyed delta it can patch —
+   * instead of re-reading the whole tree, and lets the live summary report
+   * `changedSince` against the last-observed version.
+   */
+  version?: number;
   /** resource-id / text → last-known bounds + flags. */
   index: Record<SelectorKey, IndexEntry>;
   /** Path to a stored thumbnail, when captured. */
@@ -118,6 +126,18 @@ export function selectorKeyForId(id: string): SelectorKey {
 /** Stable index key for visible text. */
 export function selectorKeyForText(text: string): SelectorKey {
   return `text${US}${text}`;
+}
+
+/** Reverse {@link selectorKeyForId} / {@link selectorKeyForText}. */
+export function parseSelectorKey(key: SelectorKey): GraphSelector | null {
+  const sep = key.indexOf(US);
+  if (sep < 0) return null;
+  const kind = key.slice(0, sep);
+  const value = key.slice(sep + 1);
+  if (value === "") return null;
+  if (kind === "id") return { id: value };
+  if (kind === "text") return { text: value };
+  return null;
 }
 
 /**

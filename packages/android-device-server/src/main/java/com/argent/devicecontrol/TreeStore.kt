@@ -20,6 +20,14 @@ import com.argent.devicecontrol.accessibility.ScreenTree
  */
 object TreeStore {
 
+    /**
+     * Structural hash of an EMPTY tree. `ScreenHash.structural(emptyList, …)`
+     * folds no bytes, so `fnv1a("")` returns the bare FNV-1a 64-bit offset basis
+     * (`0xcbf29ce484222325`). A settle that lands on this (or a 0-node forest) is
+     * a transient mid-transition frame, not a real screen — see [awaitNonEmptyTree].
+     */
+    const val EMPTY_TREE_HASH = "cbf29ce484222325"
+
     /** Monotonic AX clock. Bumped by the listener; never decreases. */
     @Volatile
     var version: Long = 0L
@@ -149,6 +157,76 @@ object TreeStore {
                 }
             }
         }
+    }
+
+    /** Result of the two-phase outcome settle ([settleAfterAction]). */
+    class SettleResult(
+        /** "no-event" (phase 1 timed out), "quiet" (went idle), or "timeout". */
+        val settled: String,
+        /** ms from action to the first AX event; -1 when none arrived. */
+        val firstEventMs: Long,
+        /** ms spent in phase 2 waiting for quiet; 0 when settled == "no-event". */
+        val idleMs: Long
+    )
+
+    /**
+     * Two-phase outcome settle (ticket §2). On a cold emulator the navigation's
+     * first AX event can arrive ~1.3 s after the tap, so a single short quiet
+     * window trips before the screen has even begun to change and the outcome
+     * falsely reports `after == before`. Split the wait:
+     *
+     *  - Phase 1: wait up to [firstEventTimeoutMs] for the AX clock to advance
+     *    past [fromVersion] — the first event the just-run action caused. If none
+     *    arrives, the action didn't move the UI: return settled="no-event"
+     *    (firstEventMs = -1), and the caller keeps `after == before`.
+     *  - Phase 2: wait for [quietMs] of no events, bounded by [idleTimeoutMs]
+     *    (measured separately from phase 1). settled="quiet" if it went idle,
+     *    "timeout" if the bound hit first.
+     */
+    fun settleAfterAction(
+        fromVersion: Long,
+        firstEventTimeoutMs: Long,
+        quietMs: Long,
+        idleTimeoutMs: Long
+    ): SettleResult {
+        val start = System.currentTimeMillis()
+        synchronized(waitLock) {
+            while (version <= fromVersion) {
+                val remaining = firstEventTimeoutMs - (System.currentTimeMillis() - start)
+                if (remaining <= 0) return SettleResult("no-event", -1L, 0L)
+                try {
+                    waitLock.wait(remaining)
+                } catch (_: InterruptedException) {
+                    return SettleResult("no-event", -1L, 0L)
+                }
+            }
+        }
+        val firstEventMs = System.currentTimeMillis() - start
+        val idleMs = waitForQuiet(quietMs, idleTimeoutMs)
+        // waitForQuiet returns as soon as it detects quiet (elapsed < timeout) and
+        // only returns elapsed >= timeout when the bound was hit first.
+        val settled = if (idleMs >= idleTimeoutMs) "timeout" else "quiet"
+        return SettleResult(settled, firstEventMs, idleMs)
+    }
+
+    /**
+     * Rebuild the tree until it is non-empty (has nodes and isn't [EMPTY_TREE_HASH]),
+     * bounded by [timeoutMs]. Used after a settle that landed on a transient empty
+     * frame (a screen caught mid-transition) so the outcome hashes a real screen.
+     * Waits on the AX clock between rebuilds; returns the first non-empty snapshot,
+     * or the last (still-empty) one if the bound elapses.
+     */
+    fun awaitNonEmptyTree(timeoutMs: Long): Snapshot {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var snap = ensure()
+        while (snap.roots.isEmpty() || snap.hash == EMPTY_TREE_HASH) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) return snap
+            val v = awaitVersionChange(snap.version, remaining)
+            if (v <= snap.version) return snap
+            snap = ensure()
+        }
+        return snap
     }
 
     /**

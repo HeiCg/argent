@@ -28,6 +28,7 @@ class AxNode(
     val enabled: Boolean,
     val focused: Boolean,
     val selected: Boolean,
+    val password: Boolean,
     val visible: Boolean,
     val children: List<AxNode>
 )
@@ -106,6 +107,7 @@ object ScreenTree {
             enabled = node.isEnabled,
             focused = node.isFocused,
             selected = node.isSelected,
+            password = node.isPassword,
             visible = visible,
             children = children
         )
@@ -143,6 +145,7 @@ object ScreenTree {
             put("enabled", n.enabled)
             if (n.checked) put("checked", true)
             if (n.selected) put("selected", true)
+            if (n.password) put("isPassword", true)
         })
         for (c in n.children) {
             if (idx[0] >= max) { truncated[0] = true; break }

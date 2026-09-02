@@ -54,9 +54,14 @@ export function makeAndroidImpl(
           // Clipboard unavailable from instrumentation → type it if it's typeable.
           // `assertTypeableAndroidText` throws for emoji / newlines, dropping to the
           // proprietary path (which sets the emulator clipboard over gRPC). The
-          // typed fallback carries the Screen-graph Phase A before/after outcome.
+          // typed fallback carries the Screen-graph Phase A before/after outcome, and
+          // `secretsUsed` (set by the paste tool when the text came from a
+          // `{{secret:…}}` placeholder) redacts the recorded graph node live.
           assertTypeableAndroidText(params.text);
-          const outcome = await openServerTypeTextWithOutcome(registry, device, params.text);
+          const secretsUsed = (params as { secretsUsed?: boolean }).secretsUsed === true;
+          const outcome = await openServerTypeTextWithOutcome(registry, device, params.text, {
+            secretsUsed,
+          });
           return { pasted: true, outcome };
         } catch (err) {
           console.debug(

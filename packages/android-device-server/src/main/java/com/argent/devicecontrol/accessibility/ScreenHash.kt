@@ -25,6 +25,16 @@ object ScreenHash {
     const val FLAG_ENABLED = 1 shl 4
     const val FLAG_FOCUSED = 1 shl 5
 
+    /**
+     * Password bit (Phase B leftover B1), matching `FLAG_PASSWORD` (1 << 6 = 64)
+     * in `packages/tool-server/src/screen-graph/types.ts`. Deliberately NOT part
+     * of [flagsOf]: including it would change the structural / state hash of any
+     * screen with a password field and break host↔device hash parity (which is
+     * bits 0..5 only). It is layered onto the SERIALIZED `flags` of a compact
+     * record (see [AxRecords.compact]) purely so the host can redact secrets.
+     */
+    const val FLAG_PASSWORD = 1 shl 6
+
     private val FNV_OFFSET = 0xcbf29ce484222325UL
     private val FNV_PRIME = 0x100000001b3UL
 

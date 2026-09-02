@@ -150,12 +150,29 @@ export interface OpenServerActionOutcome {
   changed: boolean;
   /** H differed — a different screen, not just new content. */
   newScreen: boolean;
-  /** ms spent waiting for the UI to go quiet on the AX-event clock. */
+  /**
+   * How the two-phase settle (Phase A.1) resolved:
+   *  - `"no-event"`: no AX event within `firstEventTimeoutMs` — the action didn't
+   *    move the UI, `after == before`, `changed:false`.
+   *  - `"quiet"`: the UI went idle (no event for `quietMs`) within `idleTimeoutMs`.
+   *  - `"timeout"`: still churning when `idleTimeoutMs` elapsed.
+   */
+  settled: "no-event" | "quiet" | "timeout";
+  /** ms from the action to the first AX event; -1 when none arrived. */
+  firstEventMs: number;
+  /** ms spent in phase 2 waiting for the UI to go quiet; 0 when `no-event`. */
   idleMs: number;
 }
 
 export interface OutcomeOptions {
-  /** Idle-wait budget after the action, ms (default 300 server-side). */
+  /**
+   * Phase 1 budget: ms to wait for the FIRST AX event after the action (default
+   * 600 server-side). None within it ⇒ `settled:"no-event"`.
+   */
+  firstEventTimeoutMs?: number;
+  /** Quiet window: ms of no events that counts as settled (default 80). */
+  quietMs?: number;
+  /** Phase 2 budget: ms to wait for quiet after the first event (default 1500). */
   idleTimeoutMs?: number;
 }
 
@@ -282,6 +299,14 @@ export interface OpenDeviceServerApi {
     fromVersion: number;
     timeoutMs: number;
     until?: OpenServerSelector;
+    /**
+     * Phase A.1: after the first (or matching) event, also wait for the UI to go
+     * quiet before returning, so the result is the next STABLE state rather than
+     * the first frame of the transition. Default false (first event).
+     */
+    settle?: boolean;
+    /** Quiet window for `settle`, ms (default 80 server-side). */
+    quietMs?: number;
   }): Promise<OpenServerAwaitChangeResult>;
 
   // Outcome-capable action variants: perform the action AND report the
@@ -315,11 +340,16 @@ export interface OpenDeviceServerApi {
 
 /**
  * The `outcome` param an action carries to ask the server for a before/after
- * fingerprint delta. Always an object (so the server records the outcome);
- * `idleTimeoutMs` is omitted when unset so the server default (300ms) applies.
+ * fingerprint delta. Always an object (so the server records the outcome); each
+ * bound is omitted when unset so the server defaults apply (firstEventTimeoutMs
+ * 600, quietMs 80, idleTimeoutMs 1500).
  */
 function outcomeObject(opts?: OutcomeOptions): Record<string, unknown> {
-  return opts?.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {};
+  const o: Record<string, unknown> = {};
+  if (opts?.firstEventTimeoutMs !== undefined) o.firstEventTimeoutMs = opts.firstEventTimeoutMs;
+  if (opts?.quietMs !== undefined) o.quietMs = opts.quietMs;
+  if (opts?.idleTimeoutMs !== undefined) o.idleTimeoutMs = opts.idleTimeoutMs;
+  return o;
 }
 
 const READY_TIMEOUT_MS = 30_000;
@@ -665,6 +695,8 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
             fromVersion: awaitOpts.fromVersion,
             timeoutMs: awaitOpts.timeoutMs,
             ...(awaitOpts.until !== undefined ? { until: awaitOpts.until } : {}),
+            ...(awaitOpts.settle ? { settle: true } : {}),
+            ...(awaitOpts.quietMs !== undefined ? { quietMs: awaitOpts.quietMs } : {}),
           },
           // Keep the socket alive past the server-side block: the wait itself is
           // `timeoutMs`, so give the request a comfortably larger budget.

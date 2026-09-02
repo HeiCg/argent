@@ -20,7 +20,9 @@ object AxRecords {
         put("bounds", JSONObject().apply {
             put("x1", n.x1); put("y1", n.y1); put("x2", n.x2); put("y2", n.y2)
         })
-        put("flags", ScreenHash.flagsOf(n))
+        // Actionability bits 0..5 (hash-parity) plus the password bit (6), which
+        // is serialized-only and never folded into the hash — see ScreenHash.
+        put("flags", ScreenHash.flagsOf(n) or (if (n.password) ScreenHash.FLAG_PASSWORD else 0))
         put("path", pathArray(path))
     }
 }
