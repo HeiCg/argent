@@ -18,7 +18,10 @@ vi.mock("../src/utils/ios-devices", async (importOriginal) => {
 });
 
 import { describeAndroidViaOpenState } from "../src/utils/open-server-describe";
-import { describeAndroid } from "../src/tools/describe/platforms/android";
+import {
+  describeAndroid,
+  settleToWaitTimeoutMs,
+} from "../src/tools/describe/platforms/android";
 import { createAwaitUiElementTool } from "../src/tools/await-ui-element";
 import { resolveDevice } from "../src/utils/device-info";
 import { formatDescribeTree } from "../src/tools/describe/format-tree";
@@ -129,18 +132,47 @@ describe("describeAndroidViaOpenState (T8 helper, F12)", () => {
   });
 });
 
-describe("describe open path — one RPC, comparator-matched idle cap (P3c fix 2)", () => {
-  it("issues exactly one getNestedState with waitTimeoutMs:500 and never the two-call path", async () => {
+describe("describe open path — one RPC, settle idle policy (P3d)", () => {
+  it("default (no settle) issues exactly one getNestedState with waitTimeoutMs:0 (immediate, matches the proprietary path) and never the two-call path", async () => {
     const openApi = makeOpenApi();
     const data = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
 
     expect(data.source).toBe("open-device-server");
     // Single combined round-trip …
     expect(openApi.getNestedState).toHaveBeenCalledTimes(1);
-    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 500 });
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 0 });
     // … not the old fake-parallel getNestedAccessibilityTree + getInfo pair.
     expect(openApi.getNestedAccessibilityTree).not.toHaveBeenCalled();
     expect(openApi.getInfo).not.toHaveBeenCalled();
+  });
+
+  it("settle:false reads immediately (waitTimeoutMs:0)", async () => {
+    const openApi = makeOpenApi();
+    await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL, undefined, false, false);
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 0 });
+  });
+
+  it("settle:true waits the 500 ms quiescence (the settled read)", async () => {
+    const openApi = makeOpenApi();
+    await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL, undefined, false, true);
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 500 });
+  });
+
+  it("settle:<number> passes the custom cap through as waitTimeoutMs", async () => {
+    const openApi = makeOpenApi();
+    await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL, undefined, false, 250);
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 250 });
+  });
+
+  it("settleToWaitTimeoutMs maps the policy: absent/false/0/negative/NaN → 0, true → 500, positive → floor", () => {
+    expect(settleToWaitTimeoutMs(undefined)).toBe(0);
+    expect(settleToWaitTimeoutMs(false)).toBe(0);
+    expect(settleToWaitTimeoutMs(0)).toBe(0);
+    expect(settleToWaitTimeoutMs(-100)).toBe(0);
+    expect(settleToWaitTimeoutMs(Number.NaN)).toBe(0);
+    expect(settleToWaitTimeoutMs(true)).toBe(500);
+    expect(settleToWaitTimeoutMs(250)).toBe(250);
+    expect(settleToWaitTimeoutMs(300.9)).toBe(300);
   });
 
   it("surfaces the server's waitedMs/captureMs split as result metadata (not rendered text)", async () => {

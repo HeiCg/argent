@@ -28,6 +28,21 @@ const TRUNCATION_HINT =
 
 export const androidRequires: ToolDependency[] = ["adb"];
 
+// The open describe's idle policy, mapped to the open server's `getNestedState`
+// idle-gate cap (`waitTimeoutMs`). Default/`false` = an immediate read
+// (`waitTimeoutMs: 0`), matching the proprietary `android-devtools` `getHierarchy`,
+// which reads the tree with no quiescence wait — so the two describe backends
+// differ in policy, not speed. `true` = a 500 ms quiescence (the settled read,
+// the superior product feature), and a number is a custom cap in ms.
+export const SETTLE_QUIESCENCE_MS = 500;
+export function settleToWaitTimeoutMs(settle: boolean | number | undefined): number {
+  if (settle === true) return SETTLE_QUIESCENCE_MS;
+  if (typeof settle === "number" && Number.isFinite(settle) && settle > 0) {
+    return Math.floor(settle);
+  }
+  return 0;
+}
+
 // Android TV keeps a readable uiautomator tree (unlike tvOS, which describe
 // short-circuits), so point at the focus-driven tools instead of blocking it.
 const ANDROID_TV_HINT =
@@ -49,7 +64,11 @@ export async function describeAndroid(
   // Verdict from a caller that already probed: `getAndroidRuntimeKind` shells out
   // to `adb devices` even on a cache hit and `describe` is an alwaysLoad hot
   // path. `undefined` means "unknown, probe".
-  isTv?: boolean
+  isTv?: boolean,
+  // Idle policy for the open path (ignored by the android-devtools / dump paths,
+  // which always read immediately). Absent/`false` = immediate read (matches the
+  // proprietary getHierarchy); `true` = 500 ms quiescence; a number = custom cap.
+  settle?: boolean | number
 ): Promise<DescribeTreeData> {
   const hint = (isTv ?? (await isAndroidTv(serial))) ? ANDROID_TV_HINT : undefined;
 
@@ -74,12 +93,18 @@ export async function describeAndroid(
         // is also gone from the hot path, so its rotation/package reads no longer
         // trigger `waitForIdle`.
         //
-        // `waitTimeoutMs: 500` matches the proprietary comparator's idle cap: the
-        // describe path used to wait up to 2000 ms, which on a busy screen let the
-        // in-flight navigation's `waitForIdle` dominate the verb (measured: 690 of
-        // 839 ms on tap+describe). The await-* paths keep their own (default)
-        // timeout — this cap change is describe-only.
-        const state = await server.getNestedState({ waitTimeoutMs: 500 });
+        // Idle policy (phase 3d): default `waitTimeoutMs: 0` = an immediate read,
+        // matching the proprietary `android-devtools` `getHierarchy`, which reads
+        // the tree with no quiescence wait — so the two backends are like-for-like
+        // in *policy*, not just speed. Under `settle` the describe waits out the
+        // in-flight navigation's `waitForIdle` (a 500 ms idle-quiescence window, or
+        // a custom one) for a fresh post-navigation tree — the superior product
+        // feature, available explicitly. `uiDevice.waitForIdle(0)` returns
+        // immediately (a 0 window short-circuits the idle loop — measured
+        // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
+        // keep their own (default) timeout — this is describe-only.
+        const waitTimeoutMs = settleToWaitTimeoutMs(settle);
+        const state = await server.getNestedState({ waitTimeoutMs });
         if (state.tree.length === 0) {
           throw new FailureError("open-device-server returned an empty accessibility tree", {
             error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,

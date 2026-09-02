@@ -401,6 +401,136 @@ async function describeSplit(
   return { waitedP50: p50(waited), captureP50: p50(captured), n: waited.length };
 }
 
+/* -------------------------------------------------------------------------- */
+/* describe staleness after a navigating tap (P3d)                             */
+/* -------------------------------------------------------------------------- */
+
+// Tap-centre of a describe line's trailing "(x, y, w, h)" frame.
+function frameCenterOf(descLine: string): { x: number; y: number } | null {
+  const fm = descLine.match(/\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)\s*$/);
+  if (!fm) return null;
+  return { x: Number(fm[1]) + Number(fm[3]) / 2, y: Number(fm[2]) + Number(fm[4]) / 2 };
+}
+// Every quoted label (not name="…") in a describe rendering — both backends emit
+// the same `"label"` shape, so this is directly comparable across configs.
+function labelSetOf(desc: string): Set<string> {
+  const set = new Set<string>();
+  for (const line of desc.split("\n")) {
+    const m = line.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/);
+    if (m?.[1]) set.add(m[1]);
+  }
+  return set;
+}
+
+// The Settings-root category to navigate INTO for the staleness probe. The
+// first present (by label) with a tappable frame wins; stable on API 35.
+const NAV_CANDIDATES = [
+  "Network & internet",
+  "Connected devices",
+  "Apps",
+  "Notifications",
+  "Battery",
+  "Storage",
+  "Sound & vibration",
+  "Display",
+  "Security & privacy",
+  "Security",
+  "System",
+];
+
+// Derive a deterministic navigating tap target and the destination-only marker
+// set (labels on the fully-settled destination but NOT on the root), live from
+// the device under the CURRENT flag: a stale post-tap read (still the root)
+// shares none of these markers, a fresh read shares at least one. `settleForDerive`
+// picks the describe policy used to read the settled destination (true on ON so
+// the markers are complete; undefined on OFF where `settle` is a no-op).
+async function deriveNavTarget(
+  reg: Reg,
+  settleForDerive: boolean | undefined
+): Promise<{ target: string; x: number; y: number; markers: string[] } | null> {
+  await ensureSettings(reg);
+  let root: { description: string };
+  try {
+    root = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+  } catch {
+    return null;
+  }
+  const rootLabels = labelSetOf(root.description);
+  const lines = root.description.split("\n");
+  // The Settings root renders each row as a single concatenated label
+  // ("Network & internet / Mobile, Wi‑Fi, hotspot"), so match a candidate as the
+  // PREFIX of a row's label, not an exact quoted string.
+  const lineLabel = (l: string): string | undefined =>
+    l.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/)?.[1];
+  let picked: { target: string; x: number; y: number } | null = null;
+  for (const cand of NAV_CANDIDATES) {
+    const line = lines.find((l) => {
+      const label = lineLabel(l);
+      return !!label && label.startsWith(cand) && !!frameCenterOf(l);
+    });
+    if (line) {
+      const c = frameCenterOf(line)!;
+      picked = { target: cand, x: c.x, y: c.y };
+      break;
+    }
+  }
+  if (!picked) return null;
+  await reg
+    .invokeTool("gesture-tap", { udid: SERIAL, x: picked.x, y: picked.y })
+    .catch(() => undefined);
+  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+  let dest: { description: string };
+  try {
+    dest = (await reg.invokeTool("describe", {
+      udid: SERIAL,
+      ...(settleForDerive === undefined ? {} : { settle: settleForDerive }),
+    })) as { description: string };
+  } catch {
+    return null;
+  }
+  const destLabels = labelSetOf(dest.description);
+  const markers = [...destLabels].filter((l) => !rootLabels.has(l));
+  await ensureSettings(reg);
+  return { ...picked, markers };
+}
+
+// After a navigating tap, does the IMMEDIATE describe already show the
+// destination screen (fresh) or still the pre-tap root (stale)? Returns the
+// destination-visible rate over n runs for the given describe idle policy
+// (`policy` is passed straight to the describe tool: undefined = OFF path where
+// `settle` is a no-op; false/true = ON's two policies). `waitedP50` confirms the
+// server-side idle wait each policy actually spent (≈0 for settle:false, ≈cap for
+// settle:true; null on OFF, which surfaces no split).
+async function destinationVisibleRate(
+  reg: Reg,
+  n: number,
+  policy: boolean | undefined,
+  nav: { target: string; x: number; y: number; markers: string[] }
+): Promise<{ visible: number; n: number; rate: number; waitedP50: number | null }> {
+  let visible = 0;
+  let counted = 0;
+  const waited: number[] = [];
+  const markers = new Set(nav.markers);
+  for (let i = 0; i < n; i++) {
+    await ensureSettings(reg);
+    try {
+      await reg.invokeTool("gesture-tap", { udid: SERIAL, x: nav.x, y: nav.y });
+      const d = (await reg.invokeTool("describe", {
+        udid: SERIAL,
+        ...(policy === undefined ? {} : { settle: policy }),
+      })) as { description: string; waitedMs?: number };
+      counted++;
+      const labels = labelSetOf(d.description);
+      if ([...markers].some((m) => labels.has(m))) visible++;
+      if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
+    } catch {
+      /* skip this run */
+    }
+  }
+  const rate = counted ? Number((visible / counted).toFixed(3)) : NaN;
+  return { visible, n: counted, rate, waitedP50: waited.length ? summarize(waited).p50 : null };
+}
+
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
@@ -411,6 +541,18 @@ interface BlockResult {
   // path (no split surfaced).
   describeSplitIdle: { waitedP50: number | null; captureP50: number | null; n: number };
   describeSplitAfterTap: { waitedP50: number | null; captureP50: number | null; n: number };
+  // Post-navigating-tap staleness (P3d): "destination already visible" rate for
+  // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
+  // ON settle:true in an ON block. Empty when no nav target could be derived.
+  destinationVisible: Array<{
+    policy: string;
+    target: string | null;
+    markerCount: number;
+    visible: number;
+    n: number;
+    rate: number;
+    waitedP50: number | null;
+  }>;
   describeSample: {
     source: string;
     bytes: number;
@@ -542,22 +684,30 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
   // re-establish settings after taps navigated
   await ensureSettings(reg);
 
-  // tap+describe (F4): a single timed tap→describe pair — what an agent actually
-  // does (act, then read the screen) — resetting to the Settings root between
-  // iterations (untimed) so the pair is measured from the same starting screen.
-  verbs.push(
-    await timeCalls(
-      "tap+describe",
-      async () => {
-        await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
-        await reg.invokeTool("describe", { udid: SERIAL });
-      },
-      undefined,
-      async () => {
-        await ensureSettings(reg);
-      }
-    )
-  );
+  // tap+describe (F4 / P3d): a single timed tap→describe pair — what an agent
+  // actually does (act, then read the screen) — resetting to the Settings root
+  // between iterations (untimed) so the pair is measured from the same starting
+  // screen. ON runs both idle policies: settle:false (immediate read, like-for-
+  // like with the proprietary path) and settle:true (the settled read, our
+  // policy). OFF has one policy (its describe reads immediately regardless), so it
+  // runs as-is.
+  const tapThenDescribe = (settle?: boolean) => async () => {
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
+    await reg.invokeTool("describe", {
+      udid: SERIAL,
+      ...(settle === undefined ? {} : { settle }),
+    });
+  };
+  const resetToSettings = async () => {
+    await ensureSettings(reg);
+  };
+  if (config === "ON") {
+    verbs.push(await timeCalls("tap+describe(settle:false)", tapThenDescribe(false), undefined, resetToSettings));
+    await ensureSettings(reg);
+    verbs.push(await timeCalls("tap+describe(settle:true)", tapThenDescribe(true), undefined, resetToSettings));
+  } else {
+    verbs.push(await timeCalls("tap+describe", tapThenDescribe(undefined), undefined, resetToSettings));
+  }
 
   await ensureSettings(reg);
 
@@ -568,6 +718,44 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
     await ensureSettings(reg);
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 }).catch(() => undefined);
   });
+
+  await ensureSettings(reg);
+
+  // Post-navigating-tap staleness (P3d): after tapping a KNOWN Settings category,
+  // does the immediate describe already contain the destination screen's content?
+  // OFF measures its one policy; ON measures settle:false (like-for-like) and
+  // settle:true (settled read). Marker set is derived live under the same flag.
+  const destinationVisible: BlockResult["destinationVisible"] = [];
+  const nav = await deriveNavTarget(reg, config === "ON" ? true : undefined);
+  if (!nav || nav.markers.length === 0) {
+    notes.push(
+      "destination-visible: could not derive a nav target / destination markers on this root; staleness skipped"
+    );
+  } else if (config === "ON") {
+    const off = await destinationVisibleRate(reg, N, false, nav);
+    destinationVisible.push({
+      policy: "ON settle:false",
+      target: nav.target,
+      markerCount: nav.markers.length,
+      ...off,
+    });
+    await ensureSettings(reg);
+    const onT = await destinationVisibleRate(reg, N, true, nav);
+    destinationVisible.push({
+      policy: "ON settle:true",
+      target: nav.target,
+      markerCount: nav.markers.length,
+      ...onT,
+    });
+  } else {
+    const offRes = await destinationVisibleRate(reg, N, undefined, nav);
+    destinationVisible.push({
+      policy: "OFF",
+      target: nav.target,
+      markerCount: nav.markers.length,
+      ...offRes,
+    });
+  }
 
   await ensureSettings(reg);
 
@@ -718,6 +906,7 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
     gestureParams: BENCH_GESTURE_PARAMS,
     describeSplitIdle,
     describeSplitAfterTap,
+    destinationVisible,
     notes,
   };
 }

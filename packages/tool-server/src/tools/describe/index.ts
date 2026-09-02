@@ -49,6 +49,15 @@ const zodSchema = z.object({
         "and the describe tool falls back to native-devtools inspection. " +
         "If omitted, the fallback auto-detects the frontmost connected app. Ignored on Android / Chromium."
     ),
+  settle: z
+    .union([z.boolean(), z.number().int().nonnegative()])
+    .optional()
+    .describe(
+      "Android open-server only: default (or false) reads the tree immediately (matching the " +
+        "proprietary path); true waits for the screen to settle (a 500 ms idle-quiescence window) " +
+        "first, and a number sets a custom idle-quiescence window in ms — use it to read a settled " +
+        "tree right after a navigating tap."
+    ),
 });
 
 type Params = z.infer<typeof zodSchema>;
@@ -125,7 +134,9 @@ function makeDescribeExecute(
         // through so describeAndroid doesn't re-probe.
         (await isAndroidTv(device.id))
           ? describeTv(registry, device)
-          : withDescription(await describeAndroid(registry, params.udid, params.bundleId, false)),
+          : withDescription(
+              await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)
+            ),
     },
     chromium: {
       handler: async (services) => withDescription(await describeChromium(services.chromium)),

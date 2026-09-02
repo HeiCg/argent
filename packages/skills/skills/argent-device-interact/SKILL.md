@@ -105,7 +105,7 @@ Read the exact error and choose the action that matches it:
 - `describe` returns an empty element list:
   the screen may be blank, loading, or showing content without accessibility labels. Use `screenshot` to see what is visible, then retry after the content has loaded.
 - The `describe` result reports `source: "open-device-server"`:
-  the open-source Android on-device control server answered (enabled by the `open-device-server` flag). If it becomes unavailable, `describe` falls back automatically to the `android-devtools` helper and then to a raw `uiautomator` dump — no action needed. With the flag on, `gesture-tap` and `gesture-swipe` also route through this server and fall back to the default backend the same way.
+  the open-source Android on-device control server answered (enabled by the `open-device-server` flag). If it becomes unavailable, `describe` falls back automatically to the `android-devtools` helper and then to a raw `uiautomator` dump — no action needed. With the flag on, `gesture-tap` and `gesture-swipe` also route through this server and fall back to the default backend the same way. By default `describe` reads the tree immediately, matching the proprietary path; pass `settle: true` (or a millisecond cap) to wait for the screen to go idle first — useful right after a navigating tap when you want the destination screen rather than the one still animating out.
 - `describe` succeeds but is not detailed enough for a React Native app:
   use `debugger-component-tree` next.
 - You need app-scoped inspection with full UIKit properties (`accessibilityIdentifier`, `viewClassName`):
