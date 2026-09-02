@@ -4,6 +4,17 @@
     <!-- Loopback ServerSocket bind; reached from the host via `adb forward`. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      Package visibility (API 30+): a device-control server must resolve and
+      launch ANY installed app by name (`launchApp` calls
+      PackageManager.getLaunchIntentForPackage). Without this the query is
+      filtered and returns null for apps outside the auto-visible set (e.g.
+      com.android.chrome), so launchApp fails on a target the emulator clearly
+      has. This is an adb-installed instrumentation/automation APK, never shipped
+      to Play, so the broad-visibility permission is the correct fit.
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <application
         android:label="Argent Device Control"
         android:allowBackup="false" />
