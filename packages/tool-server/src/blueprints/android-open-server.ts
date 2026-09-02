@@ -44,6 +44,36 @@ export interface OpenServerTreeResult {
   tree: OpenServerElement[];
 }
 
+export interface OpenServerScreenshot {
+  /** Base64-encoded image bytes (no data-URI prefix). */
+  data: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Combined `getState` capture: one round-trip for waitForIdle + tree + info
+ * (+ an optional screenshot). `info` lacks `currentActivity` — the server's
+ * StateHandler omits it — so callers that need the activity use `getInfo`.
+ */
+export interface OpenServerStateResult {
+  tree: OpenServerElement[];
+  info: OpenServerInfo;
+  /** Base64 JPEG; empty string when `includeScreenshot` was false. */
+  screenshot: string;
+  waitedMs: number;
+  captureMs: number;
+}
+
+/** One pointer's path for a multi-pointer [OpenDeviceServerApi.gesture]. */
+export interface GesturePointerPath {
+  /** Stable pointer id; defaults to the array index server-side. */
+  id?: number;
+  /** Device-pixel samples; `tMs` is the offset from gesture start. */
+  points: Array<{ x: number; y: number; tMs: number }>;
+}
+
 /**
  * The method surface of the open-source on-device server. Coordinates for
  * tap/longPress/swipe are device PIXELS (the server drives UiAutomator directly);
@@ -64,12 +94,35 @@ export interface OpenDeviceServerApi {
     startY: number,
     endX: number,
     endY: number,
-    steps?: number
+    steps?: number,
+    // >0 holds the last pointer position that long before the lift, so the OS
+    // reads ~0 release velocity and applies little to no fling (a momentum-free
+    // swipe). Omit / 0 for the fast `uiDevice.swipe()` path whose lift flings.
+    holdEndMs?: number
   ): Promise<{ success: boolean }>;
+  /** Inject a synchronized multi-pointer gesture (pinch / rotate / custom). */
+  gesture(pointers: GesturePointerPath[]): Promise<{ success: boolean }>;
   typeText(text: string): Promise<{ success: boolean; charsTyped: number }>;
   key(key: string): Promise<{ success: boolean }>;
   waitForIdle(timeoutMs?: number): Promise<{ idle: boolean; waitedMs: number }>;
   launchApp(packageName: string): Promise<{ success: boolean; packageName: string }>;
+  screenshot(opts?: {
+    quality?: number;
+    scale?: number;
+    format?: "png" | "jpeg" | "webp";
+  }): Promise<OpenServerScreenshot>;
+  /**
+   * Combined waitForIdle + tree + info in one round-trip. `includeScreenshot`
+   * defaults false here (the poll loops that use this never read the frame);
+   * pass true to also capture one.
+   */
+  getState(opts?: {
+    maxElements?: number;
+    waitTimeoutMs?: number;
+    includeScreenshot?: boolean;
+    quality?: number;
+    scale?: number;
+  }): Promise<OpenServerStateResult>;
 }
 
 const READY_TIMEOUT_MS = 30_000;
@@ -334,14 +387,16 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       tap: (x, y) => client.request<{ success: boolean }>("tap", { x, y }),
       longPress: (x, y, durationMs) =>
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
-      swipe: (startX, startY, endX, endY, steps) =>
+      swipe: (startX, startY, endX, endY, steps, holdEndMs) =>
         client.request<{ success: boolean }>("swipe", {
           startX,
           startY,
           endX,
           endY,
           steps: steps ?? 10,
+          ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
         }),
+      gesture: (pointers) => client.request<{ success: boolean }>("gesture", { pointers }),
       typeText: (text) =>
         client.request<{ success: boolean; charsTyped: number }>("typeText", { text }),
       key: (key) => client.request<{ success: boolean }>("key", { key }),
@@ -351,6 +406,20 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }),
       launchApp: (packageName) =>
         client.request<{ success: boolean; packageName: string }>("launchApp", { packageName }),
+      screenshot: (ssOpts = {}) =>
+        client.request<OpenServerScreenshot>("screenshot", {
+          quality: ssOpts.quality ?? 80,
+          scale: ssOpts.scale ?? 1.0,
+          format: ssOpts.format ?? "png",
+        }),
+      getState: (stateOpts = {}) =>
+        client.request<OpenServerStateResult>("getState", {
+          maxElements: stateOpts.maxElements ?? 200,
+          waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
+          includeScreenshot: stateOpts.includeScreenshot ?? false,
+          ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
+          ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
+        }),
     };
 
     const instance: ServiceInstance<OpenDeviceServerApi> = {

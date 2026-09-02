@@ -1,9 +1,23 @@
 import { z } from "zod";
-import { type ToolCapability, type ToolContext, type ToolDefinition } from "@argent/registry";
+import {
+  type Registry,
+  type ServiceRef,
+  type ToolCapability,
+  type ToolContext,
+  type ToolDefinition,
+} from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { sendTouchEvent } from "../../utils/gesture-utils";
 import { sleep } from "../../utils/timing";
+import {
+  shouldUseOpenServer,
+  openServerGesture,
+  type NormalizedPointerPath,
+} from "../../utils/open-server-input";
+
+// Host frame budget ≈ 60fps; the open server injects the same per-frame timeline.
+const FRAME_MS = 16;
 
 const zodSchema = z
   .object({
@@ -70,7 +84,8 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
 };
 
-export const gestureRotateTool: ToolDefinition<Params, Result> = {
+export function createGestureRotateTool(registry: Registry): ToolDefinition<Params, Result> {
+  return {
   id: "gesture-rotate",
   interaction: {
     startedMsg: ({ params }) => {
@@ -93,16 +108,68 @@ Use when you need to rotate a map, image picker, or any rotateable UI element. R
 Size the orbit with radius, or with radiusX and radiusY together (the pair overrides radius); one half of the pair alone, or none of the three, is rejected.`,
   zodSchema,
   capability,
-  services: (params) => ({
-    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
-  }),
+  services: (params): Record<string, ServiceRef> => {
+    const device = resolveDevice(params.udid);
+    // Skip the proprietary server when the open path is active; resolved lazily
+    // in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
+    if (shouldUseOpenServer(device)) return {};
+    return { simulatorServer: simulatorServerRef(device) };
+  },
   async execute(services, params, ctx?: ToolContext) {
-    const api = services.simulatorServer as SimulatorServerApi;
+    const device = resolveDevice(params.udid);
     const duration = params.durationMs ?? 300;
     const steps = Math.max(1, Math.round(duration / 16));
     // Refines guarantee radius is set whenever the per-axis pair is absent.
     const radiusX = params.radiusX ?? params.radius!;
     const radiusY = params.radiusY ?? params.radius!;
+
+    // Open path: one gesture RPC, so the per-frame abort below cannot apply —
+    // only an already-aborted signal is honored, matching the swipe open path.
+    if (shouldUseOpenServer(device)) {
+      const timestampMs = Date.now();
+      if (ctx?.signal?.aborted) {
+        const err = new Error("gesture-rotate aborted — cancelled before dispatch");
+        err.name = "AbortError";
+        throw err;
+      }
+      try {
+        const p0: NormalizedPointerPath["points"] = [];
+        const p1: NormalizedPointerPath["points"] = [];
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const angleDeg = params.startAngle + (params.endAngle - params.startAngle) * t;
+          const angleRad = (angleDeg * Math.PI) / 180;
+          const tMs = i * FRAME_MS;
+          p0.push({
+            x: params.centerX + radiusX * Math.cos(angleRad),
+            y: params.centerY + radiusY * Math.sin(angleRad),
+            tMs,
+          });
+          p1.push({
+            x: params.centerX - radiusX * Math.cos(angleRad),
+            y: params.centerY - radiusY * Math.sin(angleRad),
+            tMs,
+          });
+        }
+        await openServerGesture(registry, device, [
+          { id: 0, points: p0 },
+          { id: 1, points: p1 },
+        ]);
+        return { rotated: true, timestampMs };
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") throw err;
+        console.debug(
+          `[gesture-rotate] open-device-server failed, falling back to simulator-server: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+
+    const ref = simulatorServerRef(device);
+    const api = shouldUseOpenServer(device)
+      ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+      : (services.simulatorServer as SimulatorServerApi);
 
     let timestampMs = 0;
     // Last dispatched positions, so an abort lifts from where the fingers are.
@@ -152,4 +219,5 @@ Size the orbit with radius, or with radiusX and radiusY together (the pair overr
 
     return { rotated: true, timestampMs };
   },
-};
+  };
+}

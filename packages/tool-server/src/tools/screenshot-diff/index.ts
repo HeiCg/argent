@@ -18,6 +18,7 @@ import { resolveDevice } from "../../utils/device-info";
 import { httpScreenshot } from "../../utils/simulator-client";
 import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
 import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
+import { shouldUseOpenServer, captureAndroidScreenshot } from "../../utils/open-server-input";
 import type { RotationPeek } from "../../utils/device-orientation";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 import { diffPngFiles } from "./screenshot-diff";
@@ -79,6 +80,19 @@ interface ScreenshotDiffResult {
 
 type CaptureScreenshot = typeof httpScreenshot;
 
+/**
+ * Open-device-server capture backend, injected by `createScreenshotDiffTool`
+ * (the only site with a registry). When `shouldUse` is true a live capture goes
+ * through the on-device server's `screenshot` RPC (reusing the same helper as the
+ * `screenshot` tool); the proprietary simulator-server is resolved lazily via
+ * `resolveSimulatorServer` only if that fails.
+ */
+interface OpenCaptureBackend {
+  shouldUse: (device: DeviceInfo) => boolean;
+  capture: (device: DeviceInfo, scale?: number) => Promise<string>;
+  resolveSimulatorServer: (device: DeviceInfo) => Promise<SimulatorServerApi>;
+}
+
 const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
@@ -118,7 +132,12 @@ Fails if the input sources are invalid, PNG files cannot be read, outputDir cann
     // even for pure static-PNG diffs, which fails on tvOS simulators that have no
     // SimulatorServer backend.
     if (params.captureBaseline || params.captureCurrent) {
-      return { simulatorServer: simulatorServerRef(resolveDevice(params.udid)) };
+      const device = resolveDevice(params.udid);
+      // With the open-device-server flag on, the capture goes through the
+      // on-device server; the proprietary server is resolved lazily in execute
+      // only as a fallback, so don't spawn it here (mirrors gesture-tap).
+      if (shouldUseOpenServer(device)) return {};
+      return { simulatorServer: simulatorServerRef(device) };
     }
     return {};
   },
@@ -139,8 +158,21 @@ export function createScreenshotDiffTool(
   return {
     ...screenshotDiffTool,
     async execute(services, params, options) {
-      return executeScreenshotDiffTool(services, params, options, httpScreenshot, (device) =>
-        androidDevtoolsRotationPeek(registry, device)
+      return executeScreenshotDiffTool(
+        services,
+        params,
+        options,
+        httpScreenshot,
+        (device) => androidDevtoolsRotationPeek(registry, device),
+        {
+          shouldUse: shouldUseOpenServer,
+          capture: (device, scale) =>
+            captureAndroidScreenshot(registry, device, scale).then((r) => r.path),
+          resolveSimulatorServer: (device) => {
+            const ref = simulatorServerRef(device);
+            return registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
+          },
+        }
       );
     },
   };
@@ -151,7 +183,8 @@ export async function executeScreenshotDiffTool(
   params: Params,
   options?: Partial<ToolContext>,
   captureScreenshot: CaptureScreenshot = httpScreenshot,
-  peekFor?: (device: DeviceInfo) => RotationPeek
+  peekFor?: (device: DeviceInfo) => RotationPeek,
+  openBackend?: OpenCaptureBackend
 ): Promise<ScreenshotDiffResult> {
   const outputDir = await resolveOutputDir(params, options);
 
@@ -161,7 +194,8 @@ export async function executeScreenshotDiffTool(
     outputDir,
     options,
     captureScreenshot,
-    peekFor
+    peekFor,
+    openBackend
   );
 
   const result = await diffPngFiles({
@@ -234,35 +268,35 @@ async function resolveInputPaths(
   outputDir: string,
   options: Partial<ToolContext> | undefined,
   captureScreenshot: CaptureScreenshot,
-  peekFor?: (device: DeviceInfo) => RotationPeek
+  peekFor?: (device: DeviceInfo) => RotationPeek,
+  openBackend?: OpenCaptureBackend
 ): Promise<{ baselinePath: string; currentPath: string }> {
   validateInputSources(params);
 
-  const baselinePath = params.captureBaseline
-    ? await captureLiveInput({
-        api: requireSimulatorServer(services),
-        device: resolveDevice(params.udid),
-        peekFor,
-        outputDir,
-        name: "baseline",
-        rotation: params.rotation,
-        signal: options?.signal,
-        captureScreenshot,
-      })
-    : params.baselinePath!;
+  const device = resolveDevice(params.udid);
+  const useOpen = Boolean(openBackend?.shouldUse(device));
+  // On the open path the SimulatorServer is not in `services` (services() skipped
+  // it), so resolve it lazily and only when the open capture actually fails.
+  const getSimulatorServer = (): Promise<SimulatorServerApi> =>
+    useOpen && openBackend
+      ? openBackend.resolveSimulatorServer(device)
+      : Promise.resolve(requireSimulatorServer(services));
 
-  const currentPath = params.captureCurrent
-    ? await captureLiveInput({
-        api: requireSimulatorServer(services),
-        device: resolveDevice(params.udid),
-        peekFor,
-        outputDir,
-        name: "current",
-        rotation: params.rotation,
-        signal: options?.signal,
-        captureScreenshot,
-      })
-    : params.currentPath!;
+  const capture = (name: "baseline" | "current"): Promise<string> =>
+    captureLiveInput({
+      getApi: getSimulatorServer,
+      device,
+      peekFor,
+      outputDir,
+      name,
+      rotation: params.rotation,
+      signal: options?.signal,
+      captureScreenshot,
+      openCapture: useOpen && openBackend ? openBackend.capture : undefined,
+    });
+
+  const baselinePath = params.captureBaseline ? await capture("baseline") : params.baselinePath!;
+  const currentPath = params.captureCurrent ? await capture("current") : params.currentPath!;
 
   return { baselinePath, currentPath };
 }
@@ -320,7 +354,9 @@ function requireSimulatorServer(services: Record<string, unknown>): SimulatorSer
 }
 
 async function captureLiveInput(params: {
-  api: SimulatorServerApi;
+  // Lazy so the simulator-server is only resolved when the SS path actually runs
+  // (never when a healthy open-device-server serves the capture).
+  getApi: () => Promise<SimulatorServerApi>;
   // Needed so a live capture picks up the device's rotation the same way the
   // `screenshot` tool does. Without it a rotated-Android `captureCurrent` would
   // come back sideways and diff at ~100% against an upright saved baseline.
@@ -331,16 +367,57 @@ async function captureLiveInput(params: {
   rotation?: Params["rotation"];
   signal?: AbortSignal;
   captureScreenshot: CaptureScreenshot;
+  // When set, capture through the open-device-server's PNG `screenshot` RPC
+  // first (reuses the `screenshot` tool's helper); the simulator-server path
+  // below is the fallback.
+  openCapture?: (device: DeviceInfo, scale?: number) => Promise<string>;
 }): Promise<string> {
+  const capturedPath = await captureLiveSource(params);
+  const suffix = crypto.randomBytes(4).toString("hex");
+  const destination = path.join(params.outputDir, `${params.name}-${suffix}.live.png`);
+  await fs.mkdir(params.outputDir, { recursive: true });
+  await fs.copyFile(capturedPath, destination);
+  return destination;
+}
+
+async function captureLiveSource(params: {
+  getApi: () => Promise<SimulatorServerApi>;
+  device: DeviceInfo;
+  peekFor?: (device: DeviceInfo) => RotationPeek;
+  rotation?: Params["rotation"];
+  signal?: AbortSignal;
+  captureScreenshot: CaptureScreenshot;
+  openCapture?: (device: DeviceInfo, scale?: number) => Promise<string>;
+}): Promise<string> {
+  // Open path first when available: full-res, then the server default, then fall
+  // back to the simulator-server capture below — the open capture is on-device
+  // UiAutomation, already rotation-correct, so no rotation peek is applied.
+  if (params.openCapture) {
+    try {
+      return await params.openCapture(params.device, 1.0);
+    } catch {
+      try {
+        return await params.openCapture(params.device, undefined);
+      } catch (openErr) {
+        console.debug(
+          `[screenshot-diff] open-device-server capture failed, falling back to simulator-server: ${
+            openErr instanceof Error ? openErr.message : String(openErr)
+          }`
+        );
+      }
+    }
+  }
+
   // Full-res gives the best diff fidelity, but some Android emulators reject a
   // full-res frame ("wrong data size" framebuffer mismatch), which broke the whole
   // baselinePath + captureCurrent flow there. The server's default scale captures
   // reliably, and diffPngFiles' same-aspect normalization keeps a scaled capture
   // comparable to a baseline saved at any scale.
+  const api = await params.getApi();
   let capture: Awaited<ReturnType<CaptureScreenshot>>;
   try {
     capture = await captureScreenshotUpright(
-      params.api,
+      api,
       params.device,
       params.rotation,
       params.signal,
@@ -350,7 +427,7 @@ async function captureLiveInput(params: {
     );
   } catch {
     capture = await captureScreenshotUpright(
-      params.api,
+      api,
       params.device,
       params.rotation,
       params.signal,
@@ -359,9 +436,5 @@ async function captureLiveInput(params: {
       params.peekFor?.(params.device)
     );
   }
-  const suffix = crypto.randomBytes(4).toString("hex");
-  const destination = path.join(params.outputDir, `${params.name}-${suffix}.live.png`);
-  await fs.mkdir(params.outputDir, { recursive: true });
-  await fs.copyFile(capture.path, destination);
-  return destination;
+  return capture.path;
 }

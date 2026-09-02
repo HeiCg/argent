@@ -71,7 +71,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   {
     name: "open-device-server",
     description:
-      "Route Android describe and touch/type input through the open-source on-device control server (`@argent/android-device-server`) instead of the uiautomator dump and the proprietary simulator-server. When on and the server is reachable, `describe` reads its accessibility tree (source: open-device-server) and gesture-tap / gesture-swipe / keyboard fall back to the current path only if the server is unavailable. Off by default; requires the built server APK.",
+      "Route Android describe, screen capture and touch/type input through the open-source on-device control server (`@argent/android-device-server`) instead of the uiautomator dump and the proprietary simulator-server. When on and the server is reachable it serves describe (source: open-device-server), screenshot, screenshot-diff live capture, gesture-tap / gesture-swipe / gesture-pinch / gesture-rotate / gesture-custom, paste, keyboard, the flow tree, and the await-* poll loops; every path falls back to the current one if the server is unavailable. Off by default; requires the built server APK.",
   },
 ];
 

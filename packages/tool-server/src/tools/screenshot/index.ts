@@ -13,6 +13,7 @@ import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotati
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
+import { shouldUseOpenServer, captureAndroidScreenshot } from "../../utils/open-server-input";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -186,6 +187,29 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
           mimeType: "image/png",
         });
         return { image };
+      }
+
+      // Android + open-device-server flag: capture via the on-device server's
+      // `screenshot` RPC (PNG, so the image/png contract holds). UiAutomation's
+      // capture is already rotation-correct, like the describe open path, so no
+      // separate rotation peek is needed. Any failure falls back to the
+      // simulator-server capture below.
+      if (device.platform === "android" && shouldUseOpenServer(device)) {
+        try {
+          const { path: openPath } = await captureAndroidScreenshot(registry, device, params.scale);
+          const image = await requireArtifacts(ctx).register({
+            hostPath: openPath,
+            kind: "screenshot",
+            mimeType: "image/png",
+          });
+          return { image };
+        } catch (err) {
+          console.debug(
+            `[screenshot] open-device-server capture failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
       }
 
       const ref = simulatorServerRef(device);

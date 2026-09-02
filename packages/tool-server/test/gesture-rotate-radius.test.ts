@@ -7,9 +7,12 @@ vi.mock("../src/utils/simulator-client", async (importOriginal) => ({
   sendCommand: vi.fn(),
 }));
 
-import { zodObjectToJsonSchema } from "@argent/registry";
-import { gestureRotateTool } from "../src/tools/gesture-rotate";
+import { Registry, zodObjectToJsonSchema } from "@argent/registry";
+import { createGestureRotateTool } from "../src/tools/gesture-rotate";
 import { sendCommand } from "../src/utils/simulator-client";
+
+// Flag off by default, so the bound registry is unused (matches gesture-tap test).
+const gestureRotateTool = createGestureRotateTool(new Registry());
 
 const udid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const services = { simulatorServer: {} } as never;

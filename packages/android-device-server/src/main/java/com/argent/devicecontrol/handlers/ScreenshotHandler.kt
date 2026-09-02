@@ -27,9 +27,21 @@ class ScreenshotHandler(private val uiAutomation: UiAutomation) {
             bitmap
         }
 
-        val useWebp = format == "webp" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-        val compressFormat = if (useWebp) Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.JPEG
-        val mimeType = if (useWebp) "image/webp" else "image/jpeg"
+        // PNG is lossless, so the host `screenshot` tool can keep its image/png
+        // output contract (and downstream diffs get exact pixels); webp/jpeg stay
+        // for callers that want a smaller frame.
+        val usePng = format == "png"
+        val useWebp = !usePng && format == "webp" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+        val compressFormat = when {
+            usePng -> Bitmap.CompressFormat.PNG
+            useWebp -> Bitmap.CompressFormat.WEBP_LOSSY
+            else -> Bitmap.CompressFormat.JPEG
+        }
+        val mimeType = when {
+            usePng -> "image/png"
+            useWebp -> "image/webp"
+            else -> "image/jpeg"
+        }
 
         val stream = ByteArrayOutputStream()
         scaledBitmap.compress(compressFormat, quality, stream)

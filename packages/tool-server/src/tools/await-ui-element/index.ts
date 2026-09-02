@@ -14,6 +14,8 @@ import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
+import { shouldUseOpenServer } from "../../utils/open-server-input";
+import { describeAndroidViaOpenState } from "../../utils/open-server-describe";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
@@ -334,6 +336,19 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
       return describeIos(registry, device, { bundleId: params.bundleId }, { isTvOs });
     }
     if (device.platform === "android") {
+      // Open server active: idle + tree + info in one round-trip via `getState`
+      // (T8); same tree, any failure falls back to the describe source chain.
+      if (shouldUseOpenServer(device)) {
+        try {
+          return await describeAndroidViaOpenState(registry, device);
+        } catch (err) {
+          console.debug(
+            `[await-ui-element] open-device-server getState failed, falling back to describe: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
       return describeAndroid(registry, device.id, undefined, androidIsTv);
     }
     if (device.platform === "vega") {

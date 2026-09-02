@@ -24,6 +24,11 @@ class StateHandler(
         val scale = params.optDouble("scale", 1.0).toFloat()
         val maxElements = params.optInt("maxElements", 50)
         val waitTimeoutMs = params.optLong("waitTimeoutMs", 1000)
+        // The describe-tree poll loops (await-screen-idle / await-ui-element) want
+        // the idle+tree+info in one round-trip but never read the screenshot;
+        // skipping the capture makes getState a strict latency win for them
+        // instead of paying a full-frame JPEG encode on every poll.
+        val includeScreenshot = params.optBoolean("includeScreenshot", true)
 
         val startTime = System.currentTimeMillis()
 
@@ -33,7 +38,7 @@ class StateHandler(
         val waitedMs = System.currentTimeMillis() - waitStart
 
         // 2. Screenshot
-        val bitmap = uiAutomation.takeScreenshot()
+        val bitmap = if (includeScreenshot) uiAutomation.takeScreenshot() else null
         val screenshotBase64 = if (bitmap != null) {
             val scaledBitmap = if (scale < 1.0f) {
                 val w = (bitmap.width * scale).toInt()

@@ -1,9 +1,17 @@
 import { z } from "zod";
-import type { ToolCapability, ToolDefinition } from "@argent/registry";
+import type { Registry, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { sendTouchEvent } from "../../utils/gesture-utils";
 import { sleep } from "../../utils/timing";
+import {
+  shouldUseOpenServer,
+  openServerGesture,
+  type NormalizedPointerPath,
+} from "../../utils/open-server-input";
+
+// Host frame budget ≈ 60fps; the open server injects the same per-frame timeline.
+const FRAME_MS = 16;
 
 const zodSchema = z.object({
   udid: z.string().describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
@@ -69,7 +77,8 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
 };
 
-export const gesturePinchTool: ToolDefinition<Params, Result> = {
+export function createGesturePinchTool(registry: Registry): ToolDefinition<Params, Result> {
+  return {
   id: "gesture-pinch",
   interaction: {
     startedMsg: ({ params }) =>
@@ -85,11 +94,15 @@ Auto-generates interpolated frames at ~60fps. The angle parameter controls the a
 Use when you need to zoom in or out on a map, image, or zoomable view. Returns { pinched: true, timestampMs }. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
   zodSchema,
   capability,
-  services: (params) => ({
-    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
-  }),
+  services: (params): Record<string, ServiceRef> => {
+    const device = resolveDevice(params.udid);
+    // Skip the proprietary server when the open path is active; it is resolved
+    // lazily in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
+    if (shouldUseOpenServer(device)) return {};
+    return { simulatorServer: simulatorServerRef(device) };
+  },
   async execute(services, params) {
-    const api = services.simulatorServer as SimulatorServerApi;
+    const device = resolveDevice(params.udid);
     const duration = params.durationMs ?? 300;
     const steps = Math.max(1, Math.round(duration / 16));
     const angleDeg = params.angle ?? 0;
@@ -99,27 +112,55 @@ Use when you need to zoom in or out on a map, image, or zoomable view. Returns {
     const endCenterX = params.endCenterX ?? params.centerX;
     const endCenterY = params.endCenterY ?? params.centerY;
 
-    let timestampMs = 0;
-
+    // Single-source the geometry so the open (one gesture RPC) and simulator-
+    // server (per-frame Move loop) paths dispatch the exact same frames.
+    const frames: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       const dist = params.startDistance + (params.endDistance - params.startDistance) * t;
       const halfDist = dist / 2;
       const cx = params.centerX + (endCenterX - params.centerX) * t;
       const cy = params.centerY + (endCenterY - params.centerY) * t;
+      frames.push({
+        x1: cx - halfDist * cosA,
+        y1: cy - halfDist * sinA,
+        x2: cx + halfDist * cosA,
+        y2: cy + halfDist * sinA,
+      });
+    }
 
-      const x1 = cx - halfDist * cosA;
-      const y1 = cy - halfDist * sinA;
-      const x2 = cx + halfDist * cosA;
-      const y2 = cy + halfDist * sinA;
+    const timestampMs = Date.now();
 
-      const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
-      if (i === 0) timestampMs = Date.now();
+    if (shouldUseOpenServer(device)) {
+      try {
+        const pointers: NormalizedPointerPath[] = [
+          { id: 0, points: frames.map((f, i) => ({ x: f.x1, y: f.y1, tMs: i * FRAME_MS })) },
+          { id: 1, points: frames.map((f, i) => ({ x: f.x2, y: f.y2, tMs: i * FRAME_MS })) },
+        ];
+        await openServerGesture(registry, device, pointers);
+        return { pinched: true, timestampMs };
+      } catch (err) {
+        console.debug(
+          `[gesture-pinch] open-device-server failed, falling back to simulator-server: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
 
-      await sendTouchEvent(api, type, x1, y1, x2, y2);
-      if (i < steps) await sleep(16);
+    const ref = simulatorServerRef(device);
+    const api = shouldUseOpenServer(device)
+      ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+      : (services.simulatorServer as SimulatorServerApi);
+
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i]!;
+      const type = i === 0 ? "Down" : i === frames.length - 1 ? "Up" : "Move";
+      await sendTouchEvent(api, type, f.x1, f.y1, f.x2, f.y2);
+      if (i < frames.length - 1) await sleep(16);
     }
 
     return { pinched: true, timestampMs };
   },
-};
+  };
+}

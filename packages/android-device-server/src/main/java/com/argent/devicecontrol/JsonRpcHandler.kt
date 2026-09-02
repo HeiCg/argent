@@ -4,6 +4,7 @@ import android.app.Instrumentation
 import android.app.UiAutomation
 import android.util.Log
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.handlers.GestureHandler
 import com.argent.devicecontrol.handlers.HierarchyHandler
 import com.argent.devicecontrol.handlers.InfoHandler
 import com.argent.devicecontrol.handlers.KeyHandler
@@ -38,7 +39,8 @@ class JsonRpcHandler(
     }
 
     private val tapHandler = TapHandler(uiDevice)
-    private val swipeHandler = SwipeHandler(uiDevice)
+    private val swipeHandler = SwipeHandler(uiDevice, uiAutomation)
+    private val gestureHandler = GestureHandler(uiAutomation)
     private val typeHandler = TypeHandler(instrumentation, uiDevice)
     private val longPressHandler = LongPressHandler(uiDevice)
     private val keyHandler = KeyHandler(uiDevice)
@@ -69,6 +71,7 @@ class JsonRpcHandler(
                 "tap" -> tapHandler.execute(params)
                 "longPress" -> longPressHandler.execute(params)
                 "swipe" -> swipeHandler.execute(params)
+                "gesture" -> gestureHandler.execute(params)
                 "typeText" -> typeHandler.execute(params)
                 "key" -> keyHandler.execute(params)
                 "screenshot" -> screenshotHandler.execute(params)

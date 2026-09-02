@@ -19,6 +19,12 @@ const MOMENTUM_FREE_EASE_EXPONENT = 3;
 
 const DEFAULT_DURATION_MS = 300;
 
+// Hold the last pointer position this long before the lift on a `momentum: false`
+// swipe routed through the open server, so the OS velocity fit reads ~0 at
+// release and applies little to no fling. Sized above a velocity tracker's
+// ~100ms window; the host per-frame path achieves the same with an ease-out.
+const MOMENTUM_FREE_HOLD_MS = 120;
+
 // Wall clock a `momentum: false` swipe needs. Both OS velocity trackers fit a
 // curve to the last frames before the lift; given less elapsed time they read
 // the ease-out as a flick and fling harder than a plain swipe - on Android,
@@ -133,8 +139,11 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       if (shouldUseOpenServer(device)) {
         try {
           // The on-device server interpolates its own steps; map the host frame
-          // budget to a comparable step count. Momentum/abort semantics of the
-          // per-frame path below don't apply to a single-RPC swipe.
+          // budget to a comparable step count. The mid-gesture abort of the
+          // per-frame path below can't apply to a single-RPC swipe, but the
+          // `momentum: false` semantics now do: the server holds the last pointer
+          // position `holdEndMs` before the lift so the release velocity decays to
+          // ~0 (T7 option (a)), instead of that behaviour being lost.
           const steps = Math.max(1, Math.round(duration / 16));
           await openServerSwipe(
             registry,
@@ -143,7 +152,8 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             params.fromY,
             params.toX,
             params.toY,
-            steps
+            steps,
+            momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
           return { swiped: true, timestampMs };
         } catch (err) {

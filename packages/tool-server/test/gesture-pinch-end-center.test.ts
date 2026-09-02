@@ -7,8 +7,12 @@ vi.mock("../src/utils/simulator-client", async (importOriginal) => ({
   sendCommand: vi.fn(),
 }));
 
-import { gesturePinchTool } from "../src/tools/gesture-pinch";
+import { Registry } from "@argent/registry";
+import { createGesturePinchTool } from "../src/tools/gesture-pinch";
 import { sendCommand } from "../src/utils/simulator-client";
+
+// Flag off by default, so the bound registry is unused (matches gesture-tap test).
+const gesturePinchTool = createGesturePinchTool(new Registry());
 
 const udid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const services = { simulatorServer: {} } as never;

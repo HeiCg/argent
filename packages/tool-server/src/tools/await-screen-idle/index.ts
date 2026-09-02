@@ -14,6 +14,8 @@ import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
+import { shouldUseOpenServer } from "../../utils/open-server-input";
+import { describeAndroidViaOpenState } from "../../utils/open-server-describe";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
@@ -91,7 +93,7 @@ function treeSignature(root: DescribeNode): string {
 // The MCP layer times its auto-screenshot with this: capture once the screen is
 // stable instead of after a fixed delay.
 export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Params, IdleResult> {
-  function fetchTree(
+  async function fetchTree(
     device: DeviceInfo,
     services: Record<string, unknown>,
     isTvOs: boolean,
@@ -101,6 +103,20 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
       return describeIos(registry, device, {}, { isTvOs });
     }
     if (device.platform === "android") {
+      // Open server active: fetch idle + tree + info in one round-trip via
+      // `getState` (T8) instead of describe's two RPCs per poll. Same tree; any
+      // failure falls back to `describeAndroid`, which walks the full source chain.
+      if (shouldUseOpenServer(device)) {
+        try {
+          return await describeAndroidViaOpenState(registry, device);
+        } catch (err) {
+          console.debug(
+            `[await-screen-idle] open-device-server getState failed, falling back to describe: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
       return describeAndroid(registry, device.id, undefined, androidIsTv);
     }
     return describeChromium(services.chromium as ChromiumCdpApi);

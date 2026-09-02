@@ -1,5 +1,12 @@
 import type { DeviceInfo, Registry } from "@argent/registry";
+import { isFlagEnabled } from "@argent/configuration-core";
 import { androidDevtoolsRef, type AndroidDevtoolsApi } from "../../blueprints/android-devtools";
+import {
+  openDeviceServerRef,
+  type OpenDeviceServerApi,
+} from "../../blueprints/android-open-server";
+import { openDeviceServerMutex } from "../../utils/device-mutex";
+import { openServerElementsToDescribeNode } from "../describe/platforms/android/open-server-tree";
 import {
   clipBoundsToScreen,
   deriveUiAutomatorRole,
@@ -200,6 +207,45 @@ export async function queryAndroidFullHierarchy(
   registry: Registry,
   device: DeviceInfo
 ): Promise<DescribeTreeData> {
+  // Honour the `open-device-server` flag the same way `describeAndroid` does: the
+  // on-device server's accessibility tree is the preferred source when reachable.
+  // Its emit-filter keeps every resource-id-bearing node (RN testID), so selector
+  // resolution — the reason this module reads the full hierarchy — is preserved;
+  // any failure falls through to the android-devtools helper below. Unlike the
+  // devtools XML dump this tree is already flattened + compressed and carries no
+  // scroll-clip prune, so it can surface a row scrolled off-screen that the dump
+  // path would drop.
+  if (isFlagEnabled("open-device-server")) {
+    try {
+      const ref = openDeviceServerRef(device);
+      return await openDeviceServerMutex.withDeviceLock(device.id, async () => {
+        const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+        const [treeResult, info] = await Promise.all([
+          server.getAccessibilityTree({ maxElements: FLOW_MAX_NODES }),
+          server.getInfo(),
+        ]);
+        const tree = openServerElementsToDescribeNode(
+          treeResult.tree,
+          info.screenWidth,
+          info.screenHeight
+        );
+        return {
+          tree,
+          source: "open-device-server" as const,
+          ...(info.screenWidth > 0 && info.screenHeight > 0
+            ? { screen: { width: info.screenWidth, height: info.screenHeight } }
+            : {}),
+        };
+      });
+    } catch (serverErr) {
+      console.debug(
+        `[flow-android-tree] open-device-server failed, falling back to android-devtools: ${
+          serverErr instanceof Error ? serverErr.message : String(serverErr)
+        }`
+      );
+    }
+  }
+
   let devtools: AndroidDevtoolsApi;
   try {
     const ref = androidDevtoolsRef(device);
