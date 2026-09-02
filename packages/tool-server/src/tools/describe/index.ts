@@ -9,6 +9,7 @@ import type {
 import type { DescribeResult, DescribeTreeData } from "./contract";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import { describeAndroid, androidRequires } from "./platforms/android";
+import { describeAndroidTiered } from "./platforms/android/tiered";
 import { iosRequires, describeIos, withBootCaveatOncePerDevice } from "./platforms/ios";
 import { describeChromium } from "./platforms/chromium";
 import { describeTv } from "./platforms/tv";
@@ -48,6 +49,15 @@ const zodSchema = z.object({
       "Optional app bundle ID. Used as a target hint on iOS when the AX-service returns no elements " +
         "and the describe tool falls back to native-devtools inspection. " +
         "If omitted, the fallback auto-detects the frontmost connected app. Ignored on Android / Chromium."
+    ),
+  tier: z
+    .enum(["summary", "compact", "full"])
+    .optional()
+    .describe(
+      "Android open-device-server path only. `summary`: the screen graph's label + top affordances " +
+        "(~100 tokens); `compact` (the default when omitted): the current pruned tree, served from the " +
+        "screen-graph cache when the screen is unchanged; `full`: the full tree. `summary` and the " +
+        "compact cache require the `screen-graph` flag; other platforms ignore this."
     ),
 });
 
@@ -120,12 +130,16 @@ function makeDescribeExecute(
     },
     android: {
       requires: androidRequires,
-      handler: async (_services, params, device) =>
+      handler: async (_services, params, device) => {
         // Resolve the form factor once and thread the known `isTv: false`
         // through so describeAndroid doesn't re-probe.
-        (await isAndroidTv(device.id))
-          ? describeTv(registry, device)
-          : withDescription(await describeAndroid(registry, params.udid, params.bundleId, false)),
+        if (await isAndroidTv(device.id)) return describeTv(registry, device);
+        // A `tier` request routes through the screen-graph-aware path; it falls
+        // back to the standard describe on any failure, so the default (no
+        // `tier`) keeps the exact current behaviour.
+        if (params.tier) return describeAndroidTiered(registry, device, params.tier);
+        return withDescription(await describeAndroid(registry, params.udid, params.bundleId, false));
+      },
     },
     chromium: {
       handler: async (services) => withDescription(await describeChromium(services.chromium)),

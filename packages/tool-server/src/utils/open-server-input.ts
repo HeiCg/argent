@@ -16,6 +16,7 @@ import {
   setCachedScreenSize,
   __resetOpenServerScreenSizeCache,
 } from "./open-server-screen-cache";
+import { recordOpenServerObservation } from "./screen-graph-open-wiring";
 
 // Defaults for the multi-tap timeline the on-device server builds (F1/F8/F9).
 // Kept in sync with the host constants of the same name in `gesture-tap`.
@@ -162,24 +163,28 @@ export function openServerTapWithOutcome(
   const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
   return withServer(registry, device, async (server, size) => {
     const { x, y } = toPixels(size, xNorm, yNorm);
+    let outcome: OpenServerActionOutcome;
     if (clickCount <= 1) {
-      return toOutcome(await server.tapWithOutcome(x, y, opts));
+      outcome = toOutcome(await server.tapWithOutcome(x, y, opts));
+    } else {
+      const before = await server.getState({ includeScreenshot: false });
+      for (let i = 0; i < clickCount - 1; i++) await server.tap(x, y);
+      const last = await server.tapWithOutcome(x, y, opts);
+      const b = {
+        version: before.version ?? 0,
+        hash: before.hash ?? "",
+        stateHash: before.stateHash ?? "",
+      };
+      outcome = {
+        before: b,
+        after: last.after,
+        changed: b.hash !== last.after.hash || b.stateHash !== last.after.stateHash,
+        newScreen: b.hash !== last.after.hash,
+        idleMs: last.idleMs,
+      };
     }
-    const before = await server.getState({ includeScreenshot: false });
-    for (let i = 0; i < clickCount - 1; i++) await server.tap(x, y);
-    const last = await server.tapWithOutcome(x, y, opts);
-    const b = {
-      version: before.version ?? 0,
-      hash: before.hash ?? "",
-      stateHash: before.stateHash ?? "",
-    };
-    return {
-      before: b,
-      after: last.after,
-      changed: b.hash !== last.after.hash || b.stateHash !== last.after.stateHash,
-      newScreen: b.hash !== last.after.hash,
-      idleMs: last.idleMs,
-    };
+    await recordOpenServerObservation(device, server, size, { kind: "tap", x, y }, outcome);
+    return outcome;
   });
 }
 
@@ -225,7 +230,17 @@ export function openServerSwipeWithOutcome(
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
-    return toOutcome(await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts));
+    const outcome = toOutcome(
+      await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts)
+    );
+    await recordOpenServerObservation(
+      device,
+      server,
+      size,
+      { kind: "swipe", startX: from.x, startY: from.y, endX: to.x, endY: to.y },
+      outcome
+    );
+    return outcome;
   });
 }
 
@@ -258,7 +273,16 @@ export function openServerTypeTextWithOutcome(
   const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    return toOutcome(await server.typeTextWithOutcome(text, opts));
+    const outcome = toOutcome(await server.typeTextWithOutcome(text, opts));
+    // No coordinates for typeText, so bucketing is irrelevant — pass a 0 size.
+    await recordOpenServerObservation(
+      device,
+      server,
+      { width: 0, height: 0 },
+      { kind: "typeText" },
+      outcome
+    );
+    return outcome;
   });
 }
 

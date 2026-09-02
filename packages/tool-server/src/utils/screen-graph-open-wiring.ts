@@ -1,0 +1,187 @@
+/**
+ * Live wiring between the open-device-server action outcomes and the host screen
+ * graph (ticket B2, design §2.2). Best-effort and flag-gated by `screen-graph`:
+ * every entry point swallows its own errors so a graph failure never changes an
+ * action's result. The store, describe rendering and the persisted graph dir are
+ * only touched when the flag is on.
+ *
+ * On-device numbers and the versionCode / package resolution cost land in
+ * Phase C; this keeps the seam minimal and one round-trip per *new* screen.
+ */
+import { isFlagEnabled } from "@argent/configuration-core";
+import type { DeviceInfo } from "@argent/registry";
+import type { OpenDeviceServerApi, OpenServerActionOutcome } from "../blueprints/android-open-server";
+import { adbShell } from "./adb";
+import {
+  FLAG_CLICKABLE,
+  FLAG_ENABLED,
+  FLAG_FOCUSED,
+  FLAG_SCROLLABLE,
+} from "./screen-hash";
+import { openServerElementsToDescribeNode } from "../tools/describe/platforms/android/open-server-tree";
+import { formatDescribeTree } from "../tools/describe/format-tree";
+import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
+import {
+  ScreenGraphStore,
+  canonicalAction,
+  deriveLabel,
+  recordObservation,
+  selectorKeyForId,
+  selectorKeyForText,
+  type ActionInvocation,
+  type FetchedScreen,
+  type ScreenNode,
+} from "../screen-graph";
+
+const SCREEN_GRAPH_FLAG = "screen-graph";
+
+/** cache: `${serial}|${pkg}` → resolved versionCode (best-effort). */
+const versionCodeCache = new Map<string, string>();
+/** cache: `${serial}|${pkg}|${versionCode}` → loaded store. */
+const storeCache = new Map<string, Promise<ScreenGraphStore>>();
+
+async function resolveVersionCode(serial: string, pkg: string): Promise<string> {
+  const key = `${serial}|${pkg}`;
+  const cached = versionCodeCache.get(key);
+  if (cached !== undefined) return cached;
+  let versionCode = "0";
+  try {
+    const out = await adbShell(serial, `cmd package list packages --show-versioncode ${pkg}`, {
+      timeoutMs: 5_000,
+    });
+    for (const line of out.split("\n")) {
+      const m = line.trim().match(/^package:([^\s]+)(?:\s+versionCode:(\d+))?$/);
+      if (m && m[1] === pkg && m[2]) {
+        versionCode = m[2];
+        break;
+      }
+    }
+  } catch {
+    /* older API / adb miss — key the graph by "0" */
+  }
+  versionCodeCache.set(key, versionCode);
+  return versionCode;
+}
+
+/** Resolve (and cache) the graph store for the app currently in the foreground. */
+export async function resolveStoreForCurrentApp(
+  serial: string,
+  server: OpenDeviceServerApi
+): Promise<{ store: ScreenGraphStore; packageName: string; versionCode: string }> {
+  const info = await server.getInfo();
+  const pkg = info.currentPackage || "unknown";
+  const versionCode = await resolveVersionCode(serial, pkg);
+  const store = await getStore(serial, pkg, versionCode);
+  return { store, packageName: pkg, versionCode };
+}
+
+function getStore(serial: string, pkg: string, versionCode: string): Promise<ScreenGraphStore> {
+  const key = `${serial}|${pkg}|${versionCode}`;
+  let store = storeCache.get(key);
+  if (!store) {
+    store = ScreenGraphStore.load({ packageName: pkg, versionCode });
+    storeCache.set(key, store);
+  }
+  return store;
+}
+
+function flagsOfElement(el: OpenServerElement): number {
+  let f = 0;
+  if (el.clickable) f |= FLAG_CLICKABLE;
+  if (el.scrollable) f |= FLAG_SCROLLABLE;
+  if (el.enabled) f |= FLAG_ENABLED;
+  if (el.focused) f |= FLAG_FOCUSED;
+  return f;
+}
+
+function buildIndex(elements: OpenServerElement[]): ScreenNode["index"] {
+  const index: ScreenNode["index"] = {};
+  for (const el of elements) {
+    const flags = flagsOfElement(el);
+    const bounds = el.bounds;
+    if (el.resourceId) index[selectorKeyForId(el.resourceId)] = { bounds, flags };
+    const text = (el.text ?? "").trim();
+    if (text) index[selectorKeyForText(text)] = { bounds, flags };
+  }
+  return index;
+}
+
+/** Render a screen payload (compact text + index + label) from a tree snapshot. */
+export function buildScreenPayload(
+  elements: OpenServerElement[],
+  screenW: number,
+  screenH: number,
+  activity: string | undefined,
+  stateHash: string
+): FetchedScreen {
+  const tree = openServerElementsToDescribeNode(elements, screenW, screenH);
+  const compact = formatDescribeTree(tree, { source: "open-device-server" });
+  const index = buildIndex(elements);
+  const label = deriveLabel({
+    activity,
+    nodes: elements.map((el) => ({ id: el.resourceId, text: el.text, bounds: el.bounds })),
+    screenHeight: screenH,
+  });
+  return {
+    compact,
+    stateHash,
+    index,
+    ...(label !== undefined ? { label } : {}),
+  };
+}
+
+/** Read the current screen and render it for insertion as a new graph node. */
+async function fetchScreen(server: OpenDeviceServerApi): Promise<FetchedScreen> {
+  const [state, info] = await Promise.all([
+    server.getState({ includeScreenshot: false }),
+    server.getInfo(),
+  ]);
+  return buildScreenPayload(
+    state.tree,
+    state.info.screenWidth,
+    state.info.screenHeight,
+    info.currentActivity,
+    state.stateHash ?? ""
+  );
+}
+
+/**
+ * Fold one open-path action outcome into the screen graph. No-op unless the
+ * `screen-graph` flag is on. Never throws.
+ */
+export async function recordOpenServerObservation(
+  device: DeviceInfo,
+  server: OpenDeviceServerApi,
+  size: { width: number; height: number },
+  invocation: ActionInvocation,
+  outcome: OpenServerActionOutcome,
+  opts: { secret?: boolean } = {}
+): Promise<void> {
+  if (!isFlagEnabled(SCREEN_GRAPH_FLAG)) return;
+  try {
+    const info = await server.getInfo();
+    const pkg = info.currentPackage || "unknown";
+    const versionCode = await resolveVersionCode(device.id, pkg);
+    const store = await getStore(device.id, pkg, versionCode);
+    const action = canonicalAction(invocation, size);
+    await recordObservation({
+      store,
+      action,
+      before: { hash: outcome.before.hash },
+      after: { hash: outcome.after.hash, stateHash: outcome.after.stateHash },
+      success: true,
+      ...(opts.secret ? { secret: true } : {}),
+      fetchScreen: () => fetchScreen(server),
+    });
+  } catch (err) {
+    console.debug(
+      `[screen-graph] observation skipped: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/** Test-only: drop the module-level caches. */
+export function __resetScreenGraphWiringForTests(): void {
+  versionCodeCache.clear();
+  storeCache.clear();
+}

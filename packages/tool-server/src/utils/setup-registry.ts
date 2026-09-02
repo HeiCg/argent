@@ -51,6 +51,7 @@ import { createDebuggerLogRegistryTool } from "../tools/debugger/debugger-log-re
 import { networkLogsTool } from "../tools/network/network-logs";
 import { networkRequestTool } from "../tools/network/network-request";
 import { createDescribeTool } from "../tools/describe";
+import { createNavigateToTool } from "../tools/navigate-to";
 import { createAwaitUiElementTool } from "../tools/await-ui-element";
 import { createAwaitScreenIdleTool } from "../tools/await-screen-idle";
 import { createReactProfilerStartTool } from "../tools/profiler/react/react-profiler-start";
@@ -151,6 +152,7 @@ export function createRegistry(): Registry {
   registry.registerTool(networkLogsTool);
   registry.registerTool(networkRequestTool);
   registry.registerTool(createDescribeTool(registry));
+  registry.registerTool(createNavigateToTool(registry));
   registry.registerTool(createAwaitUiElementTool(registry));
   registry.registerTool(createAwaitScreenIdleTool(registry));
   registry.registerTool(createReactProfilerStartTool(registry));
