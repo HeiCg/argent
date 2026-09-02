@@ -1,53 +1,80 @@
 package com.argent.devicecontrol.handlers
 
+import android.app.Instrumentation
 import android.app.UiAutomation
 import android.view.accessibility.AccessibilityWindowInfo
-import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.util.DisplayReader
 import org.json.JSONObject
 
 class InfoHandler(
-    private val uiDevice: UiDevice,
+    private val instrumentation: Instrumentation,
     private val uiAutomation: UiAutomation
 ) {
 
+    private val context get() = instrumentation.context
+
     fun execute(): JSONObject {
+        val geo = DisplayReader.read(context)
+        // Package + activity from ONE active-window walk, NOT
+        // uiDevice.currentPackageName — that getter triggers waitForIdle and
+        // stalls this call for up to 10 s while the UI animates.
+        val (pkg, activity) = activePackageAndActivity()
         return JSONObject().apply {
-            put("screenWidth", uiDevice.displayWidth)
-            put("screenHeight", uiDevice.displayHeight)
-            put("currentPackage", uiDevice.currentPackageName ?: "")
-            put("currentActivity", getCurrentActivity())
+            put("screenWidth", geo.width)
+            put("screenHeight", geo.height)
+            put("currentPackage", pkg)
+            put("currentActivity", activity)
             put("keyboardVisible", isKeyboardVisible())
-            put("displayRotation", uiDevice.displayRotation)
+            // Rotation from the same Display snapshot, never uiDevice.displayRotation
+            // (also a waitForIdle caller).
+            put("displayRotation", geo.rotation)
         }
     }
 
     /**
-     * Cheap screen geometry for the gesture hot path: reads only `UiDevice`
-     * display metrics (rotation-aware), never `uiAutomation.windows` /
-     * `rootInActiveWindow`. The full [execute] snapshot costs ~2 ms on an idle
-     * screen but ~400 ms while the UI animates (a fling or a pinch-zoom), because
-     * those two calls walk the live accessibility tree — and the tap/swipe/pinch
-     * tools called it before every gesture only to convert normalized coordinates
-     * to pixels. This gives them the width/height without that snapshot.
+     * Cheap screen geometry for the gesture hot path: reads real size AND
+     * rotation from ONE platform [Display] snapshot ([DisplayReader]), never a
+     * `UiDevice` getter. `uiDevice.displayRotation` / `uiDevice.currentPackageName`
+     * call `UiAutomation.waitForIdle(500, 10_000)` under the hood, so on a screen
+     * that is mid-animation (a fling or a pinch-zoom) they block until it settles
+     * — the exact stall the tap/swipe/pinch tools hit when they peeked screen size
+     * before every gesture. Reading straight from the `Display` is genuinely
+     * ~1 ms even mid-animation because it never touches the accessibility
+     * pipeline. Rule: never call a `UiDevice` getter that triggers `waitForIdle`
+     * on a hot path.
      */
     fun screenSize(): JSONObject {
+        val geo = DisplayReader.read(context)
         return JSONObject().apply {
-            put("screenWidth", uiDevice.displayWidth)
-            put("screenHeight", uiDevice.displayHeight)
-            put("displayRotation", uiDevice.displayRotation)
+            put("screenWidth", geo.width)
+            put("screenHeight", geo.height)
+            put("displayRotation", geo.rotation)
         }
     }
 
-    private fun getCurrentActivity(): String {
+    /**
+     * Active window package + activity title from a single `rootInActiveWindow`
+     * walk, avoiding `uiDevice.currentPackageName` (a waitForIdle caller). Falls
+     * back to the active entry in the window list when there is no active root.
+     */
+    private fun activePackageAndActivity(): Pair<String, String> {
         return try {
             val root = uiAutomation.rootInActiveWindow
-            val windowId = root?.windowId ?: -1
-            root?.recycle()
-            val windows = uiAutomation.windows
-            val activeWindow = windows.firstOrNull { it.id == windowId }
-            activeWindow?.title?.toString() ?: ""
+            if (root != null) {
+                val pkg = root.packageName?.toString() ?: ""
+                val windowId = root.windowId
+                root.recycle()
+                val windows = uiAutomation.windows
+                val activeWindow = windows.firstOrNull { it.id == windowId }
+                pkg to (activeWindow?.title?.toString() ?: "")
+            } else {
+                val activeRoot = uiAutomation.windows.firstOrNull { it.isActive }?.root
+                val pkg = activeRoot?.packageName?.toString() ?: ""
+                activeRoot?.recycle()
+                pkg to ""
+            }
         } catch (_: Exception) {
-            ""
+            "" to ""
         }
     }
 

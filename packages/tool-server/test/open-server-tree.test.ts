@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   openServerElementsToDescribeNode,
+  openServerNestedToDescribeNode,
   type OpenServerElement,
+  type OpenServerNestedElement,
 } from "../src/tools/describe/platforms/android/open-server-tree";
+import { formatDescribeTree } from "../src/tools/describe/format-tree";
 
 const el = (
   over: Partial<OpenServerElement> & { bounds: OpenServerElement["bounds"] }
@@ -130,5 +133,122 @@ describe("openServerElementsToDescribeNode", () => {
     );
     const f = tree.children[0]!.frame;
     expect(f.x + f.width).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("openServerNestedToDescribeNode — serializer-omitted flags parse as defaults (P3c fix 4)", () => {
+  const W = 1080;
+  const H = 2400;
+
+  // The on-device serializer now emits only TRUE booleans and non-empty strings,
+  // and `enabled` ONLY when the node is disabled. The host must lower a trimmed
+  // payload to the same DescribeNode a fully-populated one produced.
+  const trimmed: OpenServerNestedElement[] = [
+    {
+      className: "android.widget.FrameLayout",
+      packageName: "com.x",
+      bounds: { x1: 0, y1: 0, x2: 1080, y2: 2400 },
+      children: [
+        {
+          // Only the true flag present; everything false is omitted, enabled omitted.
+          className: "android.widget.Button",
+          resourceId: "com.x:id/login",
+          text: "Login",
+          clickable: true,
+          bounds: { x1: 0, y1: 0, x2: 400, y2: 200 },
+        },
+        {
+          // Disabled node: enabled emitted as false (its only notable state).
+          className: "android.widget.Button",
+          resourceId: "com.x:id/off",
+          text: "Off",
+          clickable: true,
+          enabled: false,
+          bounds: { x1: 0, y1: 300, x2: 400, y2: 500 },
+        },
+      ],
+    },
+  ];
+
+  // The same tree the OLD serializer emitted: every boolean spelled out.
+  const verbose: OpenServerNestedElement[] = [
+    {
+      className: "android.widget.FrameLayout",
+      packageName: "com.x",
+      bounds: { x1: 0, y1: 0, x2: 1080, y2: 2400 },
+      clickable: false,
+      longClickable: false,
+      scrollable: false,
+      checkable: false,
+      checked: false,
+      focusable: false,
+      focused: false,
+      selected: false,
+      enabled: true,
+      password: false,
+      children: [
+        {
+          className: "android.widget.Button",
+          resourceId: "com.x:id/login",
+          text: "Login",
+          clickable: true,
+          longClickable: false,
+          scrollable: false,
+          checkable: false,
+          checked: false,
+          focusable: false,
+          focused: false,
+          selected: false,
+          enabled: true,
+          password: false,
+          bounds: { x1: 0, y1: 0, x2: 400, y2: 200 },
+        },
+        {
+          className: "android.widget.Button",
+          resourceId: "com.x:id/off",
+          text: "Off",
+          clickable: true,
+          longClickable: false,
+          scrollable: false,
+          checkable: false,
+          checked: false,
+          focusable: false,
+          focused: false,
+          selected: false,
+          enabled: false,
+          password: false,
+          bounds: { x1: 0, y1: 300, x2: 400, y2: 500 },
+        },
+      ],
+    },
+  ];
+
+  it("lowers a trimmed payload to a DescribeNode identical to the fully-populated one", () => {
+    const a = openServerNestedToDescribeNode(trimmed, W, H);
+    const b = openServerNestedToDescribeNode(verbose, W, H);
+    expect(a).toEqual(b);
+    // And the rendered text is byte-identical (the golden invariant).
+    expect(formatDescribeTree(a, { source: "open-device-server" })).toBe(
+      formatDescribeTree(b, { source: "open-device-server" })
+    );
+  });
+
+  it("treats omitted enabled as enabled and enabled:false as disabled", () => {
+    const tree = openServerNestedToDescribeNode(trimmed, W, H);
+    const login = tree.children.find((c) => c.identifier === "com.x:id/login")!;
+    const off = tree.children.find((c) => c.identifier === "com.x:id/off")!;
+    expect(login.disabled).toBeUndefined(); // omitted enabled → not disabled
+    expect(off.disabled).toBe(true); // enabled:false → disabled
+  });
+
+  it("treats every omitted boolean as false (no stray true flags)", () => {
+    const tree = openServerNestedToDescribeNode(trimmed, W, H);
+    const login = tree.children.find((c) => c.identifier === "com.x:id/login")!;
+    expect(login.clickable).toBe(true);
+    expect(login.scrollable).toBeUndefined();
+    expect(login.checked).toBeUndefined();
+    expect(login.focused).toBeUndefined();
+    expect(login.selected).toBeUndefined();
+    expect(login.longClickable).toBeUndefined();
   });
 });

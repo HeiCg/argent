@@ -89,6 +89,13 @@ export interface DescribeTreeData {
   // which is what the rotate directive's circle geometry reads it for. Set
   // only by the flow tree adapters that know it.
   screen?: { width: number; height: number };
+  // Server-measured split of the open-device-server describe capture:
+  // `waitedMs` is the idle gate, `captureMs` the post-idle serialization
+  // (screenshot skipped). Metadata only — never rendered into `description`.
+  // Set solely by the Android open path; lets a bench separate the idle wait
+  // from the tree serialization cost.
+  waitedMs?: number;
+  captureMs?: number;
 }
 
 export interface DescribeResult {
@@ -96,6 +103,10 @@ export interface DescribeResult {
   source: DescribeSource;
   should_restart?: boolean;
   hint?: string;
+  // Idle-gate vs. serialization split (open-device-server only), carried through
+  // as metadata alongside the rendered `description` — see DescribeTreeData.
+  waitedMs?: number;
+  captureMs?: number;
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {

@@ -46,7 +46,19 @@ export class AndroidOpenServerClient {
   private connecting: Promise<net.Socket> | null = null;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
-  /** Serialises calls so only one request is in flight at a time. */
+  /**
+   * Serialises calls so only one request is in flight at a time — the on-device
+   * server processes requests serially on a single UiAutomation thread, so this
+   * matches its execution model and avoids interleaving replies on the one shared
+   * connection.
+   *
+   * Consequence for callers: `Promise.all([client.request(a), client.request(b)])`
+   * does NOT overlap `a` and `b` — they still run back-to-back on this chain. No
+   * caller may rely on parallelism here for latency; two logically-parallel reads
+   * are two sequential round-trips. Where one round-trip will do (e.g. describe's
+   * tree+info), prefer a combined RPC (`getState`) over a `Promise.all` that only
+   * looks concurrent.
+   */
   private chain: Promise<unknown> = Promise.resolve();
   private closed = false;
 

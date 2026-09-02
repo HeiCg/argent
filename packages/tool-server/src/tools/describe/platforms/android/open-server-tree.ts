@@ -139,6 +139,12 @@ export function nestedTreeTruncated(roots: OpenServerNestedElement[]): boolean {
   return roots.some((r) => r.truncated === true);
 }
 
+// Counterpart to the on-device serializer's payload trim (`NodeSerializer`):
+// that side emits only true booleans and non-empty strings (and `enabled` only
+// when false). This restores the defaults — a missing boolean is false, a
+// missing `class` is "", a missing `enabled` is true — so the trimmed wire
+// payload lowers to the byte-identical `ParsedXmlNode` (and thus the identical
+// DescribeNode / rendered text) the fully-populated payload used to.
 function nestedToParsed(el: OpenServerNestedElement): ParsedXmlNode {
   const b = el.bounds;
   const attrs: Record<string, string> = {

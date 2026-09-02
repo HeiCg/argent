@@ -28,6 +28,9 @@ function withDescription(data: DescribeTreeData): DescribeResult {
   };
   if (data.should_restart) out.should_restart = data.should_restart;
   if (data.hint) out.hint = data.hint;
+  // Pass the open-path idle/capture split through as metadata (not rendered).
+  if (data.waitedMs !== undefined) out.waitedMs = data.waitedMs;
+  if (data.captureMs !== undefined) out.captureMs = data.captureMs;
   return out;
 }
 

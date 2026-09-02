@@ -88,10 +88,16 @@ export interface OpenDeviceServerApi {
   ping(): Promise<{ status: string }>;
   getInfo(): Promise<OpenServerInfo>;
   /**
-   * Cheap screen geometry (display metrics only) for the gesture hot path.
-   * Unlike [getInfo] it never walks the live accessibility tree, so it stays
-   * ~1 ms even while the UI animates — where [getInfo] costs ~400 ms. The
+   * Cheap screen geometry for the gesture hot path. The server reads real size
+   * AND rotation from one platform `Display` snapshot (`DisplayReader`), never a
+   * `UiDevice` getter: `UiDevice.getDisplayRotation()` / `getCurrentPackageName()`
+   * call `UiAutomation.waitForIdle(500, 10_000)` internally, so peeking them
+   * mid-gesture stalled this call until the animation settled (the pinch/tap
+   * regression). Reading straight from the `Display` is genuinely ~1 ms even
+   * mid-animation because it never touches the accessibility pipeline. The
    * tap/swipe/pinch tools use it to convert normalized coordinates to pixels.
+   * Rule: never call a `UiDevice` getter that triggers `waitForIdle` on a hot
+   * path.
    */
   getScreenSize(): Promise<{
     screenWidth: number;

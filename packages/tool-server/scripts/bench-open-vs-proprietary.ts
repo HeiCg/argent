@@ -50,6 +50,11 @@ import { readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
+import {
+  BENCH_GESTURE_PARAMS,
+  assertIdenticalGestureParams,
+  type BenchGestureParams,
+} from "../src/utils/bench-gesture-parity";
 
 /* -------------------------------------------------------------------------- */
 /* Config + guards                                                            */
@@ -365,11 +370,47 @@ async function timeCalls(
   };
 }
 
+// Sample the describe result's server-measured idle-gate (waitedMs) vs. capture
+// (captureMs) split, running `setup` untimed before each describe. Only the open
+// path surfaces these (they ride the DescribeResult metadata); the proprietary
+// path leaves them undefined, so `n` reports how many samples actually carried a
+// split. Isolates "the describe was slow because the UI was still animating"
+// (waitedMs) from "the tree was expensive to serialize" (captureMs).
+async function describeSplit(
+  reg: Reg,
+  n: number,
+  setup?: () => Promise<void>
+): Promise<{ waitedP50: number | null; captureP50: number | null; n: number }> {
+  const waited: number[] = [];
+  const captured: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (setup) await setup().catch(() => undefined);
+    try {
+      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as {
+        waitedMs?: number;
+        captureMs?: number;
+      };
+      if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
+      if (typeof d.captureMs === "number") captured.push(d.captureMs);
+    } catch {
+      /* skip */
+    }
+  }
+  const p50 = (xs: number[]): number | null =>
+    xs.length ? summarize(xs).p50 : null;
+  return { waitedP50: p50(waited), captureP50: p50(captured), n: waited.length };
+}
+
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
   coldStartMs: number[];
   verbs: VerbResult[];
+  // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
+  // right after a tap into a content-heavy sub-screen. null on the proprietary
+  // path (no split surfaced).
+  describeSplitIdle: { waitedP50: number | null; captureP50: number | null; n: number };
+  describeSplitAfterTap: { waitedP50: number | null; captureP50: number | null; n: number };
   describeSample: {
     source: string;
     bytes: number;
@@ -380,6 +421,9 @@ interface BlockResult {
   fidelitySet: string[];
   screenshot: { bytes: number; width: number; height: number; format: string };
   simServerRssKb: number | null;
+  // The gesture timing params this block drove (identical across OFF/ON by
+  // construction; asserted in main so a drift can't slip through).
+  gestureParams: BenchGestureParams;
   notes: string[];
 }
 
@@ -446,6 +490,13 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
   }
   verbs.push(describeRes);
 
+  // waitedMs/captureMs split for describe on the idle Settings root (open path
+  // only; screen is already at root here). Measured before the tap loops perturb
+  // the screen.
+  const describeSplitIdle = await describeSplit(reg, Math.min(N, 10), async () => {
+    await ensureSettings(reg);
+  });
+
   // screenshot — NOT a latency verb (F6). The two backends return different-sized
   // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
   // side by side compares an encode of very different pixel counts, not the same
@@ -510,6 +561,16 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
 
   await ensureSettings(reg);
 
+  // waitedMs/captureMs split for describe right after a tap into a content-heavy
+  // sub-screen — the tap+describe scenario. `setup` resets to root then taps, so
+  // each describe reads a freshly-navigated (possibly still-settling) screen.
+  const describeSplitAfterTap = await describeSplit(reg, Math.min(N, 10), async () => {
+    await ensureSettings(reg);
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 }).catch(() => undefined);
+  });
+
+  await ensureSettings(reg);
+
   // gesture-swipe — reset to the Settings root before each iteration (F5).
   verbs.push(
     await timeCalls(
@@ -521,7 +582,7 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
           fromY: 0.7,
           toX: 0.5,
           toY: 0.35,
-          durationMs: 250,
+          durationMs: BENCH_GESTURE_PARAMS.swipeDurationMs,
         });
       },
       undefined,
@@ -592,21 +653,47 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
     })
   );
 
-  // gesture-pinch on Chrome/example.com
+  // gesture-pinch on Chrome/example.com. Every iteration measures the SAME
+  // gesture — a zoom-IN from a reset (minimum) page scale — with the reset done
+  // untimed in `setup`, exactly as gesture-tap / gesture-swipe reset to the
+  // Settings root before each measured call (F5). Without this reset the pinch
+  // verb absorbed the PREVIOUS iteration's zoom-settle animation into the next
+  // call's implicit `waitForIdle` (the 1029 ms pinch in v3), so the number was
+  // measuring idle-wait drift, not the gesture.
   const chromeOk = await ensureChrome(reg);
   if (!chromeOk) notes.push("gesture-pinch: Chrome/example.com did not confirm content; latency still measured");
   verbs.push(
-    await timeCalls("gesture-pinch", async (i) => {
-      const zoomIn = i % 2 === 0;
-      await reg.invokeTool("gesture-pinch", {
-        udid: SERIAL,
-        centerX: 0.5,
-        centerY: 0.4,
-        startDistance: zoomIn ? 0.08 : 0.42,
-        endDistance: zoomIn ? 0.42 : 0.08,
-        durationMs: 300,
-      });
-    })
+    await timeCalls(
+      "gesture-pinch",
+      async () => {
+        await reg.invokeTool("gesture-pinch", {
+          udid: SERIAL,
+          centerX: 0.5,
+          centerY: 0.4,
+          startDistance: 0.08,
+          endDistance: 0.42,
+          durationMs: BENCH_GESTURE_PARAMS.pinchDurationMs,
+        });
+      },
+      undefined,
+      async () => {
+        // Untimed reset: pinch the page back to minimum zoom, then settle, so the
+        // measured zoom-in starts from the identical page scale on both backends.
+        await reg
+          .invokeTool("gesture-pinch", {
+            udid: SERIAL,
+            centerX: 0.5,
+            centerY: 0.4,
+            startDistance: 0.42,
+            endDistance: 0.05,
+            durationMs: BENCH_GESTURE_PARAMS.pinchDurationMs,
+          })
+          .catch(() => undefined);
+        await reg
+          .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+          .catch(() => undefined);
+      }
+    )
   );
 
   const rss = config === "OFF" ? simServerRssKb() : null;
@@ -628,6 +715,9 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
     fidelitySet,
     screenshot: shot,
     simServerRssKb: rss,
+    gestureParams: BENCH_GESTURE_PARAMS,
+    describeSplitIdle,
+    describeSplitAfterTap,
     notes,
   };
 }
@@ -675,6 +765,10 @@ async function main(): Promise<void> {
 
   // reset flag to default OFF
   unsetFlag("open-device-server", "project");
+
+  // Parity gate: every block must have driven the identical gesture timeline, so
+  // the OFF/ON latency comparison is genuinely like-for-like (throws otherwise).
+  assertIdenticalGestureParams(blocks);
 
   const off1 = blocks.find((b) => b.block === "OFF-1")!;
   const on = blocks.find((b) => b.block === "ON")!;

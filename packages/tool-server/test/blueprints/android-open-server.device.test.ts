@@ -582,4 +582,34 @@ suite("android open-device-server on-device", () => {
         `url landed via ${urlVia}; emoji via ${emojiVia}`
     );
   }, 120_000);
+
+  it("3k getScreenSize during a running fling — 5 consecutive calls each < 50ms (no implicit idle gate, P3c fix 1)", async () => {
+    const info = await freshSettings();
+    const cx = Math.round(info.screenWidth / 2);
+    const y0 = Math.round(info.screenHeight * 0.8);
+    const y1 = Math.round(info.screenHeight * 0.2);
+    // Fling: holdEndMs=0 means the lift carries momentum, so the Settings list
+    // keeps scrolling AFTER swipe() returns — the UI is mid-animation for the
+    // getScreenSize calls below.
+    await api.swipe(cx, y0, cx, y1, 8, 0);
+    const timings: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const t0 = Date.now();
+      const geo = await api.getScreenSize();
+      timings.push(Date.now() - t0);
+      expect(geo.screenWidth).toBe(info.screenWidth);
+      expect(geo.screenHeight).toBe(info.screenHeight);
+    }
+    // Each call must be idle-free: reading straight from the platform Display
+    // cannot block on the fling settling. Before P3c, getScreenSize peeked
+    // uiDevice.displayRotation, whose implicit waitForIdle stalled here for
+    // hundreds of ms while the fling ran.
+    for (const dt of timings) expect(dt).toBeLessThan(50);
+    const worst = Math.max(...timings);
+    record(
+      "3k getScreenSize@fling",
+      "PASS",
+      `5 calls during fling: [${timings.join(", ")}]ms, worst ${worst}ms < 50`
+    );
+  }, 90_000);
 });

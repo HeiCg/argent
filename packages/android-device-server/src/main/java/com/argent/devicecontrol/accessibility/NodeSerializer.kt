@@ -53,8 +53,18 @@ object NodeSerializer {
         counter[0]++
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
+        // Emit only the fields that carry information: true booleans and non-empty
+        // strings are written; everything else is omitted, cutting the ~15
+        // booleans/node the nested tree used to ship on every node. The host
+        // (`nestedToParsed` in `open-server-tree.ts`) restores the defaults —
+        // a missing boolean is false, a missing string is "" — so the trimmed
+        // payload lowers to a byte-identical DescribeNode. `enabled` is the one
+        // inverse case: it defaults TRUE (matching `uiautomator dump`, where only
+        // `enabled="false"` is notable), so it is emitted ONLY when the node is
+        // disabled.
         val obj = JSONObject().apply {
-            put("className", node.className?.toString() ?: "")
+            val className = node.className?.toString() ?: ""
+            if (className.isNotEmpty()) put("className", className)
             val rid = node.viewIdResourceName
             if (!rid.isNullOrEmpty()) put("resourceId", rid)
             val text = node.text?.toString() ?: ""
@@ -69,16 +79,16 @@ object NodeSerializer {
                 put("x2", bounds.right)
                 put("y2", bounds.bottom)
             })
-            put("clickable", node.isClickable)
-            put("longClickable", node.isLongClickable)
-            put("scrollable", node.isScrollable)
-            put("checkable", node.isCheckable)
-            put("checked", node.isChecked)
-            put("focusable", node.isFocusable)
-            put("focused", node.isFocused)
-            put("selected", node.isSelected)
-            put("enabled", node.isEnabled)
-            put("password", node.isPassword)
+            if (node.isClickable) put("clickable", true)
+            if (node.isLongClickable) put("longClickable", true)
+            if (node.isScrollable) put("scrollable", true)
+            if (node.isCheckable) put("checkable", true)
+            if (node.isChecked) put("checked", true)
+            if (node.isFocusable) put("focusable", true)
+            if (node.isFocused) put("focused", true)
+            if (node.isSelected) put("selected", true)
+            if (!node.isEnabled) put("enabled", false)
+            if (node.isPassword) put("password", true)
         }
         val children = JSONArray()
         for (i in 0 until node.childCount) {

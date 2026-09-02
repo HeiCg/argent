@@ -21,6 +21,7 @@ import { describeAndroidViaOpenState } from "../src/utils/open-server-describe";
 import { describeAndroid } from "../src/tools/describe/platforms/android";
 import { createAwaitUiElementTool } from "../src/tools/await-ui-element";
 import { resolveDevice } from "../src/utils/device-info";
+import { formatDescribeTree } from "../src/tools/describe/format-tree";
 import type { OpenServerNestedElement } from "../src/tools/describe/platforms/android/open-server-tree";
 
 const ANDROID_SERIAL = "emulator-5554";
@@ -128,11 +129,46 @@ describe("describeAndroidViaOpenState (T8 helper, F12)", () => {
   });
 });
 
+describe("describe open path — one RPC, comparator-matched idle cap (P3c fix 2)", () => {
+  it("issues exactly one getNestedState with waitTimeoutMs:500 and never the two-call path", async () => {
+    const openApi = makeOpenApi();
+    const data = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
+
+    expect(data.source).toBe("open-device-server");
+    // Single combined round-trip …
+    expect(openApi.getNestedState).toHaveBeenCalledTimes(1);
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 500 });
+    // … not the old fake-parallel getNestedAccessibilityTree + getInfo pair.
+    expect(openApi.getNestedAccessibilityTree).not.toHaveBeenCalled();
+    expect(openApi.getInfo).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server's waitedMs/captureMs split as result metadata (not rendered text)", async () => {
+    const openApi = makeOpenApi();
+    openApi.getNestedState.mockResolvedValueOnce({
+      tree: nestedRoots(),
+      info,
+      waitedMs: 42,
+      captureMs: 17,
+    });
+    const data = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
+    expect(data.waitedMs).toBe(42);
+    expect(data.captureMs).toBe(17);
+    // Metadata only — the timings must not leak into the rendered tree.
+    const rendered = formatDescribeTree(data.tree, { source: data.source });
+    expect(rendered).not.toContain("waitedMs");
+    expect(rendered).not.toContain("captureMs");
+  });
+});
+
 describe("describe open path — truncation hint (F13)", () => {
   it("adds a hint when a window root reports it was truncated at the element cap", async () => {
     const openApi = makeOpenApi();
-    openApi.getNestedAccessibilityTree.mockResolvedValueOnce({
+    openApi.getNestedState.mockResolvedValueOnce({
       tree: nestedRoots().map((r) => ({ ...r, truncated: true })),
+      info,
+      waitedMs: 5,
+      captureMs: 8,
     });
     const data = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
     expect(data.source).toBe("open-device-server");

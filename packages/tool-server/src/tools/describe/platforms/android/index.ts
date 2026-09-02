@@ -63,13 +63,24 @@ export async function describeAndroid(
     try {
       const device = resolveDevice(serial);
       const ref = openDeviceServerRef(device);
-      const tree = await openDeviceServerMutex.withDeviceLock(serial, async () => {
+      const result = await openDeviceServerMutex.withDeviceLock(serial, async () => {
         const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-        const [treeResult, info] = await Promise.all([
-          server.getNestedAccessibilityTree(),
-          server.getInfo(),
-        ]);
-        if (treeResult.tree.length === 0) {
+        // ONE round-trip: waitForIdle + the full nested multi-window tree + info,
+        // the same call the await-* poll loops use (`utils/open-server-describe.ts`).
+        // The previous `Promise.all([getNestedAccessibilityTree, getInfo])` never
+        // overlapped — the RPC client serialises every request on one connection
+        // (see `android-open-server-client.ts`) — so it was two sequential
+        // round-trips AND a second implicit idle gate inside `getInfo`. `getInfo`
+        // is also gone from the hot path, so its rotation/package reads no longer
+        // trigger `waitForIdle`.
+        //
+        // `waitTimeoutMs: 500` matches the proprietary comparator's idle cap: the
+        // describe path used to wait up to 2000 ms, which on a busy screen let the
+        // in-flight navigation's `waitForIdle` dominate the verb (measured: 690 of
+        // 839 ms on tap+describe). The await-* paths keep their own (default)
+        // timeout — this cap change is describe-only.
+        const state = await server.getNestedState({ waitTimeoutMs: 500 });
+        if (state.tree.length === 0) {
           throw new FailureError("open-device-server returned an empty accessibility tree", {
             error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
             failure_stage: "android_open_device_server_tree",
@@ -81,21 +92,35 @@ export async function describeAndroid(
         // runs, so the compact describe (dropped layout containers, concatenated
         // row labels, package-qualified ids) matches the proprietary token count
         // and label set. `tree` is one nested root per window (active + IME +
-        // dialogs), the multi-window shape the dump path also captures.
-        // UiDevice.displayWidth/Height are rotation-aware and match
-        // getBoundsInScreen's pixel space, so no rotation correction.
+        // dialogs), the multi-window shape the dump path also captures. The
+        // server's info geometry is rotation-aware (read straight from the
+        // Display) and matches getBoundsInScreen's pixel space, so no rotation
+        // correction.
         const node = openServerNestedToDescribeNode(
-          treeResult.tree,
-          info.screenWidth,
-          info.screenHeight
+          state.tree,
+          state.info.screenWidth,
+          state.info.screenHeight
         );
-        return { node, truncated: nestedTreeTruncated(treeResult.tree) };
+        return {
+          node,
+          truncated: nestedTreeTruncated(state.tree),
+          waitedMs: state.waitedMs,
+          captureMs: state.captureMs,
+        };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
-      const openHint = tree.truncated
+      const openHint = result.truncated
         ? [hint, TRUNCATION_HINT].filter(Boolean).join(" ")
         : hint;
-      return { tree: tree.node, source: "open-device-server", hint: openHint };
+      // waitedMs/captureMs ride the result metadata (never the rendered text) so
+      // the idle-gate-vs-serialization split of describe is measurable.
+      return {
+        tree: result.node,
+        source: "open-device-server",
+        hint: openHint,
+        waitedMs: result.waitedMs,
+        captureMs: result.captureMs,
+      };
     } catch (serverErr) {
       console.debug(
         `[describe.android] open-device-server failed, falling back: ${
