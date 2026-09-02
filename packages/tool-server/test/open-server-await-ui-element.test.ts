@@ -32,16 +32,31 @@ const INFO = {
   keyboardVisible: false,
   displayRotation: 0,
 };
+// Nested elements — the shape `getNestedState` returns (F12); the await/describe
+// open path lowers these through the v2 trim, so mark them clickable so the trim
+// keeps them.
 const okButton = [
-  { index: 1, className: "android.widget.Button", text: "OK", bounds: { x1: 0, y1: 0, x2: 100, y2: 50 } },
+  {
+    className: "android.widget.Button",
+    text: "OK",
+    clickable: true,
+    enabled: true,
+    bounds: { x1: 0, y1: 0, x2: 100, y2: 50 },
+  },
 ];
 const cancelButton = [
-  { index: 1, className: "android.widget.Button", text: "Cancel", bounds: { x1: 0, y1: 0, x2: 100, y2: 50 } },
+  {
+    className: "android.widget.Button",
+    text: "Cancel",
+    clickable: true,
+    enabled: true,
+    bounds: { x1: 0, y1: 0, x2: 100, y2: 50 },
+  },
 ];
+// Reply for `getNestedState`: nested tree + info + Phase A fingerprints/version.
 const stateReply = (tree: unknown[], version: number) => ({
   tree,
   info: INFO,
-  screenshot: "",
   waitedMs: 0,
   captureMs: 0,
   version,
@@ -68,7 +83,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("await-ui-element → open-device-server awaitChange (Screen-graph Phase A.1)", () => {
   it("resolves on the immediate trusted read without arming awaitChange", async () => {
     const openApi = {
-      getState: vi.fn(async () => stateReply(okButton, 5)),
+      getNestedState: vi.fn(async () => stateReply(okButton, 5)),
       awaitChange: vi.fn(),
     };
     const tool = makeTool(openApi);
@@ -84,12 +99,12 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
   });
 
   it("blocks on awaitChange with the mapped selector, then confirms on the settled read", async () => {
-    let getStateCalls = 0;
+    let getNestedStateCalls = 0;
     const openApi = {
-      getState: vi.fn(async () => {
-        getStateCalls += 1;
+      getNestedState: vi.fn(async () => {
+        getNestedStateCalls += 1;
         // First read: element absent. After the on-device match: present.
-        return getStateCalls === 1 ? stateReply([], 5) : stateReply(okButton, 6);
+        return getNestedStateCalls === 1 ? stateReply([], 5) : stateReply(okButton, 6);
       }),
       awaitChange: vi.fn(async () => ({
         version: 6,
@@ -118,19 +133,20 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
       })
     );
     // Immediate read + settled re-read after the match.
-    expect(openApi.getState.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(openApi.getNestedState.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("maps an identifier selector to the on-device `id` field", async () => {
     const openApi = {
-      getState: vi.fn(async () =>
+      getNestedState: vi.fn(async () =>
         stateReply(
           [
             {
-              index: 1,
               className: "android.widget.Button",
               resourceId: "com.example:id/submit",
               text: "Go",
+              clickable: true,
+              enabled: true,
               bounds: { x1: 0, y1: 0, x2: 100, y2: 50 },
             },
           ],
@@ -154,7 +170,7 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
 
   it("reports cause=unmet when the element never appears and awaitChange times out", async () => {
     const openApi = {
-      getState: vi.fn(async () => stateReply(cancelButton, 3)),
+      getNestedState: vi.fn(async () => stateReply(cancelButton, 3)),
       awaitChange: vi.fn(async () => ({
         version: 3,
         hash: "h3",

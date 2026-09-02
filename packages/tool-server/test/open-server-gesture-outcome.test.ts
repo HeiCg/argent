@@ -76,23 +76,32 @@ describe("gesture-tap → open-device-server outcome (Screen-graph Phase A)", ()
 
     const result = await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
 
-    expect(openApi.tapWithOutcome).toHaveBeenCalledWith(500, 1000, undefined);
+    // ONE tapWithOutcome RPC carrying the timeline (holdMs, clickCount 1, no gap)
+    // AND the outcome request.
+    expect(openApi.tapWithOutcome).toHaveBeenCalledWith(500, 1000, { clickCount: 1, holdMs: 50 });
     expect(result.tapped).toBe(true);
     expect(result.outcome).toEqual(OUTCOME);
   });
 
-  it("a multi-tap runs leading taps plain and spans the outcome across the gesture", async () => {
+  it("a multi-tap builds the whole timeline in one outcome-bearing RPC", async () => {
     const openApi = makeOpenApi();
     const tool = makeTool(openApi);
 
     const result = await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5, clickCount: 3 });
 
-    // 2 leading plain taps + the final outcome-bearing tap.
-    expect(openApi.tap).toHaveBeenCalledTimes(2);
+    // The whole multi-tap timeline (clickCount 3, holdMs, gapMs) is built
+    // server-side in ONE `tap` RPC that also reports the outcome — no host-side
+    // leading-tap loop.
+    expect(openApi.tap).not.toHaveBeenCalled();
     expect(openApi.tapWithOutcome).toHaveBeenCalledTimes(1);
-    expect(result.outcome?.before.hash).toBe("aaaa"); // from the pre-gesture getState
+    expect(openApi.tapWithOutcome).toHaveBeenCalledWith(500, 1000, {
+      clickCount: 3,
+      holdMs: 50,
+      gapMs: 100,
+    });
+    expect(result.outcome?.before.hash).toBe("aaaa");
     expect(result.outcome?.after.hash).toBe("bbbb");
-    // The settle report is threaded from the final outcome-bearing tap.
+    // The settle report is threaded from the outcome-bearing tap.
     expect(result.outcome?.settled).toBe("quiet");
     expect(result.outcome?.firstEventMs).toBe(12);
   });

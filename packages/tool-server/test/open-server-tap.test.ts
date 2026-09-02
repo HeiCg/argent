@@ -26,7 +26,17 @@ function makeOpenApi() {
       screenHeight: SCREEN.height,
       displayRotation: 0,
     })),
-    tap: vi.fn(async () => ({ success: true })),
+    // The tap gesture now travels on `tapWithOutcome`: ONE `tap` RPC carrying the
+    // multi-tap timeline AND the outcome request (kept in sync with the gesture-tap
+    // open path, which reports the before/after delta).
+    tapWithOutcome: vi.fn(async () => ({
+      success: true,
+      before: { version: 1, hash: "a", stateHash: "a" },
+      after: { version: 1, hash: "a", stateHash: "a" },
+      changed: false,
+      newScreen: false,
+      idleMs: 0,
+    })),
   };
 }
 
@@ -55,8 +65,8 @@ describe("gesture-tap → open-device-server multi-tap timeline (F1/F8/F9)", () 
     await tool.execute({}, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
 
     // One RPC, not a per-click host loop; server builds the DOWN@0/UP@holdMs pair.
-    expect(openApi.tap).toHaveBeenCalledTimes(1);
-    const [x, y, opts] = openApi.tap.mock.calls[0] as unknown as [
+    expect(openApi.tapWithOutcome).toHaveBeenCalledTimes(1);
+    const [x, y, opts] = openApi.tapWithOutcome.mock.calls[0] as unknown as [
       number,
       number,
       { clickCount: number; holdMs: number; gapMs?: number },
@@ -76,8 +86,8 @@ describe("gesture-tap → open-device-server multi-tap timeline (F1/F8/F9)", () 
 
     // Still ONE RPC — the four events (DOWN@0, UP@50, DOWN@150, UP@200) are built
     // server-side from these params, which a host-side loop of taps could not time.
-    expect(openApi.tap).toHaveBeenCalledTimes(1);
-    const [, , opts] = openApi.tap.mock.calls[0] as unknown as [
+    expect(openApi.tapWithOutcome).toHaveBeenCalledTimes(1);
+    const [, , opts] = openApi.tapWithOutcome.mock.calls[0] as unknown as [
       number,
       number,
       { clickCount: number; holdMs: number; gapMs: number },

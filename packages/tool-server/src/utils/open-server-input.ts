@@ -190,31 +190,21 @@ export function openServerTapWithOutcome(
   clickCount: number,
   idleTimeoutMs?: number
 ): Promise<OpenServerActionOutcome> {
-  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
   return withServer(registry, device, async (server, size) => {
     const { x, y } = toPixels(size, xNorm, yNorm);
-    let outcome: OpenServerActionOutcome;
-    if (clickCount <= 1) {
-      outcome = toOutcome(await server.tapWithOutcome(x, y, opts));
-    } else {
-      const before = await server.getState({ includeScreenshot: false });
-      for (let i = 0; i < clickCount - 1; i++) await server.tap(x, y);
-      const last = await server.tapWithOutcome(x, y, opts);
-      const b = {
-        version: before.version ?? 0,
-        hash: before.hash ?? "",
-        stateHash: before.stateHash ?? "",
-      };
-      outcome = {
-        before: b,
-        after: last.after,
-        changed: b.hash !== last.after.hash || b.stateHash !== last.after.stateHash,
-        newScreen: b.hash !== last.after.hash,
-        settled: last.settled,
-        firstEventMs: last.firstEventMs,
-        idleMs: last.idleMs,
-      };
-    }
+    // ONE `tap` RPC carries the whole multi-tap timeline (F1/F8/F9 —
+    // `clickCount` presses each held `holdMs`, spaced `gapMs` apart, built
+    // server-side) AND the outcome request, so a double-tap is a single
+    // round-trip that both lands inside the OS double-tap window and reports the
+    // before/after fingerprint delta.
+    const outcome = toOutcome(
+      await server.tapWithOutcome(x, y, {
+        clickCount,
+        holdMs: TAP_HOLD_MS,
+        ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+        ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      })
+    );
     await recordOpenServerObservation(device, server, size, { kind: "tap", x, y }, outcome);
     return outcome;
   });

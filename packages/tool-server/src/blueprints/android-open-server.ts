@@ -229,6 +229,12 @@ export interface OpenDeviceServerApi {
     info: OpenServerInfo;
     waitedMs: number;
     captureMs: number;
+    // Screen-graph Phase A fingerprints + version (android-device-server 0.2.0+),
+    // so the await-* open path can arm `awaitChange({ fromVersion })` off the same
+    // nested read the describe token-parity path uses (F12).
+    hash?: string;
+    stateHash?: string;
+    version?: number;
   }>;
   /**
    * Multi-tap (F1/F8/F9): the server builds the whole DOWN/UP timeline —
@@ -311,7 +317,14 @@ export interface OpenDeviceServerApi {
 
   // Outcome-capable action variants: perform the action AND report the
   // before/after fingerprint delta in one round-trip.
-  tapWithOutcome(x: number, y: number, opts?: OutcomeOptions): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  tapWithOutcome(
+    x: number,
+    y: number,
+    // The multi-tap timeline (F1/F8/F9) travels on the SAME `tap` RPC as the
+    // outcome request, so a double-tap is one round-trip that both builds the
+    // whole DOWN/UP timeline server-side and reports the before/after delta.
+    opts?: OutcomeOptions & { clickCount?: number; holdMs?: number; gapMs?: number }
+  ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   longPressWithOutcome(
     x: number,
     y: number,
@@ -627,6 +640,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           info: OpenServerInfo;
           waitedMs: number;
           captureMs: number;
+          hash?: string;
+          stateHash?: string;
+          version?: number;
         }>("getState", {
           nested: true,
           includeScreenshot: false,
@@ -707,6 +723,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         client.request<{ success: boolean } & OpenServerActionOutcome>("tap", {
           x,
           y,
+          ...(outcomeOpts?.clickCount !== undefined ? { clickCount: outcomeOpts.clickCount } : {}),
+          ...(outcomeOpts?.holdMs !== undefined ? { holdMs: outcomeOpts.holdMs } : {}),
+          ...(outcomeOpts?.gapMs !== undefined ? { gapMs: outcomeOpts.gapMs } : {}),
           outcome: outcomeObject(outcomeOpts),
         }),
       longPressWithOutcome: (x, y, durationMs, outcomeOpts) =>
