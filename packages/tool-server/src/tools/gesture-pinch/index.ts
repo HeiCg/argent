@@ -13,14 +13,6 @@ import {
 // Host frame budget ≈ 60fps; the open server injects the same per-frame timeline.
 const FRAME_MS = 16;
 
-// Wall-clock cap for the open-server pinch timeline. A pinch's zoom magnitude is
-// set by the finger travel (start/end distance), not by how long it takes, so
-// the on-device gesture need not hold the full authored duration — the finger is
-// down for exactly that long, which is pure latency. Capping it keeps the zoom
-// visible while bringing the gesture in well under the proprietary path (whose
-// duration this does NOT change). Only applied to the open path.
-const OPEN_PINCH_MAX_DURATION_MS = 180;
-
 const zodSchema = z.object({
   udid: z.string().describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
   centerX: z
@@ -141,13 +133,12 @@ Use when you need to zoom in or out on a map, image, or zoomable view. Returns {
 
     if (shouldUseOpenServer(device)) {
       try {
-        // Compress the injected timeline to at most OPEN_PINCH_MAX_DURATION_MS so
-        // the finger isn't held (pure latency) longer than the zoom needs. Same
-        // frame geometry, evenly spaced across the capped span.
-        const authoredMs = (frames.length - 1) * FRAME_MS;
-        const spanMs = Math.min(authoredMs, OPEN_PINCH_MAX_DURATION_MS);
-        const tAt = (i: number): number =>
-          frames.length <= 1 ? 0 : Math.round((i / (frames.length - 1)) * spanMs);
+        // Honour the authored duration (F2): the finger is held for the full
+        // timeline (one FRAME_MS per frame), same as the proprietary path, so a
+        // like-for-like bench compares equal durations. The on-device server
+        // time-thins the frames (F18) to keep the per-event injection cost down
+        // without changing the total duration or the endpoints.
+        const tAt = (i: number): number => i * FRAME_MS;
         const pointers: NormalizedPointerPath[] = [
           { id: 0, points: frames.map((f, i) => ({ x: f.x1, y: f.y1, tMs: tAt(i) })) },
           { id: 1, points: frames.map((f, i) => ({ x: f.x2, y: f.y2, tMs: tAt(i) })) },

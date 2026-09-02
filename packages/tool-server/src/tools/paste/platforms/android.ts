@@ -5,7 +5,12 @@ import { UnsupportedOperationError } from "../../../utils/capability";
 import { isAndroidTv } from "../../../utils/adb";
 import { injectAndroidKeycode } from "../../../utils/android-input";
 import { setSimulatorClipboardText } from "../../../utils/simulator-client";
-import { shouldUseOpenServer, openServerTypeText } from "../../../utils/open-server-input";
+import {
+  shouldUseOpenServer,
+  openServerSetClipboard,
+  openServerTypeText,
+} from "../../../utils/open-server-input";
+import { assertTypeableAndroidText } from "../../../utils/android-input";
 import type { PasteParams, PasteResult, PasteServices } from "../types";
 
 /** `android.view.KeyEvent.KEYCODE_PASTE`. */
@@ -31,16 +36,31 @@ export function makeAndroidImpl(
           "Android TV is focus-driven — type into the focused field with keyboard instead"
         );
       }
-      // Open-device-server path: type the text via the on-device server instead
-      // of setting the emulator clipboard + injecting KEYCODE_PASTE. Same field
-      // result; falls back to the clipboard path on any failure.
+      // Open-device-server path (F20). Prefer a genuine clipboard paste: set the
+      // DEVICE clipboard via the on-device ClipboardManager RPC, then trigger
+      // KEYCODE_PASTE — that carries arbitrary Unicode (URLs, emoji) the virtual
+      // KeyCharacterMap can't type. ClipboardManager silently drops a background
+      // app's write on API 35, so `setClipboard` reports whether it round-tripped;
+      // when it didn't, fall back to typing the text (sendStringSync handles
+      // printable ASCII — URLs, OTPs — verbatim, verified on API 35). Text that
+      // can't be typed (emoji, newlines) and can't be put on the clipboard from
+      // instrumentation is left to the proprietary clipboard path below.
       if (shouldUseOpenServer(device)) {
         try {
+          const clipSet = await openServerSetClipboard(registry, device, params.text);
+          if (clipSet) {
+            await injectAndroidKeycode(device.id, KEYCODE_PASTE);
+            return { pasted: true };
+          }
+          // Clipboard unavailable from instrumentation → type it if it's typeable.
+          // `assertTypeableAndroidText` throws for emoji / newlines, dropping to the
+          // proprietary path (which sets the emulator clipboard over gRPC).
+          assertTypeableAndroidText(params.text);
           await openServerTypeText(registry, device, params.text);
           return { pasted: true };
         } catch (err) {
           console.debug(
-            `[paste.android] open-device-server typeText failed, falling back to simulator-server: ${
+            `[paste.android] open-device-server paste failed, falling back to simulator-server: ${
               err instanceof Error ? err.message : String(err)
             }`
           );

@@ -122,6 +122,21 @@ export interface OpenServerNestedElement {
   enabled?: boolean;
   password?: boolean;
   children?: OpenServerNestedElement[];
+  /**
+   * Set on a window root when the on-device serializer hit its `maxElements`
+   * runaway guard, so the tree is a prefix of the real one (F13). The host
+   * surfaces this as a describe hint rather than silently rendering a partial
+   * screen.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * Whether any window root reports it was truncated at the server's element cap
+ * (F13). Used to add a hint to the describe output.
+ */
+export function nestedTreeTruncated(roots: OpenServerNestedElement[]): boolean {
+  return roots.some((r) => r.truncated === true);
 }
 
 function nestedToParsed(el: OpenServerNestedElement): ParsedXmlNode {

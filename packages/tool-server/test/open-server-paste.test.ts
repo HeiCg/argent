@@ -26,9 +26,13 @@ import { injectAndroidKeycode } from "../src/utils/android-input";
 import { setSimulatorClipboardText } from "../src/utils/simulator-client";
 
 const ANDROID_SERIAL = "emulator-5554";
+const KEYCODE_PASTE = 279;
 
 function makeOpenApi() {
-  return { typeText: vi.fn(async () => ({ success: true, charsTyped: 3 })) };
+  return {
+    setClipboard: vi.fn(async (text: string) => ({ success: true, text })),
+    typeText: vi.fn(async (text: string) => ({ success: true, charsTyped: text.length })),
+  };
 }
 
 function makeTool(openApi: unknown, onSimulatorServer?: () => Promise<unknown>) {
@@ -48,18 +52,56 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("paste (android) → open-device-server (T4)", () => {
-  it("flag on: types via the open server, never sets the clipboard or injects a keycode", async () => {
+describe("paste (android) → open-device-server (F20)", () => {
+  it("clipboard write succeeds: pastes via KEYCODE_PASTE, never types, never touches the proprietary path", async () => {
     flagEnabledMock = (n) => n === "open-device-server";
     const openApi = makeOpenApi();
     const tool = makeTool(openApi);
 
-    const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: "otp-42" });
+    const url = "https://example.com/reset?token=abcdef0123456789";
+    const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: url });
 
     expect(result).toEqual({ pasted: true });
-    expect(openApi.typeText).toHaveBeenCalledWith("otp-42");
+    expect(openApi.setClipboard).toHaveBeenCalledWith(url);
+    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
+    expect(openApi.typeText).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).not.toHaveBeenCalled();
+  });
+
+  it("clipboard unavailable (API 35), typeable text: falls back to typing on the open server", async () => {
+    flagEnabledMock = (n) => n === "open-device-server";
+    const openApi = makeOpenApi();
+    // ClipboardManager silently dropped the background write.
+    openApi.setClipboard.mockResolvedValue({ success: false, text: "" });
+    const tool = makeTool(openApi);
+
+    const url = "https://example.com/reset?token=abcdef0123456789";
+    const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: url });
+
+    expect(result).toEqual({ pasted: true });
+    expect(openApi.setClipboard).toHaveBeenCalledWith(url);
+    expect(openApi.typeText).toHaveBeenCalledWith(url);
+    // No keycode paste (nothing on the clipboard) and no proprietary fallback.
     expect(vi.mocked(injectAndroidKeycode)).not.toHaveBeenCalled();
+    expect(vi.mocked(setSimulatorClipboardText)).not.toHaveBeenCalled();
+  });
+
+  it("clipboard unavailable + emoji (not typeable): falls back to the proprietary clipboard path", async () => {
+    flagEnabledMock = (n) => n === "open-device-server";
+    const openApi = makeOpenApi();
+    openApi.setClipboard.mockResolvedValue({ success: false, text: "" });
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const tool = makeTool(openApi);
+
+    const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: "party 🎉 time" });
+
+    expect(result).toEqual({ pasted: true });
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
+    // Emoji can't be typed on the open server, so it goes to the proprietary path.
+    expect(openApi.typeText).not.toHaveBeenCalled();
+    expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
   });
 
   it("flag off: never touches the open server, sets clipboard + KEYCODE_PASTE", async () => {
@@ -69,24 +111,25 @@ describe("paste (android) → open-device-server (T4)", () => {
 
     await tool.execute({}, { udid: ANDROID_SERIAL, text: "hi" });
 
+    expect(openApi.setClipboard).not.toHaveBeenCalled();
     expect(openApi.typeText).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, 279);
+    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
   });
 
-  it("open server throws: warns and falls back to the clipboard + keycode path", async () => {
+  it("open server setClipboard throws: warns and falls back to the proprietary path", async () => {
     flagEnabledMock = (n) => n === "open-device-server";
     const openApi = makeOpenApi();
-    openApi.typeText.mockRejectedValueOnce(new Error("open boom"));
+    openApi.setClipboard.mockRejectedValueOnce(new Error("open boom"));
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
     const tool = makeTool(openApi);
 
     const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: "z" });
 
     expect(result).toEqual({ pasted: true });
-    expect(openApi.typeText).toHaveBeenCalledTimes(1);
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, 279);
+    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
     expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
   });
 });

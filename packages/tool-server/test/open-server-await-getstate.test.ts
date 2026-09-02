@@ -18,37 +18,64 @@ vi.mock("../src/utils/ios-devices", async (importOriginal) => {
 });
 
 import { describeAndroidViaOpenState } from "../src/utils/open-server-describe";
+import { describeAndroid } from "../src/tools/describe/platforms/android";
 import { createAwaitUiElementTool } from "../src/tools/await-ui-element";
 import { resolveDevice } from "../src/utils/device-info";
+import type { OpenServerNestedElement } from "../src/tools/describe/platforms/android/open-server-tree";
 
 const ANDROID_SERIAL = "emulator-5554";
 const device = resolveDevice(ANDROID_SERIAL);
+const SCREEN = { width: 1080, height: 2400 };
 
-function stateReply() {
-  return {
-    tree: [
-      {
-        index: 1,
-        className: "android.widget.Button",
-        text: "Login",
-        bounds: { x1: 0, y1: 0, x2: 200, y2: 100 },
-      },
-    ],
-    info: {
-      screenWidth: 1000,
-      screenHeight: 2000,
-      currentPackage: "",
-      keyboardVisible: false,
-      displayRotation: 0,
+// A nested window root the same shape `getAccessibilityTree({ nested: true })`
+// and `getState({ nested: true })` both return: raw class names, package-
+// qualified resource ids, one nested `children` tree.
+function nestedRoots(): OpenServerNestedElement[] {
+  return [
+    {
+      className: "android.widget.FrameLayout",
+      packageName: "com.android.settings",
+      bounds: { x1: 0, y1: 0, x2: 1080, y2: 2400 },
+      children: [
+        {
+          className: "android.widget.Button",
+          resourceId: "com.android.settings:id/login",
+          text: "Login",
+          clickable: true,
+          bounds: { x1: 0, y1: 0, x2: 400, y2: 200 },
+        },
+        {
+          className: "android.widget.TextView",
+          resourceId: "com.android.settings:id/title",
+          text: "Battery",
+          bounds: { x1: 0, y1: 300, x2: 500, y2: 400 },
+        },
+      ],
     },
-    screenshot: "",
-    waitedMs: 5,
-    captureMs: 8,
-  };
+  ];
 }
 
+const info = {
+  screenWidth: SCREEN.width,
+  screenHeight: SCREEN.height,
+  currentPackage: "com.android.settings",
+  keyboardVisible: false,
+  displayRotation: 0,
+};
+
 function makeOpenApi() {
-  return { getState: vi.fn(async () => stateReply()) };
+  return {
+    // The await poll path (T8 + F12) uses getNestedState (one round-trip).
+    getNestedState: vi.fn(async () => ({
+      tree: nestedRoots(),
+      info,
+      waitedMs: 5,
+      captureMs: 8,
+    })),
+    // The describe tool's own open path uses these two.
+    getNestedAccessibilityTree: vi.fn(async () => ({ tree: nestedRoots() })),
+    getInfo: vi.fn(async () => info),
+  };
 }
 
 function makeRegistry(openApi: unknown) {
@@ -66,26 +93,61 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("describeAndroidViaOpenState (T8 helper)", () => {
-  it("fetches the tree via getState in one round-trip and tags the open source", async () => {
+describe("describeAndroidViaOpenState (T8 helper, F12)", () => {
+  it("fetches the tree via getNestedState in one round-trip and tags the open source", async () => {
     const openApi = makeOpenApi();
     const data = await describeAndroidViaOpenState(makeRegistry(openApi), device);
 
-    expect(openApi.getState).toHaveBeenCalledTimes(1);
+    expect(openApi.getNestedState).toHaveBeenCalledTimes(1);
     expect(data.source).toBe("open-device-server");
-    expect(data.tree.children).toHaveLength(1);
-    expect(data.tree.children[0]!.label).toBe("Login");
+    // Rendered through the SAME nested v2 trim: the Button keeps its label + id.
+    const labels = data.tree.children.map((c) => c.label);
+    expect(labels).toContain("Login");
   });
 
-  it("rejects when getState fails, so the caller can fall back", async () => {
+  it("F12: await path and describe path render an IDENTICAL tree from the same fixture", async () => {
     const openApi = makeOpenApi();
-    openApi.getState.mockRejectedValueOnce(new Error("boom"));
+    const viaState = await describeAndroidViaOpenState(makeRegistry(openApi), device);
+    const viaDescribe = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
+
+    // Same nested trim, same size → byte-identical DescribeNode tree and source,
+    // so labels and id forms match across the two tools (no flat-vs-nested gap).
+    expect(viaState.source).toBe("open-device-server");
+    expect(viaDescribe.source).toBe("open-device-server");
+    expect(viaState.tree).toEqual(viaDescribe.tree);
+
+    const ids = viaState.tree.children.map((c) => c.identifier).filter(Boolean);
+    // Package-qualified id form, identical on both paths.
+    expect(ids).toContain("com.android.settings:id/login");
+  });
+
+  it("rejects when getNestedState fails, so the caller can fall back", async () => {
+    const openApi = makeOpenApi();
+    openApi.getNestedState.mockRejectedValueOnce(new Error("boom"));
     await expect(describeAndroidViaOpenState(makeRegistry(openApi), device)).rejects.toThrow("boom");
   });
 });
 
-describe("await-ui-element → open-device-server getState (T8)", () => {
-  it("flag on: polls the tree through getState, not describe's two RPCs", async () => {
+describe("describe open path — truncation hint (F13)", () => {
+  it("adds a hint when a window root reports it was truncated at the element cap", async () => {
+    const openApi = makeOpenApi();
+    openApi.getNestedAccessibilityTree.mockResolvedValueOnce({
+      tree: nestedRoots().map((r) => ({ ...r, truncated: true })),
+    });
+    const data = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
+    expect(data.source).toBe("open-device-server");
+    expect(data.hint ?? "").toContain("truncated");
+  });
+
+  it("no truncation hint when the tree fits", async () => {
+    const openApi = makeOpenApi();
+    const data = await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL);
+    expect(data.hint ?? "").not.toContain("truncated");
+  });
+});
+
+describe("await-ui-element → open-device-server getNestedState (T8)", () => {
+  it("flag on: polls the tree through getNestedState, not describe's two RPCs", async () => {
     const openApi = makeOpenApi();
     const tool = createAwaitUiElementTool(makeRegistry(openApi));
 
@@ -101,6 +163,6 @@ describe("await-ui-element → open-device-server getState (T8)", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(openApi.getState).toHaveBeenCalled();
+    expect(openApi.getNestedState).toHaveBeenCalled();
   });
 });

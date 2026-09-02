@@ -18,8 +18,13 @@ import {
   openDeviceServerRef,
   type OpenDeviceServerApi,
 } from "../../../../blueprints/android-open-server";
-import { openServerNestedToDescribeNode } from "./open-server-tree";
+import { openServerNestedToDescribeNode, nestedTreeTruncated } from "./open-server-tree";
 import { openDeviceServerMutex } from "../../../../utils/device-mutex";
+
+// Appended to the describe hint when the on-device tree was truncated (F13).
+const TRUNCATION_HINT =
+  "Note: the accessibility tree was truncated at the server's element cap, so some " +
+  "elements may be missing — narrow the screen or scroll to see the rest.";
 
 export const androidRequires: ToolDependency[] = ["adb"];
 
@@ -79,13 +84,18 @@ export async function describeAndroid(
         // dialogs), the multi-window shape the dump path also captures.
         // UiDevice.displayWidth/Height are rotation-aware and match
         // getBoundsInScreen's pixel space, so no rotation correction.
-        return openServerNestedToDescribeNode(
+        const node = openServerNestedToDescribeNode(
           treeResult.tree,
           info.screenWidth,
           info.screenHeight
         );
+        return { node, truncated: nestedTreeTruncated(treeResult.tree) };
       });
-      return { tree, source: "open-device-server", hint };
+      // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
+      const openHint = tree.truncated
+        ? [hint, TRUNCATION_HINT].filter(Boolean).join(" ")
+        : hint;
+      return { tree: tree.node, source: "open-device-server", hint: openHint };
     } catch (serverErr) {
       console.debug(
         `[describe.android] open-device-server failed, falling back: ${

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.util.Base64
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,11 +25,17 @@ class StateHandler(
         val scale = params.optDouble("scale", 1.0).toFloat()
         val maxElements = params.optInt("maxElements", 50)
         val waitTimeoutMs = params.optLong("waitTimeoutMs", 1000)
+        // `nested` (F12): return the full multi-window nested tree — the SAME shape
+        // `getAccessibilityTree({ nested: true })` returns — so the await-*/describe
+        // poll path runs the identical host-side v2 trim the describe tool runs, and
+        // their label sets / id forms match. A nested capture never includes a
+        // screenshot (the poll loops don't read it).
+        val nested = params.optBoolean("nested", false)
         // The describe-tree poll loops (await-screen-idle / await-ui-element) want
         // the idle+tree+info in one round-trip but never read the screenshot;
         // skipping the capture makes getState a strict latency win for them
         // instead of paying a full-frame JPEG encode on every poll.
-        val includeScreenshot = params.optBoolean("includeScreenshot", true)
+        val includeScreenshot = !nested && params.optBoolean("includeScreenshot", true)
 
         val startTime = System.currentTimeMillis()
 
@@ -57,11 +64,15 @@ class StateHandler(
             ""
         }
 
-        // 3. Hierarchy
+        // 3. Hierarchy — nested multi-window tree (F12) or the flat compressed list.
         val rootNode = uiAutomation.rootInActiveWindow
         val hierarchy = if (rootNode != null) {
             try {
-                NodeSerializer.serialize(rootNode, maxElements)
+                if (nested) {
+                    NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000))
+                } else {
+                    NodeSerializer.serialize(rootNode, maxElements)
+                }
             } finally {
                 rootNode.recycle()
             }

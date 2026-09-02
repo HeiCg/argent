@@ -2,6 +2,7 @@ package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,29 +42,11 @@ class HierarchyHandler(
     }
 
     /**
-     * Nested roots for EVERY window (in layer order), not just the active one, so
-     * the host sees what `uiautomator dump` sees — including the on-screen IME
-     * keyboard, which lives in its own window that `rootInActiveWindow` omits. The
-     * host-side v2 trim drops system chrome (status/nav bar) exactly as the dump
-     * path does, so the compacted result still matches. Falls back to the active
-     * window's root if the window list is empty.
+     * Nested roots for EVERY window (active-first, then by layer — see
+     * [NestedWindowSerializer]), shared with the `getState` nested path so the
+     * describe and await-* tools trim identical input (F12).
      */
     private fun buildNestedWindows(cap: Int, activeRoot: android.view.accessibility.AccessibilityNodeInfo): JSONArray {
-        val out = JSONArray()
-        val windows = try {
-            uiAutomation.windows.sortedBy { it.layer }
-        } catch (_: Exception) {
-            emptyList()
-        }
-        for (w in windows) {
-            val root = try { w.root } catch (_: Exception) { null } ?: continue
-            try {
-                out.put(NodeSerializer.serializeNested(root, cap))
-            } finally {
-                root.recycle()
-            }
-        }
-        if (out.length() == 0) out.put(NodeSerializer.serializeNested(activeRoot, cap))
-        return out
+        return NestedWindowSerializer.serialize(uiAutomation, activeRoot, cap)
     }
 }

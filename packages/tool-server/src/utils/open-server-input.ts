@@ -10,6 +10,16 @@ import {
   type OpenDeviceServerApi,
 } from "../blueprints/android-open-server";
 import { openDeviceServerMutex } from "./device-mutex";
+import {
+  getCachedScreenSize,
+  setCachedScreenSize,
+  __resetOpenServerScreenSizeCache,
+} from "./open-server-screen-cache";
+
+// Defaults for the multi-tap timeline the on-device server builds (F1/F8/F9).
+// Kept in sync with the host constants of the same name in `gesture-tap`.
+const TAP_HOLD_MS = 50;
+const MULTI_TAP_GAP_MS = 100;
 
 /**
  * Open-source input backend: routes touch gestures through
@@ -27,26 +37,9 @@ export function shouldUseOpenServer(device: DeviceInfo): boolean {
   return device.platform === "android" && isFlagEnabled("open-device-server");
 }
 
-/**
- * Per-session screen-size cache, keyed by device id.
- *
- * The gesture tools only need width/height to convert normalized coordinates to
- * pixels, and the display geometry is constant for the life of a session. The
- * on-device size fetch (`getScreenSize`, and `getInfo` before it) reads
- * `UiDevice` display metrics, which are ~1 ms on an idle screen but 300–400 ms
- * while the system is busy — and a gesture runs exactly when the UI is mid-fling
- * / mid-launch. Paying that on EVERY tap/swipe/pinch was the dominant cost of
- * the open input path under load. Fetching once per session and reusing removes
- * it. (A mid-session rotation would invalidate this; gestures are the one place
- * we accept a cached size, matching the proprietary path's own per-session
- * geometry assumption.)
- */
-const screenSizeCache = new Map<string, { width: number; height: number }>();
-
-/** Reset the screen-size cache — test-only seam. */
-export function __resetOpenServerScreenSizeCache(): void {
-  screenSizeCache.clear();
-}
+// Re-export the reset seam so existing importers keep working; the cache itself
+// now lives in `open-server-screen-cache` (see F21).
+export { __resetOpenServerScreenSizeCache };
 
 async function withServer<T>(
   registry: Registry,
@@ -57,16 +50,28 @@ async function withServer<T>(
   // Serialize against describe / other input on the same device.
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    // Screen size is constant for the session, so fetch it once and cache it.
-    // Even the cheap `getScreenSize` RPC (UiDevice display metrics) costs
-    // 300–400 ms while the UI is busy — and a gesture runs exactly then — so
-    // paying it per gesture dominated the open input latency. First gesture
-    // populates the cache; the rest convert coordinates with zero extra RPC.
-    let size = screenSizeCache.get(device.id);
-    if (!size) {
-      const s = await server.getScreenSize();
+    // Peek the cheap, rotation-aware `getScreenSize` (display metrics only, ~1 ms
+    // even mid-animation — unlike `getInfo`) on every gesture, and key the cache
+    // by rotation (F21). A mid-session rotation reports a new `displayRotation`,
+    // so the stored width/height is refreshed instead of converting the gesture
+    // against the pre-rotation geometry (the bug: a landscape tap landing at
+    // portrait pixels). When the rotation is unchanged the cached dimensions are
+    // reused as-is.
+    const s = await server.getScreenSize();
+    const rotation = s.displayRotation;
+    const cached = getCachedScreenSize(device.id);
+    let size: { width: number; height: number };
+    if (cached && cached.rotation === rotation && cached.width > 0 && cached.height > 0) {
+      size = { width: cached.width, height: cached.height };
+    } else {
       size = { width: s.screenWidth, height: s.screenHeight };
-      if (size.width > 0 && size.height > 0) screenSizeCache.set(device.id, size);
+      if (size.width > 0 && size.height > 0) {
+        setCachedScreenSize(device.id, { ...size, rotation });
+      } else if (cached) {
+        // A transient 0×0 read while the display is reconfiguring: keep the last
+        // known-good geometry rather than converting against zero.
+        size = { width: cached.width, height: cached.height };
+      }
     }
     return fn(server, size);
   });
@@ -83,7 +88,13 @@ function toPixels(
   };
 }
 
-/** Tap `clickCount` times at normalized coordinates via the open server. */
+/**
+ * Tap `clickCount` times at normalized coordinates via the open server. The whole
+ * multi-tap timeline is built server-side in ONE `tap` RPC (F1/F8/F9): the server
+ * holds each press `holdMs` and spaces successive taps `gapMs` apart, so a
+ * double-tap lands inside the OS double-tap window without the host firing (and
+ * having to time) N separate RPCs.
+ */
 export function openServerTap(
   registry: Registry,
   device: DeviceInfo,
@@ -93,9 +104,32 @@ export function openServerTap(
 ): Promise<void> {
   return withServer(registry, device, async (server, size) => {
     const { x, y } = toPixels(size, xNorm, yNorm);
-    for (let i = 0; i < clickCount; i++) {
-      await server.tap(x, y);
-    }
+    await server.tap(x, y, {
+      clickCount,
+      holdMs: TAP_HOLD_MS,
+      ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+    });
+  });
+}
+
+/**
+ * Put `text` on the device clipboard via the open server's `setClipboard` RPC
+ * (ClipboardManager). Backs the Android `paste` tool's open path (F20). Resolves
+ * to `true` when the write round-tripped on-device (the caller then triggers
+ * KEYCODE_PASTE), and `false` when it did not — ClipboardManager silently drops a
+ * background app's `setPrimaryClip` on API 35, so the caller falls back to typing
+ * rather than pasting nothing. Rejects only on an RPC transport error.
+ */
+export function openServerSetClipboard(
+  registry: Registry,
+  device: DeviceInfo,
+  text: string
+): Promise<boolean> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const res = await server.setClipboard(text);
+    return res.success;
   });
 }
 

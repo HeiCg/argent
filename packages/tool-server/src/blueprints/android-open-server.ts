@@ -15,6 +15,7 @@ import { runAdb } from "../utils/adb";
 import { resolveAndroidBinary } from "../utils/android-binary";
 import { ensureOpenDeviceServerInstalled } from "../utils/android-helper-install";
 import { AndroidOpenServerClient } from "../utils/android-open-server-client";
+import { invalidateScreenSize } from "../utils/open-server-screen-cache";
 import type {
   OpenServerElement,
   OpenServerNestedElement,
@@ -112,7 +113,37 @@ export interface OpenDeviceServerApi {
     maxElements?: number;
     waitTimeoutMs?: number;
   }): Promise<{ tree: OpenServerNestedElement[] }>;
-  tap(x: number, y: number): Promise<{ success: boolean }>;
+  /**
+   * Combined waitForIdle + FULL nested tree + info in ONE round-trip, for the
+   * await-* poll loops. Unlike [getState] the tree is the same nested, un-pruned
+   * multi-window shape [getNestedAccessibilityTree] returns, so the host runs the
+   * identical v2 trim the describe tool runs and their label sets / id forms match
+   * (F12). No screenshot (the poll loops never read it).
+   */
+  getNestedState(opts?: { maxElements?: number; waitTimeoutMs?: number }): Promise<{
+    tree: OpenServerNestedElement[];
+    info: OpenServerInfo;
+    waitedMs: number;
+    captureMs: number;
+  }>;
+  /**
+   * Multi-tap (F1/F8/F9): the server builds the whole DOWN/UP timeline —
+   * `clickCount` presses each held `holdMs`, spaced `gapMs` apart — so a
+   * double-tap lands inside the OS double-tap window without the host firing N
+   * separate `tap` RPCs. Defaults: clickCount 1, holdMs 50, gapMs 100.
+   */
+  tap(
+    x: number,
+    y: number,
+    opts?: { clickCount?: number; holdMs?: number; gapMs?: number }
+  ): Promise<{ success: boolean }>;
+  /**
+   * Put `text` on the DEVICE clipboard via ClipboardManager (F20). Returns
+   * `success:false` (not an error) when the write did not round-trip on-device
+   * (some API levels drop a background app's clipboard write), so the paste tool
+   * can fall back rather than paste nothing.
+   */
+  setClipboard(text: string): Promise<{ success: boolean; text: string }>;
   longPress(x: number, y: number, durationMs?: number): Promise<{ success: boolean }>;
   swipe(
     startX: number,
@@ -419,7 +450,28 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           maxElements: getOpts.maxElements ?? 3000,
           waitTimeoutMs: getOpts.waitTimeoutMs ?? 2000,
         }),
-      tap: (x, y) => client.request<{ success: boolean }>("tap", { x, y }),
+      getNestedState: (stateOpts = {}) =>
+        client.request<{
+          tree: OpenServerNestedElement[];
+          info: OpenServerInfo;
+          waitedMs: number;
+          captureMs: number;
+        }>("getState", {
+          nested: true,
+          includeScreenshot: false,
+          maxElements: stateOpts.maxElements ?? 3000,
+          waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
+        }),
+      tap: (x, y, tapOpts = {}) =>
+        client.request<{ success: boolean }>("tap", {
+          x,
+          y,
+          ...(tapOpts.clickCount !== undefined ? { clickCount: tapOpts.clickCount } : {}),
+          ...(tapOpts.holdMs !== undefined ? { holdMs: tapOpts.holdMs } : {}),
+          ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
+        }),
+      setClipboard: (text) =>
+        client.request<{ success: boolean; text: string }>("setClipboard", { text }),
       longPress: (x, y, durationMs) =>
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
       swipe: (startX, startY, endX, endY, steps, holdEndMs) =>
@@ -462,6 +514,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       dispose: async () => {
         disposed = true;
         ready = false;
+        // Drop this device's cached screen geometry (F21) so a later session on
+        // the same serial re-reads it rather than trusting a stale orientation.
+        invalidateScreenSize(serial);
         // Ask the server to exit on its own so `am instrument` ends cleanly.
         try {
           await Promise.race([

@@ -97,7 +97,10 @@ class SwipeHandler(
                 )
             )
         }
-        MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path), syncFinal = false)
+        // Final ACTION_UP is dispatched synchronously (F3): the RPC returns only
+        // once the finger is actually up, matching the proprietary path's blocking
+        // Up. Intermediate frames stay async, paced by the injector's wall clock.
+        MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path))
     }
 
     private fun injectHeldSwipe(

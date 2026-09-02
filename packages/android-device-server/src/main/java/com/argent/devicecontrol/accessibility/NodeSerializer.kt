@@ -35,13 +35,20 @@ object NodeSerializer {
      */
     fun serializeNested(rootNode: AccessibilityNodeInfo, maxElements: Int = 3000): JSONObject {
         val counter = intArrayOf(0)
-        return nodeToNestedJson(rootNode, maxElements, counter)
+        val truncated = booleanArrayOf(false)
+        val root = nodeToNestedJson(rootNode, maxElements, counter, truncated)
+        // Surface the runaway-guard hit (F13): when the cap is reached the tree is
+        // incomplete, so the host can warn the agent instead of silently rendering
+        // a partial screen. Only the window root carries the flag.
+        if (truncated[0]) root.put("truncated", true)
+        return root
     }
 
     private fun nodeToNestedJson(
         node: AccessibilityNodeInfo,
         maxElements: Int,
-        counter: IntArray
+        counter: IntArray,
+        truncated: BooleanArray
     ): JSONObject {
         counter[0]++
         val bounds = Rect()
@@ -75,10 +82,15 @@ object NodeSerializer {
         }
         val children = JSONArray()
         for (i in 0 until node.childCount) {
-            if (counter[0] >= maxElements) break
+            if (counter[0] >= maxElements) {
+                // Stopped before walking every child — the serialized tree is a
+                // prefix of the real one.
+                truncated[0] = true
+                break
+            }
             val child = node.getChild(i) ?: continue
             try {
-                children.put(nodeToNestedJson(child, maxElements, counter))
+                children.put(nodeToNestedJson(child, maxElements, counter, truncated))
             } finally {
                 child.recycle()
             }

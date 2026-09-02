@@ -500,4 +500,86 @@ suite("android open-device-server on-device", () => {
       `getState ${st.tree.length} el in ${dt}ms (captureMs=${st.captureMs}, waitedMs=${st.waitedMs}); includeScreenshot=true -> ${withShot.screenshot.length} b64 chars; waitForIdle ${idleDt}ms`
     );
   }, 90_000);
+
+  it("3i getNestedState (F12) — nested multi-window tree in one round-trip", async () => {
+    await freshSettings();
+    const st = await api.getNestedState();
+    expect(st.tree.length).toBeGreaterThan(0);
+    // Nested shape: the window root carries a children array (not a flat list).
+    const root = st.tree[0]!;
+    expect(Array.isArray(root.children)).toBe(true);
+    expect(st.info.screenWidth).toBeGreaterThan(0);
+    record(
+      "3i getNestedState",
+      "PASS",
+      `${st.tree.length} window root(s), first root has ${root.children?.length ?? 0} children; nested shape ok`
+    );
+  }, 90_000);
+
+  it("3j paste (setClipboard + KEYCODE_PASTE / typeText fallback, F20) — URL lands in an EditText", async () => {
+    const KEYCODE_PASTE = 279;
+    // Focus the Settings search field (an EditText). Returns whether it focused.
+    const focusSearch = async (): Promise<void> => {
+      await freshSettings();
+      const tree = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+      const search = tree.find(
+        (e) =>
+          (e.clickable === true || (e.resourceId ?? "").toLowerCase().includes("search")) &&
+          /search/i.test(label(e) + " " + (e.resourceId ?? ""))
+      );
+      if (!search) throw new Error("no Settings search entry found");
+      const c = center(search);
+      await api.tap(c.x, c.y);
+      await sleep(1200);
+      await api.waitForIdle(3000);
+    };
+    const readField = async (): Promise<string> => {
+      const after = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+      const edit = after.find((e) => /edittext/i.test(e.className) && (e.text ?? "").length > 0);
+      return edit?.text ?? after.find((e) => (e.text ?? "").length > 0)?.text ?? "";
+    };
+    const url = `https://ex.com/r?token=abcdef012345678${Date.now().toString().slice(-3)}`;
+    const emoji = `party🎉time${Date.now().toString().slice(-3)}`;
+
+    // ---- URL: clipboard-paste if the write round-trips, else type it (same focus). ----
+    await focusSearch();
+    const clip1 = await api.setClipboard(url);
+    let urlVia = "unsupported";
+    if (clip1.success) {
+      await adbShell(serial, `input keyevent ${KEYCODE_PASTE}`);
+      await sleep(800);
+      await api.waitForIdle(3000);
+      if ((await readField()).includes(url)) urlVia = "clipboard";
+    }
+    if (urlVia === "unsupported") {
+      // Fallback: sendStringSync types printable ASCII (URLs, OTPs) verbatim — into
+      // the field already focused above (no second focus).
+      await api.typeText(url);
+      await sleep(800);
+      await api.waitForIdle(3000);
+      if ((await readField()).includes(url)) urlVia = "typeText-fallback";
+    }
+    // The URL must land by SOME open-path method (F20: clipboard, else typing).
+    expect(urlVia).not.toBe("unsupported");
+
+    // ---- emoji: only the clipboard path can carry it. On API 35 the background
+    // clipboard write is dropped and emoji can't be typed, so the OPEN path reports
+    // unsupported (the full paste tool then falls back to the proprietary emulator
+    // clipboard). Recorded, not hard-asserted — this is the F20 platform finding.
+    await focusSearch();
+    const clip2 = await api.setClipboard(emoji);
+    let emojiVia = "unsupported (open path)";
+    if (clip2.success) {
+      await adbShell(serial, `input keyevent ${KEYCODE_PASTE}`);
+      await sleep(800);
+      await api.waitForIdle(3000);
+      if ((await readField()).includes("🎉")) emojiVia = "clipboard";
+    }
+    record(
+      "3j paste F20",
+      "PASS",
+      `setClipboard.success url=${clip1.success}/emoji=${clip2.success} (ClipboardManager from instrumentation); ` +
+        `url landed via ${urlVia}; emoji via ${emojiVia}`
+    );
+  }, 120_000);
 });

@@ -133,10 +133,21 @@ function summarize(xs: number[]): {
     mean: Number(mean.toFixed(1)),
   };
 }
-// Estimator: the token-bench harness prefers js-tiktoken(o200k_base); it is not
-// installed in this checkout, so we use the spec's documented chars/4 fallback.
-const TOKENIZER = "chars/4 (js-tiktoken o200k_base not installed in checkout)";
-const estTokens = (s: string): number => Math.ceil(s.length / 4);
+// Token estimator (F22): js-tiktoken o200k_base is the primary count for BOTH
+// configs, with chars/4 kept as a secondary sanity figure. The encoder is loaded
+// once; if it ever fails to load we fall back to chars/4 and say so.
+import { getEncoding, type Tiktoken } from "js-tiktoken";
+let o200k: Tiktoken | null = null;
+try {
+  o200k = getEncoding("o200k_base");
+} catch {
+  o200k = null;
+}
+const TOKENIZER = o200k
+  ? "js-tiktoken o200k_base (primary), chars/4 (secondary)"
+  : "chars/4 (js-tiktoken o200k_base failed to load)";
+const estTokens = (s: string): number => (o200k ? o200k.encode(s).length : Math.ceil(s.length / 4));
+const estTokensCharsDiv4 = (s: string): number => Math.ceil(s.length / 4);
 
 /* -------------------------------------------------------------------------- */
 /* describe text parsing (same formatDescribeTree output for both configs)     */
@@ -320,13 +331,21 @@ interface VerbResult {
 async function timeCalls(
   label: string,
   fn: (i: number) => Promise<void>,
-  extra?: () => Record<string, unknown>
+  extra?: () => Record<string, unknown>,
+  // Untimed per-iteration setup (F5): resets the screen to a known state before
+  // each measured tap/swipe so every iteration starts from the same place, and
+  // its cost is NOT counted in the latency of the verb under test.
+  setup?: (i: number) => Promise<void>
 ): Promise<VerbResult> {
-  for (let i = 0; i < WARMUP; i++) await fn(i).catch(() => undefined);
+  for (let i = 0; i < WARMUP; i++) {
+    if (setup) await setup(i).catch(() => undefined);
+    await fn(i).catch(() => undefined);
+  }
   const mark = debugLines.length;
   const lat: number[] = [];
   let errors = 0;
   for (let i = 0; i < N; i++) {
+    if (setup) await setup(i).catch(() => undefined);
     const t0 = Date.now();
     try {
       await fn(i);
@@ -351,7 +370,13 @@ interface BlockResult {
   config: "OFF" | "ON";
   coldStartMs: number[];
   verbs: VerbResult[];
-  describeSample: { source: string; bytes: number; tokens: number; elements: number };
+  describeSample: {
+    source: string;
+    bytes: number;
+    tokens: number;
+    tokensCharsDiv4: number;
+    elements: number;
+  };
   fidelitySet: string[];
   screenshot: { bytes: number; width: number; height: number; format: string };
   simServerRssKb: number | null;
@@ -409,6 +434,7 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
     source: lastSource,
     bytes: Buffer.byteLength(lastDesc, "utf8"),
     tokens: estTokens(lastDesc),
+    tokensCharsDiv4: estTokensCharsDiv4(lastDesc),
     elements: parsed.elements,
   };
   const expectSource = config === "ON" ? "open-device-server" : "android-devtools|uiautomator";
@@ -420,9 +446,13 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
   }
   verbs.push(describeRes);
 
-  // screenshot
+  // screenshot — NOT a latency verb (F6). The two backends return different-sized
+  // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
+  // side by side compares an encode of very different pixel counts, not the same
+  // work. We capture dims once for the report and note the asymmetry instead of
+  // scoring a bogus latency row.
   let shot = { bytes: 0, width: 0, height: 0, format: "unknown" };
-  const screenshotRes = await timeCalls("screenshot", async () => {
+  try {
     const s = (await reg.invokeTool("screenshot", {
       udid: SERIAL,
       includeImageInContext: false,
@@ -434,31 +464,71 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
       height: info.height,
       format: s.image.mimeType + (info.sig ? " (PNG sig ok)" : " (no PNG sig)"),
     };
-  });
-  verbs.push(screenshotRes);
+  } catch {
+    /* dims stay zero */
+  }
+  notes.push(
+    "screenshot latency row removed (F6): OFF and ON return different-resolution " +
+      "frames, so a side-by-side latency is not like-for-like — see the dims below."
+  );
 
-  // gesture-tap (fixed neutral coordinate; latency = inject round-trip)
+  // gesture-tap (fixed neutral coordinate; latency = inject round-trip). Reset to
+  // the Settings root before each iteration (F5) so every tap starts identically;
+  // the reset is untimed.
   verbs.push(
-    await timeCalls("gesture-tap", async () => {
-      await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
-    })
+    await timeCalls(
+      "gesture-tap",
+      async () => {
+        await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
+      },
+      undefined,
+      async () => {
+        await ensureSettings(reg);
+      }
+    )
   );
 
   // re-establish settings after taps navigated
   await ensureSettings(reg);
 
-  // gesture-swipe
+  // tap+describe (F4): a single timed tap→describe pair — what an agent actually
+  // does (act, then read the screen) — resetting to the Settings root between
+  // iterations (untimed) so the pair is measured from the same starting screen.
   verbs.push(
-    await timeCalls("gesture-swipe", async () => {
-      await reg.invokeTool("gesture-swipe", {
-        udid: SERIAL,
-        fromX: 0.5,
-        fromY: 0.7,
-        toX: 0.5,
-        toY: 0.35,
-        durationMs: 250,
-      });
-    })
+    await timeCalls(
+      "tap+describe",
+      async () => {
+        await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
+        await reg.invokeTool("describe", { udid: SERIAL });
+      },
+      undefined,
+      async () => {
+        await ensureSettings(reg);
+      }
+    )
+  );
+
+  await ensureSettings(reg);
+
+  // gesture-swipe — reset to the Settings root before each iteration (F5).
+  verbs.push(
+    await timeCalls(
+      "gesture-swipe",
+      async () => {
+        await reg.invokeTool("gesture-swipe", {
+          udid: SERIAL,
+          fromX: 0.5,
+          fromY: 0.7,
+          toX: 0.5,
+          toY: 0.35,
+          durationMs: 250,
+        });
+      },
+      undefined,
+      async () => {
+        await ensureSettings(reg);
+      }
+    )
   );
 
   await ensureSettings(reg);

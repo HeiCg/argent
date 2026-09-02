@@ -64,6 +64,14 @@ const eventSchema = z.object({
     .describe("Delay before this event in milliseconds (default 16ms ≈ 60fps)"),
 });
 
+// On the open-device-server path a multi-pointer timeline is time-thinned before
+// injection: frames are resampled to a ~16ms cadence, the first/last frame and
+// the total duration are preserved, and dwell frames (a run of same-position
+// keyframes — a hold) are kept intact so a momentum-free hold still decays the
+// release velocity to ~0. Authored timing is honoured; only redundant
+// intermediate frames between keyframes are dropped to cut per-event injection
+// cost. The proprietary path replays every frame verbatim.
+
 const zodSchema = z.object({
   udid: z.string().describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
   events: z
