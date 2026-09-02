@@ -34,6 +34,7 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
+    getScreenSize: vi.fn(async () => ({ screenWidth: 1000, screenHeight: 2000, displayRotation: 0 })),
     tap: vi.fn(async () => ({ success: true })),
     tapWithOutcome: vi.fn(async () => ({ success: true, ...OUTCOME })),
     getState: vi.fn(async () => ({

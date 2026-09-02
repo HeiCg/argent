@@ -14,8 +14,8 @@ android {
         // Keep versionName/versionCode in sync with assets/manifest.json — the TS
         // side reads that file, the install gate compares versionCode, and the APK
         // filename embeds versionName.
-        versionCode = 16
-        versionName = "0.1.14"
+        versionCode = 17
+        versionName = "0.1.15"
     }
 
     buildTypes {
