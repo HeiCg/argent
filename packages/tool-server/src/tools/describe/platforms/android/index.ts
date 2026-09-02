@@ -18,7 +18,7 @@ import {
   openDeviceServerRef,
   type OpenDeviceServerApi,
 } from "../../../../blueprints/android-open-server";
-import { openServerElementsToDescribeNode } from "./open-server-tree";
+import { openServerNestedToDescribeNode } from "./open-server-tree";
 import { openDeviceServerMutex } from "../../../../utils/device-mutex";
 
 export const androidRequires: ToolDependency[] = ["adb"];
@@ -61,12 +61,25 @@ export async function describeAndroid(
       const tree = await openDeviceServerMutex.withDeviceLock(serial, async () => {
         const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
         const [treeResult, info] = await Promise.all([
-          server.getAccessibilityTree(),
+          server.getNestedAccessibilityTree(),
           server.getInfo(),
         ]);
-        // UiDevice.displayWidth/Height are rotation-aware and match the pixel
-        // space of getBoundsInScreen, so no separate rotation correction is needed.
-        return openServerElementsToDescribeNode(
+        if (treeResult.tree.length === 0) {
+          throw new FailureError("open-device-server returned an empty accessibility tree", {
+            error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
+            failure_stage: "android_open_device_server_tree",
+            failure_area: "tool_server",
+            error_kind: "subprocess",
+          });
+        }
+        // Run the SAME v2 interactables-only trim the android-devtools XML path
+        // runs, so the compact describe (dropped layout containers, concatenated
+        // row labels, package-qualified ids) matches the proprietary token count
+        // and label set. `tree` is one nested root per window (active + IME +
+        // dialogs), the multi-window shape the dump path also captures.
+        // UiDevice.displayWidth/Height are rotation-aware and match
+        // getBoundsInScreen's pixel space, so no rotation correction.
+        return openServerNestedToDescribeNode(
           treeResult.tree,
           info.screenWidth,
           info.screenHeight

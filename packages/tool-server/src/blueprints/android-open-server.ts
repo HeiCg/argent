@@ -15,7 +15,10 @@ import { runAdb } from "../utils/adb";
 import { resolveAndroidBinary } from "../utils/android-binary";
 import { ensureOpenDeviceServerInstalled } from "../utils/android-helper-install";
 import { AndroidOpenServerClient } from "../utils/android-open-server-client";
-import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
+import type {
+  OpenServerElement,
+  OpenServerNestedElement,
+} from "../tools/describe/platforms/android/open-server-tree";
 
 const OPEN_DEVICE_SERVER_NAMESPACE = "OpenDeviceServer";
 
@@ -83,10 +86,32 @@ export interface OpenDeviceServerApi {
   isReady(): boolean;
   ping(): Promise<{ status: string }>;
   getInfo(): Promise<OpenServerInfo>;
+  /**
+   * Cheap screen geometry (display metrics only) for the gesture hot path.
+   * Unlike [getInfo] it never walks the live accessibility tree, so it stays
+   * ~1 ms even while the UI animates — where [getInfo] costs ~400 ms. The
+   * tap/swipe/pinch tools use it to convert normalized coordinates to pixels.
+   */
+  getScreenSize(): Promise<{
+    screenWidth: number;
+    screenHeight: number;
+    displayRotation: number;
+  }>;
   getAccessibilityTree(opts?: {
     maxElements?: number;
     waitTimeoutMs?: number;
   }): Promise<OpenServerTreeResult>;
+  /**
+   * Full, un-pruned accessibility tree as ONE nested node (with raw class names
+   * and package-qualified ids). Backs the describe tool's compact path: the host
+   * runs the same interactables-only trim the proprietary android-devtools XML
+   * path runs, reaching the same token count / label set. `tree[0]` is the
+   * window root; empty array if the server reports no active window.
+   */
+  getNestedAccessibilityTree(opts?: {
+    maxElements?: number;
+    waitTimeoutMs?: number;
+  }): Promise<{ tree: OpenServerNestedElement[] }>;
   tap(x: number, y: number): Promise<{ success: boolean }>;
   longPress(x: number, y: number, durationMs?: number): Promise<{ success: boolean }>;
   swipe(
@@ -379,9 +404,19 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       isReady: () => ready && !disposed,
       ping: () => client.request<{ status: string }>("ping"),
       getInfo: () => client.request<OpenServerInfo>("getInfo"),
+      getScreenSize: () =>
+        client.request<{ screenWidth: number; screenHeight: number; displayRotation: number }>(
+          "getScreenSize"
+        ),
       getAccessibilityTree: (getOpts = {}) =>
         client.request<OpenServerTreeResult>("getAccessibilityTree", {
           maxElements: getOpts.maxElements ?? 200,
+          waitTimeoutMs: getOpts.waitTimeoutMs ?? 2000,
+        }),
+      getNestedAccessibilityTree: (getOpts = {}) =>
+        client.request<{ tree: OpenServerNestedElement[] }>("getAccessibilityTree", {
+          nested: true,
+          maxElements: getOpts.maxElements ?? 3000,
           waitTimeoutMs: getOpts.waitTimeoutMs ?? 2000,
         }),
       tap: (x, y) => client.request<{ success: boolean }>("tap", { x, y }),

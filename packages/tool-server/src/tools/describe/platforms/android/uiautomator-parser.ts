@@ -609,6 +609,26 @@ export function parseUiAutomatorDump(
       error_kind: "subprocess",
     });
   }
+  return buildDescribeTreeFromParsedRoot(root, screenW, screenH, options);
+}
+
+// The `ParsedXmlNode` shape the trim consumes, re-exported so non-XML sources
+// (the open-device-server's nested accessibility tree) can build the same input
+// and run the identical v2 interactables-only trim instead of re-deriving it.
+export type { ParsedXmlNode };
+
+/**
+ * Run the v2 interactables-only trim over an already-parsed `<hierarchy>`-style
+ * root (its `children` are the top-level window nodes) and lower to the
+ * DescribeNode contract. Shared by `parseUiAutomatorDump` (XML source) and the
+ * open-device-server nested-tree adapter so both produce byte-identical output.
+ */
+export function buildDescribeTreeFromParsedRoot(
+  root: ParsedXmlNode,
+  screenW: number,
+  screenH: number,
+  options: { includeSystem?: boolean } = {}
+): DescribeNode {
   const includeSystem = options.includeSystem === true;
   const opts: PruneOptions = { screenW, screenH, includeSystem };
   const topChildren: DescribeNode[] = [];

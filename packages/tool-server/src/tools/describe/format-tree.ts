@@ -145,6 +145,10 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   const mode: "flat" | "nested" =
     opts.source === "uiautomator" ||
     opts.source === "android-devtools" ||
+    // The open-device-server describe path now returns a real parent/child tree
+    // (the same v2 trim the android-devtools path produces), so it renders
+    // nested like its sibling Android sources rather than as a flat leaf list.
+    opts.source === "open-device-server" ||
     opts.source === "cdp-dom" ||
     opts.source === "vega-automation"
       ? "nested"
