@@ -32,7 +32,19 @@ object MotionInjector {
      * pointer; `ids[i]` is pointer i's stable id. Every path must be the same
      * length (>= 2: a down frame and an up frame). Coordinates are device pixels.
      */
-    fun inject(uiAutomation: UiAutomation, ids: IntArray, paths: List<List<Point>>) {
+    fun inject(
+        uiAutomation: UiAutomation,
+        ids: IntArray,
+        paths: List<List<Point>>,
+        // Whether the final ACTION_UP is injected synchronously. A tap keeps it
+        // true so the click is confirmed delivered before the RPC returns. A
+        // swipe/pinch passes false: its events are already queued to the input
+        // dispatcher in order (a following gesture's DOWN queues strictly after
+        // this UP), and blocking on the UP's full dispatch — 20–40 ms while the
+        // list is flinging or the page zooming — bought nothing but latency. The
+        // proprietary path's Up command likewise returns on ACK, not on dispatch.
+        syncFinal: Boolean = true
+    ) {
         val n = paths.size
         require(n >= 1) { "gesture needs at least one pointer" }
         require(ids.size == n) { "ids and paths length mismatch" }
@@ -69,7 +81,7 @@ object MotionInjector {
             }
         }
 
-        fun send(action: Int, count: Int, eventTime: Long) {
+        fun send(action: Int, count: Int, eventTime: Long, sync: Boolean = false) {
             // Hold until this event's wall-clock slot before dispatching, so a
             // trailing run of same-position frames really costs its duration
             // (long-press recognition, fling deceleration).
@@ -93,7 +105,14 @@ object MotionInjector {
                 0
             )
             try {
-                uiAutomation.injectInputEvent(event, true)
+                // Intermediate DOWN/MOVE/POINTER_UP events are dispatched async
+                // (sync=false): the wall-clock `SystemClock.sleep` above already
+                // paces arrival, so blocking the RPC thread on each event's full
+                // dispatch (sync=true) only stacked ~15–30 ms of idle wait per
+                // frame — the dominant cost of swipe/pinch. Only the final
+                // ACTION_UP is injected synchronously, so the RPC returns just
+                // after the whole gesture has actually been delivered in order.
+                uiAutomation.injectInputEvent(event, sync)
             } finally {
                 event.recycle()
             }
@@ -130,6 +149,6 @@ object MotionInjector {
             )
         }
         setCoords(last, 1)
-        send(MotionEvent.ACTION_UP, 1, upTime)
+        send(MotionEvent.ACTION_UP, 1, upTime, sync = syncFinal)
     }
 }

@@ -1,7 +1,10 @@
 {
   "packageName": "com.argent.devicecontrol",
   "instrumentationRunner": "com.argent.devicecontrol/.DeviceControlInstrumentation",
-  "versionName": "0.1.1",
-  "versionCode": 2,
-  "installFlags": ["-r", "-t"]
+  "versionName": "0.1.12",
+  "versionCode": 13,
+  "installFlags": [
+    "-r",
+    "-t"
+  ]
 }

@@ -37,6 +37,7 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
+    getScreenSize: vi.fn(async () => ({ screenWidth: SCREEN.width, screenHeight: SCREEN.height, displayRotation: 0 })),
     gesture: vi.fn(async () => ({ success: true })),
   };
 }

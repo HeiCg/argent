@@ -21,6 +21,23 @@ class InfoHandler(
         }
     }
 
+    /**
+     * Cheap screen geometry for the gesture hot path: reads only `UiDevice`
+     * display metrics (rotation-aware), never `uiAutomation.windows` /
+     * `rootInActiveWindow`. The full [execute] snapshot costs ~2 ms on an idle
+     * screen but ~400 ms while the UI animates (a fling or a pinch-zoom), because
+     * those two calls walk the live accessibility tree — and the tap/swipe/pinch
+     * tools called it before every gesture only to convert normalized coordinates
+     * to pixels. This gives them the width/height without that snapshot.
+     */
+    fun screenSize(): JSONObject {
+        return JSONObject().apply {
+            put("screenWidth", uiDevice.displayWidth)
+            put("screenHeight", uiDevice.displayHeight)
+            put("displayRotation", uiDevice.displayRotation)
+        }
+    }
+
     private fun getCurrentActivity(): String {
         return try {
             val root = uiAutomation.rootInActiveWindow

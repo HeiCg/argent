@@ -38,7 +38,7 @@ class JsonRpcHandler(
         const val TAG = "JsonRpcHandler"
     }
 
-    private val tapHandler = TapHandler(uiDevice)
+    private val tapHandler = TapHandler(uiAutomation)
     private val swipeHandler = SwipeHandler(uiDevice, uiAutomation)
     private val gestureHandler = GestureHandler(uiAutomation)
     private val typeHandler = TypeHandler(instrumentation, uiDevice)
@@ -77,6 +77,7 @@ class JsonRpcHandler(
                 "screenshot" -> screenshotHandler.execute(params)
                 "getAccessibilityTree" -> hierarchyHandler.execute(params)
                 "getInfo" -> infoHandler.execute()
+                "getScreenSize" -> infoHandler.screenSize()
                 "getState" -> stateHandler.execute(params)
                 "waitForIdle" -> waitHandler.execute(params)
                 "launchApp" -> openAppHandler.execute(params)

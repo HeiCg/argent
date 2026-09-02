@@ -25,6 +25,7 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
+    getScreenSize: vi.fn(async () => ({ screenWidth: 1000, screenHeight: 2000, displayRotation: 0 })),
     swipe: vi.fn(async () => ({ success: true })),
   };
 }

@@ -27,6 +27,27 @@ export function shouldUseOpenServer(device: DeviceInfo): boolean {
   return device.platform === "android" && isFlagEnabled("open-device-server");
 }
 
+/**
+ * Per-session screen-size cache, keyed by device id.
+ *
+ * The gesture tools only need width/height to convert normalized coordinates to
+ * pixels, and the display geometry is constant for the life of a session. The
+ * on-device size fetch (`getScreenSize`, and `getInfo` before it) reads
+ * `UiDevice` display metrics, which are ~1 ms on an idle screen but 300–400 ms
+ * while the system is busy — and a gesture runs exactly when the UI is mid-fling
+ * / mid-launch. Paying that on EVERY tap/swipe/pinch was the dominant cost of
+ * the open input path under load. Fetching once per session and reusing removes
+ * it. (A mid-session rotation would invalidate this; gestures are the one place
+ * we accept a cached size, matching the proprietary path's own per-session
+ * geometry assumption.)
+ */
+const screenSizeCache = new Map<string, { width: number; height: number }>();
+
+/** Reset the screen-size cache — test-only seam. */
+export function __resetOpenServerScreenSizeCache(): void {
+  screenSizeCache.clear();
+}
+
 async function withServer<T>(
   registry: Registry,
   device: DeviceInfo,
@@ -36,8 +57,18 @@ async function withServer<T>(
   // Serialize against describe / other input on the same device.
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const info = await server.getInfo();
-    return fn(server, { width: info.screenWidth, height: info.screenHeight });
+    // Screen size is constant for the session, so fetch it once and cache it.
+    // Even the cheap `getScreenSize` RPC (UiDevice display metrics) costs
+    // 300–400 ms while the UI is busy — and a gesture runs exactly then — so
+    // paying it per gesture dominated the open input latency. First gesture
+    // populates the cache; the rest convert coordinates with zero extra RPC.
+    let size = screenSizeCache.get(device.id);
+    if (!size) {
+      const s = await server.getScreenSize();
+      size = { width: s.screenWidth, height: s.screenHeight };
+      if (size.width > 0 && size.height > 0) screenSizeCache.set(device.id, size);
+    }
+    return fn(server, size);
   });
 }
 
