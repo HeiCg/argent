@@ -12,18 +12,17 @@ vi.mock("../src/utils/simulator-client", async (importOriginal) => {
   return { ...actual, sendCommand: vi.fn(async () => {}) };
 });
 
-import { createGestureSwipeTool } from "../src/tools/gesture-swipe";
+import { createGestureTapTool } from "../src/tools/gesture-tap";
 
 const ANDROID_SERIAL = "emulator-5554";
 
-// Screen-graph Phase A: the open path swipes via `swipeWithOutcome` and returns
-// the before/after fingerprint delta additively on the result.
+// Screen-graph Phase A: the tap's before/after fingerprint delta.
 const OUTCOME = {
   before: { version: 1, hash: "aaaa", stateHash: "aaaa" },
   after: { version: 2, hash: "bbbb", stateHash: "cccc" },
   changed: true,
   newScreen: true,
-  idleMs: 20,
+  idleMs: 15,
 };
 
 function makeOpenApi() {
@@ -35,8 +34,18 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
-    getScreenSize: vi.fn(async () => ({ screenWidth: 1000, screenHeight: 2000, displayRotation: 0 })),
-    swipeWithOutcome: vi.fn(async () => ({ success: true, ...OUTCOME })),
+    tap: vi.fn(async () => ({ success: true })),
+    tapWithOutcome: vi.fn(async () => ({ success: true, ...OUTCOME })),
+    getState: vi.fn(async () => ({
+      tree: [],
+      info: { screenWidth: 1000, screenHeight: 2000, currentPackage: "", keyboardVisible: false, displayRotation: 0 },
+      screenshot: "",
+      waitedMs: 0,
+      captureMs: 0,
+      version: 1,
+      hash: "aaaa",
+      stateHash: "aaaa",
+    })),
   };
 }
 
@@ -47,10 +56,8 @@ function makeTool(openApi: unknown) {
       throw new Error(`unexpected urn ${urn}`);
     }),
   } as never;
-  return createGestureSwipeTool(registry);
+  return createGestureTapTool(registry);
 }
-
-const base = { udid: ANDROID_SERIAL, fromX: 0.5, fromY: 0.7, toX: 0.5, toY: 0.2, durationMs: 160 };
 
 beforeEach(() => {
   flagEnabledMock = (n) => n === "open-device-server";
@@ -58,29 +65,28 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("gesture-swipe momentum → open-device-server holdEndMs (T7)", () => {
-  it("a plain swipe passes no holdEndMs (the lift keeps its fling)", async () => {
+describe("gesture-tap → open-device-server outcome (Screen-graph Phase A)", () => {
+  it("a single tap goes through tapWithOutcome and surfaces the delta additively", async () => {
     const openApi = makeOpenApi();
     const tool = makeTool(openApi);
 
-    const result = await tool.execute({}, base);
+    const result = await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
 
-    expect(openApi.swipeWithOutcome).toHaveBeenCalledTimes(1);
-    // startX,startY,endX,endY,steps,holdEndMs,outcomeOpts — 500,1400,500,400,10,undefined,undefined
-    expect(openApi.swipeWithOutcome).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined, undefined);
-    // The fingerprint delta rides back additively on the tool result.
-    expect((result as { outcome?: unknown }).outcome).toEqual(OUTCOME);
+    expect(openApi.tapWithOutcome).toHaveBeenCalledWith(500, 1000, undefined);
+    expect(result.tapped).toBe(true);
+    expect(result.outcome).toEqual(OUTCOME);
   });
 
-  it("momentum: false passes holdEndMs so the server holds before the lift", async () => {
+  it("a multi-tap runs leading taps plain and spans the outcome across the gesture", async () => {
     const openApi = makeOpenApi();
     const tool = makeTool(openApi);
 
-    await tool.execute({}, { ...base, momentum: false });
+    const result = await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5, clickCount: 3 });
 
-    expect(openApi.swipeWithOutcome).toHaveBeenCalledTimes(1);
-    const args = openApi.swipeWithOutcome.mock.calls[0] as unknown[];
-    expect(args.slice(0, 5)).toEqual([500, 1400, 500, 400, 10]);
-    expect(args[5]).toBeGreaterThan(0);
+    // 2 leading plain taps + the final outcome-bearing tap.
+    expect(openApi.tap).toHaveBeenCalledTimes(2);
+    expect(openApi.tapWithOutcome).toHaveBeenCalledTimes(1);
+    expect(result.outcome?.before.hash).toBe("aaaa"); // from the pre-gesture getState
+    expect(result.outcome?.after.hash).toBe("bbbb");
   });
 });

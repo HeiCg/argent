@@ -6,8 +6,9 @@ import android.graphics.Bitmap
 import android.util.Base64
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.TreeStore
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
-import com.argent.devicecontrol.accessibility.NodeSerializer
+import com.argent.devicecontrol.accessibility.ScreenTree
 import com.argent.devicecontrol.util.DisplayReader
 import org.json.JSONArray
 import org.json.JSONObject
@@ -36,6 +37,10 @@ class StateHandler(
         // their label sets / id forms match. A nested capture never includes a
         // screenshot (the poll loops don't read it).
         val nested = params.optBoolean("nested", false)
+        // Screen-graph Phase A: when the caller passes the version it last saw and
+        // nothing has changed, the caller already holds the tree; `unchanged` in the
+        // response lets it short-circuit re-reading the body.
+        val sinceVersion = params.optLong("sinceVersion", -1L)
         // The describe-tree poll loops (await-screen-idle / await-ui-element) want
         // the idle+tree+info in one round-trip but never read the screenshot;
         // skipping the capture makes getState a strict latency win for them
@@ -74,37 +79,50 @@ class StateHandler(
             ""
         }
 
-        // 3. Hierarchy — nested multi-window tree (F12) or the flat compressed list.
-        //    Capture the active package from the SAME root we serialize, before it
-        //    is recycled, so `info` below never calls uiDevice.currentPackageName
+        // 3. Fingerprints + version from the AX cache (cache hit → no traversal, so
+        //    the Phase A traversals counter is unchanged across unchanged reads).
+        val snap = TreeStore.ensure()
+        val unchanged = sinceVersion == snap.version
+
+        // 4. Hierarchy — the nested raw multi-window tree (F12 token parity, its own
+        //    traversal for raw class names/ids) or the flat compressed list lowered
+        //    from the cached forest (no traversal on a hit). Capture the active
+        //    package from the accessibility root, never uiDevice.currentPackageName
         //    (a waitForIdle caller).
-        val rootNode = uiAutomation.rootInActiveWindow
-        var activePackage = rootNode?.packageName?.toString() ?: ""
-        val hierarchy = if (rootNode != null) {
-            try {
-                if (nested) {
+        val hierarchy: JSONArray
+        val truncated: Boolean
+        val activePackage: String
+        if (nested) {
+            val rootNode = uiAutomation.rootInActiveWindow
+            var pkg = rootNode?.packageName?.toString() ?: ""
+            hierarchy = if (rootNode != null) {
+                try {
                     NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000))
-                } else {
-                    NodeSerializer.serialize(rootNode, maxElements)
+                } finally {
+                    rootNode.recycle()
                 }
-            } finally {
-                rootNode.recycle()
+            } else {
+                JSONArray()
             }
+            truncated = false
+            if (pkg.isEmpty()) {
+                val fallbackRoot = try {
+                    uiAutomation.windows.firstOrNull { it.isActive }?.root
+                } catch (_: Exception) {
+                    null
+                }
+                pkg = fallbackRoot?.packageName?.toString() ?: ""
+                fallbackRoot?.recycle()
+            }
+            activePackage = pkg
         } else {
-            JSONArray()
-        }
-        if (activePackage.isEmpty()) {
-            // No active root — fall back to the active entry in the window list.
-            val fallbackRoot = try {
-                uiAutomation.windows.firstOrNull { it.isActive }?.root
-            } catch (_: Exception) {
-                null
-            }
-            activePackage = fallbackRoot?.packageName?.toString() ?: ""
-            fallbackRoot?.recycle()
+            val serialized = ScreenTree.serializeFlat(snap.roots, maxElements)
+            hierarchy = serialized.tree
+            truncated = serialized.truncated
+            activePackage = activePackageName()
         }
 
-        // 4. Info — geometry from one idle-free Display snapshot, package from the
+        // 5. Info — geometry from one idle-free Display snapshot, package from the
         //    accessibility root above; never a UiDevice getter that waits for idle.
         val geo = DisplayReader.read(context)
         val info = JSONObject().apply {
@@ -120,9 +138,38 @@ class StateHandler(
         return JSONObject().apply {
             put("screenshot", screenshotBase64)
             put("tree", hierarchy)
+            put("truncated", truncated)
             put("info", info)
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
+            // Screen-graph Phase A fingerprints + version.
+            put("hash", snap.hash)
+            put("stateHash", snap.stateHash)
+            put("version", snap.version)
+            put("unchanged", unchanged)
+        }
+    }
+
+    /**
+     * Active window package from a single `rootInActiveWindow` walk (falling back
+     * to the active window-list entry), avoiding `uiDevice.currentPackageName`
+     * which triggers a hidden `waitForIdle`. Never touches [TreeStore], so it
+     * does not perturb the traversal counter used by the cache-hit tests.
+     */
+    private fun activePackageName(): String {
+        return try {
+            val root = uiAutomation.rootInActiveWindow
+            if (root != null) {
+                val pkg = root.packageName?.toString() ?: ""
+                root.recycle()
+                if (pkg.isNotEmpty()) return pkg
+            }
+            val fallbackRoot = uiAutomation.windows.firstOrNull { it.isActive }?.root
+            val pkg = fallbackRoot?.packageName?.toString() ?: ""
+            fallbackRoot?.recycle()
+            pkg
+        } catch (_: Exception) {
+            ""
         }
     }
 

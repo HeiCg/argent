@@ -8,6 +8,7 @@ import {
   openDeviceServerRef,
   type GesturePointerPath,
   type OpenDeviceServerApi,
+  type OpenServerActionOutcome,
 } from "../blueprints/android-open-server";
 import { openDeviceServerMutex } from "./device-mutex";
 import {
@@ -20,6 +21,17 @@ import {
 // Kept in sync with the host constants of the same name in `gesture-tap`.
 const TAP_HOLD_MS = 50;
 const MULTI_TAP_GAP_MS = 100;
+
+/** Drop the action's own `{success}` and keep the outcome fingerprint delta. */
+function toOutcome(r: OpenServerActionOutcome & { success?: unknown }): OpenServerActionOutcome {
+  return {
+    before: r.before,
+    after: r.after,
+    changed: r.changed,
+    newScreen: r.newScreen,
+    idleMs: r.idleMs,
+  };
+}
 
 /**
  * Open-source input backend: routes touch gestures through
@@ -134,6 +146,44 @@ export function openServerSetClipboard(
 }
 
 /**
+ * Screen-graph Phase A: tap and report the before/after fingerprint delta in one
+ * round-trip. For a multi-tap (`clickCount > 1`) the leading taps run plain and
+ * the outcome's `before` is taken from a pre-gesture `getState`, so the delta
+ * spans the whole gesture; the final tap carries the server-side idle wait.
+ */
+export function openServerTapWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  xNorm: number,
+  yNorm: number,
+  clickCount: number,
+  idleTimeoutMs?: number
+): Promise<OpenServerActionOutcome> {
+  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
+  return withServer(registry, device, async (server, size) => {
+    const { x, y } = toPixels(size, xNorm, yNorm);
+    if (clickCount <= 1) {
+      return toOutcome(await server.tapWithOutcome(x, y, opts));
+    }
+    const before = await server.getState({ includeScreenshot: false });
+    for (let i = 0; i < clickCount - 1; i++) await server.tap(x, y);
+    const last = await server.tapWithOutcome(x, y, opts);
+    const b = {
+      version: before.version ?? 0,
+      hash: before.hash ?? "",
+      stateHash: before.stateHash ?? "",
+    };
+    return {
+      before: b,
+      after: last.after,
+      changed: b.hash !== last.after.hash || b.stateHash !== last.after.stateHash,
+      newScreen: b.hash !== last.after.hash,
+      idleMs: last.idleMs,
+    };
+  });
+}
+
+/**
  * Swipe between two normalized points via the open server. The server runs its
  * own UiAutomator interpolation (`steps`), so this is one RPC rather than the
  * per-frame Move loop the simulator-server path drives host-side.
@@ -159,6 +209,26 @@ export function openServerSwipe(
   });
 }
 
+/** Screen-graph Phase A: swipe and report the before/after fingerprint delta. */
+export function openServerSwipeWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  fromXNorm: number,
+  fromYNorm: number,
+  toXNorm: number,
+  toYNorm: number,
+  steps: number,
+  holdEndMs?: number,
+  idleTimeoutMs?: number
+): Promise<OpenServerActionOutcome> {
+  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
+  return withServer(registry, device, async (server, size) => {
+    const from = toPixels(size, fromXNorm, fromYNorm);
+    const to = toPixels(size, toXNorm, toYNorm);
+    return toOutcome(await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts));
+  });
+}
+
 /**
  * Type text via the open server's `typeText` RPC. Backs the Android `paste`
  * tool's open path: phase 2 accepts typing the text over injecting the device
@@ -174,6 +244,79 @@ export function openServerTypeText(
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     await server.typeText(text);
+  });
+}
+
+/** Screen-graph Phase A: type text and report the before/after fingerprint delta. */
+export function openServerTypeTextWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  text: string,
+  idleTimeoutMs?: number
+): Promise<OpenServerActionOutcome> {
+  const ref = openDeviceServerRef(device);
+  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    return toOutcome(await server.typeTextWithOutcome(text, opts));
+  });
+}
+
+/**
+ * Screen-graph Phase A: wait for the screen to settle using the device's AX
+ * event clock (`awaitChange`) instead of a host poll loop. "Settled" = the
+ * screen has content AND no AX event fired for `minStableMs`, which is exactly an
+ * `awaitChange` that times out with no change. Content that keeps changing
+ * re-arms the wait until the overall `timeoutMs`.
+ *
+ * Returns the same `{ settled, waitedMs, polls }` shape as the poll path; `polls`
+ * counts the round-trips made. Throws on any failure so the caller falls back to
+ * the describe-tree poll loop.
+ */
+export async function awaitScreenIdleViaOpenServer(
+  registry: Registry,
+  device: DeviceInfo,
+  opts: { timeoutMs: number; minStableMs: number },
+  signal?: AbortSignal
+): Promise<{ settled: boolean; waitedMs: number; polls: number }> {
+  const ref = openDeviceServerRef(device);
+  const start = Date.now();
+  const deadline = start + opts.timeoutMs;
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    let polls = 0;
+    let state = await server.getState({ includeScreenshot: false });
+    polls += 1;
+    let version = state.version ?? 0;
+
+    const waited = (): number => Date.now() - start;
+
+    for (;;) {
+      if (signal?.aborted) return { settled: false, waitedMs: waited(), polls };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { settled: false, waitedMs: waited(), polls };
+
+      const hasContent = state.tree.length > 0;
+      if (hasContent && opts.minStableMs === 0) {
+        return { settled: true, waitedMs: waited(), polls };
+      }
+
+      // Blank screen: wait for anything to appear. Content present: wait for the
+      // stability window; a timeout there (no event) means it settled.
+      const waitMs = hasContent ? Math.min(opts.minStableMs, remaining) : remaining;
+      const change = await server.awaitChange({ fromVersion: version, timeoutMs: waitMs });
+      polls += 1;
+
+      if (change.timedOut) {
+        // No event within the window. Settled iff there was content to hold still.
+        return { settled: hasContent, waitedMs: waited(), polls };
+      }
+
+      // Something changed — re-read and keep waiting.
+      version = change.version;
+      state = await server.getState({ includeScreenshot: false, sinceVersion: version });
+      polls += 1;
+    }
   });
 }
 

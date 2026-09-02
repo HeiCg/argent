@@ -28,10 +28,26 @@ import { setSimulatorClipboardText } from "../src/utils/simulator-client";
 const ANDROID_SERIAL = "emulator-5554";
 const KEYCODE_PASTE = 279;
 
+// Merged (phase-3b clipboard-first + Screen-graph Phase A outcomes): the open
+// path first tries a genuine device-clipboard write + KEYCODE_PASTE; when the
+// clipboard write is dropped it types the text via `typeTextWithOutcome` and
+// surfaces the before/after fingerprint delta additively on the result.
+const OUTCOME = {
+  before: { version: 1, hash: "aaaa", stateHash: "aaaa" },
+  after: { version: 2, hash: "aaaa", stateHash: "bbbb" },
+  changed: true,
+  newScreen: false,
+  idleMs: 12,
+};
+
 function makeOpenApi() {
   return {
     setClipboard: vi.fn(async (text: string) => ({ success: true, text })),
-    typeText: vi.fn(async (text: string) => ({ success: true, charsTyped: text.length })),
+    typeTextWithOutcome: vi.fn(async (text: string) => ({
+      success: true,
+      charsTyped: text.length,
+      ...OUTCOME,
+    })),
   };
 }
 
@@ -64,11 +80,11 @@ describe("paste (android) → open-device-server (F20)", () => {
     expect(result).toEqual({ pasted: true });
     expect(openApi.setClipboard).toHaveBeenCalledWith(url);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
-    expect(openApi.typeText).not.toHaveBeenCalled();
+    expect(openApi.typeTextWithOutcome).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).not.toHaveBeenCalled();
   });
 
-  it("clipboard unavailable (API 35), typeable text: falls back to typing on the open server", async () => {
+  it("clipboard unavailable (API 35), typeable text: falls back to typing on the open server and returns the outcome", async () => {
     flagEnabledMock = (n) => n === "open-device-server";
     const openApi = makeOpenApi();
     // ClipboardManager silently dropped the background write.
@@ -78,9 +94,9 @@ describe("paste (android) → open-device-server (F20)", () => {
     const url = "https://example.com/reset?token=abcdef0123456789";
     const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: url });
 
-    expect(result).toEqual({ pasted: true });
+    expect(result).toEqual({ pasted: true, outcome: OUTCOME });
     expect(openApi.setClipboard).toHaveBeenCalledWith(url);
-    expect(openApi.typeText).toHaveBeenCalledWith(url);
+    expect(openApi.typeTextWithOutcome).toHaveBeenCalledWith(url, undefined);
     // No keycode paste (nothing on the clipboard) and no proprietary fallback.
     expect(vi.mocked(injectAndroidKeycode)).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).not.toHaveBeenCalled();
@@ -98,7 +114,7 @@ describe("paste (android) → open-device-server (F20)", () => {
     expect(result).toEqual({ pasted: true });
     expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
     // Emoji can't be typed on the open server, so it goes to the proprietary path.
-    expect(openApi.typeText).not.toHaveBeenCalled();
+    expect(openApi.typeTextWithOutcome).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
     expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
@@ -112,7 +128,7 @@ describe("paste (android) → open-device-server (F20)", () => {
     await tool.execute({}, { udid: ANDROID_SERIAL, text: "hi" });
 
     expect(openApi.setClipboard).not.toHaveBeenCalled();
-    expect(openApi.typeText).not.toHaveBeenCalled();
+    expect(openApi.typeTextWithOutcome).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
   });
@@ -126,8 +142,10 @@ describe("paste (android) → open-device-server (F20)", () => {
 
     const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: "z" });
 
+    // Fallback path carries no outcome (the clipboard+keycode path has no fingerprint).
     expect(result).toEqual({ pasted: true });
     expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
+    expect(openApi.typeTextWithOutcome).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
     expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));

@@ -68,6 +68,17 @@ export interface OpenServerStateResult {
   screenshot: string;
   waitedMs: number;
   captureMs: number;
+  // Screen-graph Phase A (optional; present from android-device-server 0.2.0+).
+  /** Structural fingerprint H — identifies the *screen*. */
+  hash?: string;
+  /** State fingerprint H_text — identifies the screen's *state*. */
+  stateHash?: string;
+  /** AX version clock at capture. */
+  version?: number;
+  /** The `maxElements` cap cut the serialized tree short. */
+  truncated?: boolean;
+  /** `sinceVersion` matched the current version (nothing changed). */
+  unchanged?: boolean;
 }
 
 /** One pointer's path for a multi-pointer [OpenDeviceServerApi.gesture]. */
@@ -76,6 +87,76 @@ export interface GesturePointerPath {
   id?: number;
   /** Device-pixel samples; `tMs` is the offset from gesture start. */
   points: Array<{ x: number; y: number; tMs: number }>;
+}
+
+/**
+ * Screen-graph Phase A (design §2.1 / §3) selector, query/diff/await result and
+ * action-outcome shapes. `flags` is the [screen-hash] actionability bitmask;
+ * `path` is the child-index path from the root forest.
+ */
+export type OpenServerStringMatch =
+  | string
+  | { equals?: string; contains?: string; regex?: string; caseInsensitive?: boolean };
+
+export interface OpenServerSelector {
+  id?: OpenServerStringMatch;
+  text?: OpenServerStringMatch;
+  class?: OpenServerStringMatch;
+  containsDescendant?: OpenServerSelector;
+  index?: number;
+  visible?: boolean;
+}
+
+export interface OpenServerCompactNode {
+  id?: string;
+  text?: string;
+  cd?: string;
+  class: string;
+  bounds: { x1: number; y1: number; x2: number; y2: number };
+  flags: number;
+  path: number[];
+}
+
+export interface OpenServerQueryResult {
+  version: number;
+  hash: string;
+  stateHash: string;
+  nodes: OpenServerCompactNode[];
+}
+
+export interface OpenServerDiffResult {
+  version: number;
+  fromVersion: number;
+  hash: string;
+  stateHash: string;
+  added: OpenServerCompactNode[];
+  removed: number[][];
+  changed: Array<{ path: number[]; changedFields: Partial<Omit<OpenServerCompactNode, "path">> }>;
+}
+
+export interface OpenServerAwaitChangeResult {
+  version: number;
+  hash: string;
+  stateHash: string;
+  changed: boolean;
+  timedOut: boolean;
+}
+
+/** before/after fingerprint pair an action returns when asked for an outcome. */
+export interface OpenServerActionOutcome {
+  before: { version: number; hash: string; stateHash: string };
+  after: { version: number; hash: string; stateHash: string };
+  /** H or H_text differed. */
+  changed: boolean;
+  /** H differed — a different screen, not just new content. */
+  newScreen: boolean;
+  /** ms spent waiting for the UI to go quiet on the AX-event clock. */
+  idleMs: number;
+}
+
+export interface OutcomeOptions {
+  /** Idle-wait budget after the action, ms (default 300 server-side). */
+  idleTimeoutMs?: number;
 }
 
 /**
@@ -184,7 +265,61 @@ export interface OpenDeviceServerApi {
     includeScreenshot?: boolean;
     quality?: number;
     scale?: number;
+    /** Screen-graph Phase A: caller's last-seen version; flags `unchanged`. */
+    sinceVersion?: number;
   }): Promise<OpenServerStateResult>;
+
+  // ---- Screen-graph Phase A (design §2.1) --------------------------------
+  /** Match the current (cached-or-rebuilt) tree server-side; return only hits. */
+  query(
+    selector: OpenServerSelector,
+    opts?: { limit?: number; fields?: string[] }
+  ): Promise<OpenServerQueryResult>;
+  /** Keyed diff of the retained previous snapshot against the current tree. */
+  diff(sinceVersion: number): Promise<OpenServerDiffResult>;
+  /** Block until the AX version advances past `fromVersion` (or `until` matches). */
+  awaitChange(opts: {
+    fromVersion: number;
+    timeoutMs: number;
+    until?: OpenServerSelector;
+  }): Promise<OpenServerAwaitChangeResult>;
+
+  // Outcome-capable action variants: perform the action AND report the
+  // before/after fingerprint delta in one round-trip.
+  tapWithOutcome(x: number, y: number, opts?: OutcomeOptions): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  longPressWithOutcome(
+    x: number,
+    y: number,
+    durationMs?: number,
+    opts?: OutcomeOptions
+  ): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  swipeWithOutcome(
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+    steps?: number,
+    holdEndMs?: number,
+    opts?: OutcomeOptions
+  ): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  gestureWithOutcome(
+    pointers: GesturePointerPath[],
+    opts?: OutcomeOptions
+  ): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  typeTextWithOutcome(
+    text: string,
+    opts?: OutcomeOptions
+  ): Promise<{ success: boolean; charsTyped: number } & OpenServerActionOutcome>;
+  keyWithOutcome(key: string, opts?: OutcomeOptions): Promise<{ success: boolean } & OpenServerActionOutcome>;
+}
+
+/**
+ * The `outcome` param an action carries to ask the server for a before/after
+ * fingerprint delta. Always an object (so the server records the outcome);
+ * `idleTimeoutMs` is omitted when unset so the server default (300ms) applies.
+ */
+function outcomeObject(opts?: OutcomeOptions): Record<string, unknown> {
+  return opts?.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {};
 }
 
 const READY_TIMEOUT_MS = 30_000;
@@ -512,6 +647,67 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           includeScreenshot: stateOpts.includeScreenshot ?? false,
           ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
           ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
+          ...(stateOpts.sinceVersion !== undefined ? { sinceVersion: stateOpts.sinceVersion } : {}),
+        }),
+
+      // ---- Screen-graph Phase A ------------------------------------------
+      query: (selector, queryOpts = {}) =>
+        client.request<OpenServerQueryResult>("query", {
+          selector,
+          ...(queryOpts.limit !== undefined ? { limit: queryOpts.limit } : {}),
+          ...(queryOpts.fields !== undefined ? { fields: queryOpts.fields } : {}),
+        }),
+      diff: (sinceVersion) => client.request<OpenServerDiffResult>("diff", { sinceVersion }),
+      awaitChange: (awaitOpts) =>
+        client.request<OpenServerAwaitChangeResult>(
+          "awaitChange",
+          {
+            fromVersion: awaitOpts.fromVersion,
+            timeoutMs: awaitOpts.timeoutMs,
+            ...(awaitOpts.until !== undefined ? { until: awaitOpts.until } : {}),
+          },
+          // Keep the socket alive past the server-side block: the wait itself is
+          // `timeoutMs`, so give the request a comfortably larger budget.
+          { timeoutMs: awaitOpts.timeoutMs + 5_000 }
+        ),
+
+      tapWithOutcome: (x, y, outcomeOpts) =>
+        client.request<{ success: boolean } & OpenServerActionOutcome>("tap", {
+          x,
+          y,
+          outcome: outcomeObject(outcomeOpts),
+        }),
+      longPressWithOutcome: (x, y, durationMs, outcomeOpts) =>
+        client.request<{ success: boolean } & OpenServerActionOutcome>("longPress", {
+          x,
+          y,
+          durationMs: durationMs ?? 1000,
+          outcome: outcomeObject(outcomeOpts),
+        }),
+      swipeWithOutcome: (startX, startY, endX, endY, steps, holdEndMs, outcomeOpts) =>
+        client.request<{ success: boolean } & OpenServerActionOutcome>("swipe", {
+          startX,
+          startY,
+          endX,
+          endY,
+          steps: steps ?? 10,
+          ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
+          outcome: outcomeObject(outcomeOpts),
+        }),
+      gestureWithOutcome: (pointers, outcomeOpts) =>
+        client.request<{ success: boolean } & OpenServerActionOutcome>("gesture", {
+          pointers,
+          outcome: outcomeObject(outcomeOpts),
+        }),
+      typeTextWithOutcome: (text, outcomeOpts) =>
+        client.request<{ success: boolean; charsTyped: number } & OpenServerActionOutcome>("typeText", {
+          text,
+          outcome: outcomeObject(outcomeOpts),
+        }),
+      keyWithOutcome: (key, outcomeOpts) =>
+        client.request<{ success: boolean } & OpenServerActionOutcome>("key", {
+          key,
+          outcome: outcomeObject(outcomeOpts),
         }),
     };
 

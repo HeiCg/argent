@@ -3,6 +3,7 @@ package com.argent.devicecontrol.handlers
 import android.app.Instrumentation
 import android.app.UiAutomation
 import android.view.accessibility.AccessibilityWindowInfo
+import com.argent.devicecontrol.TreeStore
 import com.argent.devicecontrol.util.DisplayReader
 import org.json.JSONObject
 
@@ -28,6 +29,11 @@ class InfoHandler(
             // Rotation from the same Display snapshot, never uiDevice.displayRotation
             // (also a waitForIdle caller).
             put("displayRotation", geo.rotation)
+            // Screen-graph Phase A: the AX version clock and the tree-build
+            // counter, so tests can assert a cache hit (traversals unchanged
+            // across two reads with no UI change).
+            put("version", TreeStore.version)
+            put("traversals", TreeStore.traversals)
         }
     }
 

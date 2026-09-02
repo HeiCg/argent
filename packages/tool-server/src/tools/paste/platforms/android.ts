@@ -3,14 +3,13 @@ import { simulatorServerRef, type SimulatorServerApi } from "../../../blueprints
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { UnsupportedOperationError } from "../../../utils/capability";
 import { isAndroidTv } from "../../../utils/adb";
-import { injectAndroidKeycode } from "../../../utils/android-input";
+import { injectAndroidKeycode, assertTypeableAndroidText } from "../../../utils/android-input";
 import { setSimulatorClipboardText } from "../../../utils/simulator-client";
 import {
   shouldUseOpenServer,
   openServerSetClipboard,
-  openServerTypeText,
+  openServerTypeTextWithOutcome,
 } from "../../../utils/open-server-input";
-import { assertTypeableAndroidText } from "../../../utils/android-input";
 import type { PasteParams, PasteResult, PasteServices } from "../types";
 
 /** `android.view.KeyEvent.KEYCODE_PASTE`. */
@@ -54,10 +53,11 @@ export function makeAndroidImpl(
           }
           // Clipboard unavailable from instrumentation → type it if it's typeable.
           // `assertTypeableAndroidText` throws for emoji / newlines, dropping to the
-          // proprietary path (which sets the emulator clipboard over gRPC).
+          // proprietary path (which sets the emulator clipboard over gRPC). The
+          // typed fallback carries the Screen-graph Phase A before/after outcome.
           assertTypeableAndroidText(params.text);
-          await openServerTypeText(registry, device, params.text);
-          return { pasted: true };
+          const outcome = await openServerTypeTextWithOutcome(registry, device, params.text);
+          return { pasted: true, outcome };
         } catch (err) {
           console.debug(
             `[paste.android] open-device-server paste failed, falling back to simulator-server: ${

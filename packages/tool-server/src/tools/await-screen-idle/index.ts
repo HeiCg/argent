@@ -14,7 +14,7 @@ import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
-import { shouldUseOpenServer } from "../../utils/open-server-input";
+import { shouldUseOpenServer, awaitScreenIdleViaOpenServer } from "../../utils/open-server-input";
 import { describeAndroidViaOpenState } from "../../utils/open-server-describe";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
@@ -161,6 +161,28 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
       const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
       const minStableMs = params.minStableMs ?? DEFAULT_MIN_STABLE_MS;
+      const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+      // Screen-graph Phase A: on the Android open-device-server path, settle on
+      // the device AX event clock via `awaitChange` instead of polling the tree —
+      // no host poll, and it wakes the instant the screen goes quiet. Any failure
+      // falls back to the describe-tree poll loop below.
+      if (device.platform === "android" && shouldUseOpenServer(device)) {
+        try {
+          return await awaitScreenIdleViaOpenServer(
+            registry,
+            device,
+            { timeoutMs, minStableMs },
+            ctx?.signal
+          );
+        } catch (err) {
+          console.debug(
+            `[await-screen-idle] open-device-server awaitChange failed, falling back to poll: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
 
       let stableSignature: string | undefined;
       let stableSince = 0;

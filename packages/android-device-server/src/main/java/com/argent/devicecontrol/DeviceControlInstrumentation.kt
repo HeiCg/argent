@@ -45,6 +45,10 @@ class DeviceControlInstrumentation : Instrumentation() {
         val uiDevice = UiDevice.getInstance(this)
         val uiAutomation = uiAutomation
 
+        // Screen-graph Phase A: start the versioned tree store + AX-event listener
+        // before serving requests, so the version clock is live from the first RPC.
+        TreeStore.init(uiDevice, uiAutomation)
+
         val handler = JsonRpcHandler(uiDevice, uiAutomation, this) { requestShutdown() }
         // Port 0 → the OS picks a free port; we read the bound value below.
         val tcp = TCPServer(0, handler)

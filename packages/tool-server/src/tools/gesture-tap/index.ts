@@ -5,7 +5,8 @@ import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-c
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
-import { shouldUseOpenServer, openServerTap } from "../../utils/open-server-input";
+import { shouldUseOpenServer, openServerTapWithOutcome } from "../../utils/open-server-input";
+import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -33,6 +34,12 @@ type Params = z.infer<typeof zodSchema>;
 interface Result {
   tapped: boolean;
   timestampMs: number;
+  /**
+   * Screen-graph Phase A: present only on the Android open-device-server path.
+   * The before/after fingerprint delta of this tap, so a caller learns whether
+   * the screen changed (and whether it's a new screen) without a follow-up read.
+   */
+  outcome?: OpenServerActionOutcome;
 }
 
 function tapDescription(params: Params, tense: "present" | "past"): string {
@@ -127,8 +134,8 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       let api: SimulatorServerApi;
       if (shouldUseOpenServer(device)) {
         try {
-          await openServerTap(registry, device, params.x, params.y, clickCount);
-          return { tapped: true, timestampMs };
+          const outcome = await openServerTapWithOutcome(registry, device, params.x, params.y, clickCount);
+          return { tapped: true, timestampMs, outcome };
         } catch (err) {
           console.debug(
             `[gesture-tap] open-device-server failed, falling back to simulator-server: ${
