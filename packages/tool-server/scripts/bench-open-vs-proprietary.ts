@@ -48,8 +48,11 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
+import { resolveDevice } from "../src/utils/device-info";
+import { openDeviceServerRef, type OpenDeviceServerApi } from "../src/blueprints/android-open-server";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
@@ -384,8 +387,23 @@ type DescribeStages = {
   rootsMs: StageStat;
   serializeMs: StageStat;
   encodeMs: StageStat;
+  // Host-side split (phase 3i): the cost OUTSIDE the on-device `timings`.
+  // `hostParseMs` is the host JSON.parse of the reply, `hostRenderMs` the host
+  // tree-lowering + v2 trim. Transport (Nagle/adb-forward) is not a host stage —
+  // read it from `ping` + the ON-vs-OFF describe gap.
+  hostParseMs: StageStat;
+  hostRenderMs: StageStat;
 };
-const STAGE_KEYS = ["idleMs", "rootMs", "windowsMs", "rootsMs", "serializeMs", "encodeMs"] as const;
+const STAGE_KEYS = [
+  "idleMs",
+  "rootMs",
+  "windowsMs",
+  "rootsMs",
+  "serializeMs",
+  "encodeMs",
+  "hostParseMs",
+  "hostRenderMs",
+] as const;
 type StageKey = (typeof STAGE_KEYS)[number];
 
 function stageStat(xs: number[]): StageStat {
@@ -394,11 +412,8 @@ function stageStat(xs: number[]): StageStat {
   return { p50: sm.p50, p95: sm.p95, n: xs.length };
 }
 
-async function describeSplit(
-  reg: Reg,
-  n: number,
-  setup?: () => Promise<void>
-): Promise<{
+// Named so BlockResult and runBlock share one shape.
+type DescribeSplit = {
   waitedP50: number | null;
   captureP50: number | null;
   n: number;
@@ -407,11 +422,22 @@ async function describeSplit(
   // a concrete stage (rootInActiveWindow vs windows enumeration vs each w.root vs
   // serialize vs encode) rather than guessed from logcat.
   stages: DescribeStages;
-}> {
+  // Reply wire size (phase 3i), the full nested tree over `adb forward`. Bytes, not
+  // ms, so it rides beside `stages` rather than in the ms table.
+  wireBytes: StageStat;
+};
+
+async function describeSplit(
+  reg: Reg,
+  n: number,
+  setup?: () => Promise<void>
+): Promise<DescribeSplit> {
   const waited: number[] = [];
   const captured: number[] = [];
+  const wireBytesSamples: number[] = [];
   const stageSamples: Record<StageKey, number[]> = {
     idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+    hostParseMs: [], hostRenderMs: [],
   };
   for (let i = 0; i < n; i++) {
     if (setup) await setup().catch(() => undefined);
@@ -419,6 +445,9 @@ async function describeSplit(
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as {
         waitedMs?: number;
         captureMs?: number;
+        wireBytes?: number;
+        hostParseMs?: number;
+        hostRenderMs?: number;
         timings?: {
           idleMs?: number;
           rootMs?: number;
@@ -430,6 +459,9 @@ async function describeSplit(
       };
       if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
       if (typeof d.captureMs === "number") captured.push(d.captureMs);
+      if (typeof d.wireBytes === "number") wireBytesSamples.push(d.wireBytes);
+      if (typeof d.hostParseMs === "number") stageSamples.hostParseMs.push(d.hostParseMs);
+      if (typeof d.hostRenderMs === "number") stageSamples.hostRenderMs.push(d.hostRenderMs);
       const t = d.timings;
       if (t) {
         if (typeof t.idleMs === "number") stageSamples.idleMs.push(t.idleMs);
@@ -456,24 +488,71 @@ async function describeSplit(
     rootsMs: stageStat(stageSamples.rootsMs),
     serializeMs: stageStat(stageSamples.serializeMs),
     encodeMs: stageStat(stageSamples.encodeMs),
+    hostParseMs: stageStat(stageSamples.hostParseMs),
+    hostRenderMs: stageStat(stageSamples.hostRenderMs),
   };
-  return { waitedP50: p50(waited), captureP50: p50(captured), n: waited.length, stages };
+  return {
+    waitedP50: p50(waited),
+    captureP50: p50(captured),
+    n: waited.length,
+    stages,
+    wireBytes: stageStat(wireBytesSamples),
+  };
 }
 
 /** Render an idle-vs-after-tap per-stage p50/p95 table for the bench log. */
 function formatStageTable(
   label: string,
-  idle: { stages: DescribeStages },
-  afterTap: { stages: DescribeStages }
+  idle: { stages: DescribeStages; wireBytes: StageStat },
+  afterTap: { stages: DescribeStages; wireBytes: StageStat }
 ): string {
   const cell = (s: StageStat) =>
     s.p50 === null ? "   -   " : `${String(s.p50).padStart(3)}/${String(s.p95 ?? "?").padStart(3)}`;
   const lines: string[] = [];
   lines.push(`[bench] ${label} describe stage p50/p95 (ms)  idle | after-tap`);
   for (const k of STAGE_KEYS) {
-    lines.push(`[bench]   ${k.padEnd(11)} ${cell(idle.stages[k])} | ${cell(afterTap.stages[k])}`);
+    lines.push(`[bench]   ${k.padEnd(12)} ${cell(idle.stages[k])} | ${cell(afterTap.stages[k])}`);
   }
+  // Wire payload (phase 3i): bytes, not ms — the full nested tree over adb forward.
+  const bcell = (s: StageStat) =>
+    s.p50 === null ? "   -   " : `${String(s.p50).padStart(6)}/${String(s.p95 ?? "?").padStart(6)}`;
+  lines.push(`[bench]   ${"wireBytes".padEnd(12)} ${bcell(idle.wireBytes)} | ${bcell(afterTap.wireBytes)}`);
   return lines.join("\n");
+}
+
+/**
+ * Raw RPC round-trip floor (phase 3i): time N `ping` calls to the open server over
+ * `adb forward`. `ping` carries no `getState` work, so its p50 is the transport +
+ * dispatch floor — ~1 ms confirms the socket itself is cheap (TCP_NODELAY set both
+ * ends) and the idle describe residual is payload/serialize, not the round-trip.
+ * Sub-ms precision via performance.now(). Returns nulls if the open server can't be
+ * resolved (e.g. an OFF block).
+ */
+async function measurePing(
+  reg: Reg,
+  n: number
+): Promise<{ p50: number | null; p95: number | null; n: number }> {
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    for (let i = 0; i < 3; i++) await server.ping().catch(() => undefined); // warmup
+    const lat: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      try {
+        await server.ping();
+        lat.push(performance.now() - t0);
+      } catch {
+        /* skip */
+      }
+    }
+    if (lat.length === 0) return { p50: null, p95: null, n: 0 };
+    const s = summarize(lat);
+    return { p50: s.p50, p95: s.p95, n: lat.length };
+  } catch {
+    return { p50: null, p95: null, n: 0 };
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -616,9 +695,16 @@ interface BlockResult {
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
   // right after a tap into a content-heavy sub-screen. null on the proprietary
-  // path (no split surfaced).
-  describeSplitIdle: { waitedP50: number | null; captureP50: number | null; n: number; stages: DescribeStages };
-  describeSplitAfterTap: { waitedP50: number | null; captureP50: number | null; n: number; stages: DescribeStages };
+  // path (no split surfaced). Carries the phase 3i host split + wire bytes.
+  describeSplitIdle: DescribeSplit;
+  describeSplitAfterTap: DescribeSplit;
+  // Raw RPC round-trip floor (phase 3i): `getState`-free `ping` p50/p95 over
+  // `adb forward`. ~1 ms confirms the transport itself is cheap and the idle
+  // describe residual is payload/serialize, not the socket. null on OFF blocks
+  // (no open server) or if the ping probe could not run.
+  pingP50: number | null;
+  pingP95: number | null;
+  pingN: number;
   // Post-navigating-tap staleness (P3d): "destination already visible" rate for
   // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
   // ON settle:true in an ON block. Empty when no nav target could be derived.
@@ -728,6 +814,13 @@ async function runBlock(
     await ensureSettings(reg);
   });
 
+  // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
+  // this is an ON-only probe; OFF blocks report nulls.
+  const ping =
+    config === "ON"
+      ? await measurePing(reg, N)
+      : { p50: null, p95: null, n: 0 };
+
   // screenshot — NOT a latency verb (F6). The two backends return different-sized
   // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
   // side by side compares an encode of very different pixel counts, not the same
@@ -813,6 +906,13 @@ async function runBlock(
   // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
   // baseline (proprietary path leaves these null) and ON to read the open path.
   realDebug(formatStageTable(config, describeSplitIdle, describeSplitAfterTap));
+  if (config === "ON") {
+    realDebug(
+      `[bench] ${config} ping p50/p95=${ping.p50 === null ? "-" : ping.p50.toFixed(2)}/${
+        ping.p95 === null ? "-" : ping.p95.toFixed(2)
+      } ms (n=${ping.n})`
+    );
+  }
 
   await ensureSettings(reg);
 
@@ -1002,6 +1102,9 @@ async function runBlock(
     gestureParams: BENCH_GESTURE_PARAMS,
     describeSplitIdle,
     describeSplitAfterTap,
+    pingP50: ping.p50,
+    pingP95: ping.p95,
+    pingN: ping.n,
     destinationVisible,
     notes,
   };
