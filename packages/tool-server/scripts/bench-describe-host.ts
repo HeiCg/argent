@@ -191,11 +191,13 @@ export function runHostBench(
         encoder.encode(rendered);
       })
     : [];
+  // TOTAL excludes tokenization on purpose: the describe tool renders the tree to
+  // text and returns it (tools/describe/index.ts) — it NEVER tokenizes. o200k is a
+  // bench/agent-side cost, reported as a separate informational row below.
   const totalMs = timeIt(iterations, () => {
     const parsed = JSON.parse(wireString) as OpenServerNestedElement[];
     const dn = openServerNestedToDescribeNode(parsed, width, height);
-    const txt = formatDescribeTree(dn, { source: "open-device-server" });
-    if (encoder) encoder.encode(txt);
+    formatDescribeTree(dn, { source: "open-device-server" });
   });
 
   return {
@@ -226,6 +228,11 @@ function fmt(ms: number): string {
   return Number.isFinite(ms) ? ms.toFixed(4) : "   -  ";
 }
 
+// A real idle-Settings nested reply measured on-device (run 33784227150) is
+// ~31877 B on the wire; this synthetic fixture is smaller, so the host CPU numbers
+// are a LOWER bound. Reported so the fixture is never mistaken for a device capture.
+const REAL_WIRE_REF_BYTES = 31877;
+
 function printReport(result: HostBenchResult): void {
   const { payload, stages, iterations } = result;
   const rows: Array<[string, StageStat]> = [
@@ -233,16 +240,20 @@ function printReport(result: HostBenchResult): void {
     ["nested->parsed (pass 1)", stages.lowerMs],
     ["v2 trim (pass 2)", stages.trimMs],
     ["formatDescribeTree", stages.renderMs],
-    ["o200k tokenize", stages.tokenizeMs],
-    ["TOTAL host pipeline", stages.totalMs],
+    ["o200k tokenize (informational, NOT in TOTAL)", stages.tokenizeMs],
+    ["TOTAL host (parse+lower+trim+render)", stages.totalMs],
   ];
+  const pctOfWire = Math.round((payload.wireBytes / REAL_WIRE_REF_BYTES) * 100);
   const lines: string[] = [];
   lines.push(`[bench-describe-host] iterations=${iterations}`);
+  lines.push(
+    `[bench-describe-host] fixture: SYNTHETIC (~${pctOfWire}% of a real ~${REAL_WIRE_REF_BYTES} B wire reply) — host CPU here is a lower bound`
+  );
   lines.push(
     `[bench-describe-host] payload: wireBytes=${payload.wireBytes} nodes=${payload.nodeCount} ` +
       `renderedBytes=${payload.renderedBytes} renderedLines=${payload.renderedLines} tokens=${payload.tokens ?? "n/a"}`
   );
-  lines.push(`[bench-describe-host] host stage p50 / p95 / mean (ms)`);
+  lines.push(`[bench-describe-host] host stage p50 / p95 / mean (ms) — TOTAL excludes tokenize`);
   for (const [label, s] of rows) {
     lines.push(
       `[bench-describe-host]   ${label.padEnd(24)} ${fmt(s.p50).padStart(9)} / ${fmt(s.p95).padStart(9)} / ${fmt(s.mean).padStart(9)}`
