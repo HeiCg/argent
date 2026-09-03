@@ -98,13 +98,17 @@ class StateHandler(
         //    is recycled, so `info` below never calls uiDevice.currentPackageName
         //    (a waitForIdle caller).
         //    Per-stage timings (phase 3g) attribute the after-tap captureMs:
-        //    `rootMs` is the rootInActiveWindow binder call, the rest come from the
-        //    multi-window serializer.
+        //    `rootMs` is the active-root read, the rest come from the multi-window
+        //    serializer. The root comes from the interactive-windows snapshot
+        //    (`windows.firstOrNull { it.isActive }?.root`) rather than
+        //    `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase 3g
+        //    bench); `timings.rootSource` records which path served it.
         val windowTimings = WindowTimings()
         val rootStart = System.currentTimeMillis()
-        val rootNode = uiAutomation.rootInActiveWindow
+        val resolved = NestedWindowSerializer.activeRoot(uiAutomation)
+        val rootNode = resolved.root
         val rootMs = System.currentTimeMillis() - rootStart
-        var activePackage = rootNode?.packageName?.toString() ?: ""
+        val activePackage = rootNode?.packageName?.toString() ?: ""
         var serializeMsFlat = 0L
         val hierarchy = if (rootNode != null) {
             try {
@@ -122,16 +126,10 @@ class StateHandler(
         } else {
             JSONArray()
         }
-        if (activePackage.isEmpty()) {
-            // No active root — fall back to the active entry in the window list.
-            val fallbackRoot = try {
-                uiAutomation.windows.firstOrNull { it.isActive }?.root
-            } catch (_: Exception) {
-                null
-            }
-            activePackage = fallbackRoot?.packageName?.toString() ?: ""
-            fallbackRoot?.recycle()
-        }
+        // No separate window-list fallback for the package: `activeRoot` above
+        // already reads the active window from the interactive-windows snapshot
+        // before falling back to rootInActiveWindow, so a null root here means
+        // neither path had one.
 
         // 4. Info — geometry from one idle-free Display snapshot, package from the
         //    accessibility root above; never a UiDevice getter that waits for idle.
@@ -160,6 +158,7 @@ class StateHandler(
             put("rootsMs", JSONArray(windowTimings.rootsMs))
             put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
             put("encodeMs", encodeMs)
+            put("rootSource", resolved.source)
         }
 
         return JSONObject().apply {
