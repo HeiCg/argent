@@ -364,7 +364,7 @@ jobs:
     name: Screen-graph matrix (x86_64 KVM)
     if: ${{ github.event.inputs.suite == 'screen-graph' || github.event.inputs.suite == 'both' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -374,10 +374,14 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
 
     steps:
-      - name: Checkout feat/screen-graph-c3 @ a0f83004
+      # C.4 (review C-L3): check out the bench tree by BRANCH NAME, not a pinned
+      # SHA, so the job always reads the branch head — root cause #1 of the stuck
+      # C.2/C.3 runs was a stale SHA pin that never moved to the fixed branch.
+      # Current head at authoring: 212d7d58 (feat/screen-graph-c4).
+      - name: Checkout feat/screen-graph-c4 (branch head)
         uses: actions/checkout@v4
         with:
-          ref: a0f8300403156472132748cb04997a58b3b62f28
+          ref: feat/screen-graph-c4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -485,7 +489,8 @@ jobs:
         if: ${{ github.event.inputs.sg_mode != 'capture' }}
         env:
           BENCH_SERIAL: emulator-5554
-          BENCH_REPS: "3"
+          # C.4 work item F: 5 reps for a tighter Wilson interval above the noise floor.
+          BENCH_REPS: "5"
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
