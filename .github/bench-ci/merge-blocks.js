@@ -40,10 +40,9 @@ if (new Set(gp).size !== 1) {
 
 // Tap-timeline parity gate (phase 3h). The bench records the ACTUAL injected tap
 // timeline per block (frame count, per-frame tMs, holdMs, MOVE flag); assert the
-// authored holdMs is identical across blocks and the same-point MOVE is present in
-// EXACTLY the scrcpy block (the tap-landing fix) and absent everywhere else. This
-// replaces "the gestureParams constant equals itself per block" — meaningless
-// under BENCH_ONLY — with a check on the real shape each backend drove.
+// authored holdMs is identical across blocks and every backend injected the SAME
+// clean two-frame DOWN→UP (no MOVE anywhere — scrcpy is at parity by shape, not
+// just holdMs). Replaces "the gestureParams constant equals itself per block".
 const tls = blocks.map((b) => ({ block: b.block, tl: b.injectedTapTimeline })).filter((x) => x.tl);
 if (tls.length) {
   const holdMs0 = tls[0].tl.holdMs;
@@ -51,11 +50,10 @@ if (tls.length) {
     if (tl.holdMs !== holdMs0) {
       throw new Error(`tap-timeline parity: ${block} holdMs=${tl.holdMs} != ${tls[0].block} holdMs=${holdMs0}`);
     }
-    const expectMove = tl.backend === "scrcpy";
-    if (!!tl.hasMoveFrame !== expectMove) {
+    if (tl.hasMoveFrame || tl.frameCount !== 2) {
       throw new Error(
-        `tap-timeline parity: ${block} (backend ${tl.backend}) hasMoveFrame=${tl.hasMoveFrame} ` +
-          `but expected ${expectMove} (only the scrcpy fast-inject tap carries a same-point MOVE)`
+        `tap-timeline parity: ${block} (backend ${tl.backend}) is not a clean two-frame ` +
+          `DOWN→UP (frameCount=${tl.frameCount}, hasMoveFrame=${tl.hasMoveFrame})`
       );
     }
   }
@@ -158,7 +156,7 @@ console.log(
 console.log("tap effect-check (ON fatal, OFF tolerated) — " + effectLine + " — ON gate OK");
 if (tls.length) {
   console.log(
-    "tap-timeline parity OK: holdMs=" + tls[0].tl.holdMs + "ms; MOVE present only on scrcpy — " +
+    "tap-timeline parity OK: holdMs=" + tls[0].tl.holdMs + "ms; every backend a clean 2-frame DOWN→UP — " +
       tls.map(({ block, tl }) => `${block}:${tl.frameCount}f${tl.hasMoveFrame ? "+move" : ""}`).join(", ")
   );
 }
