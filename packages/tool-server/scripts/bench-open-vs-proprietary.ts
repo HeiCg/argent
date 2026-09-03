@@ -333,14 +333,17 @@ interface VerbResult {
   errors: number;
   fallbacks: number;
   fallbackSamples: string[];
-  // Effect-check (phase 3h): when the verb runs on a navigating target with an
-  // `effectHash`, each iteration compares a screen fingerprint before vs after the
-  // action. `effectChecked` iterations were compared; `effectZero` of them saw NO
-  // change — i.e. the tap did not land. A healthy block has effectZero === 0. This
-  // is what would have caught the v8 "tap win" that was really timing a no-op
-  // scrcpy injection (pngDiffRatio 0). Absent on verbs without an effect check.
+  // Effect-check (phase 3h), only on the tap verbs measured by `timeTapEffect`:
+  // `effectChecked` iterations had a clean origin and a completed tap; `effectZero`
+  // of them showed NO screen change within the poll window (the tap never landed);
+  // `originLost` iterations could not be restored to the origin after a tap and were
+  // hard-reset (excluded from effectChecked). A healthy block has effectZero === 0.
+  // This is TIMING-INDEPENDENT: it polls the fingerprint after the (separately
+  // timed) tap until it changes or 3 s elapse, so a driver whose describe returns
+  // before the navigation renders (the proprietary path) is not miscounted.
   effectChecked?: number;
   effectZero?: number;
+  originLost?: number;
   extra?: Record<string, unknown>;
 }
 
@@ -351,12 +354,7 @@ async function timeCalls(
   // Untimed per-iteration setup (F5): resets the screen to a known state before
   // each measured tap/swipe so every iteration starts from the same place, and
   // its cost is NOT counted in the latency of the verb under test.
-  setup?: (i: number) => Promise<void>,
-  // Optional per-iteration effect check (phase 3h). Captures a screen fingerprint
-  // (untimed) after `setup` and again after `fn`; if they are equal the action had
-  // no observable effect (the tap did not land). Returns undefined if the
-  // fingerprint could not be read (that iteration is not counted).
-  effectHash?: () => Promise<string | undefined>
+  setup?: (i: number) => Promise<void>
 ): Promise<VerbResult> {
   for (let i = 0; i < WARMUP; i++) {
     if (setup) await setup(i).catch(() => undefined);
@@ -365,34 +363,113 @@ async function timeCalls(
   const mark = debugLines.length;
   const lat: number[] = [];
   let errors = 0;
-  let effectChecked = 0;
-  let effectZero = 0;
   for (let i = 0; i < N; i++) {
     if (setup) await setup(i).catch(() => undefined);
-    const before = effectHash ? await effectHash().catch(() => undefined) : undefined;
     const t0 = Date.now();
     try {
       await fn(i);
       lat.push(Date.now() - t0);
     } catch {
       errors++;
+    }
+  }
+  const fb = fallbackCountSince(mark);
+  return {
+    verb: label,
+    latency: summarize(lat),
+    errors,
+    fallbacks: fb.count,
+    fallbackSamples: fb.samples,
+    extra: extra?.(),
+  };
+}
+
+/**
+ * Poll `read` until `ok(value)` or `timeoutMs` elapses; returns whether it became
+ * ok. Read errors are treated as not-ok (kept polling). Used to make the effect
+ * check timing-INDEPENDENT: after the (separately timed) tap we wait for the screen
+ * to actually change rather than reading once and racing the navigation.
+ */
+async function pollUntil<T>(
+  read: () => Promise<T>,
+  ok: (v: T | undefined) => boolean,
+  timeoutMs: number,
+  stepMs = 150
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = await read().catch(() => undefined);
+    if (ok(v)) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(stepMs);
+  }
+}
+
+interface TapEffectResult extends VerbResult {
+  effectChecked: number;
+  effectZero: number;
+  originLost: number;
+}
+
+/**
+ * Timing-independent effect-checked tap measurement (phase 3h). Per iteration:
+ * establish a clean origin, TIME exactly `tapRpc` (the tap RPC, or tap RPC +
+ * describe RPC for tap+describe), then OUTSIDE the timed window poll the screen
+ * fingerprint until it differs from the origin or 3 s elapse — `effectZero` counts
+ * only taps that NEVER changed the screen. Restore the origin with BACK (poll until
+ * it is back), hard-resetting via `ensureOrigin` and counting `originLost` if BACK
+ * did not restore it, so the next iteration never taps from a wrong screen.
+ */
+async function timeTapEffect(
+  label: string,
+  tapRpc: (i: number) => Promise<void>,
+  fingerprint: () => Promise<string | undefined>,
+  ensureOrigin: () => Promise<void>,
+  restoreBack: () => Promise<void>
+): Promise<TapEffectResult> {
+  for (let i = 0; i < WARMUP; i++) {
+    await ensureOrigin().catch(() => undefined);
+    await tapRpc(i).catch(() => undefined);
+  }
+  await ensureOrigin().catch(() => undefined);
+  const mark = debugLines.length;
+  const lat: number[] = [];
+  let errors = 0;
+  let effectChecked = 0;
+  let effectZero = 0;
+  let originLost = 0;
+  for (let i = 0; i < N; i++) {
+    let origin = await fingerprint().catch(() => undefined);
+    if (origin === undefined) {
+      await ensureOrigin().catch(() => undefined);
+      origin = await fingerprint().catch(() => undefined);
+    }
+    if (origin === undefined) {
+      originLost++;
       continue;
     }
-    if (effectHash && before !== undefined) {
-      let after = await effectHash().catch(() => undefined);
-      // A landing tap that navigates may still be animating/loading on the first
-      // read, so an immediate fingerprint can transiently equal the pre-tap one.
-      // Settle and re-read ONCE before counting a no-effect: a real navigation now
-      // shows the change, while a systematic no-op tap (the bug) still matches — so
-      // effectZero counts CONFIRMED no-effect, robust to a single transient read.
-      if (after !== undefined && after === before) {
-        await sleep(900);
-        const retry = await effectHash().catch(() => undefined);
-        if (retry !== undefined) after = retry;
-      }
-      if (after !== undefined) {
-        effectChecked++;
-        if (after === before) effectZero++;
+    const originFp = origin;
+    // TIMED window: exactly the tap RPC(s).
+    const t0 = Date.now();
+    try {
+      await tapRpc(i);
+      lat.push(Date.now() - t0);
+    } catch {
+      errors++;
+      await ensureOrigin().catch(() => undefined);
+      continue;
+    }
+    // UNTIMED: did the screen EVER change within 3 s? (poll, not a single read)
+    const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
+    effectChecked++;
+    if (!changed) effectZero++;
+    // UNTIMED: restore the origin for the next iteration.
+    if (changed) {
+      await restoreBack().catch(() => undefined);
+      const restored = await pollUntil(fingerprint, (f) => f === originFp, 3000, 150);
+      if (!restored) {
+        originLost++;
+        await ensureOrigin().catch(() => undefined);
       }
     }
   }
@@ -403,8 +480,9 @@ async function timeCalls(
     errors,
     fallbacks: fb.count,
     fallbackSamples: fb.samples,
-    ...(effectHash ? { effectChecked, effectZero } : {}),
-    extra: extra?.(),
+    effectChecked,
+    effectZero,
+    originLost,
   };
 }
 
@@ -689,6 +767,12 @@ interface BlockResult {
   // Total no-effect tap iterations across the effect-checked tap verbs (phase 3h).
   // A healthy block is 0; a positive count fails the block (the tap did not land).
   effectZeroTotal: number;
+  // Total effect-checked tap iterations (clean origin + completed tap), and total
+  // originLost iterations (origin could not be restored after a tap → hard-reset,
+  // excluded from effectChecked) — so a high effectZero can be read against how many
+  // taps were actually evaluated.
+  effectCheckedTotal: number;
+  originLostTotal: number;
   notes: string[];
 }
 
@@ -820,7 +904,17 @@ async function runBlock(
   const nav = await deriveNavTarget(reg, config === "ON" ? true : undefined);
   const tapX = nav ? nav.x : 0.5;
   const tapY = nav ? nav.y : 0.5;
-  const effectHash = nav ? () => describeLabelHash(reg) : undefined;
+  const canEffect = !!nav;
+  // Effect fingerprint = the describe label set (position-independent, so a scroll
+  // does not read as a change); origin restore = a system BACK keyevent (adb, not
+  // the backend under test), hard-reset = ensureSettings.
+  const fingerprint = (): Promise<string | undefined> => describeLabelHash(reg);
+  const ensureOrigin = async (): Promise<void> => {
+    await ensureSettings(reg);
+  };
+  const restoreBack = async (): Promise<void> => {
+    adbShell("input keyevent KEYCODE_BACK", 5000);
+  };
   if (!nav) {
     notes.push(
       "effect-check: no navigating target could be derived on this root — gesture-tap / " +
@@ -829,51 +923,42 @@ async function runBlock(
   }
   await ensureSettings(reg);
 
-  // gesture-tap (navigating target; latency = inject round-trip). Reset to the
-  // Settings root before each iteration (F5) so every tap starts identically; the
-  // reset is untimed. Effect-checked (phase 3h): a describe-label fingerprint
-  // before vs after every tap — effectZero counts iterations where the screen did
-  // not change (the tap did not land), which fails the block below.
+  // gesture-tap. Latency = the tap RPC ONLY; the effect check (timing-independent
+  // poll for a screen change up to 3 s, then BACK to restore the origin) is OUTSIDE
+  // the timed window (phase 3h). effectZero counts taps that NEVER changed the
+  // screen; the block fails on effectZero > 0 in the merge.
+  const gestureTapRpc = async (): Promise<void> => {
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
+  };
   verbs.push(
-    await timeCalls(
-      "gesture-tap",
-      async () => {
-        await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
-      },
-      undefined,
-      async () => {
-        await ensureSettings(reg);
-      },
-      effectHash
-    )
+    canEffect
+      ? await timeTapEffect("gesture-tap", gestureTapRpc, fingerprint, ensureOrigin, restoreBack)
+      : await timeCalls("gesture-tap", gestureTapRpc, undefined, ensureOrigin)
   );
 
-  // re-establish settings after taps navigated
   await ensureSettings(reg);
 
-  // tap+describe (F4 / P3d): a single timed tap→describe pair — what an agent
-  // actually does (act, then read the screen) — resetting to the Settings root
-  // between iterations (untimed) so the pair is measured from the same starting
-  // screen. ON runs both idle policies: settle:false (immediate read, like-for-
-  // like with the proprietary path) and settle:true (the settled read, our
-  // policy). OFF has one policy (its describe reads immediately regardless), so it
-  // runs as-is. Effect-checked on the same navigating target as gesture-tap.
-  const tapThenDescribe = (settle?: boolean) => async () => {
+  // tap+describe (F4 / P3d): what an agent actually does (act, then read). TIMED
+  // window = tap RPC + describe RPC; the effect poll + BACK restore are outside it.
+  // ON runs both idle policies (settle:false like-for-like, settle:true our policy);
+  // OFF has one policy.
+  const tapThenDescribe = (settle?: boolean) => async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
     await reg.invokeTool("describe", {
       udid: SERIAL,
       ...(settle === undefined ? {} : { settle }),
     });
   };
-  const resetToSettings = async () => {
-    await ensureSettings(reg);
-  };
+  const runTapDescribe = (name: string, settle?: boolean): Promise<VerbResult> =>
+    canEffect
+      ? timeTapEffect(name, tapThenDescribe(settle), fingerprint, ensureOrigin, restoreBack)
+      : timeCalls(name, tapThenDescribe(settle), undefined, ensureOrigin);
   if (config === "ON") {
-    verbs.push(await timeCalls("tap+describe(settle:false)", tapThenDescribe(false), undefined, resetToSettings, effectHash));
+    verbs.push(await runTapDescribe("tap+describe(settle:false)", false));
     await ensureSettings(reg);
-    verbs.push(await timeCalls("tap+describe(settle:true)", tapThenDescribe(true), undefined, resetToSettings, effectHash));
+    verbs.push(await runTapDescribe("tap+describe(settle:true)", true));
   } else {
-    verbs.push(await timeCalls("tap+describe", tapThenDescribe(undefined), undefined, resetToSettings, effectHash));
+    verbs.push(await runTapDescribe("tap+describe", undefined));
   }
 
   await ensureSettings(reg);
@@ -1066,9 +1151,10 @@ async function runBlock(
   const injectedTapTimeline = describeInjectedTapTimeline(injectBackend, BENCH_GESTURE_PARAMS.tapHoldMs);
   const effectZeroTotal = verbs.reduce((s, v) => s + (v.effectZero ?? 0), 0);
   const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
+  const originLostTotal = verbs.reduce((s, v) => s + (v.originLost ?? 0), 0);
   notes.push(
     `effect-check: ${effectZeroTotal} no-effect tap iteration(s) of ${effectCheckedTotal} checked ` +
-      `(target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
+      `(originLost=${originLostTotal}, target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
   );
 
   // Fidelity is compared on the pristine Settings root captured at block start
@@ -1091,6 +1177,8 @@ async function runBlock(
     gestureParams: BENCH_GESTURE_PARAMS,
     injectedTapTimeline,
     effectZeroTotal,
+    effectCheckedTotal,
+    originLostTotal,
     describeSplitIdle,
     describeSplitAfterTap,
     destinationVisible,
@@ -1164,8 +1252,8 @@ async function main(): Promise<void> {
     const fbTotal = (r.verbs || []).reduce((s, v) => s + (v.fallbacks || 0), 0);
     realDebug(
       `[bench][${block}] fastInject=${fastInject} fastInjectFallbacks=${fbTotal} ` +
-        `effectZero=${r.effectZeroTotal} tapFrames=${r.injectedTapTimeline.frameCount}` +
-        `(move=${r.injectedTapTimeline.hasMoveFrame})`
+        `effectZero=${r.effectZeroTotal}/${r.effectCheckedTotal} originLost=${r.originLostTotal} ` +
+        `tapFrames=${r.injectedTapTimeline.frameCount}(move=${r.injectedTapTimeline.hasMoveFrame})`
     );
     realDebug(
       `[bench] ${block} done: describe p50=${r.verbs[0]?.latency.p50}ms source=${r.describeSample.source} ` +
@@ -1182,17 +1270,10 @@ async function main(): Promise<void> {
     writeFileSync(blockPath, JSON.stringify({ env, block: blocks[0] }, null, 2));
     realDebug(`[bench] wrote ${blockPath}`);
     process.stdout.write(`RESULT_JSON=${blockPath}\n`);
-    // Effect gate (phase 3h): fail the block AFTER writing its file (so the
-    // artifact is preserved) if any effect-checked tap iteration saw no screen
-    // change. This is the gate that would have caught the retracted "tap win" — a
-    // no-op scrcpy injection timed as a fast tap.
-    const ez = blocks[0]!.effectZeroTotal;
-    if (ez > 0) {
-      throw new Error(
-        `block ${only}: ${ez} no-effect tap iteration(s) — the tap did not land on a ` +
-          `navigating target (pngDiffRatio-equivalent 0). Failing the block.`
-      );
-    }
+    // NOTE: under BENCH_ONLY the block does NOT throw on effectZero > 0 — every
+    // block must run and write its JSON so the merge can report ALL four per-block
+    // counts and fail at the END (ON fatal, OFF tolerated). A per-block throw here
+    // aborted the CI step at the first failing block and hid the ON-scrcpy A/B.
     return;
   }
 
