@@ -4,6 +4,7 @@ import android.app.UiAutomation
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
+import com.argent.devicecontrol.input.MotionInjector
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -21,6 +22,15 @@ class HierarchyHandler(
         // match its token count. The default (flat, compressed list) is unchanged
         // for the flow / await consumers.
         val nested = params.optBoolean("nested", false)
+
+        // `flush` (phase 3f): a preceding scrcpy fast-inject touch came from another
+        // process, so order it ahead of this capture with one synchronous input-queue
+        // flush before we settle/serialize — otherwise a describe right after a
+        // fast-inject tap could serialize the pre-UP (mid-press) tree. No-op unless
+        // requested; folded into this read so it costs no extra round-trip.
+        if (params.optBoolean("flush", false)) {
+            MotionInjector.flushInput(uiAutomation)
+        }
 
         // Settle before serializing so describe isn't racing an in-flight
         // layout pass — mirrors StateHandler's waitForIdle.

@@ -17,14 +17,29 @@
  *
  * The gesture SHAPES come from {@link scrcpy-inject-timeline} (a faithful port of
  * the on-device Kotlin timelines) and are paced here against a real wall clock —
- * exactly as `MotionInjector` paces its frames — so fling fidelity is unchanged.
- * Ordering with a following read on the Kotlin channel is the caller's job: it
- * calls the `flushInput` RPC after each action (see the blueprint seam).
+ * exactly as `MotionInjector` paces its frames. Single-pointer fling fidelity is
+ * preserved this way; multi-pointer verbs are NOT a per-event parity claim (see
+ * the wire-vs-Android note in {@link scrcpy-inject-timeline}). Ordering with a
+ * following read on the Kotlin channel is the caller's job: instead of a separate
+ * `flushInput` RPC after every action (an extra round-trip that erased the win),
+ * the blueprint marks a "fast-inject pending" flag and folds the synchronous
+ * flush INTO the next state/hierarchy capture (`flush:true`), so it costs no extra
+ * round-trip (see the blueprint seam).
+ *
+ * Coordinates: with `video:false` the scrcpy server ignores `videoWidth`/
+ * `videoHeight` (its `Controller.getEventPointAndDisplayId` is a raw pass-through),
+ * so we do NOT pay a `getScreenSize` RPC per action — we warm a geometry cache
+ * once and reuse it (sending 0 if even that is unavailable).
+ *
+ * Robustness: an inject error emits an UP/CANCEL for every still-down pointer and
+ * drops the client so the next action reconnects, and the blueprint falls back to
+ * the Kotlin channel for that one action (never the tool-level proprietary path).
  *
  * Lifecycle: lazy connect on first use, reconnect on a dropped control channel,
- * `dispose()` closes the scrcpy client and the adb transport. This module is
- * imported dynamically by the blueprint only when fast-inject is enabled, so the
- * pure timeline module (and its tests) never pull the `@yume-chan` ESM deps.
+ * `dispose()` closes the scrcpy client and the adb transport (awaiting any
+ * in-flight start). This module is imported dynamically by the blueprint only when
+ * fast-inject is enabled, so the pure timeline module (and its tests) never pull
+ * the `@yume-chan` ESM deps.
  */
 import { readFile } from "node:fs/promises";
 import { Adb, AdbServerClient } from "@yume-chan/adb";
@@ -42,8 +57,12 @@ import {
   type TouchFrame,
 } from "./scrcpy-inject-timeline";
 
-/** Same device path scrcpy itself uses; pushed once per device, then reused. */
-const DEVICE_SERVER_PATH = "/data/local/tmp/scrcpy-server.jar";
+/**
+ * Version-suffixed device path so our pushed jar never collides with (or gets
+ * shadowed by) a plain `scrcpy-server.jar` another tool left on the device, and a
+ * server upgrade lands at a new path (F3f). Not scrcpy's default name on purpose.
+ */
+const DEVICE_SERVER_PATH = `/data/local/tmp/argent-scrcpy-server-${VERSION}.jar`;
 
 /** Map the pure-timeline action to the scrcpy wire action (same numeric values). */
 function wireAction(a: TouchFrame["action"]): AndroidMotionEventAction {
@@ -87,9 +106,9 @@ export interface ScrcpyBackendDeps {
   serial: string;
   /**
    * Rotation-aware display metrics (the Kotlin server's cheap `getScreenSize`).
-   * Read on every action to pick the `videoWidth/videoHeight` scrcpy converts
-   * against and to self-correct after a rotation (F21), the same way the host
-   * gesture path already peeks it.
+   * Called ONCE to warm the geometry cache, not per action: with `video:false`
+   * scrcpy ignores `videoWidth/videoHeight` (raw coordinate pass-through), so the
+   * dims are informational only and a per-action RPC would just add a round-trip.
    */
   getScreenSize: () => Promise<{
     screenWidth: number;
@@ -144,18 +163,30 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     });
     const serverClient = new AdbServerClient(connector);
     const adb = await serverClient.createAdb({ serial: this.serial });
+    // Lost the race with dispose() while awaiting the transport: close and bail.
+    if (this.disposed) {
+      await adb.close().catch(() => undefined);
+      throw new Error("scrcpy inject backend disposed");
+    }
     this.adb = adb;
 
     await this.ensureServerPushed(adb);
 
     // Control-only: no video, no audio. tunnelForward mirrors device-farm's setup
     // (a forward tunnel the client dials), and `version` pins the wire protocol to
-    // the 3.3.1 jar even though AdbScrcpyOptionsLatest targets a newer default.
+    // the 3.3.1 jar even though AdbScrcpyOptionsLatest targets a newer default. An
+    // explicit random `scid` (31-bit) namespaces this server instance's sockets so
+    // it never collides with another scrcpy (ours or a peer's) on the same device.
+    // Explicit random scid (8-hex, a 31-bit id) namespaces this instance's sockets
+    // so it never collides with another scrcpy on the device. scrcpy accepts scid
+    // as a hex string.
+    const scid = Math.floor(Math.random() * 0x7fffffff).toString(16).padStart(8, "0");
     const options = new AdbScrcpyOptionsLatest<false>(
       {
         video: false,
         audio: false,
         control: true,
+        scid,
         tunnelForward: true,
         cleanup: true,
       },
@@ -163,6 +194,11 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     );
 
     const client = await AdbScrcpyClient.start(adb, DEVICE_SERVER_PATH, options);
+    // dispose() may have run while `start` was in flight; don't leak the client.
+    if (this.disposed) {
+      await client.close().catch(() => undefined);
+      throw new Error("scrcpy inject backend disposed");
+    }
     const controller = client.controller;
     if (!controller) {
       await client.close().catch(() => undefined);
@@ -205,25 +241,27 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     this.log(`pushed scrcpy server ${VERSION} to ${this.serial}:${DEVICE_SERVER_PATH}`);
   }
 
-  /** Current device geometry to convert coordinates against (rotation-aware). */
+  /**
+   * Informational dims for the scrcpy `videoWidth/videoHeight` fields. With
+   * `video:false` the server ignores them (raw coordinate pass-through), so we warm
+   * this ONCE from `getScreenSize` and reuse it — never a per-action RPC. If the
+   * warm read is unavailable we send 0 (still ignored by the server) rather than
+   * throw, so a transient geometry hiccup never blocks a touch.
+   */
   private async displaySize(): Promise<{ width: number; height: number }> {
-    const s = await this.getScreenSize();
-    const rotation = s.displayRotation;
-    if (
-      this.geom &&
-      this.geom.rotation === rotation &&
-      this.geom.width > 0 &&
-      this.geom.height > 0
-    ) {
+    if (this.geom && this.geom.width > 0 && this.geom.height > 0) {
       return { width: this.geom.width, height: this.geom.height };
     }
-    if (s.screenWidth > 0 && s.screenHeight > 0) {
-      this.geom = { width: s.screenWidth, height: s.screenHeight, rotation };
-      return { width: s.screenWidth, height: s.screenHeight };
+    try {
+      const s = await this.getScreenSize();
+      if (s.screenWidth > 0 && s.screenHeight > 0) {
+        this.geom = { width: s.screenWidth, height: s.screenHeight, rotation: s.displayRotation };
+        return { width: s.screenWidth, height: s.screenHeight };
+      }
+    } catch {
+      /* fall through to 0 dims (ignored by the server) */
     }
-    // Transient 0×0 while reconfiguring: reuse last known-good geometry.
-    if (this.geom) return { width: this.geom.width, height: this.geom.height };
-    throw new Error(`scrcpy backend: display size unavailable for ${this.serial}`);
+    return { width: 0, height: 0 };
   }
 
   /**
@@ -237,22 +275,71 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     const controller = this.controller;
     if (!controller) throw new Error("scrcpy control channel unavailable");
     const { width, height } = await this.displaySize();
+    // Track pointers currently pressed so a mid-gesture failure can lift them —
+    // otherwise a dropped socket leaves the OS believing a finger is still down,
+    // wedging every later touch. Keyed by pointerId → last (x, y).
+    const down = new Map<number, { x: number; y: number }>();
     const anchor = performance.now();
-    for (const f of frames) {
-      const wait = anchor + f.tMs - performance.now();
-      if (wait > 0) await sleep(wait);
-      await controller.injectTouch({
-        action: wireAction(f.action),
-        pointerId: BigInt(f.pointerId),
-        pointerX: Math.round(f.x),
-        pointerY: Math.round(f.y),
-        videoWidth: width,
-        videoHeight: height,
-        pressure: f.pressure,
-        actionButton: 0,
-        buttons: 0,
-      });
+    try {
+      for (const f of frames) {
+        const wait = anchor + f.tMs - performance.now();
+        if (wait > 0) await sleep(wait);
+        await controller.injectTouch({
+          action: wireAction(f.action),
+          pointerId: BigInt(f.pointerId),
+          pointerX: Math.round(f.x),
+          pointerY: Math.round(f.y),
+          videoWidth: width,
+          videoHeight: height,
+          pressure: f.pressure,
+          actionButton: 0,
+          buttons: 0,
+        });
+        if (f.action === TouchAction.Down) down.set(f.pointerId, { x: f.x, y: f.y });
+        else if (f.action === TouchAction.Up) down.delete(f.pointerId);
+        else down.set(f.pointerId, { x: f.x, y: f.y });
+      }
+    } catch (err) {
+      await this.cancelDownPointers(controller, down, width, height);
+      // Drop + restart the client so the next action reconnects on a clean channel.
+      await this.dropClient();
+      throw err instanceof Error ? err : new Error(String(err));
     }
+  }
+
+  /** Best-effort lift of every still-down pointer after an inject failure. */
+  private async cancelDownPointers(
+    controller: ScrcpyControlMessageWriter,
+    down: Map<number, { x: number; y: number }>,
+    width: number,
+    height: number
+  ): Promise<void> {
+    for (const [pointerId, pos] of down) {
+      try {
+        await controller.injectTouch({
+          action: AndroidMotionEventAction.Cancel,
+          pointerId: BigInt(pointerId),
+          pointerX: Math.round(pos.x),
+          pointerY: Math.round(pos.y),
+          videoWidth: width,
+          videoHeight: height,
+          pressure: 0,
+          actionButton: 0,
+          buttons: 0,
+        });
+      } catch {
+        // Channel is already gone; the restart below is the real recovery.
+        break;
+      }
+    }
+  }
+
+  /** Tear down the current scrcpy client so `ensureStarted` redials next time. */
+  private async dropClient(): Promise<void> {
+    const client = this.client;
+    this.client = null;
+    this.controller = null;
+    if (client) await client.close().catch(() => undefined);
   }
 
   async tap(x: number, y: number, opts: ScrcpyTapOpts = {}): Promise<void> {
@@ -286,6 +373,10 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    // Await any in-flight start so we don't leak the client/transport it opens
+    // (start() re-checks `disposed` and closes if it lost the race, but a start
+    // that finishes just before this flag was read still assigned this.client).
+    if (this.starting) await this.starting.catch(() => undefined);
     const client = this.client;
     this.client = null;
     this.controller = null;

@@ -534,6 +534,9 @@ async function destinationVisibleRate(
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
+  // Phase 3f: whether tap/swipe/gesture ran on the scrcpy fast-inject backend
+  // (true only for the ON-scrcpy block); describe/state/etc. stay on Kotlin.
+  fastInject: boolean;
   coldStartMs: number[];
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
@@ -592,10 +595,21 @@ async function coldStart(config: "OFF" | "ON"): Promise<number[]> {
   return out;
 }
 
-async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResult> {
+async function runBlock(
+  block: string,
+  config: "OFF" | "ON",
+  fastInject: boolean
+): Promise<BlockResult> {
   const notes: string[] = [];
   if (config === "ON") setFlag("open-device-server", true, "project");
   else unsetFlag("open-device-server", "project");
+  // Phase 3f: the scrcpy control-channel touch backend is gated by this flag; the
+  // blueprint reads it when the factory `fastInject` option is omitted (which is
+  // the case for the registry-created instances the bench drives). Only the
+  // ON-scrcpy block sets it — ON-uiautomation and both OFF blocks leave it off so
+  // tap/swipe/gesture stay on the UiAutomation (or proprietary) path.
+  if (fastInject) setFlag("open-device-server-fast-inject", true, "project");
+  else unsetFlag("open-device-server-fast-inject", "project");
 
   const coldStartMs = await coldStart(config);
 
@@ -897,6 +911,7 @@ async function runBlock(block: string, config: "OFF" | "ON"): Promise<BlockResul
   return {
     block,
     config,
+    fastInject,
     coldStartMs,
     verbs,
     describeSample,
@@ -937,14 +952,32 @@ async function main(): Promise<void> {
   };
   realDebug("[bench] env:", JSON.stringify(env));
 
+  // Memory-frugal per-block mode (phase 3e): under heavy host memory pressure the
+  // full OFF-1→…→OFF-2 process was Jetsam-killed (SIGKILL) mid-run. Setting
+  // BENCH_ONLY=<block> runs a SINGLE block in a short-lived process and writes a
+  // per-block file `bench-block-<name>.json` ({env, block}); run-bench-merge.js
+  // assembles the four into the same combined result + fidelity. No env → the
+  // original single-process full run.
+  //
+  // Phase 3f: FOUR blocks. The two ON blocks share the open Kotlin describe/state
+  // path (so their describe bytes/tokens/fidelity are identical); they differ only
+  // in the tap/swipe/gesture backend — ON-uiautomation injects via UiAutomation,
+  // ON-scrcpy injects over the scrcpy control channel (fast-inject flag on).
+  const ALL_BLOCKS: Array<[string, "OFF" | "ON", boolean]> = [
+    ["OFF-1", "OFF", false],
+    ["ON-uiautomation", "ON", false],
+    ["ON-scrcpy", "ON", true],
+    ["OFF-2", "OFF", false],
+  ];
+  const only = process.env.BENCH_ONLY;
+  const toRun = only ? ALL_BLOCKS.filter(([b]) => b === only) : ALL_BLOCKS;
+  if (only && toRun.length === 0)
+    throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.map(([b]) => b).join("|")}`);
+
   const blocks: BlockResult[] = [];
-  for (const [block, config] of [
-    ["OFF-1", "OFF"],
-    ["ON", "ON"],
-    ["OFF-2", "OFF"],
-  ] as Array<[string, "OFF" | "ON"]>) {
-    realDebug(`[bench] === block ${block} (${config}) ===`);
-    const r = await runBlock(block, config);
+  for (const [block, config, fastInject] of toRun) {
+    realDebug(`[bench] === block ${block} (${config}${fastInject ? ", scrcpy fast-inject" : ""}) ===`);
+    const r = await runBlock(block, config, fastInject);
     blocks.push(r);
     realDebug(
       `[bench] ${block} done: describe p50=${r.verbs[0]?.latency.p50}ms source=${r.describeSample.source} ` +
@@ -952,15 +985,27 @@ async function main(): Promise<void> {
     );
   }
 
-  // reset flag to default OFF
+  // reset flags to default OFF
   unsetFlag("open-device-server", "project");
+  unsetFlag("open-device-server-fast-inject", "project");
+
+  if (only) {
+    const blockPath = join(OUT_DIR, `bench-block-${only}.json`);
+    writeFileSync(blockPath, JSON.stringify({ env, block: blocks[0] }, null, 2));
+    realDebug(`[bench] wrote ${blockPath}`);
+    process.stdout.write(`RESULT_JSON=${blockPath}\n`);
+    return;
+  }
 
   // Parity gate: every block must have driven the identical gesture timeline, so
   // the OFF/ON latency comparison is genuinely like-for-like (throws otherwise).
   assertIdenticalGestureParams(blocks);
 
   const off1 = blocks.find((b) => b.block === "OFF-1")!;
-  const on = blocks.find((b) => b.block === "ON")!;
+  // Fidelity (describe tree) is identical for both ON blocks — fast-inject only
+  // changes touch injection, not the describe path — so compare OFF-1 against the
+  // ON-uiautomation describe sample.
+  const on = blocks.find((b) => b.block === "ON-uiautomation")!;
   const result = {
     env,
     blocks,

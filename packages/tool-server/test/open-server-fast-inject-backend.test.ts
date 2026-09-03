@@ -1,40 +1,82 @@
 /**
  * Phase 3f — scrcpy fast-inject backend lifecycle, with `@yume-chan` mocked (no
- * device). Covers: lazy single connect reused across actions, injectTouch is fed
- * the ported timelines with device geometry as videoWidth/videoHeight and a
- * `bigint` pointerId, multi-pointer ids, and `dispose()` stopping the scrcpy
- * client + adb transport. Also asserts the `open-device-server-fast-inject` flag
- * is registered and off by default (so the tap/swipe/gesture closures are left on
- * the Kotlin channel unless it is explicitly enabled).
+ * device). Covers: lazy single connect reused across actions; injectTouch fed the
+ * ported timelines with a `bigint` pointerId; the geometry cache is warmed ONCE
+ * (no per-action `getScreenSize` RPC); the jar is pushed to the version-suffixed
+ * path with an explicit random `scid`; an inject error lifts still-down pointers
+ * (CANCEL) and drops+restarts the client; `dispose()` awaits an in-flight start and
+ * stops the client + adb transport. Also asserts the `open-device-server-fast-inject`
+ * flag is registered and off by default — WITHOUT reading the real project flags
+ * file (mocked), so a bench that left the flag on can't flip this assertion.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Flag reader is mocked so this suite never depends on ~/.argent or <proj>/.argent
+// flags.json (item 8): getFlagDefinition stays real (verifies registration), but
+// isFlagEnabled resolves purely from the declared default, file-independent.
+vi.mock("@argent/configuration-core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@argent/configuration-core")>();
+  return {
+    ...actual,
+    isFlagEnabled: (name: string): boolean =>
+      Boolean(actual.getFlagDefinition(name)?.defaultEnabled),
+  };
+});
 import { getFlagDefinition, isFlagEnabled } from "@argent/configuration-core";
 
-const h = vi.hoisted(() => {
-  const injectTouchCalls: Array<Record<string, unknown>> = [];
-  const controller = {
+interface FakeCtl {
+  injectTouch: ReturnType<typeof vi.fn>;
+}
+interface Hoisted {
+  injectTouchCalls: Array<Record<string, unknown>>;
+  optionsArgs: unknown[][];
+  pushServerCalls: unknown[][];
+  failAtIndex: number | null;
+  releaseStart: null | (() => void);
+  controller: FakeCtl;
+  client: { controller: FakeCtl; exited: Promise<void>; close: ReturnType<typeof vi.fn> };
+  adb: {
+    subprocess: { noneProtocol: { spawnWaitText: ReturnType<typeof vi.fn> } };
+    close: ReturnType<typeof vi.fn>;
+  };
+  createAdb: ReturnType<typeof vi.fn>;
+  start: ReturnType<typeof vi.fn>;
+  pushServer: ReturnType<typeof vi.fn>;
+}
+
+const h = vi.hoisted((): Hoisted => {
+  const self = {
+    injectTouchCalls: [] as Array<Record<string, unknown>>,
+    optionsArgs: [] as unknown[][],
+    pushServerCalls: [] as unknown[][],
+    failAtIndex: null as number | null,
+    releaseStart: null as null | (() => void),
+  } as Hoisted;
+  self.controller = {
     injectTouch: vi.fn(async (m: Record<string, unknown>) => {
-      injectTouchCalls.push(m);
+      const idx = self.injectTouchCalls.length;
+      self.injectTouchCalls.push(m);
+      if (self.failAtIndex !== null && idx === self.failAtIndex) {
+        self.failAtIndex = null;
+        throw new Error("simulated scrcpy control-socket write failure");
+      }
     }),
   };
-  const client = {
-    controller,
+  self.client = {
+    controller: self.controller,
     exited: new Promise<void>(() => undefined), // never resolves in these tests
     close: vi.fn(async () => undefined),
   };
-  const adb = {
+  self.adb = {
     subprocess: { noneProtocol: { spawnWaitText: vi.fn(async () => "present") } },
     close: vi.fn(async () => undefined),
   };
-  return {
-    injectTouchCalls,
-    controller,
-    client,
-    adb,
-    createAdb: vi.fn(async () => adb),
-    start: vi.fn(async () => client),
-    pushServer: vi.fn(async () => undefined),
-  };
+  self.createAdb = vi.fn(async () => self.adb);
+  self.start = vi.fn(async () => self.client);
+  self.pushServer = vi.fn(async (...args: unknown[]) => {
+    self.pushServerCalls.push(args);
+  });
+  return self;
 });
 
 vi.mock("@yume-chan/adb", () => ({
@@ -48,7 +90,12 @@ vi.mock("@yume-chan/adb-server-node-tcp", () => ({
 }));
 vi.mock("@yume-chan/adb-scrcpy", () => ({
   AdbScrcpyClient: { start: h.start, pushServer: h.pushServer },
-  AdbScrcpyOptionsLatest: class {},
+  // Capture constructor args so we can assert the control-only opts + scid.
+  AdbScrcpyOptionsLatest: class {
+    constructor(...args: unknown[]) {
+      h.optionsArgs.push(args);
+    }
+  },
 }));
 vi.mock("@yume-chan/fetch-scrcpy-server", () => ({
   BIN: new URL("file:///dev/null"),
@@ -73,6 +120,10 @@ function makeBackend() {
 describe("scrcpy fast-inject backend lifecycle", () => {
   beforeEach(() => {
     h.injectTouchCalls.length = 0;
+    h.optionsArgs.length = 0;
+    h.pushServerCalls.length = 0;
+    h.failAtIndex = null;
+    h.releaseStart = null;
     vi.clearAllMocks();
     h.createAdb.mockResolvedValue(h.adb);
     h.start.mockResolvedValue(h.client);
@@ -105,18 +156,58 @@ describe("scrcpy fast-inject backend lifecycle", () => {
     expect(h.createAdb).toHaveBeenCalledTimes(1);
   });
 
-  it("gesture injects distinct bigint pointer ids for each finger", async () => {
+  it("warms the geometry cache once — no getScreenSize RPC per action (item 1)", async () => {
+    const { backend, getScreenSize } = makeBackend();
+    await backend.tap(1, 1, { holdMs: 0, gapMs: 0 });
+    await backend.tap(2, 2, { holdMs: 0, gapMs: 0 });
+    await backend.swipe(1, 1, 2, 2, 4, 0);
+    // One warm read total, not one per action.
+    expect(getScreenSize).toHaveBeenCalledTimes(1);
+    // Dims still carried on the wire (the server ignores them with video:false, but
+    // we send the cached real size rather than a stale/garbage value).
+    expect(h.injectTouchCalls[0]).toMatchObject({ videoWidth: 1080, videoHeight: 2400 });
+  });
+
+  it("still injects (dims 0) when geometry is unavailable — never throws on a bad read (item 1)", async () => {
+    const getScreenSize = vi.fn(async () => ({ screenWidth: 0, screenHeight: 0, displayRotation: 0 }));
+    const backend = createScrcpyInjectBackend({ serial: "emulator-5554", getScreenSize });
+    await backend.tap(5, 6, { holdMs: 0, gapMs: 0 });
+    expect(h.injectTouchCalls[0]).toMatchObject({ pointerX: 5, pointerY: 6, videoWidth: 0, videoHeight: 0 });
+  });
+
+  it("starts control-only with an explicit random scid (item 5)", async () => {
     const { backend } = makeBackend();
-    const mk = (xs: number[]) => xs.map((x, i) => ({ x, y: 0, tMs: i * 16 }));
-    await backend.gesture([
-      { id: 0, points: mk([0, 20, 40]) },
-      { id: 1, points: mk([100, 80, 60]) },
-    ]);
-    const ids = new Set(h.injectTouchCalls.map((m) => m.pointerId));
-    expect(ids).toEqual(new Set([0n, 1n]));
-    // First two messages are the DOWNs (one per finger).
-    expect(h.injectTouchCalls[0]).toMatchObject({ action: 0, pointerId: 0n });
-    expect(h.injectTouchCalls[1]).toMatchObject({ action: 0, pointerId: 1n });
+    await backend.tap(1, 1, { holdMs: 0, gapMs: 0 });
+    expect(h.optionsArgs).toHaveLength(1);
+    const opts = h.optionsArgs[0]![0] as Record<string, unknown>;
+    expect(opts).toMatchObject({ video: false, audio: false, control: true, tunnelForward: true });
+    expect(typeof opts.scid).toBe("string");
+    expect(opts.scid as string).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("pushes the scrcpy server jar to the version-suffixed path when absent (item 5)", async () => {
+    h.adb.subprocess.noneProtocol.spawnWaitText.mockResolvedValue("absent");
+    const { backend } = makeBackend();
+    await backend.tap(1, 1, { holdMs: 0, gapMs: 0 });
+    expect(h.pushServer).toHaveBeenCalledTimes(1);
+    // pushServer(adb, stream, devicePath) — assert the version-suffixed device path.
+    expect(h.pushServerCalls[0]![2]).toBe("/data/local/tmp/argent-scrcpy-server-3.3.1.jar");
+  });
+
+  it("on an inject failure, lifts still-down pointers (CANCEL) and drops the client (item 4)", async () => {
+    const { backend } = makeBackend();
+    // tap = DOWN (idx 0), UP (idx 1). Fail the UP so pointer 0 is left down.
+    h.failAtIndex = 1;
+    await expect(backend.tap(10, 20, { holdMs: 50, gapMs: 0 })).rejects.toThrow(/scrcpy/);
+    // A CANCEL for the still-down pointer 0 was emitted after the failure.
+    const cancel = h.injectTouchCalls.find((m) => m.action === 3);
+    expect(cancel).toMatchObject({ action: 3, pointerId: 0n });
+    // The client was dropped (closed) so the next action reconnects.
+    expect(h.client.close).toHaveBeenCalledTimes(1);
+    // Next action reconnects: a second start().
+    h.failAtIndex = null;
+    await backend.tap(1, 1, { holdMs: 0, gapMs: 0 });
+    expect(h.start).toHaveBeenCalledTimes(2);
   });
 
   it("dispose stops the scrcpy client and adb transport; further use throws", async () => {
@@ -128,20 +219,33 @@ describe("scrcpy fast-inject backend lifecycle", () => {
     await expect(backend.tap(1, 1, { holdMs: 0, gapMs: 0 })).rejects.toThrow(/disposed/);
   });
 
-  it("pushes the scrcpy server jar when it is absent from the device", async () => {
-    h.adb.subprocess.noneProtocol.spawnWaitText.mockResolvedValue("absent");
+  it("dispose awaits an in-flight start and closes the client it opened (item 6)", async () => {
     const { backend } = makeBackend();
-    await backend.tap(1, 1, { holdMs: 0, gapMs: 0 });
-    expect(h.pushServer).toHaveBeenCalledTimes(1);
+    // Stall start() until we release it, so dispose() runs while it is in flight.
+    h.start.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          h.releaseStart = () => resolve(h.client);
+        })
+    );
+    const tapP = backend.tap(1, 1, { holdMs: 0, gapMs: 0 });
+    // Let the tap reach `await ensureStarted()` (start is now pending).
+    await new Promise((r) => setTimeout(r, 5));
+    const disposeP = backend.dispose();
+    // Release the stalled start: start() must see `disposed` and close the client.
+    h.releaseStart!();
+    await disposeP;
+    await expect(tapP).rejects.toThrow(/disposed/);
+    expect(h.client.close).toHaveBeenCalled();
   });
 });
 
 describe("open-device-server-fast-inject flag", () => {
-  it("is registered and off by default", () => {
+  it("is registered and off by default (flag reader mocked — file-independent)", () => {
     const def = getFlagDefinition("open-device-server-fast-inject");
     expect(def).toBeDefined();
     expect(def?.defaultEnabled).toBeFalsy();
-    // With no flag set, the fast path is not taken (closures stay on the Kotlin channel).
+    // With the reader mocked to the declared default, the fast path is not taken.
     expect(isFlagEnabled("open-device-server-fast-inject")).toBe(false);
   });
 });

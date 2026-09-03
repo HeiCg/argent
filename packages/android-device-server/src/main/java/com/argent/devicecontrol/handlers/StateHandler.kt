@@ -42,13 +42,23 @@ class StateHandler(
         // skipping the capture makes getState a strict latency win for them
         // instead of paying a full-frame JPEG encode on every poll.
         val includeScreenshot = !nested && params.optBoolean("includeScreenshot", true)
+        // `flush` (phase 3f): the caller injected a scrcpy fast-inject touch from a
+        // separate process this UiAutomation cannot see, so `drainAsyncUp` would
+        // no-op. When set, run the full synchronous input-queue flush inline here
+        // instead — it orders every touch enqueued ahead of it (scrcpy's included)
+        // before the capture below, so the tree is never the mid-press state. Folded
+        // into this read so fast-inject costs no extra `flushInput` round-trip.
+        val flush = params.optBoolean("flush", false)
 
-        // 0. Drain a preceding tap's async ACTION_UP (R1, phase 3e). A `tap` now
-        //    queues its final UP asynchronously to return fast; before we read the
-        //    tree we flush that pending UP with one synchronous no-op so a describe
-        //    can never observe the mid-press (finger-down) state. No-op when no tap
-        //    is outstanding, and idle-wait-free either way.
-        MotionInjector.drainAsyncUp(uiAutomation)
+        // 0. Order any preceding touch's UP ahead of the capture. Fast-inject path
+        //    (flush=true) drains the whole input queue synchronously; the default
+        //    path drains only this server's own async ACTION_UP (R1, phase 3e). Both
+        //    are idle-wait-free and no-op when nothing is outstanding.
+        if (flush) {
+            MotionInjector.flushInput(uiAutomation)
+        } else {
+            MotionInjector.drainAsyncUp(uiAutomation)
+        }
 
         // 1. Explicit idle wait (the caller owns the timeout; the describe path
         //    passes 500 to match the proprietary comparator's cap). This is the ONLY

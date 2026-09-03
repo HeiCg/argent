@@ -30,6 +30,27 @@ vi.mock("@argent/android-device-server", () => ({
   bundledServerApkPath: () => "/tmp/x.apk",
 }));
 
+// Fast-inject seam (phase 3f): a controllable fake scrcpy backend so we can drive
+// the success path (touch goes to scrcpy; flush folds into the next read) and the
+// failure path (scrcpy throws → fall back to the Kotlin RPC + count it), with no
+// real @yume-chan / device.
+const fi = vi.hoisted(() => ({
+  tapImpl: async (_x: number, _y: number, _o?: unknown): Promise<void> => {},
+  swipeImpl: async (): Promise<void> => {},
+  gestureImpl: async (): Promise<void> => {},
+  disposed: false,
+}));
+vi.mock("../src/utils/scrcpy-inject-backend", () => ({
+  createScrcpyInjectBackend: () => ({
+    tap: (x: number, y: number, o?: unknown) => fi.tapImpl(x, y, o),
+    swipe: (...a: unknown[]) => (fi.swipeImpl as (...a: unknown[]) => Promise<void>)(...a),
+    gesture: (...a: unknown[]) => (fi.gestureImpl as (...a: unknown[]) => Promise<void>)(...a),
+    dispose: async () => {
+      fi.disposed = true;
+    },
+  }),
+}));
+
 import { androidOpenServerBlueprint } from "../src/blueprints/android-open-server";
 import type { OpenDeviceServerApi } from "../src/blueprints/android-open-server";
 
@@ -236,5 +257,102 @@ describe("androidOpenServerBlueprint.factory", () => {
     );
     expect(removeCall).toBeTruthy();
     expect(instance.api.isReady()).toBe(false);
+  });
+});
+
+
+// A fake device server that records every JSON-RPC request and answers a fixed
+// result map — lets a test assert which methods (and params) actually hit Kotlin.
+async function startRecordingServer(
+  recorded: Array<{ method: string; params: Record<string, unknown> }>
+): Promise<void> {
+  await startFakeDeviceServer((line, s) => {
+    const req = JSON.parse(line) as {
+      id: number;
+      method: string;
+      params?: Record<string, unknown>;
+    };
+    recorded.push({ method: req.method, params: req.params ?? {} });
+    const results: Record<string, unknown> = {
+      ping: { status: "ok" },
+      getInfo: { screenWidth: 1080, screenHeight: 1920, currentPackage: "x", keyboardVisible: false, displayRotation: 0 },
+      tap: { success: true },
+      swipe: { success: true },
+      gesture: { success: true },
+      flushInput: { success: true },
+      getState: { tree: [], info: {}, waitedMs: 0, captureMs: 0 },
+      getAccessibilityTree: { tree: [] },
+    };
+    s.write(JSON.stringify({ id: req.id, result: results[req.method] ?? {} }) + "\n");
+  });
+}
+
+describe("androidOpenServerBlueprint fast-inject seam (phase 3f)", () => {
+  beforeEach(() => {
+    fi.tapImpl = async () => {};
+    fi.swipeImpl = async () => {};
+    fi.gestureImpl = async () => {};
+    fi.disposed = false;
+  });
+
+  it("folds the flush into the next read (no per-action flushInput RPC) — item 2", async () => {
+    const recorded: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(recorded);
+    wireSpawnAndForward();
+    const instance = await androidOpenServerBlueprint.factory({} as never, undefined as never, {
+      device: DEVICE,
+      fastInject: "scrcpy",
+    } as never);
+    const api = instance.api as OpenDeviceServerApi;
+
+    // Success path: the tap goes to scrcpy, so NO Kotlin "tap" and NO "flushInput".
+    await api.tap(100, 200);
+    expect(recorded.some((r) => r.method === "tap")).toBe(false);
+    expect(recorded.some((r) => r.method === "flushInput")).toBe(false);
+
+    // The next read carries flush:true (the fold), draining the queue inline.
+    await api.getNestedState();
+    const firstState = recorded.filter((r) => r.method === "getState");
+    expect(firstState).toHaveLength(1);
+    expect(firstState[0]!.params.flush).toBe(true);
+
+    // A second read with no intervening inject does NOT flush (pending cleared).
+    await api.getNestedState();
+    const allState = recorded.filter((r) => r.method === "getState");
+    expect(allState).toHaveLength(2);
+    expect(allState[1]!.params.flush).toBeUndefined();
+
+    // Still no separate flushInput RPC anywhere.
+    expect(recorded.some((r) => r.method === "flushInput")).toBe(false);
+
+    await instance.dispose!();
+  });
+
+  it("falls back to the Kotlin channel on a scrcpy error and counts it — item 3", async () => {
+    const recorded: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(recorded);
+    wireSpawnAndForward();
+    const instance = await androidOpenServerBlueprint.factory({} as never, undefined as never, {
+      device: DEVICE,
+      fastInject: "scrcpy",
+    } as never);
+    const api = instance.api as OpenDeviceServerApi;
+
+    // scrcpy tap fails → the closure must re-enter the Kotlin `tap` RPC (never the
+    // tool-level proprietary fallback) and still report success.
+    fi.tapImpl = async () => {
+      throw new Error("scrcpy control channel down");
+    };
+    const res = await api.tap(5, 6);
+    expect(res.success).toBe(true);
+    const kotlinTap = recorded.find((r) => r.method === "tap");
+    expect(kotlinTap).toBeTruthy();
+    expect(kotlinTap!.params).toMatchObject({ x: 5, y: 6 });
+
+    // The fallback is counted and surfaced on getInfo (not silently swallowed).
+    const info = await api.getInfo();
+    expect(info.fastInjectFallbacks).toBe(1);
+
+    await instance.dispose!();
   });
 });

@@ -1,26 +1,29 @@
 /**
- * Fling-fidelity grid (F15/F16): does the open Android path (`open-device-server`
- * flag ON) reproduce the proprietary path's fling DISTANCE across a sweep of
- * swipe durations and distances?
+ * Fling-fidelity grid (F15/F16 + phase 3f A/B): does a config reproduce another's
+ * fling DISTANCE across a sweep of swipe durations and distances? The phase-3f use
+ * is the Kotlin-vs-scrcpy A/B — ON-scrcpy (fast-inject) must reproduce
+ * ON-uiautomation's flinging swipe distance, or "fling fidelity unchanged" is not
+ * a claim we may make (item 9).
  *
  * MEASUREMENT ONLY. Opt-in, not a test (lives under scripts/). For each cell in
  * durationMs ∈ {150, 250, 400} × distance ∈ {0.3, 0.5} it runs N (default 12,
- * ≥ 10) plain flinging swipes per config, resetting the Settings list before each
- * swipe, and measures how far a labelled anchor row moved (normalized fraction of
- * screen height). It reports the median and IQR per cell, plus the ON/OFF median
- * ratio — the like-for-like fling number the v2 report only had for one cell.
+ * ≥ 10) plain flinging swipes for ONE config, resetting the Settings list before
+ * each swipe, and measures how far a labelled anchor row moved (normalized
+ * fraction of screen height). It reports median + IQR per cell.
  *
- * Run exactly like the main bench (same loader, same env), against a booted AVD
- * with gRPC + token:
+ * SEPARATE PROCESSES (item 9). The touch backend flag is read ONCE at factory
+ * time, so each config runs in its own process selected by FLING_CONFIG ∈
+ * {OFF | ON-uiautomation | ON-scrcpy}, writing `.bench-results/fling-block-<cfg>.json`.
+ * `run-fling-merge.js` then assembles the A/B ratios (ON-scrcpy / ON-uiautomation,
+ * and each ON / OFF). Run each against a booted AVD with gRPC + token:
  *
  *   emulator -avd <avd> -no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token
- *   ARGENT_SIMULATOR_SERVER_DIR=<pkg>/bin \
- *   ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR=<pkg>/bin \
- *   ARGENT_NATIVE_DEVTOOLS_DIR=<pkg>/dylibs \
- *   ANDROID_HOME=$HOME/Library/Android/sdk BENCH_SERIAL=emulator-5554 \
- *   node run-fling.js            # run-fling.js = the ts-node loader, requiring this file
+ *   ARGENT_SIMULATOR_SERVER_DIR=<pkg>/bin ... ANDROID_HOME=$HOME/Library/Android/sdk \
+ *   BENCH_SERIAL=emulator-5554 FLING_CONFIG=ON-scrcpy node run-fling.js
+ *   # …repeat for ON-uiautomation and OFF, then: node run-fling-merge.js
  *
- * Env knobs: BENCH_SERIAL (emulator-5554), FLING_N (12), BENCH_OUT (.bench-results).
+ * Env knobs: BENCH_SERIAL (emulator-5554), FLING_N (12), FLING_CONFIG (required),
+ * BENCH_OUT (.bench-results).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -31,6 +34,22 @@ import { setFlag, unsetFlag } from "@argent/configuration-core";
 const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
 const N = Number(process.env.FLING_N ?? 12);
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
+// Phase 3f: the flag that selects the touch backend is read ONCE at factory time,
+// so a true A/B must run each config in its OWN process (item 9). FLING_CONFIG
+// selects exactly one config for this process; it writes a per-config block file
+// that run-fling-merge.js assembles into the A/B (ON-scrcpy vs ON-uiautomation,
+// the Kotlin-vs-scrcpy fling-distance comparison) plus the OFF proprietary ref.
+type FlingConfigName = "OFF" | "ON-uiautomation" | "ON-scrcpy";
+interface FlingConfig {
+  name: FlingConfigName;
+  openServer: boolean;
+  fastInject: boolean;
+}
+const CONFIGS: Record<FlingConfigName, FlingConfig> = {
+  OFF: { name: "OFF", openServer: false, fastInject: false },
+  "ON-uiautomation": { name: "ON-uiautomation", openServer: true, fastInject: false },
+  "ON-scrcpy": { name: "ON-scrcpy", openServer: true, fastInject: true },
+};
 const PHYSICAL_DENY = "ZF524RZBHD";
 const SETTINGS = "com.android.settings";
 
@@ -148,16 +167,18 @@ function round3(n: number): number {
 interface Cell {
   durationMs: number;
   distance: number;
-  config: "OFF" | "ON";
+  config: FlingConfigName;
   n: number;
   median: number;
   iqr: [number, number];
   samples: number[];
 }
 
-async function runConfig(config: "OFF" | "ON"): Promise<Cell[]> {
-  if (config === "ON") setFlag("open-device-server", true, "project");
+async function runConfig(cfg: FlingConfig): Promise<Cell[]> {
+  if (cfg.openServer) setFlag("open-device-server", true, "project");
   else unsetFlag("open-device-server", "project");
+  if (cfg.fastInject) setFlag("open-device-server-fast-inject", true, "project");
+  else unsetFlag("open-device-server-fast-inject", "project");
   const reg = createRegistry();
   const cells: Cell[] = [];
   for (const durationMs of DURATIONS) {
@@ -170,7 +191,7 @@ async function runConfig(config: "OFF" | "ON"): Promise<Cell[]> {
       cells.push({
         durationMs,
         distance,
-        config,
+        config: cfg.name,
         n: samples.length,
         median: round3(median(samples)),
         iqr: [round3(quantile(samples, 0.25)), round3(quantile(samples, 0.75))],
@@ -178,7 +199,7 @@ async function runConfig(config: "OFF" | "ON"): Promise<Cell[]> {
       });
       // eslint-disable-next-line no-console
       console.log(
-        `[fling] ${config} d=${durationMs}ms dist=${distance} n=${samples.length} ` +
+        `[fling] ${cfg.name} d=${durationMs}ms dist=${distance} n=${samples.length} ` +
           `median=${round3(median(samples))} iqr=[${round3(quantile(samples, 0.25))},${round3(
             quantile(samples, 0.75)
           )}]`
@@ -192,31 +213,42 @@ async function runConfig(config: "OFF" | "ON"): Promise<Cell[]> {
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true });
   const started = new Date().toISOString();
-  const off = await runConfig("OFF");
-  const on = await runConfig("ON");
-  unsetFlag("open-device-server", "project");
 
-  const grid = DURATIONS.flatMap((durationMs) =>
-    DISTANCES.map((distance) => {
-      const o = off.find((c) => c.durationMs === durationMs && c.distance === distance)!;
-      const n = on.find((c) => c.durationMs === durationMs && c.distance === distance)!;
-      const ratio = o.median > 0 ? round3(n.median / o.median) : NaN;
-      return { durationMs, distance, off: o, on: n, onOverOff: ratio };
-    })
-  );
-
-  const result = { serial: SERIAL, N, startedAt: started, finishedAt: new Date().toISOString(), grid };
-  const outPath = join(OUT_DIR, `fling-${started.replace(/[:.]/g, "-")}.json`);
-  writeFileSync(outPath, JSON.stringify(result, null, 2));
-  // eslint-disable-next-line no-console
-  console.log("\n=== FLING GRID (median normalized scroll; ON/OFF ratio) ===");
-  for (const g of grid) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `d=${g.durationMs}ms dist=${g.distance}: OFF ${g.off.median} ON ${g.on.median} → ratio ${g.onOverOff}`
+  // A/B requires each config in its own process (flag read once at factory time),
+  // so FLING_CONFIG is mandatory. Each run writes one per-config block file;
+  // run-fling-merge.js assembles the A/B (ON-scrcpy vs ON-uiautomation) + OFF ref.
+  const selected = process.env.FLING_CONFIG as FlingConfigName | undefined;
+  if (!selected || !(selected in CONFIGS)) {
+    throw new Error(
+      `FLING_CONFIG must be one of ${Object.keys(CONFIGS).join("|")} — ` +
+        `run each config in a SEPARATE process (the touch backend flag is read once ` +
+        `at factory time), then merge with run-fling-merge.js.`
     );
   }
-  process.stdout.write(`RESULT_JSON=${outPath}\n`);
+  const cfg = CONFIGS[selected];
+  const cells = await runConfig(cfg);
+  unsetFlag("open-device-server", "project");
+  unsetFlag("open-device-server-fast-inject", "project");
+
+  const result = {
+    serial: SERIAL,
+    N,
+    config: cfg.name,
+    openServer: cfg.openServer,
+    fastInject: cfg.fastInject,
+    startedAt: started,
+    finishedAt: new Date().toISOString(),
+    cells,
+  };
+  const blockPath = join(OUT_DIR, `fling-block-${cfg.name}.json`);
+  writeFileSync(blockPath, JSON.stringify(result, null, 2));
+  // eslint-disable-next-line no-console
+  console.log(`\n=== FLING BLOCK ${cfg.name} (median normalized scroll) ===`);
+  for (const c of cells) {
+    // eslint-disable-next-line no-console
+    console.log(`d=${c.durationMs}ms dist=${c.distance}: median ${c.median} iqr=[${c.iqr[0]},${c.iqr[1]}] n=${c.n}`);
+  }
+  process.stdout.write(`RESULT_JSON=${blockPath}\n`);
 }
 
 main()

@@ -20,10 +20,19 @@
  * many pointers are currently down. So on the wire every finger's press is a
  * {@link TouchAction.Down} and every lift an {@link TouchAction.Up}; the server
  * turns the 2nd..nth of them into the POINTER_* forms the Kotlin `MotionInjector`
- * emits directly. A multi-pointer MOVE that the Kotlin injector sends as ONE
- * event carrying all pointers becomes one {@link TouchAction.Move} message per
- * pointer here (scrcpy is one pointer per message); the resulting on-device
- * MotionEvents and velocity are equivalent.
+ * emits directly.
+ *
+ * IMPORTANT — multi-pointer is NOT a per-event parity claim. Kotlin's
+ * `MotionInjector` sends a multi-pointer MOVE as ONE `MotionEvent` carrying all
+ * pointers' updated coordinates; scrcpy is one pointer per control message, so the
+ * same tick becomes N separate messages here. The server applies each to its
+ * pointer set and dispatches a MotionEvent per message, i.e. ~N× as many on-device
+ * MotionEvents per tick, and the intermediate ones are "half-updated" (pointer 0
+ * moved, pointer 1 not yet). The gesture still lands correctly and the resampled
+ * frame timing matches, but the on-device event STREAM differs from Kotlin's, so
+ * pinch/rotate/custom gestures are excluded from any "per-event parity" / "fling
+ * fidelity unchanged" claim in the v7 report — only single-pointer tap/swipe make
+ * that claim (one message per event there, so the streams do match).
  */
 
 /** scrcpy wire touch actions (subset of `AndroidMotionEventAction`, same values). */
