@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import { performance } from "node:perf_hooks";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import {
   attachNdjsonReader,
@@ -43,6 +44,18 @@ export interface RequestWithStats<T> {
   wireBytes: number;
   /** Host `JSON.parse` cost for that reply, in ms. */
   parseMs: number;
+  /**
+   * Host-clock request timeline (phase 3i), all in ms:
+   * - `hostSentToFirstByteMs`: request-line-flushed → first response byte (TTFB:
+   *   request leg + server pre-write work incl. capture + first-byte response leg).
+   * - `hostFirstToLastByteMs`: first → last response byte (the receive/streaming
+   *   span of the reply — on loopback this tracks the server's write duration).
+   * - `hostRoundTripMs`: request-line-flushed → last response byte (the whole RPC
+   *   wall time as the host sees it, excluding host parse).
+   */
+  hostSentToFirstByteMs: number;
+  hostFirstToLastByteMs: number;
+  hostRoundTripMs: number;
 }
 
 interface AndroidOpenServerClientOptions {
@@ -143,6 +156,9 @@ export class AndroidOpenServerClient {
     const payload = JSON.stringify({ jsonrpc: "2.0", method, params: params ?? {}, id });
 
     return new Promise<RequestWithStats<T>>((resolve, reject) => {
+      // t1: request line fully written to the socket. Defaulted to pre-write in
+      // case the write callback is delayed; overwritten with the flush time below.
+      let sentAt = performance.now();
       const timer = setTimeout(() => {
         this.pending.delete(id);
         // A wedged request means the connection is suspect: destroy it so the
@@ -161,7 +177,15 @@ export class AndroidOpenServerClient {
       }, this.timeoutMs);
 
       this.pending.set(id, {
-        resolve: (v, stats) => resolve({ result: v as T, wireBytes: stats.bytes, parseMs: stats.parseMs }),
+        resolve: (v, stats) =>
+          resolve({
+            result: v as T,
+            wireBytes: stats.bytes,
+            parseMs: stats.parseMs,
+            hostSentToFirstByteMs: stats.firstByteAt - sentAt,
+            hostFirstToLastByteMs: stats.lastByteAt - stats.firstByteAt,
+            hostRoundTripMs: stats.lastByteAt - sentAt,
+          }),
         reject,
         timer,
       });
@@ -174,6 +198,8 @@ export class AndroidOpenServerClient {
             this.pending.delete(id);
           }
           reject(err);
+        } else {
+          sentAt = performance.now();
         }
       });
     });

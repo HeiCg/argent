@@ -85,10 +85,26 @@ class TCPServer(
                 val trimmed = line!!.trim()
                 if (trimmed.isEmpty()) continue
 
+                // Phase 3i timeline: t2 = handler entry (arrival), t3 = response
+                // ready, t4 = response written + flushed. readLine already returned
+                // (bytes delivered), so t2 is arrival with no pre-handler queue on
+                // this single-connection thread. The write+flush span (t4 − t3) is
+                // the 31 KB reply cost; reported back for the NEXT same-method reply.
+                val t2 = System.nanoTime()
                 val response = handler.handle(trimmed)
+                val t3 = System.nanoTime()
                 writer.write(response)
                 writer.write("\n")
                 writer.flush()
+                val t4 = System.nanoTime()
+                handler.lastHandledMethod?.let { m ->
+                    handler.reportServerTiming(
+                        m,
+                        (t3 - t2) / 1_000_000.0,
+                        (t4 - t3) / 1_000_000.0,
+                        (t4 - t2) / 1_000_000.0
+                    )
+                }
             }
         } catch (e: Exception) {
             if (running) Log.e(TAG, "Connection error", e)
