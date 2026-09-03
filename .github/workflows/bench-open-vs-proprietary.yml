@@ -242,6 +242,9 @@ jobs:
           OPEN_SERVER_DEVICE_TESTS: "1"
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
         run: |
+          # pipefail is REQUIRED: `vitest | tee` otherwise reports tee's exit (0),
+          # masking a device-test failure even with continue-on-error gone.
+          set -eo pipefail
           cd packages/tool-server
           npx vitest run test/blueprints/android-open-server.device.test.ts 2>&1 \
             | tee "$RUNNER_TEMP/device-test.log"
@@ -255,7 +258,9 @@ jobs:
           BENCH_SERIAL: emulator-5554
           NODE_OPTIONS: "--max-old-space-size=2048"
         run: |
-          set -e
+          # pipefail so a block's `node … | tee` reports node's exit, not tee's —
+          # an ON-block bench failure (e.g. a no-effect tap) must fail the step.
+          set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
           mkdir -p "$BENCH_OUT"
           run_block () {
@@ -295,7 +300,9 @@ jobs:
           FLING_N: "12"
           NODE_OPTIONS: "--max-old-space-size=2048"
         run: |
-          set -e
+          # pipefail so `node run-fling.js | tee` reports node's exit; an ON fling
+          # run failure must be caught by the `if …; else exit 1` below.
+          set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
           for cfg in ON-uiautomation ON-scrcpy OFF; do
             echo "########## FLING $cfg ##########"
