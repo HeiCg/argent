@@ -389,10 +389,15 @@ type DescribeStages = {
   encodeMs: StageStat;
   // Host-side split (phase 3i): the cost OUTSIDE the on-device `timings`.
   // `hostParseMs` is the host JSON.parse of the reply, `hostRenderMs` the host
-  // tree-lowering + v2 trim. Transport (Nagle/adb-forward) is not a host stage —
-  // read it from `ping` + the ON-vs-OFF describe gap.
+  // tree-lowering + v2 trim. The host-clock timeline decomposes the round-trip:
+  // `hostTtfbMs` = request-flushed → first response byte (request leg + server
+  // pre-write incl. capture), `hostRecvMs` = first → last byte (receive/streaming
+  // span; on loopback ≈ the server write duration), `hostRttMs` = the whole thing.
   hostParseMs: StageStat;
   hostRenderMs: StageStat;
+  hostTtfbMs: StageStat;
+  hostRecvMs: StageStat;
+  hostRttMs: StageStat;
 };
 const STAGE_KEYS = [
   "idleMs",
@@ -403,6 +408,9 @@ const STAGE_KEYS = [
   "encodeMs",
   "hostParseMs",
   "hostRenderMs",
+  "hostTtfbMs",
+  "hostRecvMs",
+  "hostRttMs",
 ] as const;
 type StageKey = (typeof STAGE_KEYS)[number];
 
@@ -437,7 +445,7 @@ async function describeSplit(
   const wireBytesSamples: number[] = [];
   const stageSamples: Record<StageKey, number[]> = {
     idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
-    hostParseMs: [], hostRenderMs: [],
+    hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
   };
   for (let i = 0; i < n; i++) {
     if (setup) await setup().catch(() => undefined);
@@ -448,6 +456,9 @@ async function describeSplit(
         wireBytes?: number;
         hostParseMs?: number;
         hostRenderMs?: number;
+        hostSentToFirstByteMs?: number;
+        hostFirstToLastByteMs?: number;
+        hostRoundTripMs?: number;
         timings?: {
           idleMs?: number;
           rootMs?: number;
@@ -462,6 +473,9 @@ async function describeSplit(
       if (typeof d.wireBytes === "number") wireBytesSamples.push(d.wireBytes);
       if (typeof d.hostParseMs === "number") stageSamples.hostParseMs.push(d.hostParseMs);
       if (typeof d.hostRenderMs === "number") stageSamples.hostRenderMs.push(d.hostRenderMs);
+      if (typeof d.hostSentToFirstByteMs === "number") stageSamples.hostTtfbMs.push(d.hostSentToFirstByteMs);
+      if (typeof d.hostFirstToLastByteMs === "number") stageSamples.hostRecvMs.push(d.hostFirstToLastByteMs);
+      if (typeof d.hostRoundTripMs === "number") stageSamples.hostRttMs.push(d.hostRoundTripMs);
       const t = d.timings;
       if (t) {
         if (typeof t.idleMs === "number") stageSamples.idleMs.push(t.idleMs);
@@ -490,6 +504,9 @@ async function describeSplit(
     encodeMs: stageStat(stageSamples.encodeMs),
     hostParseMs: stageStat(stageSamples.hostParseMs),
     hostRenderMs: stageStat(stageSamples.hostRenderMs),
+    hostTtfbMs: stageStat(stageSamples.hostTtfbMs),
+    hostRecvMs: stageStat(stageSamples.hostRecvMs),
+    hostRttMs: stageStat(stageSamples.hostRttMs),
   };
   return {
     waitedP50: p50(waited),
@@ -553,6 +570,126 @@ async function measurePing(
   } catch {
     return { p50: null, p95: null, n: 0 };
   }
+}
+
+// Reply fields the phase 3i host + server instrumentation attaches to getState /
+// getNestedState. All optional — absent on an older server APK.
+interface RpcTimedReply {
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
+  waitedMs?: number;
+  captureMs?: number;
+  timings?: {
+    encodeMs?: number;
+    serializeMs?: number;
+    prevServerHandleMs?: number;
+    prevServerWriteMs?: number;
+    prevServerTotalMs?: number;
+  };
+}
+
+// Full end-to-end decomposition of one RPC, measured BACK-TO-BACK (no other RPC
+// between calls) so the piggybacked prevServer* fields belong to the previous call
+// of the SAME method — the clean version of what describeSplit collects amid setup
+// (phase 3i). Bytes for wireBytes; ms for the rest.
+interface RpcBreakdown {
+  label: string;
+  n: number;
+  wireBytes: StageStat;
+  hostTtfbMs: StageStat;
+  hostRecvMs: StageStat;
+  hostRttMs: StageStat;
+  hostParseMs: StageStat;
+  serverWaitedMs: StageStat;
+  serverCaptureMs: StageStat;
+  serverEncodeMs: StageStat;
+  serverWriteMs: StageStat; // prevServerWriteMs (t4 - t3)
+  serverHandleMs: StageStat; // prevServerHandleMs (t3 - t2)
+  serverTotalMs: StageStat; // prevServerTotalMs (t4 - t2)
+}
+
+async function measureRpcBreakdown(
+  reg: Reg,
+  label: string,
+  n: number,
+  call: (server: OpenDeviceServerApi) => Promise<RpcTimedReply>
+): Promise<RpcBreakdown | null> {
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    // Warmup also primes the server's prevServer* piggyback for the first sample.
+    for (let i = 0; i < 3; i++) await call(server).catch(() => undefined);
+    const s = {
+      wire: [] as number[], ttfb: [] as number[], recv: [] as number[], rtt: [] as number[],
+      parse: [] as number[], waited: [] as number[], capture: [] as number[], encode: [] as number[],
+      write: [] as number[], handle: [] as number[], total: [] as number[],
+    };
+    const push = (arr: number[], v?: number) => {
+      if (typeof v === "number" && Number.isFinite(v)) arr.push(v);
+    };
+    for (let i = 0; i < n; i++) {
+      try {
+        const r = await call(server);
+        push(s.wire, r.wireBytes);
+        push(s.ttfb, r.hostSentToFirstByteMs);
+        push(s.recv, r.hostFirstToLastByteMs);
+        push(s.rtt, r.hostRoundTripMs);
+        push(s.parse, r.hostParseMs);
+        push(s.waited, r.waitedMs);
+        push(s.capture, r.captureMs);
+        push(s.encode, r.timings?.encodeMs);
+        push(s.write, r.timings?.prevServerWriteMs);
+        push(s.handle, r.timings?.prevServerHandleMs);
+        push(s.total, r.timings?.prevServerTotalMs);
+      } catch {
+        /* skip */
+      }
+    }
+    return {
+      label,
+      n: s.rtt.length,
+      wireBytes: stageStat(s.wire),
+      hostTtfbMs: stageStat(s.ttfb),
+      hostRecvMs: stageStat(s.recv),
+      hostRttMs: stageStat(s.rtt),
+      hostParseMs: stageStat(s.parse),
+      serverWaitedMs: stageStat(s.waited),
+      serverCaptureMs: stageStat(s.capture),
+      serverEncodeMs: stageStat(s.encode),
+      serverWriteMs: stageStat(s.write),
+      serverHandleMs: stageStat(s.handle),
+      serverTotalMs: stageStat(s.total),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Render one RpcBreakdown as a p50/p95 stage table for the bench log. */
+function formatRpcBreakdown(b: RpcBreakdown): string {
+  const cell = (st: StageStat) =>
+    st.p50 === null ? "   -   " : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
+  const rows: Array<[string, StageStat]> = [
+    ["wireBytes", b.wireBytes],
+    ["hostTtfbMs", b.hostTtfbMs],
+    ["hostRecvMs", b.hostRecvMs],
+    ["hostRttMs", b.hostRttMs],
+    ["hostParseMs", b.hostParseMs],
+    ["server waitedMs", b.serverWaitedMs],
+    ["server captureMs", b.serverCaptureMs],
+    ["server encodeMs", b.serverEncodeMs],
+    ["server writeMs(t4-t3)", b.serverWriteMs],
+    ["server handleMs(t3-t2)", b.serverHandleMs],
+    ["server totalMs(t4-t2)", b.serverTotalMs],
+  ];
+  const lines: string[] = [];
+  lines.push(`[bench] RPC breakdown ${b.label} (N=${b.n}) p50/p95`);
+  for (const [k, st] of rows) lines.push(`[bench]   ${k.padEnd(22)} ${cell(st)}`);
+  return lines.join("\n");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -705,6 +842,10 @@ interface BlockResult {
   pingP50: number | null;
   pingP95: number | null;
   pingN: number;
+  // Back-to-back end-to-end RPC decompositions (phase 3i): getNestedState (the
+  // describe path, ~31 KB text) and getState+screenshot (JPEG-heavy), so the 5-point
+  // timeline shows whether the residual is per-byte or per-request. Empty on OFF.
+  rpcBreakdowns: RpcBreakdown[];
   // Post-navigating-tap staleness (P3d): "destination already visible" rate for
   // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
   // ON settle:true in an ON block. Empty when no nav target could be derived.
@@ -820,6 +961,30 @@ async function runBlock(
     config === "ON"
       ? await measurePing(reg, N)
       : { p50: null, p95: null, n: 0 };
+
+  // Back-to-back RPC decompositions (phase 3i), ON only, on the idle Settings root.
+  // getNestedState = the describe path (big nested text, no screenshot);
+  // getState+screenshot = a JPEG-heavy payload. Comparing the 5-point timeline of
+  // the two (and vs ping) shows whether the residual scales per-byte or is a fixed
+  // per-request cost. Back-to-back so the piggybacked prevServer* is clean.
+  const rpcBreakdowns: RpcBreakdown[] = [];
+  if (config === "ON") {
+    await ensureSettings(reg);
+    const nested = await measureRpcBreakdown(reg, "getNestedState (describe path)", N, (s) =>
+      s.getNestedState({ waitTimeoutMs: 0 }) as Promise<RpcTimedReply>
+    );
+    if (nested) {
+      rpcBreakdowns.push(nested);
+      realDebug(formatRpcBreakdown(nested));
+    }
+    const withShot = await measureRpcBreakdown(reg, "getState +screenshot", N, (s) =>
+      s.getState({ waitTimeoutMs: 0, includeScreenshot: true }) as Promise<RpcTimedReply>
+    );
+    if (withShot) {
+      rpcBreakdowns.push(withShot);
+      realDebug(formatRpcBreakdown(withShot));
+    }
+  }
 
   // screenshot — NOT a latency verb (F6). The two backends return different-sized
   // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
@@ -1105,6 +1270,7 @@ async function runBlock(
     pingP50: ping.p50,
     pingP95: ping.p95,
     pingN: ping.n,
+    rpcBreakdowns,
     destinationVisible,
     notes,
   };
