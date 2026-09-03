@@ -306,6 +306,60 @@ object MotionInjector {
         }
     }
 
+    /**
+     * Flush the input dispatcher's touch queue synchronously (phase 3f).
+     *
+     * The fast-inject backend delivers tap/swipe/gesture events over the scrcpy
+     * control channel (a separate `app_process`, not this UiAutomation), so this
+     * process's own [asyncUpOutstanding] bookkeeping does NOT see them and
+     * [drainAsyncUp] would no-op. Yet a following `getNestedState` on THIS channel
+     * must still observe the post-UP tree, never the mid-press state. Both scrcpy's
+     * injected events and the event below funnel through the one system
+     * InputDispatcher FIFO, so injecting a single no-op MotionEvent
+     * SYNCHRONOUSLY (`WAIT_FOR_FINISH`) blocks until it — and therefore every
+     * touch event enqueued ahead of it — has been delivered.
+     *
+     * The no-op is an ACTION_CANCEL with no pointer down (pressure/size 0): the
+     * dispatcher drops it (zero UI effect) but still orders and drains it. Called
+     * by the `flushInput` RPC right after a fast-inject action. Also clears any
+     * stale [asyncUpOutstanding] flag, since the sync injection drained the queue.
+     */
+    fun flushInput(uiAutomation: UiAutomation) {
+        asyncUpOutstanding = false
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = 0f
+            y = 0f
+            pressure = 0f
+            size = 0f
+        }
+        val now = SystemClock.uptimeMillis()
+        val event = MotionEvent.obtain(
+            now,
+            now,
+            MotionEvent.ACTION_CANCEL,
+            1,
+            arrayOf(props),
+            arrayOf(coords),
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            InputDevice.SOURCE_TOUCHSCREEN,
+            0
+        )
+        try {
+            uiAutomation.injectInputEvent(event, true)
+        } finally {
+            event.recycle()
+        }
+    }
+
     private fun dispatchAt(
         uiAutomation: UiAutomation,
         props: MotionEvent.PointerProperties,

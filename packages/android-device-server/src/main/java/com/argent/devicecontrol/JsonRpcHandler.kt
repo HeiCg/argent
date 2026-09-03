@@ -5,6 +5,7 @@ import android.app.UiAutomation
 import android.util.Log
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.handlers.ClipboardHandler
+import com.argent.devicecontrol.handlers.FlushInputHandler
 import com.argent.devicecontrol.handlers.GestureHandler
 import com.argent.devicecontrol.handlers.HierarchyHandler
 import com.argent.devicecontrol.handlers.InfoHandler
@@ -42,6 +43,7 @@ class JsonRpcHandler(
     private val tapHandler = TapHandler(uiAutomation)
     private val swipeHandler = SwipeHandler(uiDevice, uiAutomation)
     private val gestureHandler = GestureHandler(uiAutomation)
+    private val flushInputHandler = FlushInputHandler(uiAutomation)
     private val typeHandler = TypeHandler(instrumentation, uiDevice)
     private val clipboardHandler = ClipboardHandler(instrumentation)
     private val longPressHandler = LongPressHandler(uiDevice)
@@ -74,6 +76,7 @@ class JsonRpcHandler(
                 "longPress" -> longPressHandler.execute(params)
                 "swipe" -> swipeHandler.execute(params)
                 "gesture" -> gestureHandler.execute(params)
+                "flushInput" -> flushInputHandler.execute(params)
                 "typeText" -> typeHandler.execute(params)
                 "setClipboard" -> clipboardHandler.execute(params)
                 "key" -> keyHandler.execute(params)

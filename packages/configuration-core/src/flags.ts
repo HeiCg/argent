@@ -73,6 +73,11 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     description:
       "Route Android describe, screen capture and touch/type input through the open-source on-device control server (`@argent/android-device-server`) instead of the uiautomator dump and the proprietary simulator-server. When on and the server is reachable it serves describe (source: open-device-server), screenshot, screenshot-diff live capture, gesture-tap / gesture-swipe / gesture-pinch / gesture-rotate / gesture-custom, paste, keyboard, the flow tree, and the await-* poll loops; every path falls back to the current one if the server is unavailable. Off by default; requires the built server APK.",
   },
+  {
+    name: "open-device-server-fast-inject",
+    description:
+      "Under `open-device-server`, inject tap/swipe/gesture touch events over the scrcpy control channel (Apache-2.0, server 3.3.1 via `@yume-chan/adb-scrcpy`) instead of the UiAutomation instrumentation hop, cutting per-event inject latency. Only the tap/swipe/gesture verbs move to scrcpy; describe/state/screenshot/typeText/key/await-* stay on the Kotlin on-device server. Ordering with a following read is preserved by a synchronous `flushInput` RPC. No effect unless `open-device-server` is also on. Off by default.",
+  },
 ];
 
 export function getFlagDefinition(

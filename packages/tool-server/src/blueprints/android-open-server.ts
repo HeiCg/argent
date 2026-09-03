@@ -11,7 +11,9 @@ import {
   type ServiceEvents,
 } from "@argent/registry";
 import { serverManifest } from "@argent/android-device-server";
+import { isFlagEnabled } from "@argent/configuration-core";
 import { runAdb } from "../utils/adb";
+import type { ScrcpyInjectBackend } from "../utils/scrcpy-inject-backend";
 import { resolveAndroidBinary } from "../utils/android-binary";
 import { ensureOpenDeviceServerInstalled } from "../utils/android-helper-install";
 import { AndroidOpenServerClient } from "../utils/android-open-server-client";
@@ -24,7 +26,20 @@ import type {
 
 const OPEN_DEVICE_SERVER_NAMESPACE = "OpenDeviceServer";
 
-type OpenDeviceServerFactoryOptions = Record<string, unknown> & { device: DeviceInfo };
+/**
+ * Backend for tap/swipe/gesture touch injection (phase 3f):
+ * - `'off'`   — inject via the Kotlin `android-device-server` (UiAutomation).
+ * - `'scrcpy'`— inject over the scrcpy control channel, skipping the
+ *   instrumentation hop; describe/state/screenshot/etc. stay on the Kotlin
+ *   channel. Gated by the `open-device-server-fast-inject` flag when the option
+ *   is omitted.
+ */
+export type FastInjectBackend = "off" | "scrcpy";
+
+type OpenDeviceServerFactoryOptions = Record<string, unknown> & {
+  device: DeviceInfo;
+  fastInject?: FastInjectBackend;
+};
 
 export function openDeviceServerRef(device: DeviceInfo): {
   urn: string;
@@ -165,6 +180,14 @@ export interface OpenDeviceServerApi {
   ): Promise<{ success: boolean }>;
   /** Inject a synchronized multi-pointer gesture (pinch / rotate / custom). */
   gesture(pointers: GesturePointerPath[]): Promise<{ success: boolean }>;
+  /**
+   * Synchronously drain the on-device input dispatcher's touch queue (phase 3f).
+   * Called after a fast-inject (scrcpy) tap/swipe/gesture so a following
+   * `getNestedState`/describe on this channel observes the settled, finger-up
+   * tree rather than the mid-press state — scrcpy injects from a separate process
+   * this server's async-UP bookkeeping cannot see. A cheap no-op on its own.
+   */
+  flushInput(): Promise<{ success: boolean }>;
   typeText(text: string): Promise<{ success: boolean; charsTyped: number }>;
   key(key: string): Promise<{ success: boolean }>;
   waitForIdle(timeoutMs?: number): Promise<{ idle: boolean; waitedMs: number }>;
@@ -491,6 +514,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
         }),
       gesture: (pointers) => client.request<{ success: boolean }>("gesture", { pointers }),
+      flushInput: () => client.request<{ success: boolean }>("flushInput"),
       typeText: (text) =>
         client.request<{ success: boolean; charsTyped: number }>("typeText", { text }),
       key: (key) => client.request<{ success: boolean }>("key", { key }),
@@ -516,11 +540,52 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }),
     };
 
+    // Fast-inject seam (phase 3f). When enabled, replace ONLY the tap/swipe/gesture
+    // closures with the scrcpy control-channel backend; every other verb stays on
+    // the Kotlin NDJSON client. The `@yume-chan` deps are pulled in lazily so the
+    // default path (and the pure-timeline unit tests) never load them. After each
+    // fast-inject action we call the Kotlin `flushInput` RPC: scrcpy injects from a
+    // separate process, so this synchronous no-op is what orders the touch ahead of
+    // a following `getNestedState`/describe on this channel (the critical ordering
+    // guarantee) — and it keeps `tapWithOutcome`-style before/after captures honest.
+    const fastInject: FastInjectBackend =
+      opts.fastInject ?? (isFlagEnabled("open-device-server-fast-inject") ? "scrcpy" : "off");
+    let scrcpyBackend: ScrcpyInjectBackend | null = null;
+    if (fastInject === "scrcpy") {
+      const { createScrcpyInjectBackend } = await import("../utils/scrcpy-inject-backend");
+      scrcpyBackend = createScrcpyInjectBackend({
+        serial,
+        getScreenSize: () => api.getScreenSize(),
+        log: (msg) => {
+          // eslint-disable-next-line no-console
+          console.debug(`[open-server-fast-inject] ${msg}`);
+        },
+      });
+      const backend = scrcpyBackend;
+      api.tap = async (x, y, tapOpts = {}) => {
+        await backend.tap(x, y, tapOpts);
+        await api.flushInput();
+        return { success: true };
+      };
+      api.swipe = async (startX, startY, endX, endY, steps, holdEndMs) => {
+        await backend.swipe(startX, startY, endX, endY, steps ?? 10, holdEndMs ?? 0);
+        await api.flushInput();
+        return { success: true };
+      };
+      api.gesture = async (pointers) => {
+        await backend.gesture(pointers);
+        await api.flushInput();
+        return { success: true };
+      };
+    }
+
     const instance: ServiceInstance<OpenDeviceServerApi> = {
       api,
       dispose: async () => {
         disposed = true;
         ready = false;
+        // Tear down the scrcpy control channel (F3f) before the Kotlin server.
+        if (scrcpyBackend) await scrcpyBackend.dispose().catch(() => undefined);
         // Drop this device's cached screen geometry (F21) so a later session on
         // the same serial re-reads it rather than trusting a stale orientation.
         invalidateScreenSize(serial);
