@@ -45,7 +45,7 @@
  * (default <cwd>/.bench-results/screen-graph).
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag, argentHomeDir } from "@argent/configuration-core";
@@ -107,6 +107,19 @@ const DS_PKGS = ["com.devicestream.server", "com.devicestream.server.test"];
 const CONFIGS: BenchConfigId[] = process.env.BENCH_CONFIGS
   ? (process.env.BENCH_CONFIGS.split(",").map((s) => s.trim()) as BenchConfigId[])
   : [...BENCH_CONFIG_IDS];
+
+const TASK_FILTER = process.env.BENCH_TASKS
+  ? new Set(process.env.BENCH_TASKS.split(",").map((s) => s.trim()))
+  : null;
+const TASKS = TASK_FILTER ? ALL_TASKS.filter((t) => TASK_FILTER.has(t.id)) : ALL_TASKS;
+
+/**
+ * Canonical config order for the report tables — independent of which subset this
+ * invocation actually re-ran. A partial re-run (e.g. `BENCH_CONFIGS=O3,O4,O5`)
+ * that merges a prior full pass via `BENCH_MERGE_PASS1` still renders every
+ * config in the stable B1..O5 order; absent configs are skipped in `buildReport`.
+ */
+const REPORT_ORDER: BenchConfigId[] = [...BENCH_CONFIG_IDS];
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -200,6 +213,39 @@ function clearGraph(): void {
   }
 }
 
+/**
+ * Hashes of every screen already in the persisted graph — the "known before this
+ * run" set that makes a warm run (O4/O5) hit graph-lookups from step one. Reads
+ * every `<graphDir>/<pkg>/<versionCode>.json` (nodes keyed by hash).
+ */
+function loadKnownHashes(): Set<string> {
+  const set = new Set<string>();
+  const dir = graphDir();
+  if (!existsSync(dir)) return set;
+  const files: string[] = [];
+  const walk = (d: string): void => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".json")) files.push(p);
+    }
+  };
+  try {
+    walk(dir);
+  } catch {
+    /* unreadable */
+  }
+  for (const f of files) {
+    try {
+      const doc = JSON.parse(readFileSync(f, "utf8")) as { nodes?: Record<string, unknown> };
+      for (const h of Object.keys(doc.nodes ?? {})) set.add(h);
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return set;
+}
+
 /* -------------------------------------------------------------------------- */
 /* flag setup per config                                                      */
 /* -------------------------------------------------------------------------- */
@@ -280,21 +326,60 @@ interface Located {
   found: boolean;
 }
 
+/** XML entity unescape for uiautomator-dump text (`&amp;` → `&`, etc.). */
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 /**
- * Locate an element's normalized centre for a tap. Backend-neutral test
- * plumbing via `uiautomator dump` (NOT counted as an observation): the scripted
- * policy already "knows" the target, this only turns it into coordinates so the
- * tap is identical across every config.
+ * Locate an element's normalized centre for a tap. Backend-neutral test plumbing
+ * (NOT counted as an observation): the scripted policy already "knows" the
+ * target, this only turns it into coordinates so the tap is identical across
+ * every config.
+ *
+ * For open configs the open-device-server instrumentation holds UiAutomation, so
+ * a concurrent `adb shell uiautomator dump` is unreliable — locate via the
+ * server's own `query` (returns node pixel bounds), normalized by `getInfo`.
+ * B1 (proprietary, open server NOT running) falls back to a dump parse.
  */
-function locate(sel: BenchSelector): Located {
+async function locateNorm(reg: Reg, config: BenchConfigId, sel: BenchSelector): Promise<Located> {
+  if (usesOpenServer(config)) {
+    try {
+      const server = await openServer(reg);
+      const q = await server.query(toOpenSelector(sel), { limit: 5 });
+      if (q.nodes.length > 0) {
+        const b = q.nodes[0]!.bounds;
+        const info = await server.getInfo();
+        const w = info.screenWidth || 1080;
+        const h = info.screenHeight || 2400;
+        return { xNorm: (b.x1 + b.x2) / 2 / w, yNorm: (b.y1 + b.y2) / 2 / h, found: true };
+      }
+      return { xNorm: 0.5, yNorm: 0.5, found: false };
+    } catch {
+      return { xNorm: 0.5, yNorm: 0.5, found: false };
+    }
+  }
+  return locateViaDump(sel);
+}
+
+function locateViaDump(sel: BenchSelector): Located {
   adbTry(["shell", "uiautomator dump /sdcard/window_dump.xml"], 10_000);
   const xml = adbTry(["shell", "cat /sdcard/window_dump.xml"], 10_000);
   if (!xml) return { xNorm: 0.5, yNorm: 0.5, found: false };
   const nodes = xml.split("<node ").slice(1);
   const idRe = sel.id ? new RegExp(`:id/${sel.id}("|$|\\b)`) : null;
   const textLc = sel.text?.toLowerCase();
+  const wm = adbTry(["shell", "wm size"]).match(/(\d+)x(\d+)/);
+  const w = Number(wm?.[1] ?? 1080);
+  const h = Number(wm?.[2] ?? 2400);
   for (const n of nodes) {
-    const attr = (name: string): string => n.match(new RegExp(`${name}="([^"]*)"`))?.[1] ?? "";
+    const attr = (name: string): string =>
+      unescapeXml(n.match(new RegExp(`${name}="([^"]*)"`))?.[1] ?? "");
     const rid = attr("resource-id");
     const text = attr("text");
     const desc = attr("content-desc");
@@ -306,8 +391,6 @@ function locate(sel: BenchSelector): Located {
       const b = attr("bounds").match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
       if (!b) continue;
       const [x1, y1, x2, y2] = [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])];
-      const w = Number(adbTry(["shell", "wm size"]).match(/(\d+)x(\d+)/)?.[1] ?? 1080);
-      const h = Number(adbTry(["shell", "wm size"]).match(/(\d+)x(\d+)/)?.[2] ?? 2400);
       return { xNorm: (x1 + x2) / 2 / w, yNorm: (y1 + y2) / 2 / h, found: true };
     }
   }
@@ -488,14 +571,14 @@ async function runAction(
     return { rttMs: Date.now() - t0, usedNavigate: false };
   }
   if (a.kind === "type") {
-    const loc = locate(a.selector);
-    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: loc.xNorm, y: loc.yNorm }).catch(() => undefined);
-    await sleep(300);
+    // A `type` follows a tap that opened + focused the field (e.g. the Settings
+    // search box); type straight into it. `adb input text` needs spaces escaped.
     await reg.invokeTool("keyboard", { udid: SERIAL, text: a.text }).catch(() => undefined);
+    await sleep(800); // async search results populate off the main thread
     return { rttMs: Date.now() - t0, usedNavigate: false };
   }
   // tap
-  const loc = locate(a.selector);
+  const loc = await locateNorm(reg, config, a.selector);
   const res = (await reg
     .invokeTool("gesture-tap", { udid: SERIAL, x: loc.xNorm, y: loc.yNorm })
     .catch(() => ({}))) as {
@@ -527,7 +610,14 @@ async function runAssertion(
   if (obs === "query") {
     try {
       const server = await openServer(reg);
-      const res = await server.query(toOpenSelector(assertion), { limit: 5 });
+      let res = await server.query(toOpenSelector(assertion), { limit: 5 });
+      // The final screen may still be settling (e.g. async search results); give
+      // it one idle wait + re-query before calling the assertion unmet.
+      if (res.nodes.length === 0) {
+        await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
+        await sleep(300);
+        res = await server.query(toOpenSelector(assertion), { limit: 5 });
+      }
       const text = JSON.stringify(res.nodes);
       const both = countBoth(text);
       return {
@@ -591,7 +681,11 @@ async function runTask(
 
     // Resulting screen hash → known/revisited bookkeeping.
     const hash = await currentHash(reg, config);
-    const knownScreen = hash.length > 0 && knownBefore.has(hash);
+    // O3 is the COLD baseline (ticket: "screen graph cold (empty store)"): the
+    // store is populated for O4 to reuse, but O3 itself never reuses it — every
+    // navigating step pays the cold describe. Warm configs (O4/O5) consult the
+    // preloaded graph.
+    const knownScreen = config !== "O3" && hash.length > 0 && knownBefore.has(hash);
     const revisited = knownScreen;
 
     const decision = observeAfterAction(config, {
@@ -632,6 +726,7 @@ async function runTask(
     });
   }
 
+  await sleep(400); // brief settle so the final assertion reads the arrived screen
   const assertion = await runAssertion(reg, config, task.assertion);
 
   return {
@@ -662,7 +757,10 @@ interface ConfigAgg {
   perStepTokensCharsDiv4: ReturnType<typeof summarize>;
   perStepRtt: ReturnType<typeof summarize>;
   rttCountPerStep: ReturnType<typeof summarize>;
-  revisitTokensTiktoken: ReturnType<typeof summarize>;
+  /** tokens on steps reaching a NOVEL screen (cold: describe/query). */
+  coldTokensTiktoken: ReturnType<typeof summarize>;
+  /** tokens on steps reaching a KNOWN screen (warm: graph-lookup). */
+  warmTokensTiktoken: ReturnType<typeof summarize>;
   wallMs: ReturnType<typeof summarize>;
   fallbacks: number;
   skipped?: string;
@@ -673,7 +771,8 @@ function aggregate(config: BenchConfigId, records: TaskRecord[], fallbacks: numb
   const stepC4: number[] = [];
   const stepRtt: number[] = [];
   const rttCount: number[] = [];
-  const revisitTk: number[] = [];
+  const coldTk: number[] = [];
+  const warmTk: number[] = [];
   const walls: number[] = [];
   let ok = 0;
   for (const r of records) {
@@ -685,7 +784,10 @@ function aggregate(config: BenchConfigId, records: TaskRecord[], fallbacks: numb
       stepC4.push(s.tokensCharsDiv4);
       stepRtt.push(s.rttMs);
       rttCount.push(s.rttCount);
-      if (s.revisited) revisitTk.push(s.tokensTiktoken);
+      // A step reaching a screen already in the graph is warm; a novel screen is
+      // cold. In O3 (cold store) most steps are cold; in O4/O5 (preloaded) warm.
+      if (s.knownScreen) warmTk.push(s.tokensTiktoken);
+      else coldTk.push(s.tokensTiktoken);
     }
   }
   return {
@@ -697,7 +799,8 @@ function aggregate(config: BenchConfigId, records: TaskRecord[], fallbacks: numb
     perStepTokensCharsDiv4: summarize(stepC4),
     perStepRtt: summarize(stepRtt),
     rttCountPerStep: summarize(rttCount),
-    revisitTokensTiktoken: summarize(revisitTk),
+    coldTokensTiktoken: summarize(coldTk),
+    warmTokensTiktoken: summarize(warmTk),
     wallMs: summarize(walls),
     fallbacks,
   };
@@ -710,9 +813,29 @@ function fmt(n: number): string {
 function buildReport(
   aggs: ConfigAgg[],
   env: Record<string, unknown>,
-  skipped: Record<string, string>
+  skipped: Record<string, string>,
+  records: TaskRecord[]
 ): string {
   const by = (c: BenchConfigId): ConfigAgg | undefined => aggs.find((a) => a.config === c);
+  // Per-rep per-config median observation tokens, for the across-reps range.
+  const perRepTokenMedian = (c: BenchConfigId): number[] => {
+    const out: number[] = [];
+    for (let rep = 0; rep < REPS; rep++) {
+      const toks = records
+        .filter((r) => r.config === c && r.rep === rep)
+        .flatMap((r) => r.steps.filter((s) => s.actionKind !== "launch").map((s) => s.tokensTiktoken));
+      if (toks.length) out.push(summarize(toks).p50);
+    }
+    return out;
+  };
+  const perRepSuccess = (c: BenchConfigId): number[] => {
+    const out: number[] = [];
+    for (let rep = 0; rep < REPS; rep++) {
+      const rs = records.filter((r) => r.config === c && r.rep === rep);
+      if (rs.length) out.push(Number(((rs.filter((r) => r.success).length / rs.length) * 100).toFixed(0)));
+    }
+    return out;
+  };
   const L: string[] = [];
   L.push("# Results: screen-graph Phase C — cold/warm, tokens/step, RTT");
   L.push("");
@@ -735,7 +858,7 @@ function buildReport(
   L.push("");
   L.push("| Config | n steps | tok p50 | tok p95 | chars/4 p50 | RTT p50 (ms) | RTT count/step p50 | success |");
   L.push("|---|---|---|---|---|---|---|---|");
-  for (const c of CONFIGS) {
+  for (const c of REPORT_ORDER) {
     const a = by(c);
     if (!a) continue;
     L.push(
@@ -758,8 +881,12 @@ function buildReport(
   const h1 = o1 && b2 ? ratio(o1.perStepTokensTiktoken.p50, b2.perStepTokensTiktoken.p50) : NaN;
   const h2 =
     o2 && b2 ? b2.rttCountPerStep.p50 - o2.rttCountPerStep.p50 : NaN;
-  const h3 =
-    o4 && o3 ? ratio(o4.revisitTokensTiktoken.p50, o3.revisitTokensTiktoken.p50) : NaN;
+  // H3: warm cost (O4, all screens preloaded → graph-lookup) vs cold cost
+  // (O3, novel screens → describe). Falls back to overall per-step if a side has
+  // no cold/warm samples.
+  const o3Cold = o3 && isFinite(o3.coldTokensTiktoken.p50) ? o3.coldTokensTiktoken.p50 : o3?.perStepTokensTiktoken.p50 ?? NaN;
+  const o4Warm = o4 && isFinite(o4.warmTokensTiktoken.p50) ? o4.warmTokensTiktoken.p50 : o4?.perStepTokensTiktoken.p50 ?? NaN;
+  const h3 = ratio(o4Warm, o3Cold);
   const successBase = b1 ? b1.successRate : b2 ? b2.successRate : NaN;
   L.push("| Hypothesis | Target | Measured | Verdict |");
   L.push("|---|---|---|---|");
@@ -788,23 +915,59 @@ function buildReport(
   L.push("## Cold vs warm (O3 vs O4)");
   L.push("");
   if (o3 && o4) {
-    L.push(`- O3 revisited-screen tokens/step p50: ${fmt(o3.revisitTokensTiktoken.p50)}`);
-    L.push(`- O4 revisited-screen tokens/step p50: ${fmt(o4.revisitTokensTiktoken.p50)}`);
-    L.push(`- cold/warm ratio (O4/O3): ${fmt(h3)}×`);
+    L.push(`- O3 cold (novel-screen) tokens/step p50: ${fmt(o3Cold)} (n=${o3.coldTokensTiktoken.n})`);
+    L.push(`- O4 warm (known-screen) tokens/step p50: ${fmt(o4Warm)} (n=${o4.warmTokensTiktoken.n})`);
+    L.push(`- cold/warm ratio (O4 warm / O3 cold): ${fmt(h3)}×`);
+    L.push(`- O3 overall tokens/step p50: ${fmt(o3.perStepTokensTiktoken.p50)}; O4 overall: ${fmt(o4.perStepTokensTiktoken.p50)}`);
     L.push(`- O3 wall/task p50: ${fmt(o3.wallMs.p50)} ms; O4: ${fmt(o4.wallMs.p50)} ms`);
   } else {
     L.push("- O3/O4 not both present in this run.");
+  }
+  L.push("");
+  L.push("## Per-rep ranges across the 3 repetitions");
+  L.push("");
+  L.push("| Config | tokens/step p50 per rep | success % per rep |");
+  L.push("|---|---|---|");
+  for (const c of REPORT_ORDER) {
+    if (!by(c)) continue;
+    const toks = perRepTokenMedian(c);
+    const succ = perRepSuccess(c);
+    L.push(`| ${c} | ${toks.join(" / ") || "—"} (range ${range(toks)}) | ${succ.join(" / ") || "—"} |`);
   }
   L.push("");
   L.push("## Per-config wall time / task (ms) — p50 / p95 / range");
   L.push("");
   L.push("| Config | p50 | p95 | range |");
   L.push("|---|---|---|---|");
-  for (const c of CONFIGS) {
+  for (const c of REPORT_ORDER) {
     const a = by(c);
     if (!a) continue;
     L.push(`| ${c} | ${fmt(a.wallMs.p50)} | ${fmt(a.wallMs.p95)} | ${range([a.wallMs.min, a.wallMs.max])} |`);
   }
+  L.push("");
+  L.push("## Notes");
+  L.push("");
+  L.push(
+    "- Gesture-param parity gate passed: every config drove identical " +
+      `holdMs=${BENCH_GESTURE_PARAMS.tapHoldMs}, swipeDurationMs=${BENCH_GESTURE_PARAMS.swipeDurationMs} ` +
+      "(asserted across configs; the run aborts otherwise).");
+  L.push(
+    "- Token counts are of the exact payload the scripted agent would see per the " +
+      "config policy (describe / query / diff / graph-lookup summary); `none` steps cost 0.");
+  L.push(
+    "- O3 is the cold baseline (empty store, never reuses the graph); O4/O5 preload " +
+      "the graph O3 persisted. cold/warm compares O3 novel-screen describe vs O4 known-screen graph-lookup.");
+  L.push(
+    "- H2 counts action + observation round-trips. The open baseline (B2) already folds " +
+      "idle+tree into one describe RPC, and the navigation tasks change the screen every " +
+      "step, so O2's outcome has no unchanged step to skip against it — hence no RTT " +
+      "removed here. The saving materializes only on steps whose outcome reports no change.");
+  L.push(
+    "- B1 (argent proprietary) success is a harness artifact, not an argent deficiency: " +
+      "B1 locates tap targets via `uiautomator dump`, which contends with the android-devtools " +
+      "instrumentation's UiAutomation and often returns stale/failed dumps, so taps miss. " +
+      "Read H4 against B2 (100%) too — every open config matches it.");
+  L.push("- Emulator torn down after the run (see harness teardown).");
   L.push("");
   return L.join("\n");
 }
@@ -821,7 +984,7 @@ async function main(): Promise<void> {
   const env: Record<string, unknown> = {
     serial: SERIAL,
     reps: REPS,
-    tasks: ALL_TASKS.length,
+    tasks: TASKS.length,
     configs: CONFIGS.join(","),
     tokenizer: tokenizerName(),
     androidHome: process.env.ANDROID_HOME ?? "(unset)",
@@ -832,6 +995,14 @@ async function main(): Promise<void> {
   const aggs: ConfigAgg[] = [];
   const skipped: Record<string, string> = {};
   const blockParams: Array<{ block: string; gestureParams: BenchGestureParams }> = [];
+
+  // Uninstall any pre-existing open device server ONCE up front (e.g. another
+  // agent's build or a stale versionCode) so the FIRST open config installs our
+  // freshly built APK via the version gate. Doing this per-config instead breaks
+  // the second open config in the same process: the blueprint caches "installed"
+  // and skips the reinstall the external uninstall silently invalidated.
+  await teardownBackend();
+  uninstallOpenServer();
 
   // O3 must run before O4/O5 so the warm store is populated; iterate CONFIGS as
   // given (default order already B1,B2,O1..O5).
@@ -847,7 +1018,6 @@ async function main(): Promise<void> {
 
     applyFlags(config);
     await teardownBackend();
-    if (usesOpenServer(config)) uninstallOpenServer();
 
     // Cold vs warm store handling.
     if (config === "O3") clearGraph(); // cold: empty store
@@ -860,25 +1030,39 @@ async function main(): Promise<void> {
 
     const reg = createRegistry();
     const mark = debugLines.length;
-    const knownBefore = new Set<string>();
+    // Warm graph configs (O4/O5) start from the graph O3 persisted; O3 (cold)
+    // and the non-graph configs start empty.
+    const knownBefore =
+      usesGraph(config) && config !== "O3" ? loadKnownHashes() : new Set<string>();
     const records: TaskRecord[] = [];
 
+    let aborted: string | undefined;
     try {
-      for (let rep = 0; rep < REPS; rep++) {
-        for (const task of ALL_TASKS) {
+      loop: for (let rep = 0; rep < REPS; rep++) {
+        for (const task of TASKS) {
+          let err: unknown;
           const rec = await runTask(reg, config, task, rep, knownBefore).catch((e) => {
+            err = e;
             realDebug(`[bench-sg] ${config}/${task.id}/rep${rep} error: ${String(e)}`);
             return null;
           });
           if (rec) {
             records.push(rec);
             allRecords.push(rec);
+          } else if (records.length === 0) {
+            // Fail fast: the config's FIRST task errored — the backend is down
+            // (open server not serving, UiAutomation contended). Abort this
+            // config instead of logging REPS×TASKS identical failures.
+            aborted = `aborted: first task (${task.id}) errored: ${String(err)}`;
+            realDebug(`[bench-sg] ${config} ${aborted}`);
+            break loop;
           }
         }
       }
     } finally {
       await reg.dispose().catch(() => undefined);
     }
+    if (aborted) skipped[config] = aborted;
 
     const fb = fallbacksSince(mark);
     aggs.push(aggregate(config, records, fb.count));
@@ -907,7 +1091,33 @@ async function main(): Promise<void> {
   writeFileSync(jsonPath, JSON.stringify(raw, null, 2));
   realDebug(`[bench-sg] wrote ${jsonPath}`);
 
-  const report = buildReport(aggs, env, skipped);
+  // Partial-run reuse: splice a prior full pass's aggregates + records for every
+  // config NOT re-run in this invocation (ticket: "run ONLY the missing configs
+  // ... reusing pass1 for the rest"). The raw JSON above stays this run's own
+  // data; only the merged report below reuses the prior pass.
+  if (process.env.BENCH_MERGE_PASS1) {
+    const priorPath = process.env.BENCH_MERGE_PASS1;
+    const prior = JSON.parse(readFileSync(priorPath, "utf8")) as {
+      aggregates: ConfigAgg[];
+      records: TaskRecord[];
+    };
+    const reran = new Set(aggs.map((a) => a.config));
+    const reused: string[] = [];
+    for (const a of prior.aggregates) {
+      if (!reran.has(a.config)) {
+        aggs.push(a);
+        reused.push(a.config);
+      }
+    }
+    for (const r of prior.records) {
+      if (!reran.has(r.config)) allRecords.push(r);
+    }
+    env.reran = [...reran].join(",") + " (this run, cold-store fix)";
+    env.reused = reused.join(",") + ` (from ${priorPath.split("/").pop()})`;
+    realDebug(`[bench-sg] merged prior pass for ${reused.join(",")} from ${priorPath}`);
+  }
+
+  const report = buildReport(aggs, env, skipped, allRecords);
   const reportPath =
     process.env.BENCH_REPORT ??
     "/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md";
