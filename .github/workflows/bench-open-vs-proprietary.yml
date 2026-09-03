@@ -318,19 +318,33 @@ jobs:
         if: always()
         run: |
           export BENCH_OUT="$PWD/.bench-results"
-          node .github/bench-ci/scoreboard.js | tee "$BENCH_OUT/scoreboard.md" >> "$GITHUB_STEP_SUMMARY" || \
-            echo "scoreboard generation failed" >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$BENCH_OUT"
+          if node .github/bench-ci/scoreboard.js > "$BENCH_OUT/scoreboard.md" 2>/tmp/scoreboard.err; then
+            cat "$BENCH_OUT/scoreboard.md" >> "$GITHUB_STEP_SUMMARY"
+            cat "$BENCH_OUT/scoreboard.md"   # also to the step log (artifact-independent)
+          else
+            echo "scoreboard generation failed" | tee -a "$GITHUB_STEP_SUMMARY"
+            cat /tmp/scoreboard.err || true
+          fi
+
+      - name: Stage artifacts
+        # upload-artifact@v4 drops relative globs when mixed with absolute (/tmp)
+        # paths (they share no common root); stage everything under one dir first.
+        if: always()
+        run: |
+          STAGE="$RUNNER_TEMP/bench-artifacts"
+          mkdir -p "$STAGE/logs"
+          cp -r .bench-results "$STAGE/" 2>/dev/null || true
+          cp /tmp/emulator.log /tmp/avdmanager.log /tmp/prop-probe.txt "$STAGE/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/device-test.log" "$STAGE/logs/" 2>/dev/null || true
+          echo "=== staged ==="; find "$STAGE" -type f | sed "s|$STAGE/||" | sort
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-latency
-          path: |
-            .bench-results/**
-            /tmp/emulator.log
-            /tmp/avdmanager.log
-            /tmp/prop-probe.txt
+          path: ${{ runner.temp }}/bench-artifacts
           if-no-files-found: warn
           retention-days: 14
 
@@ -458,15 +472,20 @@ jobs:
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-matrix.log"
 
+      - name: Stage screen-graph artifacts
+        if: always()
+        run: |
+          STAGE="$RUNNER_TEMP/sg-artifacts"
+          mkdir -p "$STAGE/logs"
+          cp -r .bench-results "$STAGE/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/sg-preflight.log" "$RUNNER_TEMP/sg-matrix.log" /tmp/emulator.log "$STAGE/logs/" 2>/dev/null || true
+          find "$STAGE" -type f | sed "s|$STAGE/||" | sort
+
       - name: Upload screen-graph artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-screen-graph
-          path: |
-            .bench-results/**
-            ${{ runner.temp }}/sg-preflight.log
-            ${{ runner.temp }}/sg-matrix.log
-            /tmp/emulator.log
+          path: ${{ runner.temp }}/sg-artifacts
           if-no-files-found: warn
           retention-days: 14
