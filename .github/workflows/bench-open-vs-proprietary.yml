@@ -160,6 +160,19 @@ jobs:
           adb -s emulator-5554 shell settings put global window_animation_scale 0 || true
           adb -s emulator-5554 shell settings put global transition_animation_scale 0 || true
           adb -s emulator-5554 shell settings put global animator_duration_scale 0 || true
+          # Extra settle: a cold, contended x86 boot let tests race a still-janky
+          # launcher (Pixel Launcher ANR'd in a prior run, degrading the whole
+          # session). Wake, dismiss keyguard, and wait for a resumed home activity
+          # plus a grace period so the first tests hit a settled UI.
+          adb -s emulator-5554 shell input keyevent KEYCODE_WAKEUP || true
+          adb -s emulator-5554 shell wm dismiss-keyguard || true
+          for i in $(seq 1 30); do
+            RESUMED=$(adb -s emulator-5554 shell dumpsys activity activities 2>/dev/null \
+              | grep -c "mResumedActivity" || true)
+            [ "${RESUMED:-0}" -ge 1 ] && { echo "resumed activity present at settle t+$((i*2))s"; break; }
+            sleep 2
+          done
+          sleep 25
           adb devices -l
           # Verify the gRPC discovery ini the proprietary android controller reads
           # (linux: $XDG_RUNTIME_DIR/avd/running/pid_*.ini, else /run/user/<uid>/…).
@@ -242,12 +255,28 @@ jobs:
           OPEN_SERVER_DEVICE_TESTS: "1"
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
         run: |
-          # pipefail is REQUIRED: `vitest | tee` otherwise reports tee's exit (0),
-          # masking a device-test failure even with continue-on-error gone.
-          set -eo pipefail
+          set -uo pipefail
+          # Capture logcat (verbose input) across the run so a dropped/mis-targeted
+          # injected touch is diagnosable — the scrcpy-server's own stdout is also
+          # surfaced into device-test.log via the backend's [scrcpy-server] pump.
+          adb -s emulator-5554 shell setprop log.tag.InputDispatcher VERBOSE || true
+          adb -s emulator-5554 shell setprop log.tag.InputReader VERBOSE || true
+          adb -s emulator-5554 logcat -c || true
+          adb -s emulator-5554 logcat -v threadtime > "$RUNNER_TEMP/logcat-device-test.txt" 2>&1 &
+          LOGCAT_PID=$!
           cd packages/tool-server
+          # Run WITHOUT aborting on failure so logcat is always stopped and the exit
+          # code is still propagated (pipefail via PIPESTATUS): a device-test failure
+          # must fail the job (continue-on-error is gone), but the diagnostics must
+          # survive it.
+          set +e
           npx vitest run test/blueprints/android-open-server.device.test.ts 2>&1 \
             | tee "$RUNNER_TEMP/device-test.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          kill "$LOGCAT_PID" 2>/dev/null || true
+          echo "device-test vitest exit=$RC"
+          exit "$RC"
 
       # ---- (2) latency bench: 4 blocks via BENCH_ONLY, then merge ----
       - name: Latency bench — 4 blocks + merge
@@ -343,6 +372,7 @@ jobs:
           cp -r .bench-results "$STAGE/" 2>/dev/null || true
           cp /tmp/emulator.log /tmp/avdmanager.log /tmp/prop-probe.txt "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/device-test.log" "$STAGE/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/logcat-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
           echo "=== staged ==="; find "$STAGE" -type f | sed "s|$STAGE/||" | sort
 
       - name: Upload artifacts
