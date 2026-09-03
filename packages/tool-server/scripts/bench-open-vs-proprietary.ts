@@ -379,7 +379,17 @@ async function timeCalls(
       continue;
     }
     if (effectHash && before !== undefined) {
-      const after = await effectHash().catch(() => undefined);
+      let after = await effectHash().catch(() => undefined);
+      // A landing tap that navigates may still be animating/loading on the first
+      // read, so an immediate fingerprint can transiently equal the pre-tap one.
+      // Settle and re-read ONCE before counting a no-effect: a real navigation now
+      // shows the change, while a systematic no-op tap (the bug) still matches — so
+      // effectZero counts CONFIRMED no-effect, robust to a single transient read.
+      if (after !== undefined && after === before) {
+        await sleep(900);
+        const retry = await effectHash().catch(() => undefined);
+        if (retry !== undefined) after = retry;
+      }
       if (after !== undefined) {
         effectChecked++;
         if (after === before) effectZero++;
