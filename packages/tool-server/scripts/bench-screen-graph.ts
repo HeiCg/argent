@@ -303,9 +303,83 @@ async function launchApp(reg: Reg, app: BenchTask["app"]): Promise<void> {
       ["shell", `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`],
       12_000
     );
-    await sleep(3000);
+    // Chrome's first-run flow is dismissed once up front (prepareChromeOnce);
+    // here we only wait for the page to load. Cold-load on the KVM runner needs
+    // more than the old 3 s or the assertion reads a half-painted page.
+    await sleep(4500);
   }
   await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+}
+
+/** Clickable-label / id patterns that dismiss the Chrome first-run experience. */
+const FRE_DISMISS =
+  /use without an account|accept & continue|accept and continue|got it|no thanks|not now|maybe later|dismiss|skip|use without/i;
+
+/**
+ * One-time Chrome first-run dismissal (C.3). A fresh emulator shows
+ * "Welcome to Chrome / Turn on sync?" the first time Chrome opens, which HIDES
+ * example.com and fails EVERY chrome task for EVERY config (run 33742435496:
+ * all 6 chrome tasks NNN across B1..O5, so no config discrimination and H4
+ * unmeasurable). Dismiss it ONCE, up front, over the open server: `launchApp`'s
+ * per-task `am force-stop` never `pm clear`s Chrome, so the FRE stays dismissed
+ * for the emulator's lifetime — including B1, whose per-task launch runs with the
+ * open flag off. Fully best-effort: it logs and returns on any failure (the
+ * pre-flight gate, which does its own dismissal, is the real guard).
+ */
+async function prepareChromeOnce(): Promise<void> {
+  setFlag("open-device-server", true, "project");
+  const reg = createRegistry();
+  try {
+    const server = await openServer(reg);
+    adbTry(["shell", `am force-stop ${CHROME}`], 8_000);
+    await sleep(400);
+    adbTry(
+      ["shell", `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`],
+      12_000
+    );
+    await sleep(3500);
+    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    for (let i = 0; i < 6; i++) {
+      const info = await server.getInfo().catch(() => ({ screenWidth: 1080, screenHeight: 2400 }));
+      const W = info.screenWidth || 1080;
+      const H = info.screenHeight || 2400;
+      const q = await server.query({}, { limit: 1000 });
+      const nodes = q.nodes;
+      if (nodes.some((n) => /example domain/i.test(n.text ?? ""))) {
+        realDebug("[bench-sg] chrome FRE: example.com is up; done");
+        return;
+      }
+      const hasOmnibox = nodes.some((n) =>
+        /url_bar|search_box_text|search or type/i.test(`${n.id ?? ""} ${n.text ?? ""}`)
+      );
+      const fre = nodes.find((n) =>
+        FRE_DISMISS.test(`${n.text ?? ""} ${n.cd ?? ""} ${n.id ?? ""}`)
+      );
+      if (!fre) {
+        if (hasOmnibox) {
+          realDebug("[bench-sg] chrome FRE: omnibox present, no FRE button; done");
+          return;
+        }
+        await sleep(1000);
+        continue;
+      }
+      const cx = Math.round((fre.bounds.x1 + fre.bounds.x2) / 2);
+      const cy = Math.round((fre.bounds.y1 + fre.bounds.y2) / 2);
+      realDebug(`[bench-sg] chrome FRE: tapping "${(fre.text ?? fre.cd ?? fre.id ?? "").slice(0, 40)}"`);
+      await server.tapWithOutcome(cx, cy).catch(() => undefined);
+      await sleep(1500);
+      await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+      void W;
+      void H;
+    }
+    realDebug("[bench-sg] chrome FRE: dismissal loop exhausted (continuing)");
+  } catch (e) {
+    realDebug(`[bench-sg] chrome FRE prep failed (continuing): ${String(e)}`);
+  } finally {
+    await teardownBackend().catch(() => undefined);
+    await reg.dispose().catch(() => undefined);
+    unsetFlag("open-device-server", "project");
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -621,20 +695,53 @@ async function runAction(
   config: BenchConfigId,
   step: BenchStep,
   useNavigate: boolean,
-  located: Located | null
+  located: Located | null,
+  navSel: BenchSelector | null
 ): Promise<ActionResult> {
   const a = step.action;
   const t0 = Date.now();
 
   // O5 navigate-to: replace the tap+observe loop with one plan when the target
-  // is known and the graph can route to it.
+  // is known and the graph can route to it. TWO bugs are fixed here versus the
+  // C.2 harness that produced 30/60 O5 locate-fails in run 33742435496:
+  //
+  //  1. TARGET SHAPE. The tool's target is `{ screen | selector }` — the bench
+  //     selector goes UNDER `selector`, not as the whole target. C.2 passed
+  //     `{ text }` as the target itself, which failed the tool's zod refine
+  //     (`screen ?? selector` required) and THREW on every O5 known-target step.
+  //     Because `located` was not computed for O5, each throw was recorded as a
+  //     locate-fail — the exact 10 settings-nav tasks × 3 reps = 30.
+  //  2. ROUTE TARGET. `planToSelector` matches a screen whose index holds the
+  //     selector by EXACT text. The step's TAP selector (e.g. "Network &
+  //     internet") is on the CURRENT screen, so it resolves to 0 steps and never
+  //     enters the sub-screen. We route to the task's `navTarget` instead — a
+  //     DESTINATION-unique exact text (confirmed against the capture), so the
+  //     plan is the real root→sub-screen tap. Falls back to the tap selector when
+  //     a task has no navTarget.
+  //
+  // `reached` is required; a no-route / divergence (or a throw) falls through to
+  // the plain locate+tap the caller precomputed `located` for (O5's OWN recovery
+  // on the same open backend, not a switch to another config), so a routing miss
+  // is an honest tap, never a spurious locate-fail.
   if (useNavigate && a.kind === "tap") {
+    const target = navSel ?? a.selector;
     try {
-      await reg.invokeTool("navigate-to", { udid: SERIAL, target: toBenchTarget(a.selector) });
-      return { rttMs: Date.now() - t0, usedNavigate: true, locateFailed: false, actionFailed: false };
-    } catch {
-      /* fall through to a plain tap on divergence */
+      const nav = (await reg.invokeTool("navigate-to", {
+        udid: SERIAL,
+        target: { selector: toBenchTarget(target) },
+      })) as { reached?: boolean; completedSteps?: number; totalSteps?: number };
+      if (nav?.reached) {
+        return { rttMs: Date.now() - t0, usedNavigate: true, locateFailed: false, actionFailed: false };
+      }
+      realDebug(
+        `[bench-sg] navigate-to did not reach ${JSON.stringify(target)}; falling back to locate+tap`
+      );
+    } catch (e) {
+      realDebug(
+        `[bench-sg] navigate-to threw for ${JSON.stringify(target)}: ${String(e)}; falling back to locate+tap`
+      );
     }
+    /* fall through to the plain tap below (located computed by the caller) */
   }
 
   if (a.kind === "launch") {
@@ -886,19 +993,28 @@ async function runTask(
 
     // Resolve the tap target's coordinate — plumbing, identical for every config
     // (ticket §1): open configs locate via the live `query`; B1 replays the
-    // precomputed coordinate. Skipped for O5 navigate (routes by target, not xy)
-    // and for `tapXY`, which already carries fixed normalized coordinates.
+    // precomputed coordinate. Computed for O5's navigate steps too so a navigate
+    // divergence falls back to an honest locate+tap instead of a spurious
+    // locate-fail; the locate is off-metric plumbing (not in rttCount) and O5's
+    // graph-lookup observation is unchanged. `tapXY` carries fixed normalized
+    // coordinates and skips this.
     let located: Located | null = null;
-    if (step.action.kind === "tap" && !useNavigate) {
+    if (step.action.kind === "tap") {
       located = precomputed
         ? precomputed.get(coordKey(task.id, i)) ?? { xNorm: 0.5, yNorm: 0.5, found: false }
         : await locateNorm(reg, config, step.action.selector);
     }
 
+    // O5 routes to the task's DESTINATION (navTarget: a dest-unique exact text),
+    // NOT the tap selector (which is on the current screen — 0 steps). Falls back
+    // to the tap selector for a task with no navTarget.
+    const navSel: BenchSelector | null =
+      task.navTarget ?? (step.action.kind === "tap" ? step.action.selector : null);
+
     const tBefore = await traversals(reg, config);
     const action = isLaunch
       ? { rttMs: 0, usedNavigate: false, locateFailed: false, actionFailed: false }
-      : await runAction(reg, config, step, useNavigate, located);
+      : await runAction(reg, config, step, useNavigate, located, navSel);
 
     // Resulting screen hash → known/revisited bookkeeping.
     const hash = await currentHash(reg, config);
@@ -1570,6 +1686,14 @@ async function main(): Promise<void> {
   // and skips the reinstall the external uninstall silently invalidated.
   await teardownBackend();
   uninstallOpenServer();
+
+  // Dismiss Chrome's first-run flow ONCE up front so example.com renders for
+  // every chrome task and every config (incl. B1, which launches Chrome with the
+  // open flag off). Without this all 6 chrome tasks fail identically for all
+  // configs, flattening success and making H4 unmeasurable. Best-effort.
+  if (TASKS.some((t) => t.app === "chrome")) {
+    await prepareChromeOnce();
+  }
 
   // O3 must run before O4/O5 so the warm store is populated; iterate CONFIGS as
   // given (default order already B1,B2,O1..O5).
