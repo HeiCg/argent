@@ -345,6 +345,9 @@ jobs:
         with:
           name: bench-latency
           path: ${{ runner.temp }}/bench-artifacts
+          # .bench-results is dot-prefixed; upload-artifact@v4 excludes hidden paths
+          # by default, which dropped the latency bench JSON + scoreboard. Keep it.
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
 
