@@ -4,6 +4,7 @@ import android.app.UiAutomation
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
+import com.argent.devicecontrol.accessibility.WindowTimings
 import com.argent.devicecontrol.input.MotionInjector
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,41 +23,75 @@ class HierarchyHandler(
         // match its token count. The default (flat, compressed list) is unchanged
         // for the flow / await consumers.
         val nested = params.optBoolean("nested", false)
-
         // `flush` (phase 3f): a preceding scrcpy fast-inject touch came from another
-        // process, so order it ahead of this capture with one synchronous input-queue
-        // flush before we settle/serialize — otherwise a describe right after a
-        // fast-inject tap could serialize the pre-UP (mid-press) tree. No-op unless
-        // requested; folded into this read so it costs no extra round-trip.
-        if (params.optBoolean("flush", false)) {
+        // process this UiAutomation cannot see, so `drainAsyncUp` would no-op.
+        val flush = params.optBoolean("flush", false)
+
+        // 0. Order any preceding touch's UP ahead of this capture (R1). getAccessibility-
+        //    Tree can be called directly after a tap (not only via getState), so it
+        //    must drain too, using the SAME shared helper StateHandler uses, or it
+        //    would serialize the mid-press (finger-down) state. Fast-inject path
+        //    (flush=true) drains the whole input queue synchronously; the default path
+        //    drains only this server's own async ACTION_UP. Both are idle-wait-free and
+        //    no-op when nothing is outstanding.
+        if (flush) {
             MotionInjector.flushInput(uiAutomation)
+        } else {
+            MotionInjector.drainAsyncUp(uiAutomation)
         }
 
         // Settle before serializing so describe isn't racing an in-flight
         // layout pass — mirrors StateHandler's waitForIdle.
+        val idleStart = System.currentTimeMillis()
         uiDevice.waitForIdle(waitTimeoutMs)
+        val idleMs = System.currentTimeMillis() - idleStart
 
+        val windowTimings = WindowTimings()
+        val rootStart = System.currentTimeMillis()
         val rootNode = uiAutomation.rootInActiveWindow
             ?: throw RuntimeException("No active window")
+        val rootMs = System.currentTimeMillis() - rootStart
 
         try {
+            var serializeMsFlat = 0L
             val tree = if (nested) {
-                buildNestedWindows(maxOf(maxElements, 3000), rootNode)
+                buildNestedWindows(maxOf(maxElements, 3000), rootNode, windowTimings)
             } else {
-                NodeSerializer.serialize(rootNode, maxElements)
+                val t0 = System.currentTimeMillis()
+                val flat = NodeSerializer.serialize(rootNode, maxElements)
+                serializeMsFlat = System.currentTimeMillis() - t0
+                flat
             }
-            return JSONObject().apply { put("tree", tree) }
+            val encStart = System.currentTimeMillis()
+            tree.toString()
+            val encodeMs = System.currentTimeMillis() - encStart
+            val timings = JSONObject().apply {
+                put("idleMs", idleMs)
+                put("rootMs", rootMs)
+                put("windowsMs", windowTimings.windowsMs)
+                put("rootsMs", JSONArray(windowTimings.rootsMs))
+                put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
+                put("encodeMs", encodeMs)
+            }
+            return JSONObject().apply {
+                put("tree", tree)
+                put("timings", timings)
+            }
         } finally {
             rootNode.recycle()
         }
     }
 
     /**
-     * Nested roots for EVERY window (active-first, then by layer — see
+     * Nested roots for EVERY relevant window (active-first, then by layer — see
      * [NestedWindowSerializer]), shared with the `getState` nested path so the
      * describe and await-* tools trim identical input (F12).
      */
-    private fun buildNestedWindows(cap: Int, activeRoot: android.view.accessibility.AccessibilityNodeInfo): JSONArray {
-        return NestedWindowSerializer.serialize(uiAutomation, activeRoot, cap)
+    private fun buildNestedWindows(
+        cap: Int,
+        activeRoot: android.view.accessibility.AccessibilityNodeInfo,
+        timings: WindowTimings
+    ): JSONArray {
+        return NestedWindowSerializer.serialize(uiAutomation, activeRoot, cap, timings)
     }
 }

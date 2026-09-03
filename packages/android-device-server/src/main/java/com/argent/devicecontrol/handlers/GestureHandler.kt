@@ -59,8 +59,11 @@ class GestureHandler(private val uiAutomation: UiAutomation) {
             paths.add(resample(full))
         }
 
-        MotionInjector.inject(uiAutomation, ids, paths)
-        return JSONObject().apply { put("success", true) }
+        val dropped = MotionInjector.inject(uiAutomation, ids, paths)
+        return JSONObject().apply {
+            put("success", !dropped)
+            if (dropped) put("dropped", true)
+        }
     }
 
     /**

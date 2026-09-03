@@ -80,6 +80,24 @@ export interface OpenServerScreenshot {
 }
 
 /**
+ * Per-stage split of one describe/state capture (phase 3g). `waitedMs`/`captureMs`
+ * give the idle-vs-capture halves; this breaks the capture half down further so a
+ * bench can attribute the after-tap residual to a concrete binder call rather than
+ * guessing from logcat: `rootMs` is `rootInActiveWindow`, `windowsMs` the
+ * `uiAutomation.windows` enumeration, `rootsMs` each kept window's `w.root`,
+ * `serializeMs` the node walk, `encodeMs` the JSON encode. `idleMs` mirrors
+ * `waitedMs`. Metadata only — never rendered.
+ */
+export interface OpenServerTimings {
+  idleMs: number;
+  rootMs: number;
+  windowsMs: number;
+  rootsMs: number[];
+  serializeMs: number;
+  encodeMs: number;
+}
+
+/**
  * Combined `getState` capture: one round-trip for waitForIdle + tree + info
  * (+ an optional screenshot). `info` lacks `currentActivity` — the server's
  * StateHandler omits it — so callers that need the activity use `getInfo`.
@@ -91,6 +109,8 @@ export interface OpenServerStateResult {
   screenshot: string;
   waitedMs: number;
   captureMs: number;
+  /** Per-stage capture split (phase 3g); absent on older servers. */
+  timings?: OpenServerTimings;
 }
 
 /** One pointer's path for a multi-pointer [OpenDeviceServerApi.gesture]. */
@@ -164,6 +184,8 @@ export interface OpenDeviceServerApi {
     info: OpenServerInfo;
     waitedMs: number;
     captureMs: number;
+    /** Per-stage capture split (phase 3g); absent on older servers. */
+    timings?: OpenServerTimings;
   }>;
   /**
    * Multi-tap (F1/F8/F9): the server builds the whole DOWN/UP timeline —
@@ -175,14 +197,17 @@ export interface OpenDeviceServerApi {
     x: number,
     y: number,
     opts?: { clickCount?: number; holdMs?: number; gapMs?: number }
-  ): Promise<{ success: boolean }>;
+    // `dropped:true` (phase 3g) when the on-device dispatcher rejected an injected
+    // event (no injectable window mid-transition, secure surface, contended input
+    // pipe). The caller must treat it as a failed tap and fall back.
+  ): Promise<{ success: boolean; dropped?: boolean }>;
   /**
    * Put `text` on the DEVICE clipboard via ClipboardManager (F20). Returns
    * `success:false` (not an error) when the write did not round-trip on-device
    * (some API levels drop a background app's clipboard write), so the paste tool
    * can fall back rather than paste nothing.
    */
-  setClipboard(text: string): Promise<{ success: boolean; text: string }>;
+  setClipboard(text: string): Promise<{ success: boolean; text: string; error?: string }>;
   longPress(x: number, y: number, durationMs?: number): Promise<{ success: boolean }>;
   swipe(
     startX: number,
@@ -506,6 +531,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           info: OpenServerInfo;
           waitedMs: number;
           captureMs: number;
+          timings?: OpenServerTimings;
         }>("getState", {
           nested: true,
           includeScreenshot: false,
@@ -514,7 +540,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(stateOpts.flush ? { flush: true } : {}),
         }),
       tap: (x, y, tapOpts = {}) =>
-        client.request<{ success: boolean }>("tap", {
+        client.request<{ success: boolean; dropped?: boolean }>("tap", {
           x,
           y,
           ...(tapOpts.clickCount !== undefined ? { clickCount: tapOpts.clickCount } : {}),
@@ -522,7 +548,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
         }),
       setClipboard: (text) =>
-        client.request<{ success: boolean; text: string }>("setClipboard", { text }),
+        client.request<{ success: boolean; text: string; error?: string }>("setClipboard", { text }),
       longPress: (x, y, durationMs) =>
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
       swipe: (startX, startY, endX, endY, steps, holdEndMs) =>

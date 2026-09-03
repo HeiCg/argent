@@ -20,6 +20,15 @@ import org.json.JSONObject
  * the same thread and only report `success` when it round-trips, so the host can
  * fall back (to on-device `typeText`, then the proprietary clipboard path) rather
  * than paste nothing while reporting success.
+ *
+ * R3 (phase 3g): a caught EXCEPTION (a transient failure — a Looper hiccup, a
+ * `SecurityException` while another app owns the primary clip) is reported
+ * distinctly from a DEFINITIVE non-round-trip (`setPrimaryClip` returned but the
+ * readback did not match). The result carries `error` ONLY for the exception
+ * case; the host must NOT mark a device "clipboard unsupported" on an error-
+ * carrying false, so a one-off transient can no longer permanently disable the
+ * genuine-clipboard paste path. A definitive `success:false` (no `error`) is what
+ * signals the API-level clipboard-drop the cache is meant to remember.
  */
 class ClipboardHandler(private val instrumentation: Instrumentation) {
 
@@ -27,6 +36,7 @@ class ClipboardHandler(private val instrumentation: Instrumentation) {
         val text = params.getString("text")
         var ok = false
         var readback = ""
+        var error: String? = null
         instrumentation.runOnMainSync {
             try {
                 val ctx: Context = instrumentation.targetContext ?: instrumentation.context
@@ -34,13 +44,17 @@ class ClipboardHandler(private val instrumentation: Instrumentation) {
                 cm.setPrimaryClip(ClipData.newPlainText("argent", text))
                 readback = cm.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
                 ok = readback == text
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Transient: surface the message so the host treats this false as a
+                // blip, not proof the clipboard is unsupported on this device.
                 ok = false
+                error = e.message ?: e.javaClass.simpleName
             }
         }
         return JSONObject().apply {
             put("success", ok)
             put("text", readback)
+            if (error != null) put("error", error)
         }
     }
 }

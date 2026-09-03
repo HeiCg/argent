@@ -131,6 +131,7 @@ export async function describeAndroid(
           truncated: nestedTreeTruncated(state.tree),
           waitedMs: state.waitedMs,
           captureMs: state.captureMs,
+          timings: state.timings,
         };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
@@ -145,6 +146,7 @@ export async function describeAndroid(
         hint: openHint,
         waitedMs: result.waitedMs,
         captureMs: result.captureMs,
+        ...(result.timings ? { timings: result.timings } : {}),
       };
     } catch (serverErr) {
       console.debug(

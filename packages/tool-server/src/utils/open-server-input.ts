@@ -104,32 +104,44 @@ export function openServerTap(
 ): Promise<void> {
   return withServer(registry, device, async (server, size) => {
     const { x, y } = toPixels(size, xNorm, yNorm);
-    await server.tap(x, y, {
+    const res = await server.tap(x, y, {
       clickCount,
       holdMs: TAP_HOLD_MS,
       ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
     });
+    // R1 (phase 3g): the on-device dispatcher rejected an injected event, so the
+    // tap never landed. Throw so the caller fails this action and falls back to the
+    // simulator-server path rather than reporting a tap that did nothing.
+    if (res.dropped || res.success === false) {
+      throw new Error("open-device-server tap was dropped by the input dispatcher");
+    }
   });
 }
 
 /**
  * Put `text` on the device clipboard via the open server's `setClipboard` RPC
  * (ClipboardManager). Backs the Android `paste` tool's open path (F20). Resolves
- * to `true` when the write round-tripped on-device (the caller then triggers
- * KEYCODE_PASTE), and `false` when it did not — ClipboardManager silently drops a
- * background app's `setPrimaryClip` on API 35, so the caller falls back to typing
- * rather than pasting nothing. Rejects only on an RPC transport error.
+ * to `{ success: true }` when the write round-tripped on-device (the caller then
+ * triggers KEYCODE_PASTE); to `{ success: false }` (no `error`) when it did not —
+ * ClipboardManager silently drops a background app's `setPrimaryClip` on API 35,
+ * so the caller falls back to typing rather than pasting nothing; and to
+ * `{ success: false, error }` when the on-device write THREW (a transient blip).
+ * The caller must not treat an error-carrying false as proof the clipboard is
+ * unsupported (R3, phase 3g). Rejects only on an RPC transport error.
  */
 export function openServerSetClipboard(
   registry: Registry,
   device: DeviceInfo,
   text: string
-): Promise<boolean> {
+): Promise<{ success: boolean; error?: string }> {
   const ref = openDeviceServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     const res = await server.setClipboard(text);
-    return res.success;
+    // R3 (phase 3g): thread the on-device `error` through. `error` present ⇒ the
+    // write threw (transient), which the caller must NOT treat as proof the
+    // clipboard is unsupported. A clean `success:false` is the definitive drop.
+    return { success: res.success, ...(res.error ? { error: res.error } : {}) };
   });
 }
 
@@ -155,7 +167,10 @@ export function openServerSwipe(
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
-    await server.swipe(from.x, from.y, to.x, to.y, steps, holdEndMs);
+    const res = await server.swipe(from.x, from.y, to.x, to.y, steps, holdEndMs);
+    if ((res as { dropped?: boolean }).dropped || res.success === false) {
+      throw new Error("open-device-server swipe was dropped by the input dispatcher");
+    }
   });
 }
 
@@ -202,7 +217,10 @@ export function openServerGesture(
         return { x, y, tMs: pt.tMs };
       }),
     }));
-    await server.gesture(pixelPointers);
+    const res = await server.gesture(pixelPointers);
+    if ((res as { dropped?: boolean }).dropped || res.success === false) {
+      throw new Error("open-device-server gesture was dropped by the input dispatcher");
+    }
   });
 }
 

@@ -36,37 +36,41 @@ import android.view.MotionEvent
  * intermediate DOWN / MOVE / POINTER_UP events are async: the wall-clock pacing
  * above already spaces their arrival, so blocking on each one bought nothing but
  * latency.
+ *
+ * Drop surfacing (R1, phase 3g). [UiAutomation.injectInputEvent] returns whether
+ * the event was accepted; the framework rejects an injection when there is no
+ * focused/injectable window (mid-transition, secure surface, another injector
+ * holding the pipe). The phase-3e code discarded that boolean, so a tap that
+ * never landed still returned `success`. Every site now records the return and
+ * [inject] / [injectTaps] return `dropped = true` if ANY event was rejected, so
+ * the handler can surface it and fail the action instead of lying.
  */
 object MotionInjector {
 
     /** One sampled point on a pointer's path. `tMs` is relative to gesture start. */
     data class Point(val x: Float, val y: Float, val tMs: Long)
 
-    // R1 (phase 3e). A `tap`'s final ACTION_UP is injected asynchronously so the
-    // RPC returns as soon as the UP is queued — not after the input dispatcher has
-    // finished delivering it — which is what shaved the tap's sync round-trip. That
-    // leaves a window where a follow-up describe could read the tree before the UP
-    // lands (the mid-press, finger-down state). `asyncUpOutstanding` tracks exactly
-    // that: [StateHandler] calls [drainAsyncUp] before every capture and, only when
-    // an async UP is still in flight, injects ONE synchronous no-op to flush the
-    // dispatcher's FIFO queue (guaranteeing the UP was delivered) without a
-    // `waitForIdle`. Any synchronous injection here (a gesture's final UP, or the
-    // drain itself) already flushes the queue, so it clears the flag.
-    @Volatile private var asyncUpOutstanding = false
-    @Volatile private var lastAsyncUpX = 0f
-    @Volatile private var lastAsyncUpY = 0f
+    // R1 (phase 3e/3g). A `tap`'s final ACTION_UP is injected asynchronously so
+    // the RPC returns as soon as the UP is queued. [AsyncUpTracker] remembers that
+    // and enforces the "drain before capture, clear the flag only AFTER the sync
+    // flush returns" ordering (see the class doc). Any synchronous injection here
+    // (a gesture's final UP) already flushes the dispatcher FIFO, so it clears the
+    // flag directly.
+    private val asyncUp = AsyncUpTracker()
 
     /**
      * Inject a synchronized multi-pointer gesture. `paths` is one entry per
      * pointer; `ids[i]` is pointer i's stable id. Every path must be the same
      * length (>= 2: a down frame and an up frame). Coordinates are device pixels.
      * The final ACTION_UP is dispatched synchronously (F3).
+     *
+     * @return `true` if any injected event was rejected by the dispatcher (R1).
      */
     fun inject(
         uiAutomation: UiAutomation,
         ids: IntArray,
         paths: List<List<Point>>
-    ) {
+    ): Boolean {
         val n = paths.size
         require(n >= 1) { "gesture needs at least one pointer" }
         require(ids.size == n) { "ids and paths length mismatch" }
@@ -89,6 +93,7 @@ object MotionInjector {
         // rather than the previous frame's scheduled time, so a slow dispatch does
         // not push the rest of the gesture late (F17).
         val downTime = SystemClock.uptimeMillis()
+        var dropped = false
 
         fun setCoords(frame: Int, count: Int) {
             for (i in 0 until count) {
@@ -127,7 +132,7 @@ object MotionInjector {
                 0
             )
             try {
-                uiAutomation.injectInputEvent(event, sync)
+                if (!uiAutomation.injectInputEvent(event, sync)) dropped = true
             } finally {
                 event.recycle()
             }
@@ -168,7 +173,8 @@ object MotionInjector {
         send(MotionEvent.ACTION_UP, 1, upSlot, sync = true)
         // The final UP above was synchronous, so the dispatcher queue is drained;
         // any tap's async UP that was still in flight is now delivered too.
-        asyncUpOutstanding = false
+        asyncUp.clear()
+        return dropped
     }
 
     /**
@@ -183,8 +189,10 @@ object MotionInjector {
      * ASYNCHRONOUSLY (R1, phase 3e): the RPC returns as soon as the UP is queued,
      * so a plain tap no longer pays the sync round-trip on top of its `holdMs`
      * press. Ordering vs a following capture is preserved by the dispatcher's FIFO
-     * delivery, and [StateHandler] flushes the pending UP via [drainAsyncUp] before
-     * it reads the tree (see [asyncUpOutstanding]).
+     * delivery, and [StateHandler]/[HierarchyHandler] flush the pending UP via
+     * [drainAsyncUp] before they read the tree.
+     *
+     * @return `true` if any injected event was rejected by the dispatcher (R1).
      */
     fun injectTaps(
         uiAutomation: UiAutomation,
@@ -193,7 +201,7 @@ object MotionInjector {
         count: Int,
         holdMs: Long,
         gapMs: Long
-    ) {
+    ): Boolean {
         require(count >= 1) { "tap needs count >= 1" }
         val props = MotionEvent.PointerProperties().apply {
             id = 0
@@ -208,6 +216,7 @@ object MotionInjector {
         // Anchor for the whole multi-tap run so the DOWN/UP slots below are paced
         // against one real clock (F17), preserving the gap between taps.
         val base = SystemClock.uptimeMillis()
+        var dropped = false
 
         fun dispatch(action: Int, downTime: Long, slotMs: Long, sync: Boolean) {
             val waitMs = (base + slotMs) - SystemClock.uptimeMillis()
@@ -230,7 +239,7 @@ object MotionInjector {
                 0
             )
             try {
-                uiAutomation.injectInputEvent(event, sync)
+                if (!uiAutomation.injectInputEvent(event, sync)) dropped = true
             } finally {
                 event.recycle()
             }
@@ -247,63 +256,33 @@ object MotionInjector {
             // DOWN has always been async (ordering is preserved by the dispatcher);
             // the final UP is now async too (R1) so the whole tap returns without a
             // sync round-trip.
-            dispatchAt(uiAutomation, props, coords, MotionEvent.ACTION_DOWN, tapDownTime, tapDownTime, false)
+            if (!dispatchAt(uiAutomation, props, coords, MotionEvent.ACTION_DOWN, tapDownTime, tapDownTime, false)) {
+                dropped = true
+            }
             dispatch(MotionEvent.ACTION_UP, tapDownTime, upSlot, sync = false)
         }
         // The final UP was queued asynchronously; record it so a following capture
         // drains it before reading the tree.
-        asyncUpOutstanding = true
-        lastAsyncUpX = x
-        lastAsyncUpY = y
+        asyncUp.markOutstanding(x, y)
+        return dropped
     }
 
     /** Whether a `tap`'s final ACTION_UP is still queued but not yet drained. */
-    fun hasOutstandingAsyncUp(): Boolean = asyncUpOutstanding
+    fun hasOutstandingAsyncUp(): Boolean = asyncUp.hasOutstanding()
 
     /**
-     * Drain a pending async ACTION_UP from a preceding [injectTaps] (R1, phase 3e).
+     * Drain a pending async ACTION_UP from a preceding [injectTaps] (R1).
      *
-     * No-op unless a tap left an async UP in flight. When one is outstanding, inject
-     * a single ACTION_CANCEL SYNCHRONOUSLY: with no pointer down the dispatcher
-     * drops it (zero UI effect), but injecting it in `WAIT_FOR_FINISH` mode blocks
-     * until it — and therefore the async UP queued ahead of it (FIFO) — has been
-     * delivered. That gives a capture a finger-up tree without any `waitForIdle`.
+     * No-op unless a tap left an async UP in flight. When one is outstanding,
+     * inject a single ACTION_CANCEL SYNCHRONOUSLY: with no pointer down the
+     * dispatcher drops it (zero UI effect), but injecting it in `WAIT_FOR_FINISH`
+     * mode blocks until it — and therefore the async UP queued ahead of it (FIFO)
+     * — has been delivered. That gives a capture a finger-up tree without any
+     * `waitForIdle`. The outstanding flag is cleared only AFTER this sync inject
+     * returns (see [AsyncUpTracker]).
      */
     fun drainAsyncUp(uiAutomation: UiAutomation) {
-        if (!asyncUpOutstanding) return
-        asyncUpOutstanding = false
-        val props = MotionEvent.PointerProperties().apply {
-            id = 0
-            toolType = MotionEvent.TOOL_TYPE_FINGER
-        }
-        val coords = MotionEvent.PointerCoords().apply {
-            x = lastAsyncUpX
-            y = lastAsyncUpY
-            pressure = 0f
-            size = 0f
-        }
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(
-            now,
-            now,
-            MotionEvent.ACTION_CANCEL,
-            1,
-            arrayOf(props),
-            arrayOf(coords),
-            0,
-            0,
-            1f,
-            1f,
-            0,
-            0,
-            InputDevice.SOURCE_TOUCHSCREEN,
-            0
-        )
-        try {
-            uiAutomation.injectInputEvent(event, true)
-        } finally {
-            event.recycle()
-        }
+        asyncUp.drainWith { x, y -> injectCancelSync(uiAutomation, x, y, 0f, 0f) }
     }
 
     /**
@@ -311,30 +290,29 @@ object MotionInjector {
      *
      * The fast-inject backend delivers tap/swipe/gesture events over the scrcpy
      * control channel (a separate `app_process`, not this UiAutomation), so this
-     * process's own [asyncUpOutstanding] bookkeeping does NOT see them and
-     * [drainAsyncUp] would no-op. Yet a following `getNestedState` on THIS channel
-     * must still observe the post-UP tree, never the mid-press state. Both scrcpy's
-     * injected events and the event below funnel through the one system
-     * InputDispatcher FIFO, so injecting a single no-op MotionEvent
-     * SYNCHRONOUSLY (`WAIT_FOR_FINISH`) blocks until it — and therefore every
-     * touch event enqueued ahead of it — has been delivered.
-     *
-     * The no-op is an ACTION_CANCEL with no pointer down (pressure/size 0): the
-     * dispatcher drops it (zero UI effect) but still orders and drains it. Called
-     * by the `flushInput` RPC right after a fast-inject action. Also clears any
-     * stale [asyncUpOutstanding] flag, since the sync injection drained the queue.
+     * process's own async-UP bookkeeping does NOT see them and [drainAsyncUp]
+     * would no-op. Yet a following `getNestedState` on THIS channel must still
+     * observe the post-UP tree, never the mid-press state. Both scrcpy's injected
+     * events and the event below funnel through the one system InputDispatcher
+     * FIFO, so injecting a single no-op MotionEvent SYNCHRONOUSLY blocks until it —
+     * and therefore every touch event enqueued ahead of it — has been delivered.
+     * Also clears any stale outstanding flag AFTER the inject returns (R1).
      */
     fun flushInput(uiAutomation: UiAutomation) {
-        asyncUpOutstanding = false
+        asyncUp.flushWith { injectCancelSync(uiAutomation, 0f, 0f, 0f, 0f) }
+    }
+
+    /** Inject one no-op ACTION_CANCEL synchronously (pressure/size 0 → dropped by the dispatcher). */
+    private fun injectCancelSync(uiAutomation: UiAutomation, x: Float, y: Float, pressure: Float, size: Float) {
         val props = MotionEvent.PointerProperties().apply {
             id = 0
             toolType = MotionEvent.TOOL_TYPE_FINGER
         }
         val coords = MotionEvent.PointerCoords().apply {
-            x = 0f
-            y = 0f
-            pressure = 0f
-            size = 0f
+            this.x = x
+            this.y = y
+            this.pressure = pressure
+            this.size = size
         }
         val now = SystemClock.uptimeMillis()
         val event = MotionEvent.obtain(
@@ -360,6 +338,7 @@ object MotionInjector {
         }
     }
 
+    /** @return `false` if the injection was rejected by the dispatcher. */
     private fun dispatchAt(
         uiAutomation: UiAutomation,
         props: MotionEvent.PointerProperties,
@@ -368,7 +347,7 @@ object MotionInjector {
         downTime: Long,
         eventTime: Long,
         sync: Boolean
-    ) {
+    ): Boolean {
         val event = MotionEvent.obtain(
             downTime,
             eventTime,
@@ -385,7 +364,7 @@ object MotionInjector {
             InputDevice.SOURCE_TOUCHSCREEN,
             0
         )
-        try {
+        return try {
             uiAutomation.injectInputEvent(event, sync)
         } finally {
             event.recycle()

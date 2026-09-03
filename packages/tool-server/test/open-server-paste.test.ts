@@ -137,26 +137,51 @@ describe("paste (android) → open-device-server (F20)", () => {
     expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
   });
 
-  it("R3: after clipboard proves unsupported, a later paste skips setClipboard and types directly", async () => {
+  it("R3: TWO consecutive definitive falses mark unsupported; the third paste skips setClipboard and types directly", async () => {
     flagEnabledMock = (n) => n === "open-device-server";
     const openApi = makeOpenApi();
-    // ClipboardManager silently drops the background write on this device.
+    // ClipboardManager silently drops the background write on this device — a
+    // definitive (no-error) false. Phase 3g requires two CONSECUTIVE of these
+    // before caching, so a lone false still re-probes next paste.
     openApi.setClipboard.mockResolvedValue({ success: false, text: "" });
     const tool = makeTool(openApi);
 
     const first = "https://example.com/a?token=abcdef0123456789";
     const second = "https://example.com/b?token=9876543210fedcba";
+    const third = "https://example.com/c?token=0011223344556677";
 
-    // First paste probes the clipboard (one RPC), learns it does not round-trip.
+    // First definitive false: NOT yet cached — a single blip gets a second chance.
     await tool.execute({}, { udid: ANDROID_SERIAL, text: first });
     expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
     expect(openApi.typeText).toHaveBeenCalledWith(first);
 
-    // Second paste on the SAME device must not re-attempt setClipboard.
+    // Second consecutive definitive false: re-attempts, and now marks unsupported.
     await tool.execute({}, { udid: ANDROID_SERIAL, text: second });
-    expect(openApi.setClipboard).toHaveBeenCalledTimes(1); // still 1 — cached
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(2);
     expect(openApi.typeText).toHaveBeenCalledWith(second);
+
+    // Third paste on the SAME device: cached, so setClipboard is skipped entirely.
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: third });
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(2); // still 2 — cached
+    expect(openApi.typeText).toHaveBeenCalledWith(third);
     expect(vi.mocked(setSimulatorClipboardText)).not.toHaveBeenCalled();
+  });
+
+  it("R3: an error-carrying (transient) false never marks unsupported, even repeated", async () => {
+    flagEnabledMock = (n) => n === "open-device-server";
+    const openApi = makeOpenApi();
+    // A false that carries an on-device `error` is a transient blip (Looper hiccup,
+    // a momentary SecurityException) — it must NEVER count toward the unsupported
+    // mark, so the genuine clipboard is re-probed on every subsequent paste.
+    openApi.setClipboard.mockResolvedValue({ success: false, text: "", error: "clip owned" });
+    const tool = makeTool(openApi);
+
+    for (const text of ["one", "two", "three"]) {
+      await tool.execute({}, { udid: ANDROID_SERIAL, text });
+    }
+    // Every paste re-attempted the clipboard: a transient false never caches.
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(3);
+    expect(openApi.typeText).toHaveBeenCalledTimes(3);
   });
 
   it("R3: a successful clipboard write never marks the device unsupported", async () => {

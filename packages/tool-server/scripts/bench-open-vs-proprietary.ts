@@ -376,29 +376,104 @@ async function timeCalls(
 // path leaves them undefined, so `n` reports how many samples actually carried a
 // split. Isolates "the describe was slow because the UI was still animating"
 // (waitedMs) from "the tree was expensive to serialize" (captureMs).
+type StageStat = { p50: number | null; p95: number | null; n: number };
+type DescribeStages = {
+  idleMs: StageStat;
+  rootMs: StageStat;
+  windowsMs: StageStat;
+  rootsMs: StageStat;
+  serializeMs: StageStat;
+  encodeMs: StageStat;
+};
+const STAGE_KEYS = ["idleMs", "rootMs", "windowsMs", "rootsMs", "serializeMs", "encodeMs"] as const;
+type StageKey = (typeof STAGE_KEYS)[number];
+
+function stageStat(xs: number[]): StageStat {
+  if (!xs.length) return { p50: null, p95: null, n: 0 };
+  const sm = summarize(xs);
+  return { p50: sm.p50, p95: sm.p95, n: xs.length };
+}
+
 async function describeSplit(
   reg: Reg,
   n: number,
   setup?: () => Promise<void>
-): Promise<{ waitedP50: number | null; captureP50: number | null; n: number }> {
+): Promise<{
+  waitedP50: number | null;
+  captureP50: number | null;
+  n: number;
+  // Per-stage p50/p95 of the open-path describe capture (phase 3g). Persisted per
+  // describe call and summarized here so the residual after a tap can be pinned to
+  // a concrete stage (rootInActiveWindow vs windows enumeration vs each w.root vs
+  // serialize vs encode) rather than guessed from logcat.
+  stages: DescribeStages;
+}> {
   const waited: number[] = [];
   const captured: number[] = [];
+  const stageSamples: Record<StageKey, number[]> = {
+    idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+  };
   for (let i = 0; i < n; i++) {
     if (setup) await setup().catch(() => undefined);
     try {
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as {
         waitedMs?: number;
         captureMs?: number;
+        timings?: {
+          idleMs?: number;
+          rootMs?: number;
+          windowsMs?: number;
+          rootsMs?: number[];
+          serializeMs?: number;
+          encodeMs?: number;
+        };
       };
       if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
       if (typeof d.captureMs === "number") captured.push(d.captureMs);
+      const t = d.timings;
+      if (t) {
+        if (typeof t.idleMs === "number") stageSamples.idleMs.push(t.idleMs);
+        if (typeof t.rootMs === "number") stageSamples.rootMs.push(t.rootMs);
+        if (typeof t.windowsMs === "number") stageSamples.windowsMs.push(t.windowsMs);
+        // rootsMs is one entry per kept window; sum to the per-call total so the
+        // stage reads as "time spent in w.root binder calls this capture".
+        if (Array.isArray(t.rootsMs)) {
+          stageSamples.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
+        }
+        if (typeof t.serializeMs === "number") stageSamples.serializeMs.push(t.serializeMs);
+        if (typeof t.encodeMs === "number") stageSamples.encodeMs.push(t.encodeMs);
+      }
     } catch {
       /* skip */
     }
   }
   const p50 = (xs: number[]): number | null =>
     xs.length ? summarize(xs).p50 : null;
-  return { waitedP50: p50(waited), captureP50: p50(captured), n: waited.length };
+  const stages: DescribeStages = {
+    idleMs: stageStat(stageSamples.idleMs),
+    rootMs: stageStat(stageSamples.rootMs),
+    windowsMs: stageStat(stageSamples.windowsMs),
+    rootsMs: stageStat(stageSamples.rootsMs),
+    serializeMs: stageStat(stageSamples.serializeMs),
+    encodeMs: stageStat(stageSamples.encodeMs),
+  };
+  return { waitedP50: p50(waited), captureP50: p50(captured), n: waited.length, stages };
+}
+
+/** Render an idle-vs-after-tap per-stage p50/p95 table for the bench log. */
+function formatStageTable(
+  label: string,
+  idle: { stages: DescribeStages },
+  afterTap: { stages: DescribeStages }
+): string {
+  const cell = (s: StageStat) =>
+    s.p50 === null ? "   -   " : `${String(s.p50).padStart(3)}/${String(s.p95 ?? "?").padStart(3)}`;
+  const lines: string[] = [];
+  lines.push(`[bench] ${label} describe stage p50/p95 (ms)  idle | after-tap`);
+  for (const k of STAGE_KEYS) {
+    lines.push(`[bench]   ${k.padEnd(11)} ${cell(idle.stages[k])} | ${cell(afterTap.stages[k])}`);
+  }
+  return lines.join("\n");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -542,8 +617,8 @@ interface BlockResult {
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
   // right after a tap into a content-heavy sub-screen. null on the proprietary
   // path (no split surfaced).
-  describeSplitIdle: { waitedP50: number | null; captureP50: number | null; n: number };
-  describeSplitAfterTap: { waitedP50: number | null; captureP50: number | null; n: number };
+  describeSplitIdle: { waitedP50: number | null; captureP50: number | null; n: number; stages: DescribeStages };
+  describeSplitAfterTap: { waitedP50: number | null; captureP50: number | null; n: number; stages: DescribeStages };
   // Post-navigating-tap staleness (P3d): "destination already visible" rate for
   // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
   // ON settle:true in an ON block. Empty when no nav target could be derived.
@@ -732,6 +807,12 @@ async function runBlock(
     await ensureSettings(reg);
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 }).catch(() => undefined);
   });
+
+  // Print the per-stage p50/p95 split (idle vs after-tap) so the residual is
+  // attributable to a concrete stage. Persisted in the block JSON via
+  // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
+  // baseline (proprietary path leaves these null) and ON to read the open path.
+  realDebug(formatStageTable(config, describeSplitIdle, describeSplitAfterTap));
 
   await ensureSettings(reg);
 

@@ -7,6 +7,7 @@ import android.util.Base64
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
+import com.argent.devicecontrol.accessibility.WindowTimings
 import com.argent.devicecontrol.accessibility.NodeSerializer
 import com.argent.devicecontrol.input.MotionInjector
 import com.argent.devicecontrol.util.DisplayReader
@@ -96,14 +97,24 @@ class StateHandler(
         //    Capture the active package from the SAME root we serialize, before it
         //    is recycled, so `info` below never calls uiDevice.currentPackageName
         //    (a waitForIdle caller).
+        //    Per-stage timings (phase 3g) attribute the after-tap captureMs:
+        //    `rootMs` is the rootInActiveWindow binder call, the rest come from the
+        //    multi-window serializer.
+        val windowTimings = WindowTimings()
+        val rootStart = System.currentTimeMillis()
         val rootNode = uiAutomation.rootInActiveWindow
+        val rootMs = System.currentTimeMillis() - rootStart
         var activePackage = rootNode?.packageName?.toString() ?: ""
+        var serializeMsFlat = 0L
         val hierarchy = if (rootNode != null) {
             try {
                 if (nested) {
-                    NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000))
+                    NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000), windowTimings)
                 } else {
-                    NodeSerializer.serialize(rootNode, maxElements)
+                    val t0 = System.currentTimeMillis()
+                    val flat = NodeSerializer.serialize(rootNode, maxElements)
+                    serializeMsFlat = System.currentTimeMillis() - t0
+                    flat
                 }
             } finally {
                 rootNode.recycle()
@@ -133,7 +144,23 @@ class StateHandler(
             put("displayRotation", geo.rotation)
         }
 
+        // encodeMs (phase 3g): the cost of serializing the tree to its JSON wire
+        // form. Measured on the tree alone (the whole response is re-encoded by the
+        // RPC layer); a representative few-ms cost that completes the stage split.
+        val encStart = System.currentTimeMillis()
+        hierarchy.toString()
+        val encodeMs = System.currentTimeMillis() - encStart
+
         val captureMs = System.currentTimeMillis() - captureStart
+
+        val timings = JSONObject().apply {
+            put("idleMs", waitedMs)
+            put("rootMs", rootMs)
+            put("windowsMs", windowTimings.windowsMs)
+            put("rootsMs", JSONArray(windowTimings.rootsMs))
+            put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
+            put("encodeMs", encodeMs)
+        }
 
         return JSONObject().apply {
             put("screenshot", screenshotBase64)
@@ -141,6 +168,7 @@ class StateHandler(
             put("info", info)
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
+            put("timings", timings)
         }
     }
 

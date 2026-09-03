@@ -35,7 +35,14 @@ class TapHandler(private val uiAutomation: UiAutomation) {
         val clickCount = maxOf(1, params.optInt("clickCount", 1))
         val holdMs = maxOf(0L, params.optLong("holdMs", DEFAULT_HOLD_MS))
         val gapMs = maxOf(0L, params.optLong("gapMs", DEFAULT_GAP_MS))
-        MotionInjector.injectTaps(uiAutomation, x, y, clickCount, holdMs, gapMs)
-        return JSONObject().apply { put("success", true) }
+        // `dropped` is true when the framework rejected an injected event (no
+        // injectable window mid-transition, secure surface, contended input pipe).
+        // Surface it so the host fails the tap and falls back rather than reporting
+        // a tap that never landed (R1, phase 3g).
+        val dropped = MotionInjector.injectTaps(uiAutomation, x, y, clickCount, holdMs, gapMs)
+        return JSONObject().apply {
+            put("success", !dropped)
+            if (dropped) put("dropped", true)
+        }
     }
 }

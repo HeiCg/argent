@@ -31,6 +31,7 @@ function withDescription(data: DescribeTreeData): DescribeResult {
   // Pass the open-path idle/capture split through as metadata (not rendered).
   if (data.waitedMs !== undefined) out.waitedMs = data.waitedMs;
   if (data.captureMs !== undefined) out.captureMs = data.captureMs;
+  if (data.timings !== undefined) out.timings = data.timings;
   return out;
 }
 

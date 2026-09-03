@@ -12,7 +12,7 @@ import {
 } from "../../../utils/open-server-input";
 import {
   isClipboardUnsupported,
-  markClipboardUnsupported,
+  recordClipboardOutcome,
 } from "../../../utils/open-server-clipboard-cache";
 import { assertTypeableAndroidText } from "../../../utils/android-input";
 import type { PasteParams, PasteResult, PasteServices } from "../types";
@@ -57,12 +57,17 @@ export function makeAndroidImpl(
           // and go straight to typing. Only a `false` round-trip (not a transport
           // error) marks the device unsupported.
           if (!isClipboardUnsupported(device.id)) {
-            const clipSet = await openServerSetClipboard(registry, device, params.text);
-            if (clipSet) {
+            const clip = await openServerSetClipboard(registry, device, params.text);
+            if (clip.success) {
+              recordClipboardOutcome(device.id, "ok");
               await injectAndroidKeycode(device.id, KEYCODE_PASTE);
               return { pasted: true };
             }
-            markClipboardUnsupported(device.id);
+            // A false that carried an on-device `error` is transient — never mark
+            // unsupported on it. A clean (no-error) false is the API-level clipboard
+            // drop; only two CONSECUTIVE of those mark the device (R3, phase 3g), so
+            // a single blip still re-probes the genuine clipboard next paste.
+            recordClipboardOutcome(device.id, clip.error ? "transient" : "definitive-false");
           }
           // Clipboard unavailable from instrumentation → type it if it's typeable.
           // `assertTypeableAndroidText` throws for emoji / newlines, dropping to the

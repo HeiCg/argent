@@ -1,6 +1,7 @@
 package com.argent.devicecontrol.accessibility
 
 import android.app.UiAutomation
+import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
@@ -22,37 +23,64 @@ import org.json.JSONArray
  * still matches the proprietary path. Falls back to the active window's root when
  * the window list is empty.
  *
- * Selection (R2, phase 3e): the active window is always serialized in full. Among
- * NON-active windows only the IME (`TYPE_INPUT_METHOD`) and system/dialog-like
- * chrome (`TYPE_SYSTEM`) are kept; other non-active `TYPE_APPLICATION` windows are
- * skipped. During a navigation the accessibility tree transiently carries the
- * OUTGOING activity alongside the incoming one, and walking that outgoing window
- * in full was the bulk of the mid-transition `captureMs` (~179 ms) with no describe
- * value — the caller only wants the screen the tap is navigating TO (the active
- * window) plus any IME. Per-window serialize timing is logged for the bench.
+ * Selection (R2 phase 3e, refined phase 3g): the active window is always
+ * serialized in full. Among NON-active windows the IME (`TYPE_INPUT_METHOD`) and
+ * system/dialog-like chrome (`TYPE_SYSTEM`) are always kept. A non-active
+ * `TYPE_APPLICATION` window is kept ONLY when it is a popup drawn OVER the active
+ * window — it overlaps the active window's bounds AND is either focused or on a
+ * higher layer than the active window (an AutoCompleteTextView dropdown, an
+ * overflow menu, a spinner list — exactly what the next tap targets). A
+ * fully-behind non-active application window (the outgoing activity during a
+ * navigation, or the app behind a dialog) is dropped: walking it in full was the
+ * bulk of the mid-transition `captureMs` with no describe value, since the caller
+ * only wants the screen the tap is navigating TO plus any popup/IME on top of it.
+ * Per-stage timing is collected into [WindowTimings] for the bench.
  */
 object NestedWindowSerializer {
 
     private const val TAG = "NestedWindowSerializer"
 
     /**
-     * Whether a window should be serialized. The active window always is; among
-     * non-active windows only the IME and system/dialog-like chrome survive, so a
-     * transitional outgoing `TYPE_APPLICATION` window is dropped (R2). Pure so it
-     * can be unit-tested off-device.
+     * Whether a window should be serialized. Pure so it can be unit-tested
+     * off-device: the caller computes [overlapsActive] (does this window's bounds
+     * intersect the active window's), [layer] and [activeLayer] from the live
+     * [AccessibilityWindowInfo]s.
+     *
+     * - active window: always kept.
+     * - non-active IME / system chrome: always kept.
+     * - non-active `TYPE_APPLICATION`: kept only as a popup OVER the active window
+     *   (`overlapsActive && (isFocused || layer > activeLayer)`); a fully-behind
+     *   window is dropped.
+     * - anything else non-active: dropped.
      */
-    fun shouldSerializeWindow(isActive: Boolean, type: Int): Boolean {
+    fun shouldSerializeWindow(
+        isActive: Boolean,
+        type: Int,
+        isFocused: Boolean,
+        layer: Int,
+        activeLayer: Int,
+        overlapsActive: Boolean
+    ): Boolean {
         if (isActive) return true
-        return type == AccessibilityWindowInfo.TYPE_INPUT_METHOD ||
+        if (type == AccessibilityWindowInfo.TYPE_INPUT_METHOD ||
             type == AccessibilityWindowInfo.TYPE_SYSTEM
+        ) {
+            return true
+        }
+        if (type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+            return overlapsActive && (isFocused || layer > activeLayer)
+        }
+        return false
     }
 
     fun serialize(
         uiAutomation: UiAutomation,
         activeRoot: AccessibilityNodeInfo,
-        cap: Int
+        cap: Int,
+        timings: WindowTimings? = null
     ): JSONArray {
         val out = JSONArray()
+        val enumStart = SystemClock.uptimeMillis()
         val windows = try {
             uiAutomation.windows.sortedWith(
                 compareBy({ if (it.isActive) 0 else 1 }, { it.layer })
@@ -60,25 +88,47 @@ object NestedWindowSerializer {
         } catch (_: Exception) {
             emptyList()
         }
+        timings?.windowsMs = SystemClock.uptimeMillis() - enumStart
+
+        // The active window's layer + bounds anchor the popup-vs-behind decision.
+        val active = windows.firstOrNull { it.isActive }
+        val activeLayer = active?.layer ?: Int.MIN_VALUE
+        val activeBounds = Rect().also { active?.getBoundsInScreen(it) }
+
         for (w in windows) {
-            if (!shouldSerializeWindow(w.isActive, w.type)) {
-                Log.d(TAG, "captureWindow skip type=${w.type} active=${w.isActive} layer=${w.layer}")
+            val overlaps = if (w.isActive) {
+                true
+            } else {
+                val wb = Rect().also { w.getBoundsInScreen(it) }
+                Rect.intersects(activeBounds, wb)
+            }
+            if (!shouldSerializeWindow(w.isActive, w.type, w.isFocused, w.layer, activeLayer, overlaps)) {
+                Log.d(TAG, "captureWindow skip type=${w.type} active=${w.isActive} layer=${w.layer} overlaps=$overlaps focused=${w.isFocused}")
                 continue
             }
-            val root = try { w.root } catch (_: Exception) { null } ?: continue
+            val rootStart = SystemClock.uptimeMillis()
+            val root = try { w.root } catch (_: Exception) { null }
+            timings?.rootsMs?.add(SystemClock.uptimeMillis() - rootStart)
+            if (root == null) continue
             val t0 = SystemClock.uptimeMillis()
             try {
                 out.put(NodeSerializer.serializeNested(root, cap))
             } finally {
                 root.recycle()
             }
+            val ser = SystemClock.uptimeMillis() - t0
+            timings?.let { it.serializeMs += ser }
             Log.d(
                 TAG,
                 "captureWindow keep type=${w.type} active=${w.isActive} layer=${w.layer} " +
-                    "serializeMs=${SystemClock.uptimeMillis() - t0}"
+                    "serializeMs=$ser"
             )
         }
-        if (out.length() == 0) out.put(NodeSerializer.serializeNested(activeRoot, cap))
+        if (out.length() == 0) {
+            val t0 = SystemClock.uptimeMillis()
+            out.put(NodeSerializer.serializeNested(activeRoot, cap))
+            timings?.let { it.serializeMs += SystemClock.uptimeMillis() - t0 }
+        }
         return out
     }
 }

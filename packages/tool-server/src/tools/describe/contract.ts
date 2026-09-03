@@ -96,6 +96,20 @@ export interface DescribeTreeData {
   // from the tree serialization cost.
   waitedMs?: number;
   captureMs?: number;
+  // Finer per-stage split of the open-device-server capture (phase 3g): the
+  // sub-costs of `captureMs` (rootInActiveWindow, windows enumeration, each
+  // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs).
+  // Metadata only — never rendered; a bench reads it to locate the residual.
+  timings?: DescribeStageTimings;
+}
+
+export interface DescribeStageTimings {
+  idleMs: number;
+  rootMs: number;
+  windowsMs: number;
+  rootsMs: number[];
+  serializeMs: number;
+  encodeMs: number;
 }
 
 export interface DescribeResult {
@@ -107,6 +121,8 @@ export interface DescribeResult {
   // as metadata alongside the rendered `description` — see DescribeTreeData.
   waitedMs?: number;
   captureMs?: number;
+  // Per-stage capture split (open-device-server only, phase 3g).
+  timings?: DescribeStageTimings;
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {
