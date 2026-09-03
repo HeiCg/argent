@@ -456,6 +456,26 @@ export async function isAndroidTv(serial: string): Promise<boolean> {
 }
 
 /**
+ * Cache-first form-factor check for hot paths like `describe` (phase 3i). The
+ * form factor is fixed for the life of a boot, so once a serial's kind is memoized
+ * this returns it WITHOUT spawning any `adb` — unlike {@link getAndroidRuntimeKind},
+ * which re-runs `adb devices` (readiness) + `adb shell getprop ro.boot.qemu.avd_name`
+ * (slot-reclaim) on every call. `describe` used to pay three `adb` process spawns
+ * per call this way, inside the timed window, on both OFF and ON.
+ *
+ * A cold serial still probes once (warming the shared memo); every describe after
+ * that spawns zero `adb`. The memo is invalidated by the async paths
+ * (`getAndroidRuntimeKind` on a gone device, `listAndroidDevices` enrichment) that
+ * re-key it by avdName, so a reclaimed emulator slot is corrected there — the
+ * describe path never needs to re-probe.
+ */
+export async function isAndroidTvCached(serial: string): Promise<boolean> {
+  const cached = getCachedAndroidRuntimeKind(serial);
+  if (cached !== undefined) return cached === "tv";
+  return (await getAndroidRuntimeKind(serial)) === "tv";
+}
+
+/**
  * Cache-only view of a serial's runtime kind: it NEVER runs `adb`, so callers on
  * a latency-sensitive hot path (telemetry platform inference) can distinguish
  * Android TV from a phone when the kind is already known and fall back to the

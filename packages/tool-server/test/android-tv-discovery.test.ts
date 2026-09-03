@@ -30,6 +30,7 @@ import {
   listAndroidDevices,
   getAndroidRuntimeKind,
   isAndroidTv,
+  isAndroidTvCached,
   __resetAndroidRuntimeKindCacheForTesting,
   getCachedAndroidRuntimeKind,
 } from "../src/utils/adb";
@@ -290,5 +291,44 @@ describe("getCachedAndroidRuntimeKind — synchronous cache-only read", () => {
     mockDevice("emulator-5554", {});
     expect(await getAndroidRuntimeKind("emulator-5554")).toBeUndefined();
     expect(getCachedAndroidRuntimeKind("emulator-5554")).toBeUndefined();
+  });
+});
+
+// Phase 3i: the describe hot path resolves the form factor via isAndroidTvCached,
+// which must NOT spawn adb once the serial's kind is memoized — describe used to
+// pay `adb devices` + getprop on every call, inside the timed window.
+describe("isAndroidTvCached — the describe form-factor check spawns no adb when warm", () => {
+  it("warm serial: returns the memoized verdict without calling execFile", async () => {
+    mockDevice("emulator-5554", { features: PHONE_FEATURES });
+    // Warm the memo (this call is allowed to spawn).
+    expect(await getAndroidRuntimeKind("emulator-5554")).toBe("mobile");
+    const callsAfterWarm = execFileMock.mock.calls.length;
+    expect(callsAfterWarm).toBeGreaterThan(0);
+
+    // Every subsequent describe form-factor check must spawn ZERO adb processes.
+    for (let i = 0; i < 5; i++) {
+      expect(await isAndroidTvCached("emulator-5554")).toBe(false);
+    }
+    expect(execFileMock.mock.calls.length).toBe(callsAfterWarm);
+  });
+
+  it("warm TV serial: returns true from cache, still no execFile", async () => {
+    mockDevice("emulator-5554", { features: LEANBACK_FEATURES });
+    expect(await getAndroidRuntimeKind("emulator-5554")).toBe("tv");
+    const callsAfterWarm = execFileMock.mock.calls.length;
+    expect(await isAndroidTvCached("emulator-5554")).toBe(true);
+    expect(execFileMock.mock.calls.length).toBe(callsAfterWarm);
+  });
+
+  it("cold serial: probes once (warming the memo) then is cache-only", async () => {
+    mockDevice("emulator-5554", { features: PHONE_FEATURES });
+    // Cold: no prior memo, so this one call is allowed to spawn.
+    expect(execFileMock.mock.calls.length).toBe(0);
+    expect(await isAndroidTvCached("emulator-5554")).toBe(false);
+    const afterCold = execFileMock.mock.calls.length;
+    expect(afterCold).toBeGreaterThan(0);
+    // Warm now: no more spawns.
+    expect(await isAndroidTvCached("emulator-5554")).toBe(false);
+    expect(execFileMock.mock.calls.length).toBe(afterCold);
   });
 });
