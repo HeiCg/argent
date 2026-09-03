@@ -191,6 +191,15 @@ export interface OpenDeviceServerApi {
     captureMs: number;
     /** Per-stage capture split (phase 3g); absent on older servers. */
     timings?: OpenServerTimings;
+    /**
+     * Host/transport cost of THIS reply (phase 3i), captured by the RPC client:
+     * `wireBytes` is the UTF-8 byte length of the raw NDJSON reply line (the full
+     * nested tree on the wire), `hostParseMs` the host `JSON.parse` cost. Metadata
+     * only — never rendered; a bench reads them to split the idle-describe residual
+     * into transport size vs. host parse.
+     */
+    wireBytes?: number;
+    hostParseMs?: number;
   }>;
   /**
    * Multi-tap (F1/F8/F9): the server builds the whole DOWN/UP timeline —
@@ -530,8 +539,11 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           waitTimeoutMs: getOpts.waitTimeoutMs ?? 2000,
           ...(getOpts.flush ? { flush: true } : {}),
         }),
-      getNestedState: (stateOpts = {}) =>
-        client.request<{
+      getNestedState: async (stateOpts = {}) => {
+        // requestWithStats so the reply's on-the-wire size (`wireBytes`) and host
+        // JSON.parse cost (`hostParseMs`) ride the result as metadata — the raw
+        // bytes are otherwise dropped right after parse (phase 3i).
+        const { result, wireBytes, parseMs } = await client.requestWithStats<{
           tree: OpenServerNestedElement[];
           info: OpenServerInfo;
           waitedMs: number;
@@ -543,7 +555,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           maxElements: stateOpts.maxElements ?? 3000,
           waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
           ...(stateOpts.flush ? { flush: true } : {}),
-        }),
+        });
+        return { ...result, wireBytes, hostParseMs: parseMs };
+      },
       tap: (x, y, tapOpts = {}) =>
         client.request<{ success: boolean; dropped?: boolean }>("tap", {
           x,

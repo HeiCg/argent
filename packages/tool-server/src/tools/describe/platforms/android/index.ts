@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { Registry, ToolDependency } from "@argent/registry";
 import type { DescribeTreeData } from "../../contract";
@@ -121,17 +122,25 @@ export async function describeAndroid(
         // server's info geometry is rotation-aware (read straight from the
         // Display) and matches getBoundsInScreen's pixel space, so no rotation
         // correction.
+        // Time the host tree-lowering + v2 trim (phase 3i): the JSON.parse cost is
+        // already captured on the wire as `hostParseMs`; this is the CPU spent
+        // turning the parsed nested tree into the rendered DescribeNode.
+        const renderT0 = performance.now();
         const node = openServerNestedToDescribeNode(
           state.tree,
           state.info.screenWidth,
           state.info.screenHeight
         );
+        const hostRenderMs = performance.now() - renderT0;
         return {
           node,
           truncated: nestedTreeTruncated(state.tree),
           waitedMs: state.waitedMs,
           captureMs: state.captureMs,
           timings: state.timings,
+          wireBytes: state.wireBytes,
+          hostParseMs: state.hostParseMs,
+          hostRenderMs,
         };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
@@ -147,6 +156,9 @@ export async function describeAndroid(
         waitedMs: result.waitedMs,
         captureMs: result.captureMs,
         ...(result.timings ? { timings: result.timings } : {}),
+        ...(result.wireBytes !== undefined ? { wireBytes: result.wireBytes } : {}),
+        ...(result.hostParseMs !== undefined ? { hostParseMs: result.hostParseMs } : {}),
+        ...(result.hostRenderMs !== undefined ? { hostRenderMs: result.hostRenderMs } : {}),
       };
     } catch (serverErr) {
       console.debug(

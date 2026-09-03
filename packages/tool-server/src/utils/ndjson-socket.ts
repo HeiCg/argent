@@ -1,4 +1,5 @@
 import type * as net from "node:net";
+import { performance } from "node:perf_hooks";
 
 /**
  * Frame a newline-delimited JSON socket on the `\n` byte and nothing else.
@@ -15,8 +16,21 @@ import type * as net from "node:net";
  * vanishing: a silent drop is what turned a framing defect into a
  * fifteen-second mystery.
  */
+/**
+ * Per-frame wire stats handed to `onMessage` alongside the parsed message:
+ * `bytes` is the UTF-8 byte length of the raw NDJSON line (the on-the-wire size
+ * of this reply, before `JSON.parse` drops it), `parseMs` the `JSON.parse` cost.
+ * The open-server describe path reads these to attribute the idle-describe host
+ * residual to transport size vs. host parse (phase 3i); other consumers ignore
+ * the second argument.
+ */
+export interface NdjsonFrameStats {
+  bytes: number;
+  parseMs: number;
+}
+
 interface NdjsonReaderHandlers {
-  onMessage: (msg: unknown) => void;
+  onMessage: (msg: unknown, stats: NdjsonFrameStats) => void;
   onDropped: (info: { bytes: number; preview: string }) => void;
 }
 
@@ -41,14 +55,17 @@ export function attachNdjsonReader(socket: net.Socket, handlers: NdjsonReaderHan
 
   const deliver = (raw: string): void => {
     if (raw.length === 0 || raw === "\r") return;
+    const bytes = Buffer.byteLength(raw, "utf8");
     let msg: unknown;
+    const t0 = performance.now();
     try {
       msg = JSON.parse(raw);
     } catch {
-      handlers.onDropped({ bytes: Buffer.byteLength(raw, "utf8"), preview: preview(raw) });
+      handlers.onDropped({ bytes, preview: preview(raw) });
       return;
     }
-    handlers.onMessage(msg);
+    const parseMs = performance.now() - t0;
+    handlers.onMessage(msg, { bytes, parseMs });
   };
 
   socket.on("data", (chunk: string | Buffer) => {
