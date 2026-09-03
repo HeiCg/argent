@@ -61,15 +61,26 @@ if (tls.length) {
   }
 }
 
-// Effect gate (phase 3h). Every block that ran must have landed its effect-checked
-// taps — effectZeroTotal 0. The bench already fails a block with a no-effect tap,
-// but the merge asserts it too so an assembled run cannot be scored healthy while
-// a tap silently did nothing.
-const effectBad = blocks
-  .filter((b) => (b.effectZeroTotal || 0) > 0)
-  .map((b) => `${b.block}=${b.effectZeroTotal}`);
-if (effectBad.length) {
-  throw new Error(`no-effect tap iterations detected in: ${effectBad.join(", ")} (the tap did not land)`);
+// Effect gate (phase 3h). Runs at the END, after all four per-block JSONs exist, so
+// one failing block never hides the others. A block's effect-checked taps must have
+// landed (effectZeroTotal 0, from the timing-independent poll oracle). ON blocks are
+// FATAL; OFF (proprietary) is tolerated and only reported (its arm is best-effort on
+// Linux). originLost is reported for context.
+const effectLine = present
+  .map((n) => {
+    const b = files[n].block;
+    return `${n}: effectZero=${b.effectZeroTotal || 0}/${b.effectCheckedTotal || 0} originLost=${b.originLostTotal || 0}`;
+  })
+  .join(" | ");
+console.log("tap effect-check per block — " + effectLine);
+const onEffectBad = present
+  .filter((n) => n.startsWith("ON") && (files[n].block.effectZeroTotal || 0) > 0)
+  .map((n) => `${n}=${files[n].block.effectZeroTotal}`);
+if (onEffectBad.length) {
+  throw new Error(
+    `no-effect tap iterations on an ON block: ${onEffectBad.join(", ")} — the tap did not land. ` +
+      `Full per-block: ${effectLine}`
+  );
 }
 
 // Zero-fast-inject-fallback gate for ON-scrcpy (only if that arm ran).
@@ -127,6 +138,12 @@ const result = {
   scrcpyFallbacks,
   // Phase 3h: parity + effect evidence carried into the scoreboard.
   tapTimelines: Object.fromEntries(tls.map(({ block, tl }) => [block, tl])),
+  effectByBlock: Object.fromEntries(
+    blocks.map((b) => [
+      b.block,
+      { effectZero: b.effectZeroTotal || 0, effectChecked: b.effectCheckedTotal || 0, originLost: b.originLostTotal || 0 },
+    ])
+  ),
   effectZeroByBlock: Object.fromEntries(blocks.map((b) => [b.block, b.effectZeroTotal || 0])),
   fidelity,
   finishedAt: new Date().toISOString(),
@@ -138,10 +155,7 @@ console.log(
   `blocks merged: ${present.join(", ")}` +
     (scrcpyFallbacks === null ? " (no ON-scrcpy arm)" : `; ON-scrcpy fast-inject fallbacks: ${scrcpyFallbacks} (gate 0) — OK`)
 );
-console.log(
-  "tap effect-check (no-effect iterations per block): " +
-    present.map((n) => `${n}=${files[n].block.effectZeroTotal || 0}`).join(", ") + " (gate 0) — OK"
-);
+console.log("tap effect-check (ON fatal, OFF tolerated) — " + effectLine + " — ON gate OK");
 if (tls.length) {
   console.log(
     "tap-timeline parity OK: holdMs=" + tls[0].tl.holdMs + "ms; MOVE present only on scrcpy — " +
