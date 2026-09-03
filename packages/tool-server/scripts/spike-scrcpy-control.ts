@@ -217,10 +217,15 @@ async function main(): Promise<void> {
     const tapOk = after1 !== before1 && after1 !== "(unknown)";
     results.push(`STEP1 tap-navigates: ${tapOk ? "PASS" : "FAIL"} (before=${before1} after=${after1})`);
 
-    // --- Step 2: two-pointer pinch-zoom on Chrome example.com ---
+    // --- Step 2: two-pointer pinch-zoom in Chrome ---
+    // The ticket named example.com, but that page is near-blank (a small centred
+    // text block on white), so even a perfect pinch-zoom only moves ~1.4% of
+    // pixels and can't clear a 2% threshold. A content-rich page makes a working
+    // pinch unmistakable (~99% reflow). Override with SPIKE_PINCH_URL.
+    const pinchUrl = process.env.SPIKE_PINCH_URL ?? "https://en.wikipedia.org/wiki/Linux";
     adb("shell", "am", "force-stop", CHROME);
-    adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "http://example.com", CHROME);
-    await sleep(5000);
+    adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", pinchUrl, CHROME);
+    await sleep(7000);
     const before2 = screencap();
     const cx = size.width / 2;
     const cy = size.height / 2;

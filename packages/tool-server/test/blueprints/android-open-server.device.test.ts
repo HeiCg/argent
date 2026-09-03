@@ -613,3 +613,210 @@ suite("android open-device-server on-device", () => {
     );
   }, 90_000);
 });
+
+/**
+ * Phase 3f — the SAME on-device path with fast inject ON (tap/swipe/gesture over
+ * the scrcpy control channel; describe/state/screenshot/flushInput stay on the
+ * Kotlin server). A sibling suite so it never runs while the default-path instance
+ * above holds the exclusive UiAutomation channel — vitest runs suites in file
+ * order, and this one builds its own instance with `fastInject: 'scrcpy'`.
+ */
+const CHROME_PINCH_URL = process.env.OPEN_SERVER_PINCH_URL ?? "https://en.wikipedia.org/wiki/Linux";
+const fiSuite = ENABLED ? describe : describe.skip;
+
+fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
+  let fiApi: OpenDeviceServerApi;
+  let fiDispose: () => Promise<void>;
+  let fiSerial = "";
+
+  beforeAll(async () => {
+    fiSerial = await resolveSerial();
+    for (const pkg of [
+      "com.devicestream.server",
+      "com.devicestream.server.test",
+      "com.argent.androiddevtools",
+    ]) {
+      await adbShell(fiSerial, `am force-stop ${pkg}`).catch(() => undefined);
+    }
+    const device: DeviceInfo = { id: fiSerial, platform: "android", kind: "emulator" };
+    const instance = await androidOpenServerBlueprint.factory({}, device, {
+      device,
+      fastInject: "scrcpy",
+    });
+    fiApi = instance.api;
+    fiDispose = instance.dispose;
+    expect(fiApi.isReady()).toBe(true);
+  }, 120_000);
+
+  afterAll(async () => {
+    if (fiDispose) await fiDispose().catch(() => undefined);
+  }, 30_000);
+
+  const fiHome = async (): Promise<Element[]> => {
+    // Force-stop first: launchApp only RESUMES an existing Settings task (leaving a
+    // sub-screen on top), so a plain relaunch would not return to the home list.
+    await adbShell(fiSerial, `am force-stop ${SETTINGS}`).catch(() => undefined);
+    await fiApi.launchApp(SETTINGS);
+    await sleep(1500);
+    await fiApi.waitForIdle(3000);
+    const { tree } = await fiApi.getAccessibilityTree({ maxElements: 200 });
+    return tree;
+  };
+
+  // A reliably-navigable Settings home row. Rows are full-width CLICKABLE
+  // containers with an EMPTY label (the text sits on a non-clickable child), so
+  // match on geometry, not label: the first full-width clickable below the search
+  // box (~0.30 H) — e.g. "Network & internet" — which always opens a sub-screen.
+  const navRow = (tree: Element[], screenWidth: number, screenHeight: number): Element | undefined =>
+    tree
+      .filter(
+        (e) =>
+          e.clickable === true &&
+          e.bounds.x2 - e.bounds.x1 > screenWidth * 0.6 &&
+          e.bounds.y1 > screenHeight * 0.3 &&
+          e.bounds.y2 < screenHeight * 0.92
+      )
+      .sort((a, b) => a.bounds.y1 - b.bounds.y1)[0];
+
+  const fiShot = async (): Promise<Buffer> =>
+    Buffer.from((await fiApi.screenshot({ format: "png", scale: 0.5 })).data, "base64");
+
+  it("fast-inject tap navigates (scrcpy DOWN/UP + flushInput)", async () => {
+    const tree = await fiHome();
+    const info = await fiApi.getInfo();
+    const row = navRow(tree, info.screenWidth, info.screenHeight);
+    expect(row).toBeDefined();
+    const c = center(row!);
+    const before = await fiShot();
+    await fiApi.tap(c.x, c.y);
+    await fiApi.waitForIdle(2000);
+    const after = await fiShot();
+    // A real navigation redraws most of the screen; a missed tap barely changes it.
+    const ratio = pngDiffRatio(before, after);
+    expect(ratio).toBeGreaterThan(0.1);
+    record("3f-tap navigates", "PASS", `row="${label(row!)}" @${c.x},${c.y} → diff ${(ratio * 100).toFixed(0)}%`);
+  }, 90_000);
+
+  it("fast-inject tap→describe sees destination 20/20 (settle) and quick-read ordered (flushInput)", async () => {
+    // Fix the target once from a fresh home; Settings layout is stable on relaunch.
+    const tree0 = await fiHome();
+    const info = await fiApi.getInfo();
+    const row = navRow(tree0, info.screenWidth, info.screenHeight);
+    expect(row).toBeDefined();
+    const c = center(row!);
+
+    let settleHits = 0;
+    let quickHits = 0;
+    const RUNS = 20;
+    for (let i = 0; i < RUNS; i++) {
+      // settle:true — after tap + flushInput, an idle-waited describe sees the
+      // destination every time (the tap is never lost).
+      await fiHome();
+      const before1 = await fiShot();
+      await fiApi.tap(c.x, c.y);
+      await fiApi.waitForIdle(2000);
+      const settled = await fiShot();
+      if (pngDiffRatio(before1, settled) > 0.1) settleHits++;
+
+      // Ordering (the flushInput guarantee): a QUICK describe right after the tap
+      // must already reflect the post-UP screen — flushInput ordered the UP ahead
+      // of the read, so it never catches the pre-UP (unchanged) frame.
+      await fiHome();
+      const before2 = await fiShot();
+      await fiApi.tap(c.x, c.y);
+      await fiApi.getNestedState({ waitTimeoutMs: 300 });
+      const quick = await fiShot();
+      if (pngDiffRatio(before2, quick) > 0.1) quickHits++;
+    }
+    expect(settleHits).toBe(RUNS);
+    expect(quickHits).toBe(RUNS);
+    record(
+      "3f-tap→describe",
+      "PASS",
+      `settle ${settleHits}/${RUNS}, quick-read(flushInput ordered) ${quickHits}/${RUNS}`
+    );
+  }, 360_000);
+
+  it("fast-inject pinch zooms (scrcpy multi-pointer)", async () => {
+    await adbShell(fiSerial, `am force-stop ${CHROME}`).catch(() => undefined);
+    await adbShell(
+      fiSerial,
+      `am start -a android.intent.action.VIEW -d '${CHROME_PINCH_URL}' ${CHROME}`
+    );
+    await sleep(7000);
+    const info = await fiApi.getInfo();
+    const before = Buffer.from((await fiApi.screenshot({ format: "png" })).data, "base64");
+    const cx = Math.round(info.screenWidth / 2);
+    const cy = Math.round(info.screenHeight / 2);
+    const frames = 14;
+    const near = info.screenHeight * 0.05;
+    const far = info.screenHeight * 0.34;
+    const mk = (dir: number) =>
+      Array.from({ length: frames }, (_, i) => {
+        const t = i / (frames - 1);
+        return { x: cx, y: Math.round(cy + dir * (near + (far - near) * t)), tMs: i * 16 };
+      });
+    await fiApi.gesture([
+      { id: 0, points: mk(-1) },
+      { id: 1, points: mk(+1) },
+    ]);
+    await sleep(1500);
+    const after = Buffer.from((await fiApi.screenshot({ format: "png" })).data, "base64");
+    const ratio = pngDiffRatio(before, after);
+    expect(ratio).toBeGreaterThanOrEqual(0.02);
+    record("3f-pinch zooms", "PASS", `screenshot diff ${(ratio * 100).toFixed(1)}% ≥ 2%`);
+  }, 90_000);
+
+  it("fast-inject momentum-free swipe travels less than a default (flinging) swipe", async () => {
+    const measure = async (holdEndMs: number): Promise<number> => {
+      await fiHome();
+      const info = await fiApi.getInfo();
+      const cx = Math.round(info.screenWidth / 2);
+      const y0 = Math.round(info.screenHeight * 0.8);
+      const y1 = Math.round(info.screenHeight * 0.2);
+      const before = Buffer.from(
+        (await fiApi.screenshot({ format: "png", scale: 0.5 })).data,
+        "base64"
+      );
+      await fiApi.swipe(cx, y0, cx, y1, 12, holdEndMs);
+      // Let a fling (holdEndMs=0) run to rest before sampling the resting position.
+      await sleep(1600);
+      const after = Buffer.from(
+        (await fiApi.screenshot({ format: "png", scale: 0.5 })).data,
+        "base64"
+      );
+      return pngDiffRatio(before, after);
+    };
+    const momentum = await measure(0);
+    const held = await measure(250);
+    // The flinging swipe keeps scrolling after lift, so more of the list changes
+    // than the momentum-free swipe that decelerates to ~0 before the lift.
+    expect(momentum).toBeGreaterThan(held);
+    record(
+      "3f-swipe momentum",
+      "PASS",
+      `default(fling) diff ${(momentum * 100).toFixed(1)}% > momentum-free ${(held * 100).toFixed(1)}%`
+    );
+  }, 120_000);
+
+  it("fast-inject coexists with the Kotlin instrumentation channel", async () => {
+    // scrcpy (shell-uid app_process) injects touch while the same instance's Kotlin
+    // server answers ping/describe/screenshot — both channels live at once.
+    const ping = await fiApi.ping();
+    expect(ping.status).toBe("ok");
+    const tree = await fiHome();
+    const info = await fiApi.getInfo();
+    const row = navRow(tree, info.screenWidth, info.screenHeight);
+    expect(row).toBeDefined();
+    const c = center(row!);
+    await fiApi.tap(c.x, c.y); // scrcpy inject
+    await fiApi.waitForIdle(2000); // Kotlin
+    const shot = await fiApi.screenshot({ format: "png" }); // Kotlin
+    expect(shot.width).toBeGreaterThan(0);
+    record(
+      "3f-coexistence",
+      "PASS",
+      `ping=${ping.status}, scrcpy tap + Kotlin describe/screenshot both served`
+    );
+  }, 90_000);
+});
