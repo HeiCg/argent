@@ -247,11 +247,13 @@ jobs:
 
       # ---- (1) device test ----
       - name: Open-server on-device test (OPEN_SERVER_DEVICE_TESTS=1)
-        # Validation gate (phase 3h). ENFORCED normally: any device-test failure
-        # fails the job. TEMPORARILY non-blocking for ONE diagnostic run so the
-        # latency bench below executes and its effect-check gives the decisive
-        # scrcpy-vs-UiAutomation tap-landing A/B on a known-navigating row. REVERT
-        # (remove continue-on-error) once the mechanism is settled.
+        id: devtest
+        # Validation gate (phase 3h). `continue-on-error` here lets the latency
+        # bench below ALWAYS run (its per-block effect-check is the diagnostic that
+        # would have caught the retracted "tap win"), but the job is still failed on
+        # any device-test failure by the "Enforce device-test result" step at the
+        # very end — AFTER artifacts upload. So no run can look green with a failing
+        # device test, and the bench diagnostics survive a failure.
         continue-on-error: true
         env:
           OPEN_SERVER_DEVICE_TESTS: "1"
@@ -396,6 +398,21 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      # ---- ENFORCE the device-test result LAST (after diagnostics uploaded) ----
+      - name: Enforce device-test result
+        if: always()
+        # The device-test step is continue-on-error so the bench always runs, but a
+        # device-test failure MUST still fail the job — checked here, after every
+        # diagnostic artifact is uploaded, so nothing can look green with a red
+        # device suite (the phase-3h enforcement requirement).
+        run: |
+          echo "device-test outcome: ${{ steps.devtest.outcome }}"
+          if [ "${{ steps.devtest.outcome }}" = "failure" ]; then
+            echo "::error::device tests failed — see bench-latency/logs/device-test.log"
+            exit 1
+          fi
+          echo "device tests passed."
 
   # ── Screen-graph matrix (optional, own emulator, runs in parallel) ─────────
   screen-graph:
