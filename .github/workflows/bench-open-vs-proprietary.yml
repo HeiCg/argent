@@ -34,6 +34,14 @@ on:
           - latency
           - screen-graph
           - both
+      sg_mode:
+        description: "screen-graph mode: capture (pre-flight dumps launch+destination to capture.json, no matrix) or matrix"
+        required: false
+        default: "matrix"
+        type: choice
+        options:
+          - matrix
+          - capture
 
 jobs:
   # ── Latency bench (4 blocks) + device smoke + fling A/B ────────────────────
@@ -366,10 +374,10 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
 
     steps:
-      - name: Checkout feat/screen-graph @ 5b1e6e98
+      - name: Checkout feat/screen-graph-c3 @ a7402c30
         uses: actions/checkout@v4
         with:
-          ref: 5b1e6e98eb307354581d0f5ce24cd397d3bb86e1
+          ref: a7402c30df37c70c3f1990da2014750ce1c02ed5
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -453,17 +461,28 @@ jobs:
           echo "PROP_PKG=$PKGTMP/extracted/package" >> "$GITHUB_ENV"
           chmod +x "$PKGTMP/extracted/package/bin/linux/simulator-server" 2>/dev/null || true
 
-      - name: Pre-flight (BLOCKER-1/2 oracle check)
+      - name: Pre-flight (needle gate + optional capture)
         env:
           BENCH_SERIAL: emulator-5554
+          # capture mode dumps launch+destination per task to capture.json (under
+          # OUT_DIR, staged by the artifact step) and does NOT gate; matrix mode
+          # gates: a BAD/MISSING needle exits 1 and — with pipefail — stops the job.
+          BENCH_CAPTURE: ${{ github.event.inputs.sg_mode == 'capture' && '1' || '' }}
+          BENCH_OUT: ${{ github.workspace }}/.bench-results/screen-graph
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+        # `set -o pipefail` so the script's non-zero exit is NOT masked by `tee`
+        # (the C.2 bug: the gate exited 1 but tee's 0 rode over it and the matrix
+        # ran anyway). `-e` then fails the step, and — no continue-on-error here —
+        # the later matrix step in the same job never runs on a failed pre-flight.
         run: |
+          set -euo pipefail
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-preflight.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-preflight.log"
 
       - name: Screen-graph matrix
+        if: ${{ github.event.inputs.sg_mode != 'capture' }}
         env:
           BENCH_SERIAL: emulator-5554
           BENCH_REPS: "3"
@@ -477,6 +496,7 @@ jobs:
           # by the artifact step) so writeFileSync does not ENOENT at run end.
           BENCH_REPORT: ${{ github.workspace }}/.bench-results/screen-graph/results-ci.md
         run: |
+          set -euo pipefail
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-matrix.log"
 
