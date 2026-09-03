@@ -256,6 +256,10 @@ jobs:
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
         run: |
           set -uo pipefail
+          # Readiness gate: a tap that lands on an ANR dialog is not a landed tap.
+          # Wait for a settled, launcher-focused emulator (no "Application Not
+          # Responding" window) before running — logs the wait, never fatal.
+          bash .github/bench-ci/ready-gate.sh emulator-5554 3 90 | tee "$RUNNER_TEMP/ready-gate-device-test.txt"
           # Capture logcat (verbose input) across the run so a dropped/mis-targeted
           # injected touch is diagnosable — the scrcpy-server's own stdout is also
           # surfaced into device-test.log via the backend's [scrcpy-server] pump.
@@ -295,8 +299,11 @@ jobs:
           run_block () {
             local b="$1"
             echo "########## BLOCK $b ##########"
+            # Settle before each block: an ANR dialog left up from a prior block
+            # would poison this block's effect check. Logged into the block log.
+            bash .github/bench-ci/ready-gate.sh emulator-5554 3 60 | tee -a "$BENCH_OUT/bench-log-$b.txt" || true
             BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
-              2>&1 | tee "$BENCH_OUT/bench-log-$b.txt"
+              2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
           }
           OFF_OK=1
           # OFF-1 — best-effort: a proprietary refusal on Linux downgrades to ON-only.
@@ -373,6 +380,7 @@ jobs:
           cp /tmp/emulator.log /tmp/avdmanager.log /tmp/prop-probe.txt "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/device-test.log" "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/logcat-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/ready-gate-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
           echo "=== staged ==="; find "$STAGE" -type f | sed "s|$STAGE/||" | sort
 
       - name: Upload artifacts
