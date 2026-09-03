@@ -101,6 +101,15 @@ export interface DescribeTreeData {
   // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs).
   // Metadata only — never rendered; a bench reads it to locate the residual.
   timings?: DescribeStageTimings;
+  // Host/transport split of the open-device-server describe (phase 3i), the piece
+  // that lives OUTSIDE the on-device `timings`: `wireBytes` is the raw NDJSON reply
+  // size on the wire (the full nested tree), `hostParseMs` the host `JSON.parse`
+  // cost, `hostRenderMs` the host tree-lowering + trim (`openServerNestedToDescribeNode`).
+  // Metadata only — never rendered; a bench reads them to attribute the idle
+  // describe residual to transport vs. host CPU. Set solely by the Android open path.
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostRenderMs?: number;
 }
 
 export interface DescribeStageTimings {
@@ -110,6 +119,10 @@ export interface DescribeStageTimings {
   rootsMs: number[];
   serializeMs: number;
   encodeMs: number;
+  // Which path produced the active root (phase 3g-b): "windows" =
+  // `windows.firstOrNull { it.isActive }?.root` (the fast, mid-transition-safe
+  // path), "activeWindow" = `rootInActiveWindow` fallback. Absent on older servers.
+  rootSource?: "windows" | "activeWindow";
 }
 
 export interface DescribeResult {
@@ -123,6 +136,11 @@ export interface DescribeResult {
   captureMs?: number;
   // Per-stage capture split (open-device-server only, phase 3g).
   timings?: DescribeStageTimings;
+  // Host/transport split (open-device-server only, phase 3i): reply wire size,
+  // host JSON.parse cost, host tree-lowering cost. See DescribeTreeData.
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostRenderMs?: number;
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {

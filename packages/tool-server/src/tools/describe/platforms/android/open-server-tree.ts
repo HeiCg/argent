@@ -175,6 +175,22 @@ function nestedToParsed(el: OpenServerNestedElement): ParsedXmlNode {
 }
 
 /**
+ * First host pass: lower the nested roots to the XML-shaped `ParsedXmlNode`
+ * `<hierarchy>` the v2 trim consumes. Each element is one window's root (active
+ * window, IME keyboard, dialogs …), exactly the multi-window shape a uiautomator
+ * `<hierarchy>` carries. Exported so the phase 3i host micro-bench can time this
+ * pass (the nested→parsed rebuild) separately from the trim
+ * (`buildDescribeTreeFromParsedRoot`) and measure the two-pass cost.
+ */
+export function nestedRootsToParsedHierarchy(roots: OpenServerNestedElement[]): ParsedXmlNode {
+  return {
+    tag: "hierarchy",
+    attrs: {},
+    children: roots.map(nestedToParsed),
+  };
+}
+
+/**
  * Lower the open server's full nested accessibility tree to a `DescribeNode` by
  * running the EXACT v2 interactables-only trim the `uiautomator dump` /
  * `android-devtools` path runs. The server root is wrapped as the single window
@@ -183,18 +199,16 @@ function nestedToParsed(el: OpenServerNestedElement): ParsedXmlNode {
  * collapsed wrappers, package-qualified ids) is byte-identical to the
  * proprietary path — which is what makes the describe token count and label set
  * match rather than merely approximate it.
+ *
+ * Two passes: {@link nestedRootsToParsedHierarchy} (nested→parsed) then
+ * `buildDescribeTreeFromParsedRoot` (parsed→trimmed DescribeNode). Kept as a
+ * composition of the two so both the goldens (the byte-identical contract) and
+ * the host micro-bench see the identical output.
  */
 export function openServerNestedToDescribeNode(
   roots: OpenServerNestedElement[],
   screenW: number,
   screenH: number
 ): DescribeNode {
-  // Each element is one window's root (active window, IME keyboard, dialogs …),
-  // exactly the multi-window shape a uiautomator `<hierarchy>` carries.
-  const hierarchy: ParsedXmlNode = {
-    tag: "hierarchy",
-    attrs: {},
-    children: roots.map(nestedToParsed),
-  };
-  return buildDescribeTreeFromParsedRoot(hierarchy, screenW, screenH);
+  return buildDescribeTreeFromParsedRoot(nestedRootsToParsedHierarchy(roots), screenW, screenH);
 }

@@ -64,6 +64,19 @@ class TCPServer(
 
     private fun handleConnection(socket: Socket) {
         try {
+            // Disable Nagle on the accepted socket (phase 3i). The host client already
+            // sets TCP_NODELAY (android-open-server-client.ts), but the reply side was
+            // still Nagling: each describe reply is one small `\n`-terminated line, and
+            // with Nagle on the server can hold it ~40 ms waiting to coalesce with a
+            // (never-coming) next write or the previous segment's ACK, inflating the
+            // idle-describe round-trip over `adb forward`. `flush()` alone does not
+            // defeat Nagle; TCP_NODELAY does. Best-effort: a failure here must not drop
+            // the connection.
+            try {
+                socket.tcpNoDelay = true
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not set TCP_NODELAY on accepted socket", e)
+            }
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
             val writer = OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8)
 

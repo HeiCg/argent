@@ -1,5 +1,6 @@
 package com.argent.devicecontrol
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.Instrumentation
 import android.os.Bundle
@@ -44,6 +45,23 @@ class DeviceControlInstrumentation : Instrumentation() {
         super.onStart()
         val uiDevice = UiDevice.getInstance(this)
         val uiAutomation = uiAutomation
+
+        // Enable the interactive-windows API so `uiAutomation.windows` is populated
+        // and the active window's root can be read from that snapshot instead of via
+        // `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase 3g
+        // bench). FLAG_REPORT_VIEW_IDS keeps resource-id view ids on serialized
+        // nodes. UiAutomator may already set these; the OR is a no-op if so.
+        try {
+            val info = uiAutomation.serviceInfo
+            if (info != null) {
+                info.flags = info.flags or
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                uiAutomation.serviceInfo = info
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not set UiAutomation service flags", e)
+        }
 
         val handler = JsonRpcHandler(uiDevice, uiAutomation, this) { requestShutdown() }
         // Port 0 → the OS picks a free port; we read the bound value below.

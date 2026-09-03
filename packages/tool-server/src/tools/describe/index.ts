@@ -32,6 +32,10 @@ function withDescription(data: DescribeTreeData): DescribeResult {
   if (data.waitedMs !== undefined) out.waitedMs = data.waitedMs;
   if (data.captureMs !== undefined) out.captureMs = data.captureMs;
   if (data.timings !== undefined) out.timings = data.timings;
+  // Host/transport split (phase 3i): wire size, host parse, host render.
+  if (data.wireBytes !== undefined) out.wireBytes = data.wireBytes;
+  if (data.hostParseMs !== undefined) out.hostParseMs = data.hostParseMs;
+  if (data.hostRenderMs !== undefined) out.hostRenderMs = data.hostRenderMs;
   return out;
 }
 
