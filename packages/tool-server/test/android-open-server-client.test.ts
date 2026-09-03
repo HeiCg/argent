@@ -201,6 +201,25 @@ describe("AndroidOpenServerClient", () => {
     expect(res.label).toBe(label);
   });
 
+  it("requestWithStats returns the reply wire size, parse cost and host timeline (phase 3i)", async () => {
+    const label = "x".repeat(2000); // a chunky reply so wireBytes is clearly > 0
+    const s = await startServer((line, socket) => {
+      const req = JSON.parse(line) as { id: number };
+      reply(socket, { id: req.id, result: { label } });
+    });
+    servers.push(s);
+    const c = makeClient(s.port);
+    const r = await c.requestWithStats<{ label: string }>("getState");
+    expect(r.result.label).toBe(label);
+    // wireBytes is the whole NDJSON reply line, so at least the payload length.
+    expect(r.wireBytes).toBeGreaterThan(2000);
+    expect(r.parseMs).toBeGreaterThanOrEqual(0);
+    // Timeline is monotonic: sent -> first byte -> last byte.
+    expect(r.hostSentToFirstByteMs).toBeGreaterThanOrEqual(0);
+    expect(r.hostFirstToLastByteMs).toBeGreaterThanOrEqual(0);
+    expect(r.hostRoundTripMs).toBeGreaterThanOrEqual(r.hostSentToFirstByteMs);
+  });
+
   it("rejects in-flight requests when closed", async () => {
     const s = await startServer(() => {
       /* never replies */

@@ -141,6 +141,9 @@ export async function describeAndroid(
           wireBytes: state.wireBytes,
           hostParseMs: state.hostParseMs,
           hostRenderMs,
+          hostSentToFirstByteMs: state.hostSentToFirstByteMs,
+          hostFirstToLastByteMs: state.hostFirstToLastByteMs,
+          hostRoundTripMs: state.hostRoundTripMs,
         };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
@@ -159,6 +162,13 @@ export async function describeAndroid(
         ...(result.wireBytes !== undefined ? { wireBytes: result.wireBytes } : {}),
         ...(result.hostParseMs !== undefined ? { hostParseMs: result.hostParseMs } : {}),
         ...(result.hostRenderMs !== undefined ? { hostRenderMs: result.hostRenderMs } : {}),
+        ...(result.hostSentToFirstByteMs !== undefined
+          ? { hostSentToFirstByteMs: result.hostSentToFirstByteMs }
+          : {}),
+        ...(result.hostFirstToLastByteMs !== undefined
+          ? { hostFirstToLastByteMs: result.hostFirstToLastByteMs }
+          : {}),
+        ...(result.hostRoundTripMs !== undefined ? { hostRoundTripMs: result.hostRoundTripMs } : {}),
       };
     } catch (serverErr) {
       console.debug(

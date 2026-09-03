@@ -55,7 +55,33 @@ class JsonRpcHandler(
     private val waitHandler = WaitHandler(uiDevice)
     private val openAppHandler = OpenAppHandler(instrumentation)
 
+    /**
+     * The method of the last request [handle] parsed, or null if parsing failed.
+     * [TCPServer] reads it after writing the response to key [reportServerTiming]
+     * by method — a response cannot carry the cost of writing itself (phase 3i).
+     */
+    var lastHandledMethod: String? = null
+        private set
+
+    private data class ServerTiming(val handleMs: Double, val writeMs: Double, val totalMs: Double)
+
+    // Per-method server-side timeline of the PREVIOUS request of that method,
+    // injected into the next same-method response's `timings`. Single connection
+    // thread, so no synchronisation is needed.
+    private val prevServerTiming = HashMap<String, ServerTiming>()
+
+    /**
+     * Record the just-written request's server-side timeline (phase 3i), keyed by
+     * method: `handleMs` = handler entry → response ready (t3 − t2), `writeMs` =
+     * response write + flush (t4 − t3), `totalMs` = entry → flush (t4 − t2).
+     * Surfaced on the NEXT same-method response.
+     */
+    fun reportServerTiming(method: String, handleMs: Double, writeMs: Double, totalMs: Double) {
+        prevServerTiming[method] = ServerTiming(handleMs, writeMs, totalMs)
+    }
+
     fun handle(line: String): String {
+        lastHandledMethod = null
         val json: JSONObject
         val method: String
         try {
@@ -64,6 +90,7 @@ class JsonRpcHandler(
         } catch (e: Exception) {
             return JsonRpc.errorResponse(null, -32700, "Parse error")
         }
+        lastHandledMethod = method
 
         val id = json.opt("id")
         val params = json.optJSONObject("params") ?: JSONObject()
@@ -94,6 +121,18 @@ class JsonRpcHandler(
                     JSONObject().apply { put("status", "ok") }
                 }
                 else -> return JsonRpc.errorResponse(id, -32601, "Method not found: $method")
+            }
+            // Phase 3i: fold the PREVIOUS same-method request's server-side timeline
+            // into this response's `timings` (a response cannot time its own write).
+            if (result is JSONObject) {
+                val t = result.optJSONObject("timings")
+                if (t != null) {
+                    prevServerTiming[method]?.let { prev ->
+                        t.put("prevServerHandleMs", prev.handleMs)
+                        t.put("prevServerWriteMs", prev.writeMs)
+                        t.put("prevServerTotalMs", prev.totalMs)
+                    }
+                }
             }
             JsonRpc.successResponse(id, result)
         } catch (e: Exception) {

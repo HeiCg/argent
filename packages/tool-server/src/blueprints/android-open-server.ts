@@ -100,6 +100,16 @@ export interface OpenServerTimings {
   // interactive-windows snapshot (fast, coherent mid-transition), "activeWindow" =
   // `rootInActiveWindow` fallback. Absent on servers before versionCode 22.
   rootSource?: "windows" | "activeWindow";
+  // Server-side request timeline of the PREVIOUS same-method request (phase 3i),
+  // piggybacked because a response cannot carry the cost of writing itself. All ms:
+  // `prevServerHandleMs` = handler entry → response string ready (capture + JSON
+  // build); `prevServerWriteMs` = response write + flush to the socket (t4 − t3);
+  // `prevServerTotalMs` = handler entry → flush done (t4 − t2). Absent on servers
+  // before versionCode 23. In a describe loop the previous getState is the previous
+  // describe/await-idle capture of the same screen, so these characterise it.
+  prevServerHandleMs?: number;
+  prevServerWriteMs?: number;
+  prevServerTotalMs?: number;
 }
 
 /**
@@ -116,6 +126,12 @@ export interface OpenServerStateResult {
   captureMs: number;
   /** Per-stage capture split (phase 3g); absent on older servers. */
   timings?: OpenServerTimings;
+  /** Host/transport timeline of this reply (phase 3i); see {@link getNestedState}. */
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
 }
 
 /** One pointer's path for a multi-pointer [OpenDeviceServerApi.gesture]. */
@@ -192,14 +208,19 @@ export interface OpenDeviceServerApi {
     /** Per-stage capture split (phase 3g); absent on older servers. */
     timings?: OpenServerTimings;
     /**
-     * Host/transport cost of THIS reply (phase 3i), captured by the RPC client:
+     * Host/transport cost of THIS reply (phase 3i), captured by the RPC client.
      * `wireBytes` is the UTF-8 byte length of the raw NDJSON reply line (the full
-     * nested tree on the wire), `hostParseMs` the host `JSON.parse` cost. Metadata
-     * only — never rendered; a bench reads them to split the idle-describe residual
-     * into transport size vs. host parse.
+     * nested tree on the wire), `hostParseMs` the host `JSON.parse` cost, and the
+     * `hostSentToFirstByteMs` / `hostFirstToLastByteMs` / `hostRoundTripMs` triple
+     * is the host-clock timeline (TTFB, receive/streaming span, whole round-trip)
+     * — the clean, per-request decomposition of the idle-describe residual.
+     * Metadata only — never rendered.
      */
     wireBytes?: number;
     hostParseMs?: number;
+    hostSentToFirstByteMs?: number;
+    hostFirstToLastByteMs?: number;
+    hostRoundTripMs?: number;
   }>;
   /**
    * Multi-tap (F1/F8/F9): the server builds the whole DOWN/UP timeline —
@@ -540,10 +561,18 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(getOpts.flush ? { flush: true } : {}),
         }),
       getNestedState: async (stateOpts = {}) => {
-        // requestWithStats so the reply's on-the-wire size (`wireBytes`) and host
-        // JSON.parse cost (`hostParseMs`) ride the result as metadata — the raw
-        // bytes are otherwise dropped right after parse (phase 3i).
-        const { result, wireBytes, parseMs } = await client.requestWithStats<{
+        // requestWithStats so the reply's on-the-wire size (`wireBytes`), host
+        // JSON.parse cost, and the host-clock timeline (TTFB / receive / round-trip)
+        // ride the result as metadata — the raw bytes and receive timing are
+        // otherwise dropped right after parse (phase 3i).
+        const {
+          result,
+          wireBytes,
+          parseMs,
+          hostSentToFirstByteMs,
+          hostFirstToLastByteMs,
+          hostRoundTripMs,
+        } = await client.requestWithStats<{
           tree: OpenServerNestedElement[];
           info: OpenServerInfo;
           waitedMs: number;
@@ -556,7 +585,14 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
           ...(stateOpts.flush ? { flush: true } : {}),
         });
-        return { ...result, wireBytes, hostParseMs: parseMs };
+        return {
+          ...result,
+          wireBytes,
+          hostParseMs: parseMs,
+          hostSentToFirstByteMs,
+          hostFirstToLastByteMs,
+          hostRoundTripMs,
+        };
       },
       tap: (x, y, tapOpts = {}) =>
         client.request<{ success: boolean; dropped?: boolean }>("tap", {
@@ -596,15 +632,25 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           scale: ssOpts.scale ?? 1.0,
           format: ssOpts.format ?? "png",
         }),
-      getState: (stateOpts = {}) =>
-        client.request<OpenServerStateResult>("getState", {
-          maxElements: stateOpts.maxElements ?? 200,
-          waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
-          includeScreenshot: stateOpts.includeScreenshot ?? false,
-          ...(stateOpts.flush ? { flush: true } : {}),
-          ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
-          ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
-        }),
+      getState: async (stateOpts = {}) => {
+        const { result, wireBytes, parseMs, hostSentToFirstByteMs, hostFirstToLastByteMs, hostRoundTripMs } =
+          await client.requestWithStats<OpenServerStateResult>("getState", {
+            maxElements: stateOpts.maxElements ?? 200,
+            waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
+            includeScreenshot: stateOpts.includeScreenshot ?? false,
+            ...(stateOpts.flush ? { flush: true } : {}),
+            ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
+            ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
+          });
+        return {
+          ...result,
+          wireBytes,
+          hostParseMs: parseMs,
+          hostSentToFirstByteMs,
+          hostFirstToLastByteMs,
+          hostRoundTripMs,
+        };
+      },
     };
 
     // Fast-inject seam (phase 3f). When enabled, replace ONLY the tap/swipe/gesture
