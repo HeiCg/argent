@@ -24,8 +24,12 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Network & internet") }, knownTarget: true },
     ],
-    assertion: t("Internet"),
-    navTarget: t("Network & internet"),
+    // Destination-unique (C.3): "Calls & SMS" is on the Network & internet
+    // sub-screen and NOT on the Settings root (capture run 33767073864). The old
+    // "Internet" matched the root's "Network & internet" — a missed tap would
+    // false-pass. navTarget is the same exact text so O5 routes root→sub-screen.
+    assertion: t("Calls & SMS"),
+    navTarget: t("Calls & SMS"),
   },
   {
     id: "settings-connected",
@@ -35,8 +39,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Connected devices") }, knownTarget: true },
     ],
-    assertion: t("Bluetooth"),
-    navTarget: t("Connected devices"),
+    // "Pair new device" is on the Connected devices screen, not the root.
+    assertion: t("Pair new device"),
+    navTarget: t("Pair new device"),
   },
   {
     id: "settings-apps",
@@ -46,8 +51,10 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Apps") }, knownTarget: true },
     ],
-    assertion: t("app"),
-    navTarget: t("Apps"),
+    // "Special app access" is on the Apps screen, not the root (whose "Apps"
+    // item made the old bare-"app" needle a guaranteed false-pass).
+    assertion: t("Special app access"),
+    navTarget: t("Special app access"),
   },
   {
     id: "settings-notifications",
@@ -57,8 +64,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Notifications") }, knownTarget: true },
     ],
-    assertion: t("notification"),
-    navTarget: t("Notifications"),
+    // "App notifications" is on the Notifications screen, not the root.
+    assertion: t("App notifications"),
+    navTarget: t("App notifications"),
   },
   {
     id: "settings-battery",
@@ -68,8 +76,10 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Battery") }, knownTarget: true },
     ],
-    assertion: t("battery"),
-    navTarget: t("Battery"),
+    // "Battery usage" is on the Battery screen, not the root (whose "Battery"
+    // item made the old bare-"battery" needle a false-pass).
+    assertion: t("Battery usage"),
+    navTarget: t("Battery usage"),
   },
   {
     id: "settings-storage",
@@ -79,8 +89,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Storage") }, knownTarget: true },
     ],
-    assertion: t("storage"),
-    navTarget: t("Storage"),
+    // "Free up space" is on the Storage screen, not the root.
+    assertion: t("Free up space"),
+    navTarget: t("Free up space"),
   },
   {
     id: "settings-sound",
@@ -90,8 +101,10 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Sound & vibration") }, knownTarget: true },
     ],
-    assertion: t("volume"),
-    navTarget: t("Sound & vibration"),
+    // "Media volume" is on the Sound & vibration screen, not the root (whose
+    // "Volume, haptics, Do Not Disturb" made the old "volume" needle a false-pass).
+    assertion: t("Media volume"),
+    navTarget: t("Media volume"),
   },
   {
     id: "settings-display",
@@ -102,8 +115,11 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "swipe", direction: "up" } },
       { action: { kind: "tap", selector: t("Display") }, knownTarget: true },
     ],
+    // "brightness" is already destination-unique (not on the root). navTarget is
+    // a Display-screen exact text ("Brightness level"), NOT "Display" — "Display"
+    // is on the root too, so it would route O5 0 steps and never open the screen.
     assertion: t("brightness"),
-    navTarget: t("Display"),
+    navTarget: t("Brightness level"),
   },
   {
     id: "settings-network-internet",
@@ -114,20 +130,29 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "tap", selector: t("Network & internet") }, knownTarget: true },
       { action: { kind: "tap", selector: t("Internet") }, knownTarget: true },
     ],
+    // "SIMs" is destination-unique vs the root (existing pre-flight ok). navTarget
+    // "SIMs" routes O5 to the nearest screen holding it (Network & internet).
     assertion: t("SIMs"),
-    navTarget: t("Internet"),
+    navTarget: t("SIMs"),
   },
   {
     id: "settings-battery-then-back",
     app: "settings",
-    description: "Open Battery, go back to the root (revisit)",
+    // C.3: a task that goes Battery→back→root ENDS on its launch screen, so no
+    // needle can be present on the destination yet absent on the launch — the old
+    // "Network & internet" needle matched the root and false-passed on a missed
+    // Battery tap. Reopen Battery after the back instead: the root is still
+    // revisited (warm-graph reuse), the Battery screen is revisited too, and the
+    // task ends on a screen with a destination-unique needle ("Battery usage").
+    description: "Open Battery, go back to root, reopen Battery (revisit, warm graph)",
     steps: [
       { action: { kind: "launch" } },
       { action: { kind: "tap", selector: t("Battery") }, knownTarget: true },
       { action: { kind: "back" } },
+      { action: { kind: "tap", selector: t("Battery") }, knownTarget: true },
     ],
-    assertion: t("Network & internet"),
-    navTarget: t("Battery"),
+    assertion: t("Battery usage"),
+    navTarget: t("Battery usage"),
   },
 ];
 
@@ -166,8 +191,11 @@ export const CHROME_TASKS: BenchTask[] = [
   {
     id: "chrome-scroll-doc",
     app: "chrome",
-    // Needle to be confirmed against the real example.com AX-tree dump by the
-    // C.1 pre-flight (BLOCKER-2) before the matrix — not assumption.
+    // "documentation" is confirmed on example.com's real body ("...for use in
+    // documentation examples without needing permission." — capture 33767073864).
+    // example.com is a single short page a swipe cannot add content to, so launch
+    // == destination and the pre-flight treats this as a launch-destination task
+    // (needle present, no false-pass risk — there is no tap to miss).
     description: "Scroll the page and confirm a real body word",
     steps: [
       { action: { kind: "launch" } },
@@ -201,7 +229,11 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
       { action: { kind: "type", selector: t("Search"), text: "blue" }, sameScreen: true },
       { action: { kind: "type", selector: t("Search"), text: "tooth" }, sameScreen: true },
     ],
-    assertion: t("Bluetooth"),
+    // "Settings Services" is on the search screen but NOT the root, so it confirms
+    // the search-field tap navigated without false-passing. The old "Bluetooth"
+    // matched the root's "Bluetooth, pairing". (The Settings search result rows do
+    // not surface as queryable nodes over the open server — capture 33767073864.)
+    assertion: t("Settings Services"),
   },
   {
     id: "same-sound-noop",
@@ -213,7 +245,8 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
       { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
       { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
     ],
-    assertion: t("volume"),
+    // "Media volume" is on the Sound & vibration screen, not the root.
+    assertion: t("Media volume"),
   },
   {
     id: "same-chrome-noop",
@@ -249,7 +282,8 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
       { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
       { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
     ],
-    assertion: t("app"),
+    // "Special app access" is on the Apps screen, not the root.
+    assertion: t("Special app access"),
   },
 ];
 

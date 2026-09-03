@@ -109,10 +109,26 @@ function toOpenSelector(sel: BenchSelector): OpenServerSelector {
   return out;
 }
 
-/** A task "navigates" away from its launch screen if it has a tap/tapXY/swipe/back before asserting. */
+/**
+ * A task "navigates" away from its launch screen only via a REAL navigation step
+ * — a `tap` on a selector that is NOT flagged `sameScreen`, or a `back`. Swipes
+ * and `sameScreen` no-op taps do NOT change the screen for needle purposes:
+ *  - the same-screen H2 tasks (no-op tapXY / typing) stay put by design, so their
+ *    needle legitimately lives on the launch==destination screen;
+ *  - example.com is a single short page a swipe cannot reveal new content on, so
+ *    the chrome-scroll tasks also end where they launched.
+ * Confirmed by capture 33767073864: chrome-scroll-* and same-chrome-noop have
+ * identical launch/destination node sets. The old "any non-launch step" rule
+ * mis-flagged all of these as BAD. A launch-destination task's needle must be
+ * PRESENT on that screen (checked as a launch-only task); a genuinely navigating
+ * task's needle must be ABSENT from the launch screen (destination-unique).
+ */
 function navigatesAwayFromLaunch(taskId: string): boolean {
   const task = ALL_TASKS.find((t) => t.id === taskId)!;
-  return task.steps.some((s) => s.action.kind !== "launch");
+  return task.steps.some((s) => {
+    if (s.sameScreen) return false;
+    return s.action.kind === "tap" || s.action.kind === "back";
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -224,7 +240,9 @@ async function execCaptureStep(reg: Reg, step: BenchStep): Promise<void> {
       break;
     }
     case "back": {
-      await server.keyWithOutcome("KEYCODE_BACK").catch(() => undefined);
+      // Match the matrix harness (adb keyevent 4); the server key path did not
+      // navigate back reliably in capture 33767073864.
+      adbTry(["shell", "input keyevent 4"], 6_000);
       break;
     }
   }
