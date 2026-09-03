@@ -19,6 +19,17 @@ for (const n of ALL) {
 const present = ALL.filter((n) => files[n]);
 if (present.length === 0) throw new Error(`no bench-block-*.json found under ${OUT}`);
 
+// ON blocks are the hard requirement: a requested ON-* block that produced no
+// file must fail loudly (a silent drop would score an incomplete run as healthy).
+// OFF-* may be absent — a proprietary refusal on Linux legitimately downgrades to
+// ON-only.
+const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const missingOn = requested.filter((n) => n.startsWith("ON") && ALL.includes(n) && !files[n]);
+if (missingOn.length) {
+  throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
+}
+
 const blocks = present.map((n) => files[n].block);
 
 // Gesture-param drift gate across the blocks that ran.
