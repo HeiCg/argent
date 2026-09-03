@@ -175,6 +175,39 @@ if (fling) {
   L.push("");
 }
 
+// Phase 3j: serialize-once + compact in-run A/B and the transport experiment.
+// Defensive — only rendered for ON blocks that carry a `phase3j` object.
+const p50p95 = (st) => (st && st.p50 !== null && st.p50 !== undefined ? `${st.p50}/${st.p95 ?? "?"}` : "-");
+const on3j = blocks.filter((b) => b.phase3j);
+if (on3j.length) {
+  L.push("### Phase 3j — serialize-once + compact (before | after, p50/p95)");
+  L.push("");
+  for (const b of on3j) {
+    const p = b.phase3j;
+    L.push(`**${b.block}**`);
+    L.push("");
+    L.push("| metric | serialize legacy | serialize once | compact off | compact on |");
+    L.push("| --- | --- | --- | --- | --- |");
+    const el = p.encodeLegacy, eo = p.encodeOnce, co = p.compactOff, cn = p.compactOn;
+    L.push(`| server handleMs (t3-t2) | ${p50p95(el?.serverHandleMs)} | ${p50p95(eo?.serverHandleMs)} | ${p50p95(co?.serverHandleMs)} | ${p50p95(cn?.serverHandleMs)} |`);
+    L.push(`| server encodeMs | ${p50p95(el?.serverEncodeMs)} | ${p50p95(eo?.serverEncodeMs)} | ${p50p95(co?.serverEncodeMs)} | ${p50p95(cn?.serverEncodeMs)} |`);
+    L.push(`| wireBytes | ${p50p95(el?.wireBytes)} | ${p50p95(eo?.wireBytes)} | ${p50p95(co?.wireBytes)} | ${p50p95(cn?.wireBytes)} |`);
+    L.push(`| hostRttMs | ${p50p95(el?.hostRttMs)} | ${p50p95(eo?.hostRttMs)} | ${p50p95(co?.hostRttMs)} | ${p50p95(cn?.hostRttMs)} |`);
+    L.push("");
+    if (p.transport && p.transport.arms) {
+      L.push(`Transport experiment (N per arm; pad target ${p.transport.paddingTarget}B) — rttMs / recvMs / wireB p50/p95:`);
+      L.push("");
+      L.push("| arm | rttMs | recvMs | wireB | note |");
+      L.push("| --- | --- | --- | --- | --- |");
+      for (const a of p.transport.arms) {
+        const note = (a.available ? "" : "N/A: ") + (a.note || "");
+        L.push(`| ${a.label} | ${p50p95(a.rtt)} | ${p50p95(a.recv)} | ${p50p95(a.wire)} | ${note.replace(/\|/g, "\\|")} |`);
+      }
+      L.push("");
+    }
+  }
+}
+
 L.push(`_merged: ${path.basename(mergedPath)}${fling ? `, fling: ${path.basename(flingPath)}` : ""}_`);
 
 process.stdout.write(L.join("\n") + "\n");
