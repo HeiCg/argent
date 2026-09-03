@@ -245,6 +245,15 @@ jobs:
           OPEN_SERVER_DEVICE_TESTS: "1"
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
         run: |
+          # pipefail so `vitest … | tee` returns vitest's exit code, not tee's 0
+          # (phase 3j gate fix). Without it a failing device test exits 0 through
+          # the pipe, so `continue-on-error` records outcome=success and the
+          # final "Fail the job if device tests failed" gate never fires — exactly
+          # how run 33792592764 finished green with 4/17 device tests failing. The
+          # implicit GH Actions `run` shell (no `shell:` key) is `bash -e {0}`,
+          # which does NOT enable pipefail, so it must be set explicitly here (same
+          # reason the latency-bench step sets it for its `run_block` pipe).
+          set -o pipefail
           cd packages/tool-server
           npx vitest run test/blueprints/android-open-server.device.test.ts 2>&1 \
             | tee "$RUNNER_TEMP/device-test.log"
