@@ -49,6 +49,46 @@ const MASK64 = 0xffffffffffffffffn;
 
 const SCROLLING_CONTAINERS = new Set(["RecyclerView", "ListView", "ScrollView", "HorizontalScrollView"]);
 
+/**
+ * Window-decor resource-ids excluded from `H_id` (status/nav bar backgrounds),
+ * so the same screen hashes identically whether or not the decor was captured.
+ * MUST match `ScreenHash.SYSTEM_RIDS` (Kotlin).
+ */
+const SYSTEM_RIDS = new Set(["statusBarBackground", "navigationBarBackground"]);
+
+/**
+ * Volatile text dropped from `H_id` identity titles — a clock, percentage, size,
+ * date or bare counter. MUST stay in lockstep with `ScreenHash.VOLATILE_TEXT`
+ * (Kotlin) and `VOLATILE_TEXT` in `screen-graph/plan.ts`.
+ */
+const HID_VOLATILE_TEXT =
+  /^\s*(?:\d{1,3}\s*%|\d{1,2}:\d{2}(?:\s*[ap]m)?|\d[\d.,]*\s*(?:%|min|hr|hrs|h|GB|MB|KB|B)?|[A-Z][a-z]{2}\s+\d{1,2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*$/i;
+
+/** True when `text` is purely volatile content (mirror of `ScreenHash.isVolatileText`). */
+export function isVolatileText(text: string): boolean {
+  return HID_VOLATILE_TEXT.test(text.trim());
+}
+
+/** A container whose id marks it a toolbar / action-bar / app-bar (Kotlin twin). */
+export function isToolbarContainer(resourceId: string): boolean {
+  const r = resourceId.toLowerCase();
+  return r.includes("toolbar") || r === "action_bar" || r.includes("app_bar");
+}
+
+/**
+ * A node whose text is the screen's IDENTITY title (Kotlin twin). The Settings
+ * homepage `homepage_title` is deliberately NOT matched: it collapses out of the
+ * tree on scroll, so keying identity on it splits one screen in two.
+ */
+export function isIdentityTitle(resourceId: string, ancestorIsToolbar: boolean): boolean {
+  const r = resourceId.toLowerCase();
+  if (r.includes("search")) return false;
+  if (r.includes("collapsing_toolbar")) return true;
+  if (r === "action_bar_title" || r === "toolbar_title" || r === "actionbar_title" || r === "alerttitle") return true;
+  if (r === "title" && ancestorIsToolbar) return true;
+  return false;
+}
+
 export function flagsOf(n: HashNode): number {
   let f = 0;
   if (n.clickable) f |= FLAG_CLICKABLE;
@@ -105,6 +145,56 @@ export function structuralHash(roots: HashNode[], screenW: number, screenH: numb
     for (const c of n.children ?? []) appendClassSeq(c);
   };
   for (const r of roots) append(r);
+  return fnv1a(out);
+}
+
+/**
+ * H_id — the SCREEN identity used for graph node keys and routing (design D §1),
+ * the host twin of `ScreenHash.identity` (Kotlin). Unlike `H`/`structuralHash`
+ * (scroll- and focus-sensitive), `H_id` is stable across scroll/focus and
+ * distinct across sibling screens:
+ *   package
+ *   + identity-node texts (collapsing-toolbar / action-bar / dialog titles, and a
+ *     `title` under a toolbar), volatile text dropped;
+ *   + the resource-id MULTISET of non-scrollable subtrees, order-free;
+ *   + `class#id` ONLY for every scrolling container — never its child sequence,
+ *     never bounds.
+ * No bounds, no focus flags, no list content. Same FNV-1a + US/RS as `H`/`H_text`.
+ */
+export function identityHash(roots: HashNode[], packageName: string): string {
+  const titles = new Set<string>();
+  const nonScrollRids: string[] = [];
+  const scTokens = new Set<string>();
+
+  const collectTitle = (n: HashNode): void => {
+    const t = ((n.text ?? "") !== "" ? n.text! : n.cd ?? "").trim();
+    if (t !== "" && !isVolatileText(t)) titles.add(t);
+  };
+  const scanTitles = (n: HashNode, ancestorIsToolbar: boolean): void => {
+    if (isIdentityTitle(n.id ?? "", ancestorIsToolbar)) collectTitle(n);
+    const childToolbar = ancestorIsToolbar || isToolbarContainer(n.id ?? "");
+    for (const c of n.children ?? []) scanTitles(c, childToolbar);
+  };
+  const scanRids = (n: HashNode, insideScroll: boolean): void => {
+    if (isScrollingContainer(n)) {
+      scTokens.add(`SC:${n.class ?? ""}#${n.id ?? ""}`);
+      for (const c of n.children ?? []) scanRids(c, true);
+    } else {
+      const id = n.id ?? "";
+      if (!insideScroll && id !== "" && !SYSTEM_RIDS.has(id)) nonScrollRids.push(id);
+      for (const c of n.children ?? []) scanRids(c, insideScroll);
+    }
+  };
+  for (const r of roots) {
+    scanTitles(r, isToolbarContainer(r.id ?? ""));
+    scanRids(r, false);
+  }
+  nonScrollRids.sort();
+  const out =
+    packageName + US +
+    "ID:" + [...titles].sort().join("|") + US +
+    "RID:" + nonScrollRids.join(",") + US +
+    "SC:" + [...scTokens].sort().join(",");
   return fnv1a(out);
 }
 

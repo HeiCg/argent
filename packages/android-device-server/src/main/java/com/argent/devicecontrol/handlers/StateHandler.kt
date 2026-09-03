@@ -145,6 +145,7 @@ class StateHandler(
             // Screen-graph Phase A fingerprints + version.
             put("hash", snap.hash)
             put("stateHash", snap.stateHash)
+            put("idHash", snap.idHash)
             put("version", snap.version)
             put("unchanged", unchanged)
         }

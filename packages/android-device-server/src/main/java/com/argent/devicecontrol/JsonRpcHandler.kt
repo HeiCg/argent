@@ -165,6 +165,7 @@ class JsonRpcHandler(
             put("version", snap.version)
             put("hash", snap.hash)
             put("stateHash", snap.stateHash)
+            put("idHash", snap.idHash)
         }
 
     private fun executeBatch(params: JSONObject): JSONObject {

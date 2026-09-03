@@ -59,6 +59,13 @@ object TreeStore {
         val roots: List<AxNode>,
         val hash: String,
         val stateHash: String,
+        /**
+         * `H_id` — the SCREEN IDENTITY (screen-graph Phase D §1): stable across
+         * scroll/focus, distinct across sibling screens. The host graph keys nodes
+         * by this, not by [hash] (which collapses every Settings detail screen onto
+         * one value). See [ScreenHash.identity].
+         */
+        val idHash: String,
         val screenW: Int,
         val screenH: Int
     )
@@ -107,8 +114,12 @@ object TreeStore {
             val w = dev.displayWidth
             val h = dev.displayHeight
             val root = ui.rootInActiveWindow
+            var pkg = ""
             val roots = if (root != null) {
                 try {
+                    // Cheap: the active-window package off the root we already hold,
+                    // no extra traversal / idle wait. Part of H_id (design D §1).
+                    pkg = root.packageName?.toString() ?: ""
                     ScreenTree.build(root, w, h)
                 } finally {
                     root.recycle()
@@ -122,6 +133,7 @@ object TreeStore {
                 roots = roots,
                 hash = ScreenHash.structural(roots, w, h),
                 stateHash = ScreenHash.state(roots, w, h),
+                idHash = ScreenHash.identity(roots, pkg),
                 screenW = w,
                 screenH = h
             )

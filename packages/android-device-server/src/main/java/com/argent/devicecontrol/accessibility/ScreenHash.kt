@@ -46,6 +46,30 @@ object ScreenHash {
         "RecyclerView", "ListView", "ScrollView", "HorizontalScrollView"
     )
 
+    /**
+     * Window-decor resource-ids that appear/disappear independently of the screen
+     * (the status-bar / nav-bar backgrounds). Excluded from `H_id` so the same
+     * screen hashes identically whether or not the decor node was captured
+     * (screen-graph Phase D §1 — "exclude the status bar window").
+     */
+    private val SYSTEM_RIDS = setOf("statusBarBackground", "navigationBarBackground")
+
+    /**
+     * Text that is volatile between otherwise-identical screen states — a clock, a
+     * battery/signal percentage, a size, a date, a bare counter. Kept in lockstep
+     * with `VOLATILE_TEXT` in `packages/tool-server/src/screen-graph/plan.ts` and
+     * the host `screen-hash.ts` twin. An identity title matching this is dropped
+     * from `H_id` so a live counter cannot split a screen from itself.
+     */
+    private val VOLATILE_TEXT = Regex(
+        "^\\s*(?:\\d{1,3}\\s*%|\\d{1,2}:\\d{2}(?:\\s*[ap]m)?|" +
+            "\\d[\\d.,]*\\s*(?:%|min|hr|hrs|h|GB|MB|KB|B)?|" +
+            "[A-Z][a-z]{2}\\s+\\d{1,2}|\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?)\\s*$",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun isVolatileText(text: String): Boolean = VOLATILE_TEXT.matches(text.trim())
+
     fun flagsOf(n: AxNode): Int {
         var f = 0
         if (n.clickable) f = f or FLAG_CLICKABLE
@@ -113,6 +137,91 @@ object ScreenHash {
             .append(n.text).append(US)
             .append(n.contentDesc).append(RS)
         for (c in n.children) appendState(c, w, h, sb)
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* H_id — screen IDENTITY (screen-graph Phase D §1)                         */
+    /* ---------------------------------------------------------------------- */
+
+    /** A container whose id marks it as a toolbar / action-bar / app-bar. */
+    fun isToolbarContainer(resourceId: String): Boolean {
+        val r = resourceId.lowercase()
+        return r.contains("toolbar") || r == "action_bar" || r.contains("app_bar")
+    }
+
+    /**
+     * A node whose text is the screen's IDENTITY title: a collapsing-toolbar /
+     * action-bar / dialog title, or a bare `title` sitting under a toolbar. The
+     * Settings homepage's oversized `homepage_title` is deliberately NOT matched:
+     * it collapses out of the tree on scroll (run 33806639520 roots 77a189ce vs
+     * 299378e0), so keying identity on it would split one screen in two. Search
+     * hints are excluded.
+     */
+    fun isIdentityTitle(resourceId: String, ancestorIsToolbar: Boolean): Boolean {
+        val r = resourceId.lowercase()
+        if (r.contains("search")) return false
+        if (r.contains("collapsing_toolbar")) return true
+        if (r == "action_bar_title" || r == "toolbar_title" || r == "actionbar_title" || r == "alerttitle") return true
+        if (r == "title" && ancestorIsToolbar) return true
+        return false
+    }
+
+    /**
+     * H_id — the SCREEN identity used for graph node keys and routing (design D §1).
+     * Unlike [structural] (`H`, which is scroll- and focus-sensitive: it appends a
+     * scrolling container's first-child class sequence, quantised bounds and the
+     * focus flag, so every Settings detail screen collapses onto one hash), `H_id`
+     * is built to be STABLE across scroll and focus and DISTINCT across sibling
+     * screens:
+     *
+     *   package
+     *   + the texts of identity nodes (collapsing-toolbar / action-bar / dialog
+     *     titles, and a `title` under a toolbar), volatile text dropped;
+     *   + the resource-id MULTISET of non-scrollable subtrees, order-free;
+     *   + for every scrolling container, `class#resourceId` ONLY — never its child
+     *     sequence, never bounds.
+     *
+     * No bounds, no focus flags, no list content enter the hash. `H` and `H_text`
+     * are unchanged (diff / awaitChange still use them). Same 64-bit FNV-1a and
+     * US/RS separators as the other two, mirrored host-side in
+     * `packages/tool-server/src/utils/screen-hash.ts` — edit the two in lockstep.
+     */
+    fun identity(roots: List<AxNode>, packageName: String): String {
+        val titles = sortedSetOf<String>()
+        val nonScrollRids = ArrayList<String>()
+        val scTokens = sortedSetOf<String>()
+
+        fun collectTitle(n: AxNode) {
+            val t = (if (n.text.isNotEmpty()) n.text else n.contentDesc).trim()
+            if (t.isNotEmpty() && !isVolatileText(t)) titles.add(t)
+        }
+        fun scanTitles(n: AxNode, ancestorIsToolbar: Boolean) {
+            if (isIdentityTitle(n.resourceId, ancestorIsToolbar)) collectTitle(n)
+            val childToolbar = ancestorIsToolbar || isToolbarContainer(n.resourceId)
+            for (c in n.children) scanTitles(c, childToolbar)
+        }
+        fun scanRids(n: AxNode, insideScroll: Boolean) {
+            if (isScrollingContainer(n)) {
+                scTokens.add("SC:${n.className}#${n.resourceId}")
+                for (c in n.children) scanRids(c, true)
+            } else {
+                if (!insideScroll && n.resourceId.isNotEmpty() && n.resourceId !in SYSTEM_RIDS) {
+                    nonScrollRids.add(n.resourceId)
+                }
+                for (c in n.children) scanRids(c, insideScroll)
+            }
+        }
+        for (r in roots) {
+            scanTitles(r, isToolbarContainer(r.resourceId))
+            scanRids(r, false)
+        }
+        nonScrollRids.sort()
+        val sb = StringBuilder()
+        sb.append(packageName).append(US)
+            .append("ID:").append(titles.joinToString("|")).append(US)
+            .append("RID:").append(nonScrollRids.joinToString(",")).append(US)
+            .append("SC:").append(scTokens.joinToString(","))
+        return fnv1a(sb.toString())
     }
 
     private fun fnv1a(s: String): String {

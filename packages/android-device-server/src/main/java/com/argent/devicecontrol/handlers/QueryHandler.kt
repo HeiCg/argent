@@ -24,6 +24,7 @@ class QueryHandler {
             put("version", snap.version)
             put("hash", snap.hash)
             put("stateHash", snap.stateHash)
+            put("idHash", snap.idHash)
             put("nodes", nodes)
         }
     }

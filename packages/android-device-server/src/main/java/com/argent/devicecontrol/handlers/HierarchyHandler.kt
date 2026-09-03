@@ -54,6 +54,7 @@ class HierarchyHandler(
             put("truncated", serialized.truncated)
             put("hash", snap.hash)
             put("stateHash", snap.stateHash)
+            put("idHash", snap.idHash)
             put("version", snap.version)
         }
     }

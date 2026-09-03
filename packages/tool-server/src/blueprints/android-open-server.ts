@@ -73,6 +73,12 @@ export interface OpenServerStateResult {
   hash?: string;
   /** State fingerprint H_text — identifies the screen's *state*. */
   stateHash?: string;
+  /**
+   * Screen-identity fingerprint H_id (android-device-server 0.2.0+, screen-graph
+   * Phase D §1) — stable across scroll/focus, distinct across sibling screens;
+   * the host graph keys nodes by this.
+   */
+  idHash?: string;
   /** AX version clock at capture. */
   version?: number;
   /** The `maxElements` cap cut the serialized tree short. */
@@ -121,6 +127,7 @@ export interface OpenServerQueryResult {
   version: number;
   hash: string;
   stateHash: string;
+  idHash?: string;
   nodes: OpenServerCompactNode[];
 }
 
@@ -144,8 +151,8 @@ export interface OpenServerAwaitChangeResult {
 
 /** before/after fingerprint pair an action returns when asked for an outcome. */
 export interface OpenServerActionOutcome {
-  before: { version: number; hash: string; stateHash: string };
-  after: { version: number; hash: string; stateHash: string };
+  before: { version: number; hash: string; stateHash: string; idHash?: string };
+  after: { version: number; hash: string; stateHash: string; idHash?: string };
   /** H or H_text differed. */
   changed: boolean;
   /** H differed — a different screen, not just new content. */
@@ -234,6 +241,8 @@ export interface OpenDeviceServerApi {
     // nested read the describe token-parity path uses (F12).
     hash?: string;
     stateHash?: string;
+    /** Screen-identity fingerprint H_id (screen-graph Phase D §1). */
+    idHash?: string;
     version?: number;
   }>;
   /**
@@ -642,6 +651,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           captureMs: number;
           hash?: string;
           stateHash?: string;
+          idHash?: string;
           version?: number;
         }>("getState", {
           nested: true,
