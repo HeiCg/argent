@@ -374,10 +374,10 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
 
     steps:
-      - name: Checkout feat/screen-graph-c3 @ a9f4e510
+      - name: Checkout feat/screen-graph-c3 @ a0f83004
         uses: actions/checkout@v4
         with:
-          ref: a9f4e5108fb51792c24fbd218253d410ce2d71d2
+          ref: a0f8300403156472132748cb04997a58b3b62f28
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
