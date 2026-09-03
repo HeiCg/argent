@@ -103,7 +103,11 @@ object NestedWindowSerializer {
         uiAutomation: UiAutomation,
         activeRoot: AccessibilityNodeInfo,
         cap: Int,
-        timings: WindowTimings? = null
+        timings: WindowTimings? = null,
+        // Phase 3j: when true each window subtree is compacted (scaffold hoist +
+        // zero-area empty leaf drop) before serialization, shrinking the wire
+        // payload to the byte-identical DescribeNode. See [NodeSerializer.serializeNested].
+        compact: Boolean = false
     ): JSONArray {
         val out = JSONArray()
         val enumStart = SystemClock.uptimeMillis()
@@ -138,7 +142,7 @@ object NestedWindowSerializer {
             if (root == null) continue
             val t0 = SystemClock.uptimeMillis()
             try {
-                out.put(NodeSerializer.serializeNested(root, cap))
+                out.put(NodeSerializer.serializeNested(root, cap, compact))
             } finally {
                 root.recycle()
             }
@@ -152,7 +156,7 @@ object NestedWindowSerializer {
         }
         if (out.length() == 0) {
             val t0 = SystemClock.uptimeMillis()
-            out.put(NodeSerializer.serializeNested(activeRoot, cap))
+            out.put(NodeSerializer.serializeNested(activeRoot, cap, compact))
             timings?.let { it.serializeMs += SystemClock.uptimeMillis() - t0 }
         }
         return out

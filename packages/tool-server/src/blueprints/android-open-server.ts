@@ -200,13 +200,30 @@ export interface OpenDeviceServerApi {
    * identical v2 trim the describe tool runs and their label sets / id forms match
    * (F12). No screenshot (the poll loops never read it).
    */
-  getNestedState(opts?: { maxElements?: number; waitTimeoutMs?: number; flush?: boolean }): Promise<{
+  getNestedState(opts?: {
+    maxElements?: number;
+    waitTimeoutMs?: number;
+    flush?: boolean;
+    /**
+     * Phase 3j: drop the trim-discarded nodes on the device before serializing, so
+     * the wire payload lowers to the byte-identical DescribeNode. Defaults TRUE
+     * (describe + the await-* poll loops all run the host v2 trim, so the smaller
+     * payload is safe and cheaper). Pass `false` for a raw, un-compacted capture.
+     */
+    compact?: boolean;
+    /** Bench A/B (phase 3j): force the server's OLD double-encode of the tree. */
+    _benchLegacyEncode?: boolean;
+    /** Bench diagnostic (phase 3j): pad the reply to a multiple of this many bytes. */
+    _padTo?: number;
+  }): Promise<{
     tree: OpenServerNestedElement[];
     info: OpenServerInfo;
     waitedMs: number;
     captureMs: number;
     /** Per-stage capture split (phase 3g); absent on older servers. */
     timings?: OpenServerTimings;
+    /** Which host↔device transport carried this reply (phase 3j). */
+    transport?: "adb-forward" | "redir";
     /**
      * Host/transport cost of THIS reply (phase 3i), captured by the RPC client.
      * `wireBytes` is the UTF-8 byte length of the raw NDJSON reply line (the full
@@ -287,16 +304,32 @@ export interface OpenDeviceServerApi {
     scale?: number;
     flush?: boolean;
   }): Promise<OpenServerStateResult>;
+  /**
+   * Ports the phase 3j transport experiment needs to set up an emulator-console
+   * `redir` path alongside the default `adb forward` one: `localPort` is the
+   * adb-forwarded host loopback port the RPC client dials, `devicePort` the guest
+   * loopback port the server's default listener bound, and `allPort` the guest
+   * 0.0.0.0 listener the server bound when spawned with `bindAll` (undefined
+   * otherwise — redir can only reach a routable, non-loopback listener). Bench-only.
+   */
+  getTransportPorts(): { localPort: number; devicePort: number; allPort?: number };
 }
 
 const READY_TIMEOUT_MS = 30_000;
 const HELPER_PORT_MARKER = /^INSTRUMENTATION_STATUS:\s*port=(\d+)/;
+const HELPER_ALLPORT_MARKER = /^INSTRUMENTATION_STATUS:\s*allPort=(\d+)/;
 const ADB_FORWARD_PORT_MARKER = /^(\d+)\s*$/;
+// Phase 3j: spawn the on-device server with a second 0.0.0.0 listener so the redir
+// transport experiment can reach it. Gated by env — off in normal operation, since
+// binding device control on a routable interface is not something to ship on.
+const BIND_ALL = process.env.ARGENT_OPEN_SERVER_BIND_ALL === "1";
 
 interface SpawnedServer {
   proc: ChildProcess;
   devicePort: number;
   localPort: number;
+  /** Guest 0.0.0.0 listener port (phase 3j redir experiment); undefined unless bindAll. */
+  allPort?: number;
 }
 
 async function spawnServer(serial: string): Promise<SpawnedServer> {
@@ -316,13 +349,26 @@ async function spawnServer(serial: string): Promise<SpawnedServer> {
 
   const proc = spawn(
     adbPath,
-    ["-s", serial, "shell", "am", "instrument", "-w", manifest.instrumentationRunner],
+    [
+      "-s",
+      serial,
+      "shell",
+      "am",
+      "instrument",
+      "-w",
+      // Phase 3j: `-e bindAll true` makes the server also bind a 0.0.0.0 listener
+      // for the redir transport experiment (announced as `allPort=`). Gated by env.
+      ...(BIND_ALL ? ["-e", "bindAll", "true"] : []),
+      manifest.instrumentationRunner,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] }
   );
 
   return new Promise<SpawnedServer>((resolve, reject) => {
     let devicePort: number | null = null;
     let localPort: number | null = null;
+    // Phase 3j: captured from the `allPort=` status line (sent before `port=`).
+    let allPort: number | undefined;
     let settled = false;
     let stderrBuf = "";
 
@@ -338,6 +384,13 @@ async function spawnServer(serial: string): Promise<SpawnedServer> {
     const rl = readline.createInterface({ input: proc.stdout! });
     rl.on("line", async (rawLine: string) => {
       const line = rawLine.trim();
+      // Phase 3j: the `allPort=` status is emitted before `port=`, so capture it here
+      // first (best-effort — absent unless the server was spawned with bindAll).
+      const allMatch = HELPER_ALLPORT_MARKER.exec(line);
+      if (allMatch) {
+        allPort = parseInt(allMatch[1]!, 10);
+        return;
+      }
       const portMatch = HELPER_PORT_MARKER.exec(line);
       if (!portMatch || devicePort !== null) return;
       devicePort = parseInt(portMatch[1]!, 10);
@@ -357,7 +410,7 @@ async function spawnServer(serial: string): Promise<SpawnedServer> {
           });
         }
         localPort = parseInt(lpMatch[1]!, 10);
-        settle(() => resolve({ proc, devicePort: devicePort!, localPort: localPort! }));
+        settle(() => resolve({ proc, devicePort: devicePort!, localPort: localPort!, allPort }));
       } catch (err) {
         settle(
           () => reject(err instanceof Error ? err : new Error(String(err))),
@@ -581,12 +634,19 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }>("getState", {
           nested: true,
           includeScreenshot: false,
+          // Phase 3j: compact by default (describe + await-* both run the host v2
+          // trim, so the smaller wire payload is byte-identical). Explicit
+          // `compact:false` opts out for a raw capture / the bench's before arm.
+          compact: stateOpts.compact ?? true,
           maxElements: stateOpts.maxElements ?? 3000,
           waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
           ...(stateOpts.flush ? { flush: true } : {}),
+          ...(stateOpts._benchLegacyEncode ? { _benchLegacyEncode: true } : {}),
+          ...(stateOpts._padTo && stateOpts._padTo > 0 ? { _padTo: stateOpts._padTo } : {}),
         });
         return {
           ...result,
+          transport: "adb-forward" as const,
           wireBytes,
           hostParseMs: parseMs,
           hostSentToFirstByteMs,
@@ -594,6 +654,11 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           hostRoundTripMs,
         };
       },
+      getTransportPorts: () => ({
+        localPort: spawned.localPort,
+        devicePort: spawned.devicePort,
+        ...(spawned.allPort !== undefined ? { allPort: spawned.allPort } : {}),
+      }),
       tap: (x, y, tapOpts = {}) =>
         client.request<{ success: boolean; dropped?: boolean }>("tap", {
           x,

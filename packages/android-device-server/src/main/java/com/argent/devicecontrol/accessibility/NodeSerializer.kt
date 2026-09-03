@@ -33,7 +33,18 @@ object NodeSerializer {
      * already lives, which is what keeps the rendered label set identical to the
      * proprietary path rather than re-deriving it here and risking drift.
      */
-    fun serializeNested(rootNode: AccessibilityNodeInfo, maxElements: Int = 3000): JSONObject {
+    fun serializeNested(
+        rootNode: AccessibilityNodeInfo,
+        maxElements: Int = 3000,
+        // Phase 3j: drop the descendants the host v2 trim discards anyway (scaffold
+        // layout/ImageView wrappers it passes through, zero-area empty leaves it
+        // drops), so the wire payload shrinks while lowering to the byte-identical
+        // DescribeNode. Mirrors the host `compactNestedRoots` (open-server-tree.ts);
+        // the golden proves the host lowering is identical for compact vs full. The
+        // WINDOW ROOT is always kept (only its subtree is compacted) so the
+        // `truncated` flag and window count are preserved.
+        compact: Boolean = false
+    ): JSONObject {
         val counter = intArrayOf(0)
         val truncated = booleanArrayOf(false)
         val root = nodeToNestedJson(rootNode, maxElements, counter, truncated)
@@ -41,7 +52,133 @@ object NodeSerializer {
         // incomplete, so the host can warn the agent instead of silently rendering
         // a partial screen. Only the window root carries the flag.
         if (truncated[0]) root.put("truncated", true)
+        if (compact) compactChildrenInPlace(root)
         return root
+    }
+
+    // ---- compact payload (phase 3j) --------------------------------------
+
+    // The v2 trim's layout-passthrough set (`LAYOUT_CONTAINERS` in
+    // uiautomator-parser.ts / `COMPACT_LAYOUT_CONTAINERS` in open-server-tree.ts).
+    // Kept byte-for-byte in sync. The empty class ("") is deliberately absent: the
+    // trim's passthrough uses `LAYOUT_CONTAINERS.has(cls)`, false for "", so an
+    // empty-class node is not hoisted.
+    private val COMPACT_LAYOUT_CONTAINERS = setOf(
+        "android.widget.FrameLayout",
+        "android.widget.LinearLayout",
+        "android.widget.RelativeLayout",
+        "androidx.constraintlayout.widget.ConstraintLayout",
+        "androidx.coordinatorlayout.widget.CoordinatorLayout",
+        "android.view.ViewGroup",
+        "android.view.View"
+    )
+
+    /** Label the trim derives: content-desc wins, else text (both trimmed). Pure. */
+    fun compactLabelOf(text: String, contentDesc: String): String {
+        val cd = contentDesc.trim()
+        if (cd.isNotEmpty()) return cd
+        return text.trim()
+    }
+
+    /** Whether the trim treats the node as interactive (mirrors `isInteractive`). Pure. */
+    fun compactIsInteractive(
+        clickable: Boolean,
+        longClickable: Boolean,
+        checkable: Boolean,
+        scrollable: Boolean,
+        focusable: Boolean,
+        label: String
+    ): Boolean {
+        if (clickable || longClickable || checkable || scrollable) return true
+        if (focusable && label.isNotEmpty()) return true
+        return false
+    }
+
+    /**
+     * The trim's pure-passthrough case: a layout container or decorative ImageView
+     * that is non-interactive and carries no label of its own. `computeNodeOutput`
+     * inlines such a node's kept children in its place, so dropping the wrapper and
+     * hoisting its children is output-preserving. Pure (primitives only) so a JVM
+     * unit test can pin it without a device.
+     */
+    fun compactIsScaffold(
+        className: String,
+        clickable: Boolean,
+        longClickable: Boolean,
+        checkable: Boolean,
+        scrollable: Boolean,
+        focusable: Boolean,
+        text: String,
+        contentDesc: String
+    ): Boolean {
+        val label = compactLabelOf(text, contentDesc)
+        if (label.isNotEmpty()) return false
+        if (compactIsInteractive(clickable, longClickable, checkable, scrollable, focusable, label)) {
+            return false
+        }
+        return COMPACT_LAYOUT_CONTAINERS.contains(className) || className.endsWith(".ImageView")
+    }
+
+    /**
+     * A zero-area rect with no text/content-desc: the trim always drops it
+     * (invisible, no kept children) and it feeds no descendantText aggregation, so
+     * a childless such node is safe to drop. Pure.
+     */
+    fun compactIsZeroAreaEmptyLeaf(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        text: String,
+        contentDesc: String
+    ): Boolean {
+        return (x2 <= x1 || y2 <= y1) && compactLabelOf(text, contentDesc).isEmpty()
+    }
+
+    private fun compactIsScaffoldNode(node: JSONObject): Boolean =
+        compactIsScaffold(
+            node.optString("className", ""),
+            node.optBoolean("clickable", false),
+            node.optBoolean("longClickable", false),
+            node.optBoolean("checkable", false),
+            node.optBoolean("scrollable", false),
+            node.optBoolean("focusable", false),
+            node.optString("text", ""),
+            node.optString("contentDesc", "")
+        )
+
+    private fun compactIsZeroAreaEmptyLeafNode(node: JSONObject): Boolean {
+        val b = node.optJSONObject("bounds") ?: return false
+        return compactIsZeroAreaEmptyLeaf(
+            b.optInt("x1", 0),
+            b.optInt("y1", 0),
+            b.optInt("x2", 0),
+            b.optInt("y2", 0),
+            node.optString("text", ""),
+            node.optString("contentDesc", "")
+        )
+    }
+
+    /** Compact a node's `children` array in place (bottom-up). */
+    private fun compactChildrenInPlace(node: JSONObject) {
+        val children = node.optJSONArray("children") ?: return
+        val out = JSONArray()
+        for (i in 0 until children.length()) {
+            val child = children.optJSONObject(i) ?: continue
+            for (kept in compactNode(child)) out.put(kept)
+        }
+        node.put("children", out)
+    }
+
+    /** The nodes that take `node`'s place in its parent: hoisted children, [], or [node]. */
+    private fun compactNode(node: JSONObject): List<JSONObject> {
+        compactChildrenInPlace(node)
+        val children = node.optJSONArray("children") ?: JSONArray()
+        if (compactIsScaffoldNode(node)) {
+            return (0 until children.length()).mapNotNull { children.optJSONObject(it) }
+        }
+        if (children.length() == 0 && compactIsZeroAreaEmptyLeafNode(node)) return emptyList()
+        return listOf(node)
     }
 
     private fun nodeToNestedJson(

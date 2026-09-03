@@ -190,6 +190,114 @@ export function nestedRootsToParsedHierarchy(roots: OpenServerNestedElement[]): 
   };
 }
 
+// ---------------------------------------------------------------------------
+// compact payload (phase 3j)
+// ---------------------------------------------------------------------------
+
+// The v2 trim's layout-passthrough set (`LAYOUT_CONTAINERS` in uiautomator-parser),
+// duplicated here as a raw class list so the compaction can recognise the exact
+// wrappers `computeNodeOutput` inlines. Kept byte-for-byte in sync with that set;
+// the on-device `TreeCompressor.LAYOUT_CONTAINERS` (Kotlin) mirrors it too. The
+// empty class ("") is deliberately NOT here: the trim's passthrough uses
+// `LAYOUT_CONTAINERS.has(cls)`, which is false for "", so an empty-class node is
+// not a passthrough and must not be hoisted.
+const COMPACT_LAYOUT_CONTAINERS = new Set([
+  "android.widget.FrameLayout",
+  "android.widget.LinearLayout",
+  "android.widget.RelativeLayout",
+  "androidx.constraintlayout.widget.ConstraintLayout",
+  "androidx.coordinatorlayout.widget.CoordinatorLayout",
+  "android.view.ViewGroup",
+  "android.view.View",
+]);
+
+/** Label the trim derives for a nested element: content-desc wins, else text. */
+function compactLabelOf(el: OpenServerNestedElement): string {
+  const cd = (el.contentDesc ?? "").trim();
+  if (cd) return cd;
+  return (el.text ?? "").trim();
+}
+
+/** Whether the trim treats this element as interactive (mirrors `isInteractive`). */
+function compactIsInteractive(el: OpenServerNestedElement, label: string): boolean {
+  if (el.clickable || el.longClickable || el.checkable || el.scrollable) return true;
+  if (el.focusable && label !== "") return true;
+  return false;
+}
+
+/**
+ * Whether this element is the trim's pure-passthrough case: a layout container or
+ * a decorative ImageView that is non-interactive and carries no label of its own.
+ * `computeNodeOutput` returns such a node's kept children in its place (it is never
+ * emitted), so dropping the wrapper and hoisting its children is output-preserving.
+ * It carries no text/content-desc (label === ""), so no ancestor's descendantText
+ * aggregation changes.
+ */
+function compactIsScaffoldPassthrough(el: OpenServerNestedElement): boolean {
+  const label = compactLabelOf(el);
+  if (label !== "") return false;
+  if (compactIsInteractive(el, label)) return false;
+  const cls = el.className ?? "";
+  return COMPACT_LAYOUT_CONTAINERS.has(cls) || cls.endsWith(".ImageView");
+}
+
+function compactNestedNode(el: OpenServerNestedElement): OpenServerNestedElement[] {
+  const compactedChildren: OpenServerNestedElement[] = [];
+  for (const c of el.children ?? []) {
+    for (const cc of compactNestedNode(c)) compactedChildren.push(cc);
+  }
+  // Rule 1 — scaffold hoist: drop the wrapper, splice its compacted children into
+  // its slot (document order preserved by the in-order push above).
+  if (compactIsScaffoldPassthrough(el)) return compactedChildren;
+  // Rule 2 — zero-area empty leaf: a leaf with a zero-area rect and no
+  // text/content-desc is always dropped by the trim (invisible, no kept children)
+  // and feeds no descendantText, so drop it. A zero-area node that still carries
+  // text, or one whose descendants survived, is kept (the trim will drop the
+  // invisible one on its own — keeping it only wastes a few bytes, never diverges).
+  const b = el.bounds;
+  const zeroArea = b.x2 <= b.x1 || b.y2 <= b.y1;
+  if (compactedChildren.length === 0 && zeroArea && compactLabelOf(el) === "") {
+    return [];
+  }
+  // Kept: same node, compacted children. Preserve every field the trim reads.
+  return el.children === undefined && compactedChildren.length === 0
+    ? [el]
+    : [{ ...el, children: compactedChildren }];
+}
+
+function compactChildren(children: OpenServerNestedElement[] | undefined): OpenServerNestedElement[] {
+  const out: OpenServerNestedElement[] = [];
+  for (const c of children ?? []) {
+    for (const cc of compactNestedNode(c)) out.push(cc);
+  }
+  return out;
+}
+
+/**
+ * Drop, before serialization, the nested nodes the host v2 trim discards anyway,
+ * so a `compact:true` capture ships a smaller wire payload that lowers to the
+ * BYTE-IDENTICAL DescribeNode (phase 3j). Conservative and output-preserving: it
+ * only removes trim-passthrough wrappers (rule 1) and trim-dropped zero-area empty
+ * leaves (rule 2) — see {@link compactIsScaffoldPassthrough}.
+ *
+ * Each WINDOW ROOT is kept as-is (only its descendants are compacted): the trim
+ * passes a scaffold root through anyway, so keeping it is byte-identical, and it
+ * preserves the per-root `truncated` runaway-guard flag the host reads. This
+ * mirrors the on-device serializer, which compacts within each window root.
+ *
+ * Contract: `openServerNestedToDescribeNode(roots)` and
+ * `openServerNestedToDescribeNode(compactNestedRoots(roots))` are deep-equal — the
+ * golden asserts it on the committed fixtures. The on-device serializer applies
+ * the identical rules (`NodeSerializer` compact path); either side being *more*
+ * conservative stays byte-identical, because both only ever remove nodes the trim
+ * itself passes through or drops.
+ */
+export function compactNestedRoots(
+  roots: OpenServerNestedElement[]
+): OpenServerNestedElement[] {
+  return roots.map((r) => ({ ...r, children: compactChildren(r.children) }));
+}
+
 /**
  * Lower the open server's full nested accessibility tree to a `DescribeNode` by
  * running the EXACT v2 interactables-only trim the `uiautomator dump` /

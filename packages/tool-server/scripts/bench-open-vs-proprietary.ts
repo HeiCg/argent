@@ -48,12 +48,15 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
+import * as net from "node:net";
 import { performance } from "node:perf_hooks";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
 import { resolveDevice } from "../src/utils/device-info";
 import { isAndroidTv, isAndroidTvCached } from "../src/utils/adb";
 import { openDeviceServerRef, type OpenDeviceServerApi } from "../src/blueprints/android-open-server";
+import { AndroidOpenServerClient } from "../src/utils/android-open-server-client";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
@@ -810,6 +813,290 @@ function formatRpcBreakdown(b: RpcBreakdown): string {
 }
 
 /* -------------------------------------------------------------------------- */
+/* phase 3j: serialize-once + compact A/B, and the transport experiment         */
+/* -------------------------------------------------------------------------- */
+
+// One transport arm's host-observed cost (phase 3j item 3): the RPC round-trip,
+// the first→last-byte receive span (where the ~40 ms delayed-ACK gap lives), and
+// the wire size, all p50/p95 over N getNestedState calls.
+interface TransportArm {
+  label: string;
+  available: boolean;
+  note: string;
+  rtt: StageStat;
+  recv: StageStat;
+  wire: StageStat;
+}
+
+interface TransportExperiment {
+  paddingTarget: number;
+  arms: TransportArm[];
+}
+
+interface Phase3jResults {
+  // Item 1 (serialize-once) in-run A/B: same method, same run, back-to-back N.
+  encodeLegacy: RpcBreakdown | null; // _benchLegacyEncode:true (before)
+  encodeOnce: RpcBreakdown | null; // serialize-once (after)
+  // Item 2 (compact payload) in-run A/B.
+  compactOff: RpcBreakdown | null; // compact:false (before)
+  compactOn: RpcBreakdown | null; // compact:true (after)
+  // Item 3 (transport) experiment: adb-forward vs +padding vs redir.
+  transport: TransportExperiment;
+}
+
+/** Grab a free host TCP port (for the redir experiment's host side). */
+async function freeHostPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      srv.close(() => (port ? resolve(port) : reject(new Error("no free port"))));
+    });
+  });
+}
+
+/**
+ * Drive the emulator console (127.0.0.1:<consolePort>): authenticate with the
+ * token file, then run each command, resolving once the last one is acknowledged.
+ * The console prints an `OK` after the banner, after `auth`, and after each command
+ * (or `KO` on error), so progress is tracked by counting `OK` lines. Phase 3j
+ * redir experiment only.
+ */
+async function emulatorConsole(consolePort: number, commands: string[]): Promise<void> {
+  const token = readFileSync(join(homedir(), ".emulator_console_auth_token"), "utf8").trim();
+  await new Promise<void>((resolve, reject) => {
+    const sock = net.createConnection({ host: "127.0.0.1", port: consolePort });
+    let buf = "";
+    let authed = false;
+    let sent = 0; // commands issued so far
+    const okTarget = () => 1 /* banner */ + 1 /* auth */ + commands.length;
+    const okCount = (): number => (buf.match(/^OK\s*$/gm) || []).length;
+    const cleanup = (): void => {
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+    };
+    sock.setTimeout(6000, () => {
+      cleanup();
+      reject(new Error("emulator console timed out"));
+    });
+    sock.on("error", (e) => {
+      cleanup();
+      reject(e);
+    });
+    sock.on("data", (d) => {
+      buf += d.toString("utf8");
+      if (/^KO\b/m.test(buf)) {
+        cleanup();
+        reject(new Error(`console KO: ${buf.trim().slice(-200)}`));
+        return;
+      }
+      const oks = okCount();
+      if (!authed && oks >= 1) {
+        authed = true;
+        sock.write(`auth ${token}\n`);
+        return;
+      }
+      // After auth's OK (oks>=2), issue each command as its predecessor's OK lands.
+      while (authed && sent < commands.length && oks >= 2 + sent) {
+        sock.write(commands[sent] + "\n");
+        sent++;
+      }
+      if (authed && sent === commands.length && oks >= okTarget()) {
+        sock.write("quit\n");
+        cleanup();
+        resolve();
+      }
+    });
+  });
+}
+
+/** N getNestedState round-trips over `client`, returning the host timeline stats. */
+async function measureClientTransport(
+  client: AndroidOpenServerClient,
+  n: number
+): Promise<{ rtt: StageStat; recv: StageStat; wire: StageStat }> {
+  for (let i = 0; i < 3; i++) await client.request("ping").catch(() => undefined);
+  const rtt: number[] = [];
+  const recv: number[] = [];
+  const wire: number[] = [];
+  for (let i = 0; i < n; i++) {
+    try {
+      const r = await client.requestWithStats("getState", {
+        nested: true,
+        includeScreenshot: false,
+        compact: true,
+        maxElements: 3000,
+        waitTimeoutMs: 0,
+      });
+      rtt.push(r.hostRoundTripMs);
+      recv.push(r.hostFirstToLastByteMs);
+      wire.push(r.wireBytes);
+    } catch {
+      /* skip */
+    }
+  }
+  return { rtt: stageStat(rtt), recv: stageStat(recv), wire: stageStat(wire) };
+}
+
+/**
+ * (b) The redir transport arm: bypass adbd + the host adb server by forwarding a
+ * host port straight to the guest's 0.0.0.0 listener via the emulator console's
+ * `redir` (sender on the last hop is qemu slirp, not the Nagling adb server). Needs
+ * the server spawned with bindAll (ARGENT_OPEN_SERVER_BIND_ALL=1) so a routable
+ * listener exists — redir cannot reach the default loopback-only bind. Best-effort:
+ * any failure returns `available:false` with the reason, never throws.
+ */
+async function measureRedirArm(reg: Reg, n: number): Promise<TransportArm> {
+  const empty = (): StageStat => stageStat([]);
+  const arm = (available: boolean, note: string, s?: { rtt: StageStat; recv: StageStat; wire: StageStat }): TransportArm => ({
+    label: "redir (emulator console)",
+    available,
+    note,
+    rtt: s?.rtt ?? empty(),
+    recv: s?.recv ?? empty(),
+    wire: s?.wire ?? empty(),
+  });
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const ports = server.getTransportPorts();
+    if (ports.allPort === undefined) {
+      return arm(
+        false,
+        "server has no 0.0.0.0 listener (spawn with ARGENT_OPEN_SERVER_BIND_ALL=1); " +
+          "redir connects to the guest's routable IP and cannot reach a loopback-only bind"
+      );
+    }
+    const m = /^emulator-(\d+)$/.exec(SERIAL);
+    if (!m) return arm(false, `serial ${SERIAL} is not emulator-NNNN, so no console port`);
+    const consolePort = parseInt(m[1]!, 10);
+    const hostPort = await freeHostPort();
+    await emulatorConsole(consolePort, [`redir add tcp:${hostPort}:${ports.allPort}`]);
+    const client = new AndroidOpenServerClient("127.0.0.1", hostPort);
+    try {
+      const s = await measureClientTransport(client, n);
+      return arm(true, `redir tcp:${hostPort} -> guest 0.0.0.0:${ports.allPort} (bypasses adb server)`, s);
+    } finally {
+      client.close();
+      await emulatorConsole(consolePort, [`redir del tcp:${hostPort}`]).catch(() => undefined);
+    }
+  } catch (e) {
+    return arm(false, `redir probe failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * The phase 3j transport experiment (item 3), all in ONE run, N each: (a) the
+ * `adb forward` baseline, (b) the emulator-console `redir` path, (c) the padding
+ * diagnostic (`_padTo` a full MSS multiple so the reply has no final partial
+ * segment). Comparing the recv gap across the three isolates the fixed ~40 ms
+ * host-recv cost's cause.
+ */
+async function measureTransportExperiment(reg: Reg, n: number): Promise<TransportExperiment> {
+  const PAD = 1448;
+  const arms: TransportArm[] = [];
+  const toArm = (
+    label: string,
+    b: RpcBreakdown | null,
+    note: string
+  ): TransportArm =>
+    b
+      ? { label, available: true, note, rtt: b.hostRttMs, recv: b.hostRecvMs, wire: b.wireBytes }
+      : { label, available: false, note: `${note} — probe returned no samples`, rtt: stageStat([]), recv: stageStat([]), wire: stageStat([]) };
+
+  // (a) baseline over adb forward.
+  const baseline = await measureRpcBreakdown(reg, "transport a: adb-forward", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  );
+  arms.push(toArm("adb-forward", baseline, "baseline (adb server on the last hop)"));
+
+  // (b) redir, best-effort.
+  arms.push(await measureRedirArm(reg, n));
+
+  // (c) padding diagnostic: pad the reply to a multiple of one MSS.
+  const padded = await measureRpcBreakdown(reg, "transport c: adb-forward +pad", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true, _padTo: PAD }) as Promise<RpcTimedReply>
+  );
+  arms.push(
+    toArm(
+      `adb-forward +pad${PAD}`,
+      padded,
+      "diagnostic: reply padded to a full-MSS multiple (never shipped)"
+    )
+  );
+
+  return { paddingTarget: PAD, arms };
+}
+
+/** Render the phase 3j serialize-once + compact A/B and transport table for the log. */
+function formatPhase3j(p: Phase3jResults): string {
+  const lines: string[] = [];
+  const cell = (st: StageStat): string =>
+    st.p50 === null ? "   -   " : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
+  const ab = (title: string, before: RpcBreakdown | null, after: RpcBreakdown | null, keys: Array<[string, (b: RpcBreakdown) => StageStat]>): void => {
+    lines.push(`[bench] ${title} (before | after) p50/p95`);
+    for (const [k, sel] of keys) {
+      const b = before ? cell(sel(before)) : "   -   ";
+      const a = after ? cell(sel(after)) : "   -   ";
+      lines.push(`[bench]   ${k.padEnd(22)} ${b} | ${a}`);
+    }
+  };
+  ab("3j item1 serialize-once", p.encodeLegacy, p.encodeOnce, [
+    ["server handleMs(t3-t2)", (b) => b.serverHandleMs],
+    ["server encodeMs", (b) => b.serverEncodeMs],
+    ["server writeMs(t4-t3)", (b) => b.serverWriteMs],
+    ["server totalMs(t4-t2)", (b) => b.serverTotalMs],
+    ["wireBytes", (b) => b.wireBytes],
+    ["hostRttMs", (b) => b.hostRttMs],
+  ]);
+  ab("3j item2 compact", p.compactOff, p.compactOn, [
+    ["wireBytes", (b) => b.wireBytes],
+    ["server encodeMs", (b) => b.serverEncodeMs],
+    ["server handleMs(t3-t2)", (b) => b.serverHandleMs],
+    ["hostParseMs", (b) => b.hostParseMs],
+    ["hostRecvMs", (b) => b.hostRecvMs],
+    ["hostRttMs", (b) => b.hostRttMs],
+  ]);
+  lines.push(`[bench] 3j item3 transport experiment (pad target ${p.transport.paddingTarget}B) p50/p95`);
+  lines.push(`[bench]   ${"arm".padEnd(22)} ${"rttMs".padStart(13)} ${"recvMs".padStart(13)} ${"wireB".padStart(13)}  note`);
+  for (const a of p.transport.arms) {
+    lines.push(
+      `[bench]   ${a.label.padEnd(22)} ${cell(a.rtt)} ${cell(a.recv)} ${cell(a.wire)}  ${a.available ? "" : "N/A: "}${a.note}`
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Run the phase 3j in-run A/Bs (serialize-once, compact) and the transport
+ * experiment on the idle Settings root, ON only. Each A/B is back-to-back N so the
+ * server's piggybacked prevServer* timings are clean.
+ */
+async function runPhase3j(reg: Reg, n: number): Promise<Phase3jResults> {
+  await ensureSettings(reg);
+  const encodeLegacy = await measureRpcBreakdown(reg, "3j serialize legacy (before)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true, _benchLegacyEncode: true }) as Promise<RpcTimedReply>
+  );
+  const encodeOnce = await measureRpcBreakdown(reg, "3j serialize-once (after)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  );
+  const compactOff = await measureRpcBreakdown(reg, "3j compact off (before)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: false }) as Promise<RpcTimedReply>
+  );
+  const compactOn = await measureRpcBreakdown(reg, "3j compact on (after)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  );
+  const transport = await measureTransportExperiment(reg, n);
+  return { encodeLegacy, encodeOnce, compactOff, compactOn, transport };
+}
+
+/* -------------------------------------------------------------------------- */
 /* describe staleness after a navigating tap (P3d)                             */
 /* -------------------------------------------------------------------------- */
 
@@ -963,6 +1250,9 @@ interface BlockResult {
   // describe path, ~31 KB text) and getState+screenshot (JPEG-heavy), so the 5-point
   // timeline shows whether the residual is per-byte or per-request. Empty on OFF.
   rpcBreakdowns: RpcBreakdown[];
+  // Phase 3j: serialize-once + compact in-run A/B and the transport experiment
+  // (adb-forward vs redir vs padding). ON only; undefined on OFF blocks.
+  phase3j?: Phase3jResults;
   // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1):
   // before = old `isAndroidTv` (adb devices + getprop every call), after ≈ 0 =
   // `isAndroidTvCached`. Both configs.
@@ -1099,6 +1389,7 @@ async function runBlock(
   // the two (and vs ping) shows whether the residual scales per-byte or is a fixed
   // per-request cost. Back-to-back so the piggybacked prevServer* is clean.
   const rpcBreakdowns: RpcBreakdown[] = [];
+  let phase3j: Phase3jResults | undefined;
   if (config === "ON") {
     await ensureSettings(reg);
     const nested = await measureRpcBreakdown(reg, "getNestedState (describe path)", N, (s) =>
@@ -1147,6 +1438,13 @@ async function runBlock(
       } catch (e) {
         realDebug(`[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
+    }
+    // Phase 3j: serialize-once + compact in-run A/B, and the transport experiment.
+    try {
+      phase3j = await runPhase3j(reg, N);
+      realDebug(formatPhase3j(phase3j));
+    } catch (e) {
+      realDebug(`[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1435,6 +1733,7 @@ async function runBlock(
     pingP95: ping.p95,
     pingN: ping.n,
     rpcBreakdowns,
+    ...(phase3j ? { phase3j } : {}),
     adbFormFactorBeforeP50: adbFF.beforeP50,
     adbFormFactorBeforeP95: adbFF.beforeP95,
     adbFormFactorAfterP50: adbFF.afterP50,

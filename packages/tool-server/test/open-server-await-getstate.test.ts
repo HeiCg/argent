@@ -140,7 +140,7 @@ describe("describe open path — one RPC, settle idle policy (P3d)", () => {
     expect(data.source).toBe("open-device-server");
     // Single combined round-trip …
     expect(openApi.getNestedState).toHaveBeenCalledTimes(1);
-    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 0 });
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 0, compact: true });
     // … not the old fake-parallel getNestedAccessibilityTree + getInfo pair.
     expect(openApi.getNestedAccessibilityTree).not.toHaveBeenCalled();
     expect(openApi.getInfo).not.toHaveBeenCalled();
@@ -149,19 +149,19 @@ describe("describe open path — one RPC, settle idle policy (P3d)", () => {
   it("settle:false reads immediately (waitTimeoutMs:0)", async () => {
     const openApi = makeOpenApi();
     await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL, undefined, false, false);
-    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 0 });
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 0, compact: true });
   });
 
   it("settle:true waits the 500 ms quiescence (the settled read)", async () => {
     const openApi = makeOpenApi();
     await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL, undefined, false, true);
-    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 500 });
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 500, compact: true });
   });
 
   it("settle:<number> passes the custom cap through as waitTimeoutMs", async () => {
     const openApi = makeOpenApi();
     await describeAndroid(makeRegistry(openApi), ANDROID_SERIAL, undefined, false, 250);
-    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 250 });
+    expect(openApi.getNestedState).toHaveBeenCalledWith({ waitTimeoutMs: 250, compact: true });
   });
 
   it("settleToWaitTimeoutMs maps the policy: absent/false/0/negative/NaN → 0, true → 500, positive → floor", () => {

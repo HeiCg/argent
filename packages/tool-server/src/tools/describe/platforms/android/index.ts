@@ -105,7 +105,11 @@ export async function describeAndroid(
         // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
         // keep their own (default) timeout — this is describe-only.
         const waitTimeoutMs = settleToWaitTimeoutMs(settle);
-        const state = await server.getNestedState({ waitTimeoutMs });
+        // Phase 3j: compact:true drops the trim-discarded nodes on the device, so the
+        // wire payload is smaller yet lowers to the byte-identical DescribeNode (the
+        // golden is the contract). It is the blueprint default too; passed explicitly
+        // here so the describe path's intent is legible.
+        const state = await server.getNestedState({ waitTimeoutMs, compact: true });
         if (state.tree.length === 0) {
           throw new FailureError("open-device-server returned an empty accessibility tree", {
             error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
@@ -144,6 +148,7 @@ export async function describeAndroid(
           hostSentToFirstByteMs: state.hostSentToFirstByteMs,
           hostFirstToLastByteMs: state.hostFirstToLastByteMs,
           hostRoundTripMs: state.hostRoundTripMs,
+          transport: state.transport,
         };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
@@ -169,6 +174,7 @@ export async function describeAndroid(
           ? { hostFirstToLastByteMs: result.hostFirstToLastByteMs }
           : {}),
         ...(result.hostRoundTripMs !== undefined ? { hostRoundTripMs: result.hostRoundTripMs } : {}),
+        ...(result.transport !== undefined ? { transport: result.transport } : {}),
       };
     } catch (serverErr) {
       console.debug(

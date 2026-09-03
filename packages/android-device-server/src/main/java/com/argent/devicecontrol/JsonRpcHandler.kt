@@ -63,6 +63,17 @@ class JsonRpcHandler(
     var lastHandledMethod: String? = null
         private set
 
+    /**
+     * The `_padTo` of the last request [handle] parsed (0 if absent). Phase 3j
+     * transport diagnostic: [TCPServer] pads the response line with trailing spaces
+     * to the next multiple of this many UTF-8 bytes before the newline, to test
+     * whether a full-MSS-aligned reply escapes the ~40 ms delayed-ACK stall on the
+     * last partial segment. Trailing whitespace after the JSON object is ignored by
+     * the host `JSON.parse`, so it never changes the parsed reply.
+     */
+    var lastPadTo: Int = 0
+        private set
+
     private data class ServerTiming(val handleMs: Double, val writeMs: Double, val totalMs: Double)
 
     // Per-method server-side timeline of the PREVIOUS request of that method,
@@ -82,6 +93,7 @@ class JsonRpcHandler(
 
     fun handle(line: String): String {
         lastHandledMethod = null
+        lastPadTo = 0
         val json: JSONObject
         val method: String
         try {
@@ -94,6 +106,7 @@ class JsonRpcHandler(
 
         val id = json.opt("id")
         val params = json.optJSONObject("params") ?: JSONObject()
+        lastPadTo = params.optInt("_padTo", 0)
 
         Log.d(TAG, "method=$method id=$id")
 
@@ -134,7 +147,19 @@ class JsonRpcHandler(
                     }
                 }
             }
-            JsonRpc.successResponse(id, result)
+            val body = JsonRpc.successResponse(id, result)
+            // Serialize-once splice (phase 3j): getState's default path put a
+            // placeholder where the tree goes and exposed the raw pre-serialized tree
+            // on the handler. Splice it in verbatim so the tree is encoded exactly
+            // once. No-op on the legacy path (lastTreeJson == null) and every other
+            // method — the placeholder is absent, and replaceFirst leaves the string
+            // untouched when the token is not found.
+            val raw = stateHandler.lastTreeJson
+            if (method == "getState" && raw != null) {
+                JsonRpc.spliceRawMember(body, StateHandler.TREE_TOKEN, raw)
+            } else {
+                body
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing $method", e)
             JsonRpc.errorResponse(id, -32603, e.message ?: "Internal error")
