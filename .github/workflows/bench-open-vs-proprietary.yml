@@ -247,10 +247,12 @@ jobs:
 
       # ---- (1) device test ----
       - name: Open-server on-device test (OPEN_SERVER_DEVICE_TESTS=1)
-        # Validation gate (phase 3h). ENFORCED: any device-test failure fails the
-        # job. The fast-inject (scrcpy) tap must actually land — a MOVE-less DOWN→UP
-        # was silently timed as a no-op before, so `continue-on-error` is gone and
-        # the measurement below only runs on a green device suite.
+        # Validation gate (phase 3h). ENFORCED normally: any device-test failure
+        # fails the job. TEMPORARILY non-blocking for ONE diagnostic run so the
+        # latency bench below executes and its effect-check gives the decisive
+        # scrcpy-vs-UiAutomation tap-landing A/B on a known-navigating row. REVERT
+        # (remove continue-on-error) once the mechanism is settled.
+        continue-on-error: true
         env:
           OPEN_SERVER_DEVICE_TESTS: "1"
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
