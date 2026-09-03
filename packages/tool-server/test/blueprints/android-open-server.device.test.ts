@@ -647,10 +647,19 @@ suite("android open-device-server on-device", () => {
     }
     if (urlVia === "unsupported") {
       // Fallback: sendStringSync types printable ASCII (URLs, OTPs) verbatim — into
-      // the field already focused above (no second focus).
-      await api.typeText(url);
+      // the field already focused above (no second focus). A single open-server RPC
+      // can wedge under CI contention (client 10 s timeout, then it destroys the
+      // socket); the client reconnects on the next call, so retry once rather than
+      // failing the whole verb on one transient timeout.
+      try {
+        await api.typeText(url);
+      } catch {
+        await sleep(500);
+        await focusSearch(); // reconnect + re-focus the field on the fresh socket
+        await api.typeText(url).catch(() => undefined);
+      }
       await sleep(800);
-      await api.waitForIdle(3000);
+      await api.waitForIdle(3000).catch(() => undefined);
       if ((await readField()).includes(url)) urlVia = "typeText-fallback";
     }
     // The URL must land by SOME open-path method (F20: clipboard, else typing).
@@ -750,13 +759,35 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
   }, 30_000);
 
   const fiHome = async (): Promise<Element[]> => {
-    // Force-stop first: launchApp only RESUMES an existing Settings task (leaving a
-    // sub-screen on top), so a plain relaunch would not return to the home list.
+    // Force-stop first (launchApp only RESUMES an existing task, leaving a sub-screen
+    // on top), then start the root activity DIRECTLY via `am start -n .../.Settings`
+    // — exactly the bench's relaunchSettings, which navigates 20/20 — instead of
+    // launchApp's MAIN/LAUNCHER intent that bounces through the launcher.
     await adbShell(fiSerial, `am force-stop ${SETTINGS}`).catch(() => undefined);
-    await fiApi.launchApp(SETTINGS);
-    await sleep(1500);
-    await fiApi.waitForIdle(3000);
-    const { tree } = await fiApi.getAccessibilityTree({ maxElements: 200 });
+    await adbShell(fiSerial, `am start -n ${SETTINGS}/.Settings`).catch(() => undefined);
+    // Wait until Settings actually HOLDS window focus AND its root has rendered:
+    // getInfo().currentPackage flips to settings before the launcher finishes
+    // animating out (observed: currentPackage=settings while mCurrentFocus was still
+    // NexusLauncherActivity), so a fixed sleep raced the transition and a tap landed
+    // on the launcher on ~2/20 iterations. Gate on the authoritative signals.
+    let tree: Element[] = [];
+    for (let i = 0; i < 20; i++) {
+      await sleep(350);
+      const focused = /com\.android\.settings/.test(await foregroundFocus(fiSerial));
+      try {
+        tree = (await fiApi.getAccessibilityTree({ maxElements: 200 })).tree;
+      } catch {
+        continue;
+      }
+      const rooted = [...textSet(tree)].some((l) =>
+        /Network & internet|Connected devices|Search settings/i.test(l)
+      );
+      if (focused && rooted) {
+        await fiApi.waitForIdle(3000).catch(() => undefined);
+        return tree;
+      }
+    }
+    await fiApi.waitForIdle(3000).catch(() => undefined);
     return tree;
   };
 
@@ -836,7 +867,10 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     const focus = await foregroundFocus(fiSerial);
     // eslint-disable-next-line no-console
     console.log(`  [fi-tap] foreground before tap: currentPackage=${info.currentPackage} | ${focus}`);
-    expect(info.currentPackage).toBe(SETTINGS);
+    // Assert on the WINDOW focus (dumpsys mCurrentFocus), the signal that decides
+    // where a tap goes — currentPackage flips to settings before the launcher yields
+    // focus, so it is not a sufficient gate (fiHome already waited for both).
+    expect(focus).toMatch(/com\.android\.settings/);
     const fbBefore = info.fastInjectFallbacks ?? 0;
     const origin = await labelHash(fiApi);
     expect(origin).toBeDefined();
@@ -865,13 +899,15 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     let landedHits = 0;
     const RUNS = 20;
     for (let i = 0; i < RUNS; i++) {
-      await fiHome(); // restore the origin (force-stop + relaunch Settings) each run
-      const info = await fiApi.getInfo();
-      if (info.currentPackage !== SETTINGS) {
+      await fiHome(); // restore the origin (force-stop + relaunch Settings, focus-gated) each run
+      const focus = await foregroundFocus(fiSerial);
+      if (!/com\.android\.settings/.test(focus)) {
         // eslint-disable-next-line no-console
-        console.log(`  [fi-tap→describe] iter ${i} not on Settings: ${info.currentPackage} | ${await foregroundFocus(fiSerial)}`);
+        console.log(`  [fi-tap→describe] iter ${i} not focused on Settings: ${focus}`);
       }
-      expect(info.currentPackage).toBe(SETTINGS);
+      // fiHome already waited for Settings to hold focus; assert it (the window
+      // focus, not currentPackage) so a tap can only be counted from the real root.
+      expect(focus).toMatch(/com\.android\.settings/);
       const origin = await labelHash(fiApi);
       expect(origin).toBeDefined();
       await fiApi.tap(c!.x, c!.y);
