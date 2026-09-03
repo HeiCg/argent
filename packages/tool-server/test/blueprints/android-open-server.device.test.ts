@@ -663,11 +663,28 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     return tree;
   };
 
-  // A reliably-navigable Settings home row. Rows are full-width CLICKABLE
-  // containers with an EMPTY label (the text sits on a non-clickable child), so
-  // match on geometry, not label: the first full-width clickable below the search
-  // box (~0.30 H) — e.g. "Network & internet" — which always opens a sub-screen.
-  const navRow = (tree: Element[], screenWidth: number, screenHeight: number): Element | undefined =>
+  // A reliably-navigable Settings home row. Phase 3h: target the SAME known
+  // category the bench uses, located by LABEL (so it is the identical, definitely-
+  // navigating row across the device test and the bench A/B), not a derived
+  // geometry coordinate that could land on a divider on a shifted layout. Settings
+  // rows are full-width CLICKABLE containers with an EMPTY label (the text sits on a
+  // non-clickable child), so: find the element whose label is a known category,
+  // then tap the CLICKABLE row that contains it (hit-testing routes the touch to
+  // the row); fall back to the label's own centre, then to the first full-width
+  // clickable below the search box.
+  const NAV_LABELS = [
+    "Network & internet",
+    "Connected devices",
+    "Apps",
+    "Notifications",
+    "Battery",
+    "Storage",
+    "Sound & vibration",
+    "Display",
+    "Security & privacy",
+    "System",
+  ];
+  const geomRow = (tree: Element[], screenWidth: number, screenHeight: number): Element | undefined =>
     tree
       .filter(
         (e) =>
@@ -677,6 +694,34 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
           e.bounds.y2 < screenHeight * 0.92
       )
       .sort((a, b) => a.bounds.y1 - b.bounds.y1)[0];
+  const navTarget = (
+    tree: Element[],
+    screenWidth: number,
+    screenHeight: number
+  ): { x: number; y: number; label: string } | undefined => {
+    for (const cand of NAV_LABELS) {
+      const labelEl = tree.find((e) => label(e).startsWith(cand));
+      if (!labelEl) continue;
+      const lc = center(labelEl);
+      const row = tree.find(
+        (e) =>
+          e.clickable === true &&
+          e.bounds.x1 <= lc.x &&
+          lc.x <= e.bounds.x2 &&
+          e.bounds.y1 <= lc.y &&
+          lc.y <= e.bounds.y2 &&
+          e.bounds.x2 - e.bounds.x1 > screenWidth * 0.6
+      );
+      const c = row ? center(row) : lc;
+      return { x: c.x, y: c.y, label: cand };
+    }
+    const g = geomRow(tree, screenWidth, screenHeight);
+    if (g) {
+      const c = center(g);
+      return { x: c.x, y: c.y, label: label(g) || "(geometry row)" };
+    }
+    return undefined;
+  };
 
   const fiShot = async (): Promise<Buffer> =>
     Buffer.from((await fiApi.screenshot({ format: "png", scale: 0.5 })).data, "base64");
@@ -684,26 +729,24 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
   it("fast-inject tap navigates (scrcpy DOWN/UP + flushInput)", async () => {
     const tree = await fiHome();
     const info = await fiApi.getInfo();
-    const row = navRow(tree, info.screenWidth, info.screenHeight);
-    expect(row).toBeDefined();
-    const c = center(row!);
+    const c = navTarget(tree, info.screenWidth, info.screenHeight);
+    expect(c).toBeDefined();
     const before = await fiShot();
-    await fiApi.tap(c.x, c.y);
+    await fiApi.tap(c!.x, c!.y);
     await fiApi.waitForIdle(2000);
     const after = await fiShot();
     // A real navigation redraws most of the screen; a missed tap barely changes it.
     const ratio = pngDiffRatio(before, after);
     expect(ratio).toBeGreaterThan(0.1);
-    record("3f-tap navigates", "PASS", `row="${label(row!)}" @${c.x},${c.y} → diff ${(ratio * 100).toFixed(0)}%`);
+    record("3f-tap navigates", "PASS", `row="${c!.label}" @${c!.x},${c!.y} → diff ${(ratio * 100).toFixed(0)}%`);
   }, 90_000);
 
   it("fast-inject tap→describe sees destination 20/20 (settle) and quick-read ordered (flushInput)", async () => {
     // Fix the target once from a fresh home; Settings layout is stable on relaunch.
     const tree0 = await fiHome();
     const info = await fiApi.getInfo();
-    const row = navRow(tree0, info.screenWidth, info.screenHeight);
-    expect(row).toBeDefined();
-    const c = center(row!);
+    const c = navTarget(tree0, info.screenWidth, info.screenHeight);
+    expect(c).toBeDefined();
 
     let settleHits = 0;
     let quickHits = 0;
@@ -713,7 +756,7 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       // destination every time (the tap is never lost).
       await fiHome();
       const before1 = await fiShot();
-      await fiApi.tap(c.x, c.y);
+      await fiApi.tap(c!.x, c!.y);
       await fiApi.waitForIdle(2000);
       const settled = await fiShot();
       if (pngDiffRatio(before1, settled) > 0.1) settleHits++;
@@ -723,7 +766,7 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       // of the read, so it never catches the pre-UP (unchanged) frame.
       await fiHome();
       const before2 = await fiShot();
-      await fiApi.tap(c.x, c.y);
+      await fiApi.tap(c!.x, c!.y);
       await fiApi.getNestedState({ waitTimeoutMs: 300 });
       const quick = await fiShot();
       if (pngDiffRatio(before2, quick) > 0.1) quickHits++;
@@ -806,10 +849,9 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     expect(ping.status).toBe("ok");
     const tree = await fiHome();
     const info = await fiApi.getInfo();
-    const row = navRow(tree, info.screenWidth, info.screenHeight);
-    expect(row).toBeDefined();
-    const c = center(row!);
-    await fiApi.tap(c.x, c.y); // scrcpy inject
+    const c = navTarget(tree, info.screenWidth, info.screenHeight);
+    expect(c).toBeDefined();
+    await fiApi.tap(c!.x, c!.y); // scrcpy inject
     await fiApi.waitForIdle(2000); // Kotlin
     const shot = await fiApi.screenshot({ format: "png" }); // Kotlin
     expect(shot.width).toBeGreaterThan(0);
