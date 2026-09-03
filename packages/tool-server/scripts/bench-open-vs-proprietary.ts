@@ -53,7 +53,10 @@ import { setFlag, unsetFlag } from "@argent/configuration-core";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
+  assertTapTimelineParity,
+  describeInjectedTapTimeline,
   type BenchGestureParams,
+  type InjectedTapTimeline,
 } from "../src/utils/bench-gesture-parity";
 
 /* -------------------------------------------------------------------------- */
@@ -330,6 +333,14 @@ interface VerbResult {
   errors: number;
   fallbacks: number;
   fallbackSamples: string[];
+  // Effect-check (phase 3h): when the verb runs on a navigating target with an
+  // `effectHash`, each iteration compares a screen fingerprint before vs after the
+  // action. `effectChecked` iterations were compared; `effectZero` of them saw NO
+  // change — i.e. the tap did not land. A healthy block has effectZero === 0. This
+  // is what would have caught the v8 "tap win" that was really timing a no-op
+  // scrcpy injection (pngDiffRatio 0). Absent on verbs without an effect check.
+  effectChecked?: number;
+  effectZero?: number;
   extra?: Record<string, unknown>;
 }
 
@@ -340,7 +351,12 @@ async function timeCalls(
   // Untimed per-iteration setup (F5): resets the screen to a known state before
   // each measured tap/swipe so every iteration starts from the same place, and
   // its cost is NOT counted in the latency of the verb under test.
-  setup?: (i: number) => Promise<void>
+  setup?: (i: number) => Promise<void>,
+  // Optional per-iteration effect check (phase 3h). Captures a screen fingerprint
+  // (untimed) after `setup` and again after `fn`; if they are equal the action had
+  // no observable effect (the tap did not land). Returns undefined if the
+  // fingerprint could not be read (that iteration is not counted).
+  effectHash?: () => Promise<string | undefined>
 ): Promise<VerbResult> {
   for (let i = 0; i < WARMUP; i++) {
     if (setup) await setup(i).catch(() => undefined);
@@ -349,14 +365,25 @@ async function timeCalls(
   const mark = debugLines.length;
   const lat: number[] = [];
   let errors = 0;
+  let effectChecked = 0;
+  let effectZero = 0;
   for (let i = 0; i < N; i++) {
     if (setup) await setup(i).catch(() => undefined);
+    const before = effectHash ? await effectHash().catch(() => undefined) : undefined;
     const t0 = Date.now();
     try {
       await fn(i);
       lat.push(Date.now() - t0);
     } catch {
       errors++;
+      continue;
+    }
+    if (effectHash && before !== undefined) {
+      const after = await effectHash().catch(() => undefined);
+      if (after !== undefined) {
+        effectChecked++;
+        if (after === before) effectZero++;
+      }
     }
   }
   const fb = fallbackCountSince(mark);
@@ -366,6 +393,7 @@ async function timeCalls(
     errors,
     fallbacks: fb.count,
     fallbackSamples: fb.samples,
+    ...(effectHash ? { effectChecked, effectZero } : {}),
     extra: extra?.(),
   };
 }
@@ -644,7 +672,26 @@ interface BlockResult {
   // The gesture timing params this block drove (identical across OFF/ON by
   // construction; asserted in main so a drift can't slip through).
   gestureParams: BenchGestureParams;
+  // The tap frame timeline this block's backend actually injected (phase 3h) —
+  // frame count, per-frame tMs, holdMs. The merge asserts parity from THIS rather
+  // than re-reading the source constant per block (meaningless under BENCH_ONLY).
+  injectedTapTimeline: InjectedTapTimeline;
+  // Total no-effect tap iterations across the effect-checked tap verbs (phase 3h).
+  // A healthy block is 0; a positive count fails the block (the tap did not land).
+  effectZeroTotal: number;
   notes: string[];
+}
+
+// Screen fingerprint for the effect check: the sorted label set of a describe.
+// Both backends emit the same `"label"` shape, so this is comparable across
+// configs; a navigating tap changes the set, a no-op tap leaves it identical.
+async function describeLabelHash(reg: Reg): Promise<string | undefined> {
+  try {
+    const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+    return [...labelSetOf(d.description)].sort().join("\n");
+  } catch {
+    return undefined;
+  }
 }
 
 async function coldStart(config: "OFF" | "ON"): Promise<number[]> {
@@ -754,19 +801,40 @@ async function runBlock(
       "frames, so a side-by-side latency is not like-for-like — see the dims below."
   );
 
-  // gesture-tap (fixed neutral coordinate; latency = inject round-trip). Reset to
-  // the Settings root before each iteration (F5) so every tap starts identically;
-  // the reset is untimed.
+  // Derive a NAVIGATING tap target once (a real Settings category that opens a
+  // sub-screen), then reuse it for the effect-checked gesture-tap / tap+describe
+  // below AND the staleness probe. Tapping a neutral (0.5, 0.5) point could land on
+  // a gap and change nothing — worthless for an effect check — so the effect gate
+  // taps a known-navigating row. On the pristine Settings root this target is
+  // stable across resets.
+  const nav = await deriveNavTarget(reg, config === "ON" ? true : undefined);
+  const tapX = nav ? nav.x : 0.5;
+  const tapY = nav ? nav.y : 0.5;
+  const effectHash = nav ? () => describeLabelHash(reg) : undefined;
+  if (!nav) {
+    notes.push(
+      "effect-check: no navigating target could be derived on this root — gesture-tap / " +
+        "tap+describe ran on (0.5, 0.5) WITHOUT an effect check this block"
+    );
+  }
+  await ensureSettings(reg);
+
+  // gesture-tap (navigating target; latency = inject round-trip). Reset to the
+  // Settings root before each iteration (F5) so every tap starts identically; the
+  // reset is untimed. Effect-checked (phase 3h): a describe-label fingerprint
+  // before vs after every tap — effectZero counts iterations where the screen did
+  // not change (the tap did not land), which fails the block below.
   verbs.push(
     await timeCalls(
       "gesture-tap",
       async () => {
-        await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
+        await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
       },
       undefined,
       async () => {
         await ensureSettings(reg);
-      }
+      },
+      effectHash
     )
   );
 
@@ -779,9 +847,9 @@ async function runBlock(
   // screen. ON runs both idle policies: settle:false (immediate read, like-for-
   // like with the proprietary path) and settle:true (the settled read, our
   // policy). OFF has one policy (its describe reads immediately regardless), so it
-  // runs as-is.
+  // runs as-is. Effect-checked on the same navigating target as gesture-tap.
   const tapThenDescribe = (settle?: boolean) => async () => {
-    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 });
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
     await reg.invokeTool("describe", {
       udid: SERIAL,
       ...(settle === undefined ? {} : { settle }),
@@ -791,11 +859,11 @@ async function runBlock(
     await ensureSettings(reg);
   };
   if (config === "ON") {
-    verbs.push(await timeCalls("tap+describe(settle:false)", tapThenDescribe(false), undefined, resetToSettings));
+    verbs.push(await timeCalls("tap+describe(settle:false)", tapThenDescribe(false), undefined, resetToSettings, effectHash));
     await ensureSettings(reg);
-    verbs.push(await timeCalls("tap+describe(settle:true)", tapThenDescribe(true), undefined, resetToSettings));
+    verbs.push(await timeCalls("tap+describe(settle:true)", tapThenDescribe(true), undefined, resetToSettings, effectHash));
   } else {
-    verbs.push(await timeCalls("tap+describe", tapThenDescribe(undefined), undefined, resetToSettings));
+    verbs.push(await timeCalls("tap+describe", tapThenDescribe(undefined), undefined, resetToSettings, effectHash));
   }
 
   await ensureSettings(reg);
@@ -805,7 +873,7 @@ async function runBlock(
   // each describe reads a freshly-navigated (possibly still-settling) screen.
   const describeSplitAfterTap = await describeSplit(reg, Math.min(N, 10), async () => {
     await ensureSettings(reg);
-    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: 0.5, y: 0.5 }).catch(() => undefined);
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY }).catch(() => undefined);
   });
 
   // Print the per-stage p50/p95 split (idle vs after-tap) so the residual is
@@ -819,9 +887,9 @@ async function runBlock(
   // Post-navigating-tap staleness (P3d): after tapping a KNOWN Settings category,
   // does the immediate describe already contain the destination screen's content?
   // OFF measures its one policy; ON measures settle:false (like-for-like) and
-  // settle:true (settled read). Marker set is derived live under the same flag.
+  // settle:true (settled read). Reuses the `nav` target derived above (same row +
+  // marker set), so the effect check and the staleness probe agree.
   const destinationVisible: BlockResult["destinationVisible"] = [];
-  const nav = await deriveNavTarget(reg, config === "ON" ? true : undefined);
   if (!nav || nav.markers.length === 0) {
     notes.push(
       "destination-visible: could not derive a nav target / destination markers on this root; staleness skipped"
@@ -982,6 +1050,17 @@ async function runBlock(
   const rss = config === "OFF" ? simServerRssKb() : null;
   if (config === "ON") notes.push("host process: none beyond adb (open server runs on-device via am instrument)");
 
+  // The tap timeline this block's backend injected, and the total no-effect tap
+  // iterations across the effect-checked tap verbs (phase 3h).
+  const injectBackend = fastInject ? "scrcpy" : config === "ON" ? "uiautomation" : "proprietary";
+  const injectedTapTimeline = describeInjectedTapTimeline(injectBackend, BENCH_GESTURE_PARAMS.tapHoldMs);
+  const effectZeroTotal = verbs.reduce((s, v) => s + (v.effectZero ?? 0), 0);
+  const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
+  notes.push(
+    `effect-check: ${effectZeroTotal} no-effect tap iteration(s) of ${effectCheckedTotal} checked ` +
+      `(target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
+  );
+
   // Fidelity is compared on the pristine Settings root captured at block start
   // (before any tap/paste/keyboard state), so OFF and ON are the same screen.
   const fidelitySet = parsed.idTextSet;
@@ -1000,6 +1079,8 @@ async function runBlock(
     screenshot: shot,
     simServerRssKb: rss,
     gestureParams: BENCH_GESTURE_PARAMS,
+    injectedTapTimeline,
+    effectZeroTotal,
     describeSplitIdle,
     describeSplitAfterTap,
     destinationVisible,
@@ -1058,8 +1139,24 @@ async function main(): Promise<void> {
   const blocks: BlockResult[] = [];
   for (const [block, config, fastInject] of toRun) {
     realDebug(`[bench] === block ${block} (${config}${fastInject ? ", scrcpy fast-inject" : ""}) ===`);
+    const dbgMark = debugLines.length;
     const r = await runBlock(block, config, fastInject);
     blocks.push(r);
+    // Surface the scrcpy server start line + scid + control-channel line to REAL
+    // stdout (not only the captured console.debug), plus this block's fast-inject
+    // fallback count and effect-check count — so bench-log-<block>.txt shows the
+    // scrcpy session was real and clean without digging into the JSON (item: print
+    // the scrcpy server start line, scid, and fastInjectFallbacks per block).
+    const scrcpyLines = debugLines
+      .slice(dbgMark)
+      .filter((l) => /scrcpy (server starting|control channel)|scid=/.test(l));
+    for (const l of [...new Set(scrcpyLines)]) realDebug(`[bench][${block}] ${l}`);
+    const fbTotal = (r.verbs || []).reduce((s, v) => s + (v.fallbacks || 0), 0);
+    realDebug(
+      `[bench][${block}] fastInject=${fastInject} fastInjectFallbacks=${fbTotal} ` +
+        `effectZero=${r.effectZeroTotal} tapFrames=${r.injectedTapTimeline.frameCount}` +
+        `(move=${r.injectedTapTimeline.hasMoveFrame})`
+    );
     realDebug(
       `[bench] ${block} done: describe p50=${r.verbs[0]?.latency.p50}ms source=${r.describeSample.source} ` +
         `screenshot=${r.screenshot.bytes}b cold=${JSON.stringify(r.coldStartMs)} rss=${r.simServerRssKb}`
@@ -1075,12 +1172,33 @@ async function main(): Promise<void> {
     writeFileSync(blockPath, JSON.stringify({ env, block: blocks[0] }, null, 2));
     realDebug(`[bench] wrote ${blockPath}`);
     process.stdout.write(`RESULT_JSON=${blockPath}\n`);
+    // Effect gate (phase 3h): fail the block AFTER writing its file (so the
+    // artifact is preserved) if any effect-checked tap iteration saw no screen
+    // change. This is the gate that would have caught the retracted "tap win" — a
+    // no-op scrcpy injection timed as a fast tap.
+    const ez = blocks[0]!.effectZeroTotal;
+    if (ez > 0) {
+      throw new Error(
+        `block ${only}: ${ez} no-effect tap iteration(s) — the tap did not land on a ` +
+          `navigating target (pngDiffRatio-equivalent 0). Failing the block.`
+      );
+    }
     return;
   }
 
   // Parity gate: every block must have driven the identical gesture timeline, so
   // the OFF/ON latency comparison is genuinely like-for-like (throws otherwise).
   assertIdenticalGestureParams(blocks);
+  // Tap-timeline parity (phase 3h): same authored holdMs everywhere; the same-point
+  // MOVE present in exactly the scrcpy block. Recorded from the real injected shape.
+  assertTapTimelineParity(blocks);
+  // Effect gate across blocks: no block may have a no-effect tap iteration.
+  const effectZeroByBlock = blocks
+    .filter((b) => b.effectZeroTotal > 0)
+    .map((b) => `${b.block}=${b.effectZeroTotal}`);
+  if (effectZeroByBlock.length) {
+    throw new Error(`no-effect tap iterations detected: ${effectZeroByBlock.join(", ")}`);
+  }
 
   const off1 = blocks.find((b) => b.block === "OFF-1")!;
   // Fidelity (describe tree) is identical for both ON blocks — fast-inject only

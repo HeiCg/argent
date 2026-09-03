@@ -83,8 +83,9 @@ export interface OpenServerScreenshot {
  * Per-stage split of one describe/state capture (phase 3g). `waitedMs`/`captureMs`
  * give the idle-vs-capture halves; this breaks the capture half down further so a
  * bench can attribute the after-tap residual to a concrete binder call rather than
- * guessing from logcat: `rootMs` is `rootInActiveWindow`, `windowsMs` the
- * `uiAutomation.windows` enumeration, `rootsMs` each kept window's `w.root`,
+ * guessing from logcat: `rootMs` is the active-root read (from the windows
+ * snapshot, or the `rootInActiveWindow` fallback — see `rootSource`), `windowsMs`
+ * the `uiAutomation.windows` enumeration, `rootsMs` each kept window's `w.root`,
  * `serializeMs` the node walk, `encodeMs` the JSON encode. `idleMs` mirrors
  * `waitedMs`. Metadata only — never rendered.
  */
@@ -95,6 +96,10 @@ export interface OpenServerTimings {
   rootsMs: number[];
   serializeMs: number;
   encodeMs: number;
+  // Which path produced the active root (phase 3g-b): "windows" = read from the
+  // interactive-windows snapshot (fast, coherent mid-transition), "activeWindow" =
+  // `rootInActiveWindow` fallback. Absent on servers before versionCode 22.
+  rootSource?: "windows" | "activeWindow";
 }
 
 /**

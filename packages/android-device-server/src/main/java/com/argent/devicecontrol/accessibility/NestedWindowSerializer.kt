@@ -73,6 +73,32 @@ object NestedWindowSerializer {
         return false
     }
 
+    /** The active window's root plus which path produced it (see [activeRoot]). */
+    data class ActiveRoot(val root: AccessibilityNodeInfo?, val source: String)
+
+    /**
+     * Resolve the active window's root WITHOUT `uiAutomation.rootInActiveWindow`.
+     * That binder call blocks ~170-210 ms mid-transition (phase 3g bench: after-tap
+     * `rootMs` p50) while the active window settles. Reading the root from the
+     * already-enumerated interactive-windows snapshot
+     * (`windows.firstOrNull { it.isActive }?.root`) returns the current active root
+     * coherently mid-transition instead, so a describe issued right after a tap no
+     * longer pays that transitional block. Requires `FLAG_RETRIEVE_INTERACTIVE_WINDOWS`
+     * on the UiAutomation service info (set at startup in
+     * `DeviceControlInstrumentation`); falls back to `rootInActiveWindow` only when
+     * the window list has no active entry with a root. `source` is surfaced as
+     * `timings.rootSource` so the bench can tell which path served the capture.
+     */
+    fun activeRoot(uiAutomation: UiAutomation): ActiveRoot {
+        val fromWindows = try {
+            uiAutomation.windows.firstOrNull { it.isActive }?.root
+        } catch (_: Exception) {
+            null
+        }
+        if (fromWindows != null) return ActiveRoot(fromWindows, "windows")
+        return ActiveRoot(uiAutomation.rootInActiveWindow, "activeWindow")
+    }
+
     fun serialize(
         uiAutomation: UiAutomation,
         activeRoot: AccessibilityNodeInfo,

@@ -47,8 +47,12 @@ class HierarchyHandler(
         val idleMs = System.currentTimeMillis() - idleStart
 
         val windowTimings = WindowTimings()
+        // Read the active window's root from the interactive-windows snapshot rather
+        // than `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase
+        // 3g bench). `rootSource` records which path served it.
         val rootStart = System.currentTimeMillis()
-        val rootNode = uiAutomation.rootInActiveWindow
+        val resolved = NestedWindowSerializer.activeRoot(uiAutomation)
+        val rootNode = resolved.root
             ?: throw RuntimeException("No active window")
         val rootMs = System.currentTimeMillis() - rootStart
 
@@ -72,6 +76,7 @@ class HierarchyHandler(
                 put("rootsMs", JSONArray(windowTimings.rootsMs))
                 put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
                 put("encodeMs", encodeMs)
+                put("rootSource", resolved.source)
             }
             return JSONObject().apply {
                 put("tree", tree)

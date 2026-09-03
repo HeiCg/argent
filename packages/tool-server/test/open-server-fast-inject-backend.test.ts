@@ -130,10 +130,12 @@ describe("scrcpy fast-inject backend lifecycle", () => {
     h.adb.subprocess.noneProtocol.spawnWaitText.mockResolvedValue("present");
   });
 
-  it("tap injects DOWN then UP with device geometry, rounded px, bigint pointerId", async () => {
+  it("tap injects the scrcpy click sequence DOWN → MOVE → UP (same point), rounded px, bigint pointerId", async () => {
     const { backend } = makeBackend();
-    await backend.tap(100.4, 200.6, { holdMs: 0, gapMs: 0 });
-    expect(h.injectTouchCalls).toHaveLength(2);
+    await backend.tap(100.4, 200.6, { holdMs: 50, gapMs: 0 });
+    // Phase 3h: a bare DOWN→UP is dropped by scrcpy on the emulator; the tap now
+    // carries one same-point MOVE between them to commit the press.
+    expect(h.injectTouchCalls).toHaveLength(3);
     expect(h.injectTouchCalls[0]).toMatchObject({
       action: 0, // Down
       pointerId: 0n,
@@ -145,7 +147,18 @@ describe("scrcpy fast-inject backend lifecycle", () => {
       actionButton: 0,
       buttons: 0,
     });
-    expect(h.injectTouchCalls[1]).toMatchObject({ action: 1, pointerId: 0n, pressure: 0 });
+    // MOVE: same pointerId, same rounded coordinates, still pressed (pressure 1).
+    expect(h.injectTouchCalls[1]).toMatchObject({
+      action: 2, // Move
+      pointerId: 0n,
+      pointerX: 100,
+      pointerY: 201,
+      pressure: 1,
+      actionButton: 0,
+      buttons: 0,
+    });
+    // UP: same pointerId, pressure 0.
+    expect(h.injectTouchCalls[2]).toMatchObject({ action: 1, pointerId: 0n, pressure: 0 });
   });
 
   it("connects once and reuses the session across actions", async () => {
@@ -196,8 +209,9 @@ describe("scrcpy fast-inject backend lifecycle", () => {
 
   it("on an inject failure, lifts still-down pointers (CANCEL) and drops the client (item 4)", async () => {
     const { backend } = makeBackend();
-    // tap = DOWN (idx 0), UP (idx 1). Fail the UP so pointer 0 is left down.
-    h.failAtIndex = 1;
+    // tap = DOWN (idx 0), MOVE (idx 1), UP (idx 2). Fail the UP so pointer 0 is
+    // left down and must be CANCELled.
+    h.failAtIndex = 2;
     await expect(backend.tap(10, 20, { holdMs: 50, gapMs: 0 })).rejects.toThrow(/scrcpy/);
     // A CANCEL for the still-down pointer 0 was emitted after the failure.
     const cancel = h.injectTouchCalls.find((m) => m.action === 3);

@@ -110,6 +110,10 @@ export interface DescribeStageTimings {
   rootsMs: number[];
   serializeMs: number;
   encodeMs: number;
+  // Which path produced the active root (phase 3g-b): "windows" =
+  // `windows.firstOrNull { it.isActive }?.root` (the fast, mid-transition-safe
+  // path), "activeWindow" = `rootInActiveWindow` fallback. Absent on older servers.
+  rootSource?: "windows" | "activeWindow";
 }
 
 export interface DescribeResult {
