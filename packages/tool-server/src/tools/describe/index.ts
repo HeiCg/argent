@@ -16,7 +16,7 @@ import { describeVega, vegaRequires } from "./platforms/vega";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { resolveDevice } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
-import { isAndroidTv } from "../../utils/adb";
+import { isAndroidTvCached } from "../../utils/adb";
 import { formatDescribeTree } from "./format-tree";
 
 // Renders the adapter-internal `tree` to text and drops it, so the caller (LLM)
@@ -138,9 +138,11 @@ function makeDescribeExecute(
     android: {
       requires: androidRequires,
       handler: async (_services, params, device) =>
-        // Resolve the form factor once and thread the known `isTv: false`
+        // Resolve the form factor cache-first (phase 3i): a warm serial spawns zero
+        // `adb` here, where `isAndroidTv` used to run `adb devices` + getprop on
+        // every describe, inside the timed window. Thread the known `isTv: false`
         // through so describeAndroid doesn't re-probe.
-        (await isAndroidTv(device.id))
+        (await isAndroidTvCached(device.id))
           ? describeTv(registry, device)
           : withDescription(
               await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)

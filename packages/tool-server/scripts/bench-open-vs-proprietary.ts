@@ -52,6 +52,7 @@ import { performance } from "node:perf_hooks";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
 import { resolveDevice } from "../src/utils/device-info";
+import { isAndroidTv, isAndroidTvCached } from "../src/utils/adb";
 import { openDeviceServerRef, type OpenDeviceServerApi } from "../src/blueprints/android-open-server";
 import {
   BENCH_GESTURE_PARAMS,
@@ -398,6 +399,12 @@ type DescribeStages = {
   hostTtfbMs: StageStat;
   hostRecvMs: StageStat;
   hostRttMs: StageStat;
+  // Server-side write timeline piggybacked from the previous same-method reply
+  // (phase 3i). Clean when the describe loop is back-to-back (prev getState is the
+  // previous describe's getState); representative-only under the after-tap loop.
+  prevServerWriteMs: StageStat;
+  prevServerHandleMs: StageStat;
+  prevServerTotalMs: StageStat;
 };
 const STAGE_KEYS = [
   "idleMs",
@@ -411,6 +418,9 @@ const STAGE_KEYS = [
   "hostTtfbMs",
   "hostRecvMs",
   "hostRttMs",
+  "prevServerWriteMs",
+  "prevServerHandleMs",
+  "prevServerTotalMs",
 ] as const;
 type StageKey = (typeof STAGE_KEYS)[number];
 
@@ -435,85 +445,159 @@ type DescribeSplit = {
   wireBytes: StageStat;
 };
 
+// The describe result metadata the phase 3g/3i instrumentation attaches.
+type DescribeMeta = {
+  waitedMs?: number;
+  captureMs?: number;
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostRenderMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
+  timings?: {
+    idleMs?: number;
+    rootMs?: number;
+    windowsMs?: number;
+    rootsMs?: number[];
+    serializeMs?: number;
+    encodeMs?: number;
+    prevServerHandleMs?: number;
+    prevServerWriteMs?: number;
+    prevServerTotalMs?: number;
+  };
+};
+
+// Accumulator so the timed idle loop and the after-tap loop collect identically.
+interface SplitAcc {
+  waited: number[];
+  captured: number[];
+  wireBytesSamples: number[];
+  stageSamples: Record<StageKey, number[]>;
+}
+function newSplitAcc(): SplitAcc {
+  return {
+    waited: [],
+    captured: [],
+    wireBytesSamples: [],
+    stageSamples: {
+      idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+      hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
+      prevServerWriteMs: [], prevServerHandleMs: [], prevServerTotalMs: [],
+    },
+  };
+}
+function collectSplit(acc: SplitAcc, d: DescribeMeta): void {
+  const s = acc.stageSamples;
+  if (typeof d.waitedMs === "number") acc.waited.push(d.waitedMs);
+  if (typeof d.captureMs === "number") acc.captured.push(d.captureMs);
+  if (typeof d.wireBytes === "number") acc.wireBytesSamples.push(d.wireBytes);
+  if (typeof d.hostParseMs === "number") s.hostParseMs.push(d.hostParseMs);
+  if (typeof d.hostRenderMs === "number") s.hostRenderMs.push(d.hostRenderMs);
+  if (typeof d.hostSentToFirstByteMs === "number") s.hostTtfbMs.push(d.hostSentToFirstByteMs);
+  if (typeof d.hostFirstToLastByteMs === "number") s.hostRecvMs.push(d.hostFirstToLastByteMs);
+  if (typeof d.hostRoundTripMs === "number") s.hostRttMs.push(d.hostRoundTripMs);
+  const t = d.timings;
+  if (t) {
+    if (typeof t.idleMs === "number") s.idleMs.push(t.idleMs);
+    if (typeof t.rootMs === "number") s.rootMs.push(t.rootMs);
+    if (typeof t.windowsMs === "number") s.windowsMs.push(t.windowsMs);
+    // rootsMs is one entry per kept window; sum to the per-call total.
+    if (Array.isArray(t.rootsMs)) s.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
+    if (typeof t.serializeMs === "number") s.serializeMs.push(t.serializeMs);
+    if (typeof t.encodeMs === "number") s.encodeMs.push(t.encodeMs);
+    if (typeof t.prevServerWriteMs === "number") s.prevServerWriteMs.push(t.prevServerWriteMs);
+    if (typeof t.prevServerHandleMs === "number") s.prevServerHandleMs.push(t.prevServerHandleMs);
+    if (typeof t.prevServerTotalMs === "number") s.prevServerTotalMs.push(t.prevServerTotalMs);
+  }
+}
+function finalizeSplit(acc: SplitAcc): DescribeSplit {
+  const p50 = (xs: number[]): number | null => (xs.length ? summarize(xs).p50 : null);
+  const s = acc.stageSamples;
+  const stages: DescribeStages = {
+    idleMs: stageStat(s.idleMs),
+    rootMs: stageStat(s.rootMs),
+    windowsMs: stageStat(s.windowsMs),
+    rootsMs: stageStat(s.rootsMs),
+    serializeMs: stageStat(s.serializeMs),
+    encodeMs: stageStat(s.encodeMs),
+    hostParseMs: stageStat(s.hostParseMs),
+    hostRenderMs: stageStat(s.hostRenderMs),
+    hostTtfbMs: stageStat(s.hostTtfbMs),
+    hostRecvMs: stageStat(s.hostRecvMs),
+    hostRttMs: stageStat(s.hostRttMs),
+    prevServerWriteMs: stageStat(s.prevServerWriteMs),
+    prevServerHandleMs: stageStat(s.prevServerHandleMs),
+    prevServerTotalMs: stageStat(s.prevServerTotalMs),
+  };
+  return {
+    waitedP50: p50(acc.waited),
+    captureP50: p50(acc.captured),
+    n: Math.max(acc.waited.length, acc.stageSamples.hostRttMs.length),
+    stages,
+    wireBytes: stageStat(acc.wireBytesSamples),
+  };
+}
+
 async function describeSplit(
   reg: Reg,
   n: number,
   setup?: () => Promise<void>
 ): Promise<DescribeSplit> {
-  const waited: number[] = [];
-  const captured: number[] = [];
-  const wireBytesSamples: number[] = [];
-  const stageSamples: Record<StageKey, number[]> = {
-    idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
-    hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
-  };
+  const acc = newSplitAcc();
   for (let i = 0; i < n; i++) {
     if (setup) await setup().catch(() => undefined);
     try {
-      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as {
-        waitedMs?: number;
-        captureMs?: number;
-        wireBytes?: number;
-        hostParseMs?: number;
-        hostRenderMs?: number;
-        hostSentToFirstByteMs?: number;
-        hostFirstToLastByteMs?: number;
-        hostRoundTripMs?: number;
-        timings?: {
-          idleMs?: number;
-          rootMs?: number;
-          windowsMs?: number;
-          rootsMs?: number[];
-          serializeMs?: number;
-          encodeMs?: number;
-        };
-      };
-      if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
-      if (typeof d.captureMs === "number") captured.push(d.captureMs);
-      if (typeof d.wireBytes === "number") wireBytesSamples.push(d.wireBytes);
-      if (typeof d.hostParseMs === "number") stageSamples.hostParseMs.push(d.hostParseMs);
-      if (typeof d.hostRenderMs === "number") stageSamples.hostRenderMs.push(d.hostRenderMs);
-      if (typeof d.hostSentToFirstByteMs === "number") stageSamples.hostTtfbMs.push(d.hostSentToFirstByteMs);
-      if (typeof d.hostFirstToLastByteMs === "number") stageSamples.hostRecvMs.push(d.hostFirstToLastByteMs);
-      if (typeof d.hostRoundTripMs === "number") stageSamples.hostRttMs.push(d.hostRoundTripMs);
-      const t = d.timings;
-      if (t) {
-        if (typeof t.idleMs === "number") stageSamples.idleMs.push(t.idleMs);
-        if (typeof t.rootMs === "number") stageSamples.rootMs.push(t.rootMs);
-        if (typeof t.windowsMs === "number") stageSamples.windowsMs.push(t.windowsMs);
-        // rootsMs is one entry per kept window; sum to the per-call total so the
-        // stage reads as "time spent in w.root binder calls this capture".
-        if (Array.isArray(t.rootsMs)) {
-          stageSamples.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
-        }
-        if (typeof t.serializeMs === "number") stageSamples.serializeMs.push(t.serializeMs);
-        if (typeof t.encodeMs === "number") stageSamples.encodeMs.push(t.encodeMs);
-      }
+      collectSplit(acc, (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta);
     } catch {
       /* skip */
     }
   }
-  const p50 = (xs: number[]): number | null =>
-    xs.length ? summarize(xs).p50 : null;
-  const stages: DescribeStages = {
-    idleMs: stageStat(stageSamples.idleMs),
-    rootMs: stageStat(stageSamples.rootMs),
-    windowsMs: stageStat(stageSamples.windowsMs),
-    rootsMs: stageStat(stageSamples.rootsMs),
-    serializeMs: stageStat(stageSamples.serializeMs),
-    encodeMs: stageStat(stageSamples.encodeMs),
-    hostParseMs: stageStat(stageSamples.hostParseMs),
-    hostRenderMs: stageStat(stageSamples.hostRenderMs),
-    hostTtfbMs: stageStat(stageSamples.hostTtfbMs),
-    hostRecvMs: stageStat(stageSamples.hostRecvMs),
-    hostRttMs: stageStat(stageSamples.hostRttMs),
-  };
+  return finalizeSplit(acc);
+}
+
+/**
+ * Timed idle-describe loop (phase 3i correction): times N BACK-TO-BACK describes
+ * on the already-at-root screen AND collects each one's stage timings + host/server
+ * timeline, so the verb-latency p50/p95 and the full decomposition come from the
+ * SAME N iterations (the old split sampled a separate Math.min(N,10) loop with an
+ * untimed ensureSettings between calls — not subtractable). Back-to-back also makes
+ * the piggybacked prevServer* clean: the previous getState is the previous
+ * describe's getState.
+ */
+async function describeIdleLatencyWithStages(
+  reg: Reg,
+  label: string,
+  n: number
+): Promise<{ verb: VerbResult; split: DescribeSplit }> {
+  for (let i = 0; i < WARMUP; i++) {
+    await reg.invokeTool("describe", { udid: SERIAL }).catch(() => undefined);
+  }
+  const mark = debugLines.length;
+  const acc = newSplitAcc();
+  const lat: number[] = [];
+  let errors = 0;
+  for (let i = 0; i < n; i++) {
+    const t0 = Date.now();
+    try {
+      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta;
+      lat.push(Date.now() - t0);
+      collectSplit(acc, d);
+    } catch {
+      errors++;
+    }
+  }
+  const fb = fallbackCountSince(mark);
   return {
-    waitedP50: p50(waited),
-    captureP50: p50(captured),
-    n: waited.length,
-    stages,
-    wireBytes: stageStat(wireBytesSamples),
+    verb: {
+      verb: label,
+      latency: summarize(lat),
+      errors,
+      fallbacks: fb.count,
+      fallbackSamples: fb.samples,
+      extra: undefined,
+    },
+    split: finalizeSplit(acc),
   };
 }
 
@@ -666,6 +750,39 @@ async function measureRpcBreakdown(
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Measure the per-describe adb-spawn cost the form-factor check used to pay
+ * (phase 3i correction #1). `isAndroidTv` re-runs `adb devices` + `getprop
+ * ro.boot.qemu.avd_name` on EVERY call (the memo caches only the pm-features
+ * verdict), so `describe` paid three adb process spawns inside its timed window,
+ * OFF and ON alike. `isAndroidTvCached` returns the memoized kind with zero
+ * spawns. before = the old cost, after ≈ 0 = the new cost. Runs on both configs
+ * (adb is available in both).
+ */
+async function measureAdbFormFactorCost(
+  n: number
+): Promise<{ beforeP50: number | null; beforeP95: number | null; afterP50: number | null; n: number }> {
+  try {
+    const before: number[] = [];
+    const after: number[] = [];
+    for (let i = 0; i < 3; i++) await isAndroidTv(SERIAL).catch(() => undefined); // warm the memo
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      await isAndroidTv(SERIAL).catch(() => undefined); // still spawns adb devices + getprop
+      before.push(performance.now() - t0);
+      const t1 = performance.now();
+      await isAndroidTvCached(SERIAL).catch(() => undefined); // cache-only, zero spawns
+      after.push(performance.now() - t1);
+    }
+    if (before.length === 0) return { beforeP50: null, beforeP95: null, afterP50: null, n: 0 };
+    const b = summarize(before);
+    const a = summarize(after);
+    return { beforeP50: b.p50, beforeP95: b.p95, afterP50: a.p50, n: before.length };
+  } catch {
+    return { beforeP50: null, beforeP95: null, afterP50: null, n: 0 };
   }
 }
 
@@ -846,6 +963,13 @@ interface BlockResult {
   // describe path, ~31 KB text) and getState+screenshot (JPEG-heavy), so the 5-point
   // timeline shows whether the residual is per-byte or per-request. Empty on OFF.
   rpcBreakdowns: RpcBreakdown[];
+  // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1):
+  // before = old `isAndroidTv` (adb devices + getprop every call), after ≈ 0 =
+  // `isAndroidTvCached`. Both configs.
+  adbFormFactorBeforeP50: number | null;
+  adbFormFactorBeforeP95: number | null;
+  adbFormFactorAfterP50: number | null;
+  adbFormFactorN: number;
   // Post-navigating-tap staleness (P3d): "destination already visible" rate for
   // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
   // ON settle:true in an ON block. Empty when no nav target could be derived.
@@ -928,10 +1052,13 @@ async function runBlock(
   const lastSource = clean.source;
   const parsed = parseDescribe(lastDesc);
 
-  // describe latency (measured separately; screen already at root)
-  const describeRes = await timeCalls("describe", async () => {
-    await reg.invokeTool("describe", { udid: SERIAL });
-  });
+  // describe latency AND its decomposition from the SAME N back-to-back idle
+  // describes (phase 3i correction): the verb p50/p95 and the stage + host/server
+  // timeline table are now one sample, not a latency loop minus a separate
+  // Math.min(N,10) split loop with untimed setup between calls.
+  const idle = await describeIdleLatencyWithStages(reg, "describe", N);
+  const describeRes = idle.verb;
+  const describeSplitIdle = idle.split;
   const describeSample = {
     source: lastSource,
     bytes: Buffer.byteLength(lastDesc, "utf8"),
@@ -948,19 +1075,23 @@ async function runBlock(
   }
   verbs.push(describeRes);
 
-  // waitedMs/captureMs split for describe on the idle Settings root (open path
-  // only; screen is already at root here). Measured before the tap loops perturb
-  // the screen.
-  const describeSplitIdle = await describeSplit(reg, Math.min(N, 10), async () => {
-    await ensureSettings(reg);
-  });
-
   // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
   // this is an ON-only probe; OFF blocks report nulls.
   const ping =
     config === "ON"
       ? await measurePing(reg, N)
       : { p50: null, p95: null, n: 0 };
+
+  // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1),
+  // measured on both configs.
+  const adbFF = await measureAdbFormFactorCost(Math.min(N, 12));
+  realDebug(
+    `[bench] ${config} adb form-factor cost before/after p50=${
+      adbFF.beforeP50 === null ? "-" : adbFF.beforeP50.toFixed(2)
+    }/${adbFF.afterP50 === null ? "-" : adbFF.afterP50.toFixed(2)} ms (before p95=${
+      adbFF.beforeP95 === null ? "-" : adbFF.beforeP95.toFixed(2)
+    }, n=${adbFF.n})`
+  );
 
   // Back-to-back RPC decompositions (phase 3i), ON only, on the idle Settings root.
   // getNestedState = the describe path (big nested text, no screenshot);
@@ -1271,6 +1402,10 @@ async function runBlock(
     pingP95: ping.p95,
     pingN: ping.n,
     rpcBreakdowns,
+    adbFormFactorBeforeP50: adbFF.beforeP50,
+    adbFormFactorBeforeP95: adbFF.beforeP95,
+    adbFormFactorAfterP50: adbFF.afterP50,
+    adbFormFactorN: adbFF.n,
     destinationVisible,
     notes,
   };
