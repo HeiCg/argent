@@ -42,6 +42,20 @@ object MotionInjector {
     /** One sampled point on a pointer's path. `tMs` is relative to gesture start. */
     data class Point(val x: Float, val y: Float, val tMs: Long)
 
+    // R1 (phase 3e). A `tap`'s final ACTION_UP is injected asynchronously so the
+    // RPC returns as soon as the UP is queued — not after the input dispatcher has
+    // finished delivering it — which is what shaved the tap's sync round-trip. That
+    // leaves a window where a follow-up describe could read the tree before the UP
+    // lands (the mid-press, finger-down state). `asyncUpOutstanding` tracks exactly
+    // that: [StateHandler] calls [drainAsyncUp] before every capture and, only when
+    // an async UP is still in flight, injects ONE synchronous no-op to flush the
+    // dispatcher's FIFO queue (guaranteeing the UP was delivered) without a
+    // `waitForIdle`. Any synchronous injection here (a gesture's final UP, or the
+    // drain itself) already flushes the queue, so it clears the flag.
+    @Volatile private var asyncUpOutstanding = false
+    @Volatile private var lastAsyncUpX = 0f
+    @Volatile private var lastAsyncUpY = 0f
+
     /**
      * Inject a synchronized multi-pointer gesture. `paths` is one entry per
      * pointer; `ids[i]` is pointer i's stable id. Every path must be the same
@@ -152,6 +166,9 @@ object MotionInjector {
         }
         setCoords(last, 1)
         send(MotionEvent.ACTION_UP, 1, upSlot, sync = true)
+        // The final UP above was synchronous, so the dispatcher queue is drained;
+        // any tap's async UP that was still in flight is now delivered too.
+        asyncUpOutstanding = false
     }
 
     /**
@@ -162,8 +179,12 @@ object MotionInjector {
      * the OS double-tap window (which is what a host-side loop of single taps
      * could not guarantee). For `count = 2` this emits four events — DOWN@0,
      * UP@holdMs, DOWN@(holdMs+gapMs), UP@(2*holdMs+gapMs) — each tap carrying its
-     * own `downTime`, as a real multi-tap does. The last ACTION_UP is synchronous
-     * so the RPC returns only once the final tap has been delivered (F3).
+     * own `downTime`, as a real multi-tap does. The final ACTION_UP is injected
+     * ASYNCHRONOUSLY (R1, phase 3e): the RPC returns as soon as the UP is queued,
+     * so a plain tap no longer pays the sync round-trip on top of its `holdMs`
+     * press. Ordering vs a following capture is preserved by the dispatcher's FIFO
+     * delivery, and [StateHandler] flushes the pending UP via [drainAsyncUp] before
+     * it reads the tree (see [asyncUpOutstanding]).
      */
     fun injectTaps(
         uiAutomation: UiAutomation,
@@ -223,8 +244,65 @@ object MotionInjector {
             val downWait = (base + downSlot) - SystemClock.uptimeMillis()
             if (downWait > 0) SystemClock.sleep(downWait)
             val tapDownTime = SystemClock.uptimeMillis()
+            // DOWN has always been async (ordering is preserved by the dispatcher);
+            // the final UP is now async too (R1) so the whole tap returns without a
+            // sync round-trip.
             dispatchAt(uiAutomation, props, coords, MotionEvent.ACTION_DOWN, tapDownTime, tapDownTime, false)
-            dispatch(MotionEvent.ACTION_UP, tapDownTime, upSlot, sync = (k == count - 1))
+            dispatch(MotionEvent.ACTION_UP, tapDownTime, upSlot, sync = false)
+        }
+        // The final UP was queued asynchronously; record it so a following capture
+        // drains it before reading the tree.
+        asyncUpOutstanding = true
+        lastAsyncUpX = x
+        lastAsyncUpY = y
+    }
+
+    /** Whether a `tap`'s final ACTION_UP is still queued but not yet drained. */
+    fun hasOutstandingAsyncUp(): Boolean = asyncUpOutstanding
+
+    /**
+     * Drain a pending async ACTION_UP from a preceding [injectTaps] (R1, phase 3e).
+     *
+     * No-op unless a tap left an async UP in flight. When one is outstanding, inject
+     * a single ACTION_CANCEL SYNCHRONOUSLY: with no pointer down the dispatcher
+     * drops it (zero UI effect), but injecting it in `WAIT_FOR_FINISH` mode blocks
+     * until it — and therefore the async UP queued ahead of it (FIFO) — has been
+     * delivered. That gives a capture a finger-up tree without any `waitForIdle`.
+     */
+    fun drainAsyncUp(uiAutomation: UiAutomation) {
+        if (!asyncUpOutstanding) return
+        asyncUpOutstanding = false
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            x = lastAsyncUpX
+            y = lastAsyncUpY
+            pressure = 0f
+            size = 0f
+        }
+        val now = SystemClock.uptimeMillis()
+        val event = MotionEvent.obtain(
+            now,
+            now,
+            MotionEvent.ACTION_CANCEL,
+            1,
+            arrayOf(props),
+            arrayOf(coords),
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            InputDevice.SOURCE_TOUCHSCREEN,
+            0
+        )
+        try {
+            uiAutomation.injectInputEvent(event, true)
+        } finally {
+            event.recycle()
         }
     }
 

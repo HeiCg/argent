@@ -14,8 +14,8 @@ android {
         // Keep versionName/versionCode in sync with assets/manifest.json — the TS
         // side reads that file, the install gate compares versionCode, and the APK
         // filename embeds versionName.
-        versionCode = 16
-        versionName = "0.1.14"
+        versionCode = 18
+        versionName = "0.1.15"
     }
 
     buildTypes {
@@ -35,6 +35,14 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        // The one JVM unit test (NestedWindowSerializerTest) exercises a pure
+        // predicate that only reads inlined `AccessibilityWindowInfo.TYPE_*`
+        // constants — it never calls an android.jar method — so default-value
+        // stubbing is enough and no Robolectric runtime is needed.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -42,4 +50,7 @@ dependencies {
     // plain custom Instrumentation (no androidTest scope needed).
     implementation("androidx.test.uiautomator:uiautomator:2.3.0")
     implementation("androidx.test:runner:1.5.2")
+
+    // Local JVM unit tests (window-selection predicate, R2). No device required.
+    testImplementation("junit:junit:4.13.2")
 }

@@ -16,6 +16,7 @@ import { resolveAndroidBinary } from "../utils/android-binary";
 import { ensureOpenDeviceServerInstalled } from "../utils/android-helper-install";
 import { AndroidOpenServerClient } from "../utils/android-open-server-client";
 import { invalidateScreenSize } from "../utils/open-server-screen-cache";
+import { invalidateClipboardSupport } from "../utils/open-server-clipboard-cache";
 import type {
   OpenServerElement,
   OpenServerNestedElement,
@@ -523,6 +524,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         // Drop this device's cached screen geometry (F21) so a later session on
         // the same serial re-reads it rather than trusting a stale orientation.
         invalidateScreenSize(serial);
+        // Drop the cached "clipboard unsupported" result (R3) so a fresh server
+        // session re-probes the clipboard rather than assuming the last verdict.
+        invalidateClipboardSupport(serial);
         // Ask the server to exit on its own so `am instrument` ends cleanly.
         try {
           await Promise.race([

@@ -10,6 +10,10 @@ import {
   openServerSetClipboard,
   openServerTypeText,
 } from "../../../utils/open-server-input";
+import {
+  isClipboardUnsupported,
+  markClipboardUnsupported,
+} from "../../../utils/open-server-clipboard-cache";
 import { assertTypeableAndroidText } from "../../../utils/android-input";
 import type { PasteParams, PasteResult, PasteServices } from "../types";
 
@@ -47,10 +51,18 @@ export function makeAndroidImpl(
       // instrumentation is left to the proprietary clipboard path below.
       if (shouldUseOpenServer(device)) {
         try {
-          const clipSet = await openServerSetClipboard(registry, device, params.text);
-          if (clipSet) {
-            await injectAndroidKeycode(device.id, KEYCODE_PASTE);
-            return { pasted: true };
+          // R3 (phase 3e): the clipboard write is silently dropped for a background
+          // instrumentation on API 35, so once a device has proven it does not
+          // round-trip we skip the wasted `setClipboard` RPC on every later paste
+          // and go straight to typing. Only a `false` round-trip (not a transport
+          // error) marks the device unsupported.
+          if (!isClipboardUnsupported(device.id)) {
+            const clipSet = await openServerSetClipboard(registry, device, params.text);
+            if (clipSet) {
+              await injectAndroidKeycode(device.id, KEYCODE_PASTE);
+              return { pasted: true };
+            }
+            markClipboardUnsupported(device.id);
           }
           // Clipboard unavailable from instrumentation → type it if it's typeable.
           // `assertTypeableAndroidText` throws for emoji / newlines, dropping to the

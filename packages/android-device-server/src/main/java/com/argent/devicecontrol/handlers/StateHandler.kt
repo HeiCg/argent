@@ -8,6 +8,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
+import com.argent.devicecontrol.input.MotionInjector
 import com.argent.devicecontrol.util.DisplayReader
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,6 +42,13 @@ class StateHandler(
         // skipping the capture makes getState a strict latency win for them
         // instead of paying a full-frame JPEG encode on every poll.
         val includeScreenshot = !nested && params.optBoolean("includeScreenshot", true)
+
+        // 0. Drain a preceding tap's async ACTION_UP (R1, phase 3e). A `tap` now
+        //    queues its final UP asynchronously to return fast; before we read the
+        //    tree we flush that pending UP with one synchronous no-op so a describe
+        //    can never observe the mid-press (finger-down) state. No-op when no tap
+        //    is outstanding, and idle-wait-free either way.
+        MotionInjector.drainAsyncUp(uiAutomation)
 
         // 1. Explicit idle wait (the caller owns the timeout; the describe path
         //    passes 500 to match the proprietary comparator's cap). This is the ONLY

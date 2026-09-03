@@ -24,6 +24,7 @@ vi.mock("../src/utils/simulator-client", async (importOriginal) => {
 import { createPasteTool } from "../src/tools/paste";
 import { injectAndroidKeycode } from "../src/utils/android-input";
 import { setSimulatorClipboardText } from "../src/utils/simulator-client";
+import { __resetOpenServerClipboardCache } from "../src/utils/open-server-clipboard-cache";
 
 const ANDROID_SERIAL = "emulator-5554";
 const KEYCODE_PASTE = 279;
@@ -49,6 +50,9 @@ function makeTool(openApi: unknown, onSimulatorServer?: () => Promise<unknown>) 
 beforeEach(() => {
   flagEnabledMock = () => false;
   vi.clearAllMocks();
+  // The clipboard-unsupported cache (R3) is module-level and persists across
+  // tests; reset it so each test starts with the clipboard un-probed.
+  __resetOpenServerClipboardCache();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -130,6 +134,65 @@ describe("paste (android) → open-device-server (F20)", () => {
     expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
+  });
+
+  it("R3: after clipboard proves unsupported, a later paste skips setClipboard and types directly", async () => {
+    flagEnabledMock = (n) => n === "open-device-server";
+    const openApi = makeOpenApi();
+    // ClipboardManager silently drops the background write on this device.
+    openApi.setClipboard.mockResolvedValue({ success: false, text: "" });
+    const tool = makeTool(openApi);
+
+    const first = "https://example.com/a?token=abcdef0123456789";
+    const second = "https://example.com/b?token=9876543210fedcba";
+
+    // First paste probes the clipboard (one RPC), learns it does not round-trip.
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: first });
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
+    expect(openApi.typeText).toHaveBeenCalledWith(first);
+
+    // Second paste on the SAME device must not re-attempt setClipboard.
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: second });
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(1); // still 1 — cached
+    expect(openApi.typeText).toHaveBeenCalledWith(second);
+    expect(vi.mocked(setSimulatorClipboardText)).not.toHaveBeenCalled();
+  });
+
+  it("R3: a successful clipboard write never marks the device unsupported", async () => {
+    flagEnabledMock = (n) => n === "open-device-server";
+    const openApi = makeOpenApi(); // setClipboard succeeds by default
+    const tool = makeTool(openApi);
+
+    const first = "https://example.com/a";
+    const second = "https://example.com/b";
+
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: first });
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: second });
+
+    // Both pastes attempt (and win) the clipboard; neither falls back to typing.
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(2);
+    expect(openApi.typeText).not.toHaveBeenCalled();
+    expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledTimes(2);
+  });
+
+  it("R3: a transport error (reject) does NOT mark unsupported — next paste re-attempts the clipboard", async () => {
+    flagEnabledMock = (n) => n === "open-device-server";
+    const openApi = makeOpenApi();
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const tool = makeTool(openApi);
+
+    // First paste: setClipboard throws (transport), falls back to proprietary.
+    openApi.setClipboard.mockRejectedValueOnce(new Error("open boom"));
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: "one" });
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
+
+    // Second paste: clipboard was NOT marked unsupported, so it re-attempts and,
+    // this time round-tripping, pastes via KEYCODE_PASTE on the open path.
+    await tool.execute({}, { udid: ANDROID_SERIAL, text: "two" });
+    expect(openApi.setClipboard).toHaveBeenCalledTimes(2);
+    expect(openApi.setClipboard).toHaveBeenLastCalledWith("two");
     expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
   });
 });
