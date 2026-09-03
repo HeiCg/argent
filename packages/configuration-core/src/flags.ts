@@ -118,13 +118,41 @@ export function resolveProjectRoot(startDir: string): string {
   return findProjectRoot(startDir) ?? path.resolve(startDir);
 }
 
+// --- process-local read cache (phase 3i) -----------------------------------
+// `isFlagEnabled` ran on EVERY Android describe, and each call did a project-root
+// fs walk (an `existsSync` per marker up the tree) plus up to two `readFileSync` +
+// `JSON.parse`. On the describe hot path that disk work dominated the host-side
+// flag check. Cache the resolved project root (per cwd) and the parsed flag maps
+// (per file path) for the life of the process, invalidating BOTH whenever this
+// process writes a flag via `setFlag`/`unsetFlag`. Cross-process writes are
+// deliberately NOT observed: a long-lived tool-server reloads flags on restart,
+// and the OFF/ON bench flips flags in-process through `setFlag` (so it sees the
+// invalidation). Semantics of `readFlags`/`isFlagEnabled` are unchanged — only
+// repeat disk reads *between writes* are elided.
+let flagsCacheEpoch = 0;
+const parsedFlagsByPath = new Map<string, { epoch: number; flags: Record<string, boolean> }>();
+const projectRootByCwd = new Map<string, { epoch: number; root: string }>();
+
+/** Bump the epoch so the next read re-hits disk. Called after any local write. */
+function invalidateFlagsCache(): void {
+  flagsCacheEpoch++;
+}
+
+function resolveProjectRootCached(cwd: string): string {
+  const hit = projectRootByCwd.get(cwd);
+  if (hit !== undefined && hit.epoch === flagsCacheEpoch) return hit.root;
+  const root = resolveProjectRoot(cwd);
+  projectRootByCwd.set(cwd, { epoch: flagsCacheEpoch, root });
+  return root;
+}
+
 export function getFlagsPath(scope: FlagScope, options: FlagsPathOptions = {}): string {
   const home = options.homeDir ?? homedir();
   if (scope === "global") {
     return path.join(home, ".argent", "flags.json");
   }
   const cwd = options.cwd ?? process.cwd();
-  return path.join(resolveProjectRoot(cwd), ".argent", "flags.json");
+  return path.join(resolveProjectRootCached(cwd), ".argent", "flags.json");
 }
 
 function readFlagsFile(filePath: string): Record<string, boolean> {
@@ -148,6 +176,17 @@ function readFlagsFile(filePath: string): Record<string, boolean> {
     if (typeof v === "boolean") out[k] = v;
   }
   return out;
+}
+
+// Cached variant of {@link readFlagsFile}, keyed by resolved path and invalidated
+// on any local flag write (see the phase 3i cache note above). `setFlag`/
+// `unsetFlag` read fresh through `readFlagsFile` for their read-modify-write.
+function readFlagsFileCached(filePath: string): Record<string, boolean> {
+  const hit = parsedFlagsByPath.get(filePath);
+  if (hit !== undefined && hit.epoch === flagsCacheEpoch) return hit.flags;
+  const flags = readFlagsFile(filePath);
+  parsedFlagsByPath.set(filePath, { epoch: flagsCacheEpoch, flags });
+  return flags;
 }
 
 function writeFlagsFile(filePath: string, flags: Record<string, boolean>): void {
@@ -177,7 +216,7 @@ export function readFlags(
   scope: FlagScope,
   options: FlagsPathOptions = {}
 ): Record<string, boolean> {
-  return readFlagsFile(getFlagsPath(scope, options));
+  return readFlagsFileCached(getFlagsPath(scope, options));
 }
 
 export function setFlag(
@@ -190,6 +229,7 @@ export function setFlag(
   const current = readFlagsFile(filePath);
   current[name] = value;
   writeFlagsFile(filePath, current);
+  invalidateFlagsCache();
 }
 
 // Returns true when an entry existed; the next scope (or the default) then applies.
@@ -200,6 +240,7 @@ export function unsetFlag(name: string, scope: FlagScope, options: FlagsPathOpti
   if (!Object.hasOwn(current, name)) return false;
   delete current[name];
   writeFlagsFile(filePath, current);
+  invalidateFlagsCache();
   return true;
 }
 
