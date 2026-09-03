@@ -73,18 +73,18 @@ export interface TapTimelineOpts {
  * (F1/F8/F9). Tap k presses DOWN at `k*(holdMs+gapMs)`, holds, and lifts UP at
  * `+holdMs`.
  *
- * DIVERGENCE from the Kotlin `MotionInjector.injectTaps` (phase 3h). The Kotlin
- * path injects a bare DOWN→UP via `UiAutomation.injectInputEvent` and it lands.
- * scrcpy injects the SAME two events via a shell-uid `InputManager.injectInputEvent`
- * (`INJECT_MODE_ASYNC`), and on the emulator a MOVE-less DOWN→UP does NOT land
- * (`pngDiffRatio == 0`, tap→describe destination 0/20) even though scrcpy swipe /
- * held-swipe — which carry MOVE frames at the SAME coordinates — do land. The async
- * UP arrives before the async DOWN has established a touch target for a static
- * press, so the click is dropped. Inserting one same-point MOVE between DOWN and UP
- * (at the hold midpoint) commits the press exactly as the working swipe does, and
- * a standard clickable View still fires `performClick()` on UP (zero displacement
- * is within touch slop, `holdMs` is within the tap timeout). This MOVE is
- * scrcpy-path-only; it does not change the Kotlin/UiAutomation or proprietary tap.
+ * Mirrors `MotionInjector.injectTaps`: a bare DOWN→UP per click, one pointerId,
+ * pressure 1 on the DOWN/hold and 0 on the UP — byte-identical in shape to the
+ * UiAutomation and proprietary taps.
+ *
+ * Phase 3h note. The scrcpy tap was long believed not to land on the emulator
+ * (`pngDiffRatio == 0`); that was a TIMING-DEPENDENT effect oracle reading the
+ * screen before the navigation rendered, not the injector. A logcat side-by-side
+ * showed the scrcpy DOWN/UP is byte-identical to the UiAutomation tap that
+ * navigates (same deviceId, source, toolType, flags, hold), and once the oracle
+ * polled for the change the scrcpy tap landed every iteration and FASTER than
+ * UiAutomation. So NO same-point MOVE is inserted: the tap is a clean two-frame
+ * DOWN→UP, at parity with the other backends by shape, not just by holdMs.
  */
 export function buildTapTimeline(x: number, y: number, opts: TapTimelineOpts): TouchFrame[] {
   const count = Math.max(1, opts.clickCount);
@@ -94,11 +94,7 @@ export function buildTapTimeline(x: number, y: number, opts: TapTimelineOpts): T
   const frames: TouchFrame[] = [];
   for (let k = 0; k < count; k++) {
     const downSlot = k * period;
-    // Same-point MOVE at the hold midpoint: paced with a real-clock gap on either
-    // side (like the swipe frames) so the DOWN is committed before the UP.
-    const moveSlot = downSlot + Math.trunc(holdMs / 2);
     frames.push({ action: TouchAction.Down, pointerId: 0, x, y, tMs: downSlot, pressure: 1 });
-    frames.push({ action: TouchAction.Move, pointerId: 0, x, y, tMs: moveSlot, pressure: 1 });
     frames.push({ action: TouchAction.Up, pointerId: 0, x, y, tMs: downSlot + holdMs, pressure: 0 });
   }
   return frames;

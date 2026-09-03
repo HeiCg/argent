@@ -14,44 +14,35 @@ import {
   TouchAction,
 } from "../src/utils/scrcpy-inject-timeline";
 
-describe("fast-inject tap timeline (scrcpy DOWN → MOVE → UP click)", () => {
-  // Phase 3h. scrcpy injects via a shell-uid `InputManager.injectInputEvent`, and
-  // on the emulator a MOVE-less DOWN→UP is dropped (the UP arrives before the
-  // async DOWN has established a touch target). The Kotlin/UiAutomation path lands
-  // a bare DOWN→UP fine, but the scrcpy path needs one same-point MOVE between them
-  // to commit the press — exactly the shape the (working) swipe/held-swipe already
-  // carry. So the tap timeline is DOWN(p1) → MOVE(p1, same x,y) → UP(p0), one
-  // pointerId, MOVE at the hold midpoint.
-  it("single tap: DOWN@0, MOVE@holdMs/2 (same point), UP@holdMs (default hold 50)", () => {
+describe("fast-inject tap timeline (scrcpy DOWN → UP click, MotionInjector parity)", () => {
+  // Phase 3h. The scrcpy tap is a bare two-frame DOWN→UP — byte-identical in shape
+  // to the UiAutomation/proprietary tap. (The tap was believed not to land on the
+  // emulator; that was a timing-dependent effect oracle, not the injector — the
+  // events are identical to the UiAutomation tap that navigates. No same-point MOVE.)
+  it("single tap: DOWN@0 (pressure 1), UP@holdMs (pressure 0), same pointerId", () => {
     const t = buildTapTimeline(100, 200, { clickCount: 1, holdMs: 50, gapMs: 100 });
     expect(t).toEqual([
       { action: TouchAction.Down, pointerId: 0, x: 100, y: 200, tMs: 0, pressure: 1 },
-      { action: TouchAction.Move, pointerId: 0, x: 100, y: 200, tMs: 25, pressure: 1 },
       { action: TouchAction.Up, pointerId: 0, x: 100, y: 200, tMs: 50, pressure: 0 },
     ]);
   });
 
-  it("scrcpy click sequence: DOWN pressure 1, MOVE pressure 1 (same point), UP pressure 0, same pointerId", () => {
+  it("scrcpy click sequence: DOWN pressure 1, UP pressure 0, one pointerId, no MOVE", () => {
     const t = buildTapTimeline(377, 660, { clickCount: 1, holdMs: 50, gapMs: 100 });
-    expect(t.map((f) => f.action)).toEqual([TouchAction.Down, TouchAction.Move, TouchAction.Up]);
-    expect(t.map((f) => f.pressure)).toEqual([1, 1, 0]);
+    expect(t.map((f) => f.action)).toEqual([TouchAction.Down, TouchAction.Up]);
+    expect(t.map((f) => f.pressure)).toEqual([1, 0]);
     expect(t.every((f) => f.pointerId === 0)).toBe(true);
-    // MOVE carries the DOWN's coordinates (a no-op move that only commits the press).
-    expect(t[1]).toMatchObject({ x: 377, y: 660 });
-    // Monotonic, DOWN < MOVE < UP.
+    expect(t.some((f) => f.action === TouchAction.Move)).toBe(false);
     expect(t[0]!.tMs).toBeLessThan(t[1]!.tMs);
-    expect(t[1]!.tMs).toBeLessThan(t[2]!.tMs);
   });
 
-  it("double tap: two DOWN/MOVE/UP triples one period (hold+gap) apart", () => {
+  it("double tap: two DOWN/UP pairs one period (hold+gap) apart", () => {
     const t = buildTapTimeline(10, 20, { clickCount: 2, holdMs: 50, gapMs: 100 });
-    // period = 150; tap0 DOWN@0 MOVE@25 UP@50; tap1 DOWN@150 MOVE@175 UP@200.
+    // period = 150; tap0 DOWN@0 UP@50; tap1 DOWN@150 UP@200.
     expect(t.map((f) => [f.action, f.tMs])).toEqual([
       [TouchAction.Down, 0],
-      [TouchAction.Move, 25],
       [TouchAction.Up, 50],
       [TouchAction.Down, 150],
-      [TouchAction.Move, 175],
       [TouchAction.Up, 200],
     ]);
     expect(t.every((f) => f.pointerId === 0)).toBe(true);

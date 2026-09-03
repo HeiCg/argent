@@ -28,11 +28,10 @@ export type InjectBackend = "scrcpy" | "uiautomation" | "proprietary";
  * The tap frame timeline a block actually injected — frame count, per-frame `tMs`,
  * and the authored `holdMs` — recorded per block so the merge can prove parity
  * from the REAL shape rather than from re-reading the same source constant (which
- * is meaningless per block under BENCH_ONLY). Phase 3h: the scrcpy path carries a
- * same-point MOVE between DOWN and UP (the tap-landing fix); the UiAutomation and
- * proprietary paths inject a bare DOWN→UP (they land without it). So the tap frame
- * COUNT legitimately differs by backend — the invariant that must hold across
- * blocks is the authored `holdMs`, plus "exactly the scrcpy block carries a MOVE".
+ * is meaningless per block under BENCH_ONLY). Phase 3h: every backend injects the
+ * IDENTICAL two-frame DOWN→UP tap (the scrcpy tap needs no MOVE — it lands as-is,
+ * proven once the effect oracle stopped reading too early). Parity is exact: same
+ * holdMs, same two frames, no MOVE anywhere.
  */
 export interface InjectedTapTimeline {
   backend: InjectBackend;
@@ -76,12 +75,10 @@ export function describeInjectedTapTimeline(
 }
 
 /**
- * Cross-block tap-timeline parity (phase 3h). Throws unless every block used the
- * identical authored `holdMs`, and the MOVE frame is present in EXACTLY the scrcpy
- * blocks (the fast-inject tap-landing fix) and absent everywhere else. This is the
- * honest replacement for "assert the frame count is identical across blocks": the
- * scrcpy tap genuinely carries one extra same-point MOVE, so a naive equality would
- * be wrong — this asserts the intended shape instead.
+ * Cross-block tap-timeline parity (phase 3h). Throws unless every block injected the
+ * IDENTICAL tap: same authored `holdMs`, exactly two frames (DOWN then UP), and NO
+ * MOVE on any backend. scrcpy is at parity by shape with UiAutomation/proprietary,
+ * not merely by holdMs.
  */
 export function assertTapTimelineParity(
   blocks: Array<{ block: string; fastInject?: boolean; injectedTapTimeline?: InjectedTapTimeline }>
@@ -97,20 +94,11 @@ export function assertTapTimelineParity(
         `tap-timeline parity violated: ${b.block} holdMs=${tl.holdMs} != ${first.block} holdMs=${holdMs}`
       );
     }
-    const expectMove = tl.backend === "scrcpy";
-    if (tl.hasMoveFrame !== expectMove) {
+    if (tl.hasMoveFrame || tl.frameCount !== 2) {
       throw new Error(
-        `tap-timeline parity violated: ${b.block} (backend ${tl.backend}) ` +
-          `hasMoveFrame=${tl.hasMoveFrame} but expected ${expectMove} ` +
-          `(only the scrcpy fast-inject tap carries a same-point MOVE)`
+        `tap-timeline parity violated: ${b.block} (backend ${tl.backend}) is not a clean ` +
+          `two-frame DOWN→UP (frameCount=${tl.frameCount}, hasMoveFrame=${tl.hasMoveFrame})`
       );
-    }
-    // The scrcpy MOVE sits strictly between DOWN and UP.
-    if (expectMove) {
-      const [d, m, u] = tl.frames;
-      if (!d || !m || !u || !(d.tMs <= m.tMs && m.tMs <= u.tMs)) {
-        throw new Error(`tap-timeline parity violated: ${b.block} scrcpy frames not DOWN≤MOVE≤UP: ${JSON.stringify(tl.frames)}`);
-      }
     }
   }
 }
