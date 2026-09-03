@@ -163,12 +163,20 @@ jobs:
           adb devices -l
           # Verify the gRPC discovery ini the proprietary android controller reads
           # (linux: $XDG_RUNTIME_DIR/avd/running/pid_*.ini, else /run/user/<uid>/…).
-          echo "=== discovery dir $XDG_RUNTIME_DIR/avd/running ==="
-          ls -la "$XDG_RUNTIME_DIR/avd/running/" 2>&1 || echo "(none in XDG_RUNTIME_DIR)"
-          ls -la "/run/user/$(id -u)/avd/running/" 2>&1 || echo "(none in /run/user)"
-          for f in "$XDG_RUNTIME_DIR"/avd/running/pid_*.ini "/run/user/$(id -u)"/avd/running/pid_*.ini; do
-            [ -f "$f" ] && { echo "--- $f ---"; grep -E '^(grpc\.port|port\.serial)' "$f" || true; }
+          # set -e safe: never let a missing dir / non-matching glob fail the step.
+          echo "=== gRPC discovery ==="
+          for d in "$XDG_RUNTIME_DIR/avd/running" "/run/user/$(id -u)/avd/running"; do
+            [ -d "$d" ] || continue
+            ls -la "$d" || true
+            for f in "$d"/pid_*.ini; do
+              [ -f "$f" ] || continue
+              echo "--- $f ---"; grep -E '^(grpc\.port|port\.serial|grpc\.token)' "$f" || true
+            done
           done
+          # gRPC token often lands in a file rather than the ini; the proprietary
+          # controller reads it as a fallback. Diagnostic only — never fatal.
+          ls -la ~/.emulator_console_auth_token 2>&1 || echo "(no console auth token file)"
+          echo "boot step complete"
 
       - name: Install argent deps + build TS
         # `npm ci` MUST run lifecycle scripts: the @argent/tool-server postinstall
