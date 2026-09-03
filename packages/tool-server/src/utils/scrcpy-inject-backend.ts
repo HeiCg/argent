@@ -134,6 +134,8 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
   private controller: ScrcpyControlMessageWriter | null = null;
   private starting: Promise<void> | null = null;
   private disposed = false;
+  /** The 8-hex scid this session's scrcpy server was started with (null until started). */
+  private scid: string | null = null;
   /** Rotation-keyed geometry cache; refreshed when `getScreenSize` reports a new rotation. */
   private geom: { width: number; height: number; rotation: number } | null = null;
 
@@ -181,6 +183,8 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     // so it never collides with another scrcpy on the device. scrcpy accepts scid
     // as a hex string.
     const scid = Math.floor(Math.random() * 0x7fffffff).toString(16).padStart(8, "0");
+    this.scid = scid;
+    this.log(`scrcpy server starting for ${this.serial} (server ${VERSION}, scid=${scid}, control-only)`);
     const options = new AdbScrcpyOptionsLatest<false>(
       {
         video: false,
@@ -217,7 +221,7 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
           this.log(`scrcpy control channel for ${this.serial} closed; will reconnect on next use`);
         }
       });
-    this.log(`scrcpy control channel up for ${this.serial} (server ${VERSION})`);
+    this.log(`scrcpy control channel up for ${this.serial} (server ${VERSION}, scid=${scid})`);
   }
 
   private async ensureServerPushed(adb: Adb): Promise<void> {

@@ -70,8 +70,21 @@ export interface TapTimelineOpts {
 /**
  * `clickCount` presses at (x, y), each held `holdMs`, successive taps `gapMs`
  * apart, as ONE timeline — so a double-tap lands inside the OS double-tap window
- * (F1/F8/F9). Mirrors `MotionInjector.injectTaps`: tap k presses DOWN at
- * `k*(holdMs+gapMs)` and lifts UP at `+holdMs`.
+ * (F1/F8/F9). Tap k presses DOWN at `k*(holdMs+gapMs)`, holds, and lifts UP at
+ * `+holdMs`.
+ *
+ * DIVERGENCE from the Kotlin `MotionInjector.injectTaps` (phase 3h). The Kotlin
+ * path injects a bare DOWN→UP via `UiAutomation.injectInputEvent` and it lands.
+ * scrcpy injects the SAME two events via a shell-uid `InputManager.injectInputEvent`
+ * (`INJECT_MODE_ASYNC`), and on the emulator a MOVE-less DOWN→UP does NOT land
+ * (`pngDiffRatio == 0`, tap→describe destination 0/20) even though scrcpy swipe /
+ * held-swipe — which carry MOVE frames at the SAME coordinates — do land. The async
+ * UP arrives before the async DOWN has established a touch target for a static
+ * press, so the click is dropped. Inserting one same-point MOVE between DOWN and UP
+ * (at the hold midpoint) commits the press exactly as the working swipe does, and
+ * a standard clickable View still fires `performClick()` on UP (zero displacement
+ * is within touch slop, `holdMs` is within the tap timeout). This MOVE is
+ * scrcpy-path-only; it does not change the Kotlin/UiAutomation or proprietary tap.
  */
 export function buildTapTimeline(x: number, y: number, opts: TapTimelineOpts): TouchFrame[] {
   const count = Math.max(1, opts.clickCount);
@@ -81,7 +94,11 @@ export function buildTapTimeline(x: number, y: number, opts: TapTimelineOpts): T
   const frames: TouchFrame[] = [];
   for (let k = 0; k < count; k++) {
     const downSlot = k * period;
+    // Same-point MOVE at the hold midpoint: paced with a real-clock gap on either
+    // side (like the swipe frames) so the DOWN is committed before the UP.
+    const moveSlot = downSlot + Math.trunc(holdMs / 2);
     frames.push({ action: TouchAction.Down, pointerId: 0, x, y, tMs: downSlot, pressure: 1 });
+    frames.push({ action: TouchAction.Move, pointerId: 0, x, y, tMs: moveSlot, pressure: 1 });
     frames.push({ action: TouchAction.Up, pointerId: 0, x, y, tMs: downSlot + holdMs, pressure: 0 });
   }
   return frames;
