@@ -115,6 +115,9 @@ export interface DescribeTreeData {
   hostSentToFirstByteMs?: number;
   hostFirstToLastByteMs?: number;
   hostRoundTripMs?: number;
+  // Which host↔device transport carried the open-path reply (phase 3j):
+  // "adb-forward" (default) or "redir". Metadata only.
+  transport?: "adb-forward" | "redir";
 }
 
 export interface DescribeStageTimings {

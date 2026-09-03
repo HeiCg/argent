@@ -33,10 +33,15 @@ class DeviceControlInstrumentation : Instrumentation() {
     }
 
     @Volatile private var server: TCPServer? = null
+    // Optional 0.0.0.0 listener for the phase 3j redir experiment (gated by bindAll).
+    @Volatile private var allServer: TCPServer? = null
+    // Instrumentation args captured in onCreate (onStart has no access to them).
+    private var startArgs: Bundle? = null
     private val shutdownLatch = CountDownLatch(1)
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        startArgs = arguments
         // `start()` schedules onStart() on the instrumentation thread.
         start()
     }
@@ -72,9 +77,35 @@ class DeviceControlInstrumentation : Instrumentation() {
         val port = tcp.boundPort
         Log.i(TAG, "Device control server listening on ephemeral port $port")
 
-        // Handshake: report the bound port so the host can `adb forward tcp:0`.
-        val status = Bundle().apply { putInt("port", port) }
-        sendStatus(STATUS_RUNNING, status)
+        // Phase 3j redir experiment (gated by `-e bindAll true`): also bind a second
+        // listener on 0.0.0.0 so the emulator console `redir add tcp:h:allPort` — which
+        // connects to the guest's routable IP, not loopback — can reach the server, and
+        // the host can measure that transport against `adb forward`. Its own handler so
+        // its per-request state never interleaves with the loopback one's (the host uses
+        // one transport at a time). Off by default; never exposed in normal operation.
+        var allPort = -1
+        val bindAll = startArgs?.getString("bindAll") == "true"
+        if (bindAll) {
+            try {
+                val allHandler = JsonRpcHandler(uiDevice, uiAutomation, this) { requestShutdown() }
+                val tcpAll = TCPServer(0, allHandler, "0.0.0.0")
+                tcpAll.start()
+                allServer = tcpAll
+                allPort = tcpAll.boundPort
+                Log.i(TAG, "Device control server ALSO listening on 0.0.0.0:$allPort (bindAll)")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start bindAll listener", e)
+            }
+        }
+
+        // Handshake. Send `allPort` FIRST (its own status) when present, so the host
+        // has captured it by the time the `port=` line — the one it greps to trigger
+        // the `adb forward` + connect — arrives (phase 3j redir experiment).
+        if (allPort > 0) {
+            sendStatus(STATUS_RUNNING, Bundle().apply { putInt("allPort", allPort) })
+        }
+        // Report the bound port so the host can `adb forward tcp:0`.
+        sendStatus(STATUS_RUNNING, Bundle().apply { putInt("port", port) })
 
         // Block the instrumentation until a `shutdown` RPC (or process kill) ends it.
         try {
@@ -83,6 +114,7 @@ class DeviceControlInstrumentation : Instrumentation() {
             Log.i(TAG, "Interrupted, shutting down")
         } finally {
             tcp.stop()
+            allServer?.stop()
         }
 
         finish(Activity.RESULT_OK, Bundle())
@@ -91,6 +123,7 @@ class DeviceControlInstrumentation : Instrumentation() {
     private fun requestShutdown() {
         Log.i(TAG, "Shutdown requested")
         server?.stop()
+        allServer?.stop()
         shutdownLatch.countDown()
     }
 }

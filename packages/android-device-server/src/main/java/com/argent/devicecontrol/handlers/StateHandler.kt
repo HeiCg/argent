@@ -27,7 +27,29 @@ class StateHandler(
 
     private val context get() = instrumentation.context
 
+    companion object {
+        // Placeholder the serialize-once path (phase 3j) puts in place of the tree.
+        // JsonRpcHandler splices the raw pre-serialized tree JSON over
+        // `"<TREE_TOKEN>"` in the finished response, so the tree is encoded exactly
+        // once (the old successResponse re-serialize is gone). Distinctive and
+        // underscore-bearing so it cannot collide with base64 screenshot data,
+        // package names, or numbers elsewhere in the envelope.
+        const val TREE_TOKEN = "__ARGENT_RAW_TREE_9f83c1__"
+    }
+
+    /**
+     * Raw, pre-serialized tree JSON for the last [execute] on the serialize-once
+     * path, or null on the legacy path / before the first call. [JsonRpcHandler]
+     * reads it immediately after `execute` to splice it into the response. Requests
+     * run serially on one connection thread, so no synchronisation is needed.
+     */
+    var lastTreeJson: String? = null
+        private set
+
     fun execute(params: JSONObject): JSONObject {
+        // Cleared each call so a stale value from a previous getState can never be
+        // spliced if this one takes the legacy path or throws.
+        lastTreeJson = null
         val quality = params.optInt("quality", 80)
         val scale = params.optDouble("scale", 1.0).toFloat()
         val maxElements = params.optInt("maxElements", 50)
@@ -50,6 +72,15 @@ class StateHandler(
         // before the capture below, so the tree is never the mid-press state. Folded
         // into this read so fast-inject costs no extra `flushInput` round-trip.
         val flush = params.optBoolean("flush", false)
+        // Phase 3j: drop the trim-discarded nodes before serializing (describe /
+        // getNestedState pass compact:true; a raw `getAccessibilityTree` dump leaves
+        // it false). Only the nested path honours it. See NodeSerializer.serializeNested.
+        val compact = params.optBoolean("compact", false)
+        // Phase 3j before/after toggle: force the OLD double-encode (serialize the
+        // tree once to time encodeMs, discard it, then let successResponse
+        // re-serialize the whole tree) so the bench can measure legacy vs
+        // serialize-once IN THE SAME RUN. Default false = the single-pass path.
+        val legacyEncode = params.optBoolean("_benchLegacyEncode", false)
 
         // 0. Order any preceding touch's UP ahead of the capture. Fast-inject path
         //    (flush=true) drains the whole input queue synchronously; the default
@@ -113,7 +144,7 @@ class StateHandler(
         val hierarchy = if (rootNode != null) {
             try {
                 if (nested) {
-                    NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000), windowTimings)
+                    NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000), windowTimings, compact)
                 } else {
                     val t0 = System.currentTimeMillis()
                     val flat = NodeSerializer.serialize(rootNode, maxElements)
@@ -142,11 +173,23 @@ class StateHandler(
             put("displayRotation", geo.rotation)
         }
 
-        // encodeMs (phase 3g): the cost of serializing the tree to its JSON wire
-        // form. Measured on the tree alone (the whole response is re-encoded by the
-        // RPC layer); a representative few-ms cost that completes the stage split.
+        // encodeMs: the cost of serializing the tree to its JSON wire form.
+        // Serialize-once (phase 3j): on the default path this is the ONLY tree
+        // serialization — the resulting string is spliced verbatim into the response
+        // by JsonRpcHandler, so successResponse never re-encodes the tree (the old
+        // ~27 ms second pass is gone) and `encodeMs` now measures the single pass
+        // whose output actually ships. The legacy toggle reproduces the old
+        // throwaway-then-re-encode so the bench can A/B both in one run.
         val encStart = System.currentTimeMillis()
-        hierarchy.toString()
+        val treeValue: Any
+        if (legacyEncode) {
+            hierarchy.toString() // throwaway pass (measured, discarded — old behavior)
+            lastTreeJson = null // no splice: successResponse re-serializes `hierarchy`
+            treeValue = hierarchy
+        } else {
+            lastTreeJson = hierarchy.toString() // the single serialization pass
+            treeValue = TREE_TOKEN // placeholder; JsonRpcHandler splices the tree in
+        }
         val encodeMs = System.currentTimeMillis() - encStart
 
         val captureMs = System.currentTimeMillis() - captureStart
@@ -163,7 +206,7 @@ class StateHandler(
 
         return JSONObject().apply {
             put("screenshot", screenshotBase64)
-            put("tree", hierarchy)
+            put("tree", treeValue)
             put("info", info)
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)

@@ -20,7 +20,14 @@ import java.util.concurrent.Executors
  */
 class TCPServer(
     private val port: Int,
-    private val handler: JsonRpcHandler
+    private val handler: JsonRpcHandler,
+    // Bind interface. Default loopback: the host reaches the server over
+    // `adb forward`, so there is no reason to expose it on the device's network
+    // interfaces. The phase 3j redir transport experiment starts a SECOND server
+    // bound to `0.0.0.0` (gated by the `bindAll` instrumentation arg) so the
+    // emulator console's `redir` — which connects to the guest's routable IP, not
+    // loopback — can reach it and the host can measure that transport.
+    private val bindHost: String = "127.0.0.1"
 ) {
     private companion object {
         const val TAG = "TCPServer"
@@ -36,9 +43,9 @@ class TCPServer(
 
     fun start() {
         running = true
-        // backlog 50, bound to loopback.
-        serverSocket = ServerSocket(port, 50, InetAddress.getByName("127.0.0.1"))
-        Log.i(TAG, "Listening on 127.0.0.1:${serverSocket?.localPort}")
+        // backlog 50, bound to [bindHost].
+        serverSocket = ServerSocket(port, 50, InetAddress.getByName(bindHost))
+        Log.i(TAG, "Listening on $bindHost:${serverSocket?.localPort}")
 
         executor.submit {
             while (running) {
@@ -60,6 +67,19 @@ class TCPServer(
         } catch (_: Exception) {
         }
         executor.shutdownNow()
+    }
+
+    /**
+     * Pad [response] with trailing ASCII spaces so its UTF-8 length plus the
+     * trailing newline is a multiple of [padTo] bytes (phase 3j diagnostic). Spaces
+     * are 1 byte each and sit after the closing `}`, which the host `JSON.parse`
+     * ignores. Returns [response] unchanged when it is already aligned.
+     */
+    private fun padToMultiple(response: String, padTo: Int): String {
+        val total = response.toByteArray(Charsets.UTF_8).size + 1 // + '\n'
+        val rem = total % padTo
+        if (rem == 0) return response
+        return response + " ".repeat(padTo - rem)
     }
 
     private fun handleConnection(socket: Socket) {
@@ -93,7 +113,14 @@ class TCPServer(
                 val t2 = System.nanoTime()
                 val response = handler.handle(trimmed)
                 val t3 = System.nanoTime()
-                writer.write(response)
+                // Phase 3j transport diagnostic: pad the reply to the next multiple
+                // of `_padTo` UTF-8 bytes (counting the trailing `\n`) with trailing
+                // spaces, so the wire reply has no final partial TCP segment. If that
+                // removes the ~40 ms host-recv gap, the gap is the delayed-ACK stall
+                // on the last partial segment. Off (padTo=0) unless the request asked.
+                val padTo = handler.lastPadTo
+                val toWrite = if (padTo > 0) padToMultiple(response, padTo) else response
+                writer.write(toWrite)
                 writer.write("\n")
                 writer.flush()
                 val t4 = System.nanoTime()
