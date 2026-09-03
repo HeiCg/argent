@@ -31,7 +31,43 @@ const grid = uia.cells.map((c) => {
     scrcpyOverUia, reliable,
   };
 });
-const result = { serial: uia.serial, N: uia.N, offReferencePresent: !!off, grid, generatedAt: new Date().toISOString() };
+// Fling parity gate (phase 3h). scrcpy and uiautomation drive the IDENTICAL swipe
+// timeline (buildSwipeTimeline), so their median scroll distance should agree.
+// Gate the scrcpy/uia ratio to within ±15% on INFORMATIVE cells only — reliable
+// (both medians in (0,1), n>=10) AND not clamped at the floor/ceiling of the
+// scroll range (median 0 or 1), where the ratio carries no signal. Judge on the
+// AGGREGATE (median of the informative per-cell ratios) so a single noisy cell on
+// a contended x86 emulator cannot flip the verdict, while a systematic fling drift
+// still trips it. Per-cell deviations are printed for transparency.
+const TOL = 0.15;
+const clamped = (c) => !c || !(c.median > 0 && c.median < 1);
+const informative = grid.filter(
+  (g) => g.reliable && Number.isFinite(g.scrcpyOverUia) && !clamped(g.uiautomation) && !clamped(g.scrcpy)
+);
+const median = (xs) => {
+  if (!xs.length) return NaN;
+  const s = xs.slice().sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+const aggRatio = median(informative.map((g) => g.scrcpyOverUia));
+const perCell = informative.map((g) => ({
+  durationMs: g.durationMs, distance: g.distance, ratio: g.scrcpyOverUia,
+  deviation: Number(Math.abs(g.scrcpyOverUia - 1).toFixed(3)),
+  withinTol: Math.abs(g.scrcpyOverUia - 1) <= TOL,
+}));
+let verdict;
+if (informative.length === 0) verdict = "INCONCLUSIVE (no informative cells — all saturated/underpowered)";
+else if (Number.isFinite(aggRatio) && Math.abs(aggRatio - 1) <= TOL)
+  verdict = `PASS (aggregate scrcpy/uia median ratio ${aggRatio.toFixed(3)} within ±${TOL} over ${informative.length} informative cell(s))`;
+else
+  verdict = `FAIL (aggregate scrcpy/uia median ratio ${Number.isFinite(aggRatio) ? aggRatio.toFixed(3) : "n/a"} outside ±${TOL} over ${informative.length} informative cell(s))`;
+
+const result = {
+  serial: uia.serial, N: uia.N, offReferencePresent: !!off, grid,
+  flingGate: { tolerance: TOL, informativeCells: informative.length, aggregateRatio: Number.isFinite(aggRatio) ? Number(aggRatio.toFixed(3)) : null, perCell, verdict },
+  generatedAt: new Date().toISOString(),
+};
 const outPath = path.join(OUT, `fling-ab-${Date.now()}.json`);
 fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
 console.log("\n=== FLING A/B (scrcpy vs uiautomation median scroll; reliable cells) ===");
@@ -42,4 +78,13 @@ for (const g of grid) {
     (g.off ? ` (off ${g.off.median})` : "") + (g.reliable ? "  [reliable]" : "  [saturated]")
   );
 }
+console.log(`\n=== FLING PARITY GATE (±${TOL} on informative cells) ===`);
+for (const c of perCell) {
+  console.log(`  d=${c.durationMs}ms dist=${c.distance}: ratio ${c.ratio} dev ${c.deviation} ${c.withinTol ? "OK" : "OUT"}`);
+}
+console.log(`FLING VERDICT: ${verdict}`);
 console.log("FLING_AB_JSON=" + outPath);
+if (verdict.startsWith("FAIL")) {
+  console.error("::error::fling parity gate FAILED — " + verdict);
+  process.exit(1);
+}

@@ -150,6 +150,25 @@ if (onScr) {
   L.push("");
 }
 
+// Effect-check + tap-timeline parity (phase 3h) — the taps actually landed and the
+// injected shape was as intended.
+const ez = merged.effectZeroByBlock;
+if (ez && Object.keys(ez).length) {
+  L.push("### tap effect-check & timeline parity (phase 3h)");
+  L.push("");
+  L.push("| block | no-effect taps | tap frames | MOVE |");
+  L.push("| --- | --- | --- | --- |");
+  const tt = merged.tapTimelines || {};
+  for (const b of blocks) {
+    const tl = tt[b.block];
+    L.push(`| ${b.block} | ${ez[b.block] ?? "-"} | ${tl ? tl.frameCount : "-"} | ${tl ? (tl.hasMoveFrame ? "yes" : "no") : "-"} |`);
+  }
+  const allZero = Object.values(ez).every((v) => (v || 0) === 0);
+  L.push("");
+  L.push(`- effect gate (no-effect tap iterations per block == 0): **${allZero ? "PASS" : "FAIL"}**`);
+  L.push("");
+}
+
 // Notes
 L.push("### Notes per block");
 L.push("");
@@ -166,6 +185,10 @@ if (fling) {
   L.push("### Fling A/B (scrcpy vs uiautomation median scroll)");
   L.push("");
   L.push(`OFF reference present: ${fling.offReferencePresent ? "yes" : "no"}`);
+  if (fling.flingGate) {
+    L.push("");
+    L.push(`Fling parity gate (±${fling.flingGate.tolerance} on informative cells): **${fling.flingGate.verdict}**`);
+  }
   L.push("");
   L.push("| dur(ms) | dist | uia med | scrcpy med | scrcpy/uia | off med | reliable |");
   L.push("| --- | --- | --- | --- | --- | --- | --- |");

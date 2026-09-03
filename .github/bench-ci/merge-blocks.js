@@ -38,6 +38,40 @@ if (new Set(gp).size !== 1) {
   throw new Error("gesture params drifted across blocks: " + gp.join(" | "));
 }
 
+// Tap-timeline parity gate (phase 3h). The bench records the ACTUAL injected tap
+// timeline per block (frame count, per-frame tMs, holdMs, MOVE flag); assert the
+// authored holdMs is identical across blocks and the same-point MOVE is present in
+// EXACTLY the scrcpy block (the tap-landing fix) and absent everywhere else. This
+// replaces "the gestureParams constant equals itself per block" — meaningless
+// under BENCH_ONLY — with a check on the real shape each backend drove.
+const tls = blocks.map((b) => ({ block: b.block, tl: b.injectedTapTimeline })).filter((x) => x.tl);
+if (tls.length) {
+  const holdMs0 = tls[0].tl.holdMs;
+  for (const { block, tl } of tls) {
+    if (tl.holdMs !== holdMs0) {
+      throw new Error(`tap-timeline parity: ${block} holdMs=${tl.holdMs} != ${tls[0].block} holdMs=${holdMs0}`);
+    }
+    const expectMove = tl.backend === "scrcpy";
+    if (!!tl.hasMoveFrame !== expectMove) {
+      throw new Error(
+        `tap-timeline parity: ${block} (backend ${tl.backend}) hasMoveFrame=${tl.hasMoveFrame} ` +
+          `but expected ${expectMove} (only the scrcpy fast-inject tap carries a same-point MOVE)`
+      );
+    }
+  }
+}
+
+// Effect gate (phase 3h). Every block that ran must have landed its effect-checked
+// taps — effectZeroTotal 0. The bench already fails a block with a no-effect tap,
+// but the merge asserts it too so an assembled run cannot be scored healthy while
+// a tap silently did nothing.
+const effectBad = blocks
+  .filter((b) => (b.effectZeroTotal || 0) > 0)
+  .map((b) => `${b.block}=${b.effectZeroTotal}`);
+if (effectBad.length) {
+  throw new Error(`no-effect tap iterations detected in: ${effectBad.join(", ")} (the tap did not land)`);
+}
+
 // Zero-fast-inject-fallback gate for ON-scrcpy (only if that arm ran).
 let scrcpyFallbacks = null;
 if (files["ON-scrcpy"]) {
@@ -91,6 +125,9 @@ const result = {
   offArmPresent: !!(files["OFF-1"] || files["OFF-2"]),
   blocks,
   scrcpyFallbacks,
+  // Phase 3h: parity + effect evidence carried into the scoreboard.
+  tapTimelines: Object.fromEntries(tls.map(({ block, tl }) => [block, tl])),
+  effectZeroByBlock: Object.fromEntries(blocks.map((b) => [b.block, b.effectZeroTotal || 0])),
   fidelity,
   finishedAt: new Date().toISOString(),
 };
@@ -101,4 +138,14 @@ console.log(
   `blocks merged: ${present.join(", ")}` +
     (scrcpyFallbacks === null ? " (no ON-scrcpy arm)" : `; ON-scrcpy fast-inject fallbacks: ${scrcpyFallbacks} (gate 0) — OK`)
 );
+console.log(
+  "tap effect-check (no-effect iterations per block): " +
+    present.map((n) => `${n}=${files[n].block.effectZeroTotal || 0}`).join(", ") + " (gate 0) — OK"
+);
+if (tls.length) {
+  console.log(
+    "tap-timeline parity OK: holdMs=" + tls[0].tl.holdMs + "ms; MOVE present only on scrcpy — " +
+      tls.map(({ block, tl }) => `${block}:${tl.frameCount}f${tl.hasMoveFrame ? "+move" : ""}`).join(", ")
+  );
+}
 console.log("MERGED_JSON=" + outPath);

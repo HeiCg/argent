@@ -234,11 +234,10 @@ jobs:
 
       # ---- (1) device test ----
       - name: Open-server on-device test (OPEN_SERVER_DEVICE_TESTS=1)
-        # Validation smoke, not the measurement. The fast-inject (scrcpy) suite is
-        # heavy on a contended hosted x86 emulator, so this is surfaced but
-        # non-blocking — the measurement artifacts below are the deliverable and
-        # must be produced even if a smoke assertion flakes.
-        continue-on-error: true
+        # Validation gate (phase 3h). ENFORCED: any device-test failure fails the
+        # job. The fast-inject (scrcpy) tap must actually land — a MOVE-less DOWN→UP
+        # was silently timed as a no-op before, so `continue-on-error` is gone and
+        # the measurement below only runs on a green device suite.
         env:
           OPEN_SERVER_DEVICE_TESTS: "1"
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
