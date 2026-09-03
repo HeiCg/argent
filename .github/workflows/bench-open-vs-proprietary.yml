@@ -468,6 +468,11 @@ jobs:
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
           NODE_OPTIONS: "--max-old-space-size=3072"
+          # The harness defaults its report path to a hardcoded local macOS path
+          # whose parent dir does not exist on the runner; only OUT_DIR is mkdir'd.
+          # Point BENCH_REPORT under OUT_DIR (created before the write, and staged
+          # by the artifact step) so writeFileSync does not ENOENT at run end.
+          BENCH_REPORT: ${{ github.workspace }}/.bench-results/screen-graph/results-ci.md
         run: |
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-matrix.log"
@@ -487,5 +492,8 @@ jobs:
         with:
           name: bench-screen-graph
           path: ${{ runner.temp }}/sg-artifacts
+          # .bench-results is a dot-prefixed dir; upload-artifact@v4 excludes hidden
+          # paths by default, which silently dropped the bench JSON + report. Keep it.
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
