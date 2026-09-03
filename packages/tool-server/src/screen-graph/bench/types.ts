@@ -21,6 +21,18 @@ export interface BenchSelector {
 export type BenchAction =
   | { kind: "launch" }
   | { kind: "tap"; selector: BenchSelector }
+  | {
+      /**
+       * Coordinate tap at a FIXED normalized point (0–1), no selector/locate.
+       * Used by the same-screen H2 tasks for no-op taps (empty space, disabled
+       * rows, slider positions) that must not navigate.
+       */
+      kind: "tapXY";
+      x: number;
+      y: number;
+      /** Human label for reports/precompute logs. */
+      label?: string;
+    }
   | { kind: "swipe"; direction: "up" | "down" }
   | { kind: "type"; selector: BenchSelector; text: string }
   | { kind: "back" };
@@ -32,6 +44,13 @@ export interface BenchStep {
    * replace the tap+observe loop with a single `navigate-to` plan.
    */
   knownTarget?: boolean;
+  /**
+   * This step is INTENDED to keep the SAME screen (no structural navigation).
+   * The H2 hypothesis (outcome removes ≥1 RTT/step) is measured over these
+   * steps only — the navigation steps change the screen every time, leaving
+   * O2's outcome nothing to skip against.
+   */
+  sameScreen?: boolean;
 }
 
 export interface BenchTask {

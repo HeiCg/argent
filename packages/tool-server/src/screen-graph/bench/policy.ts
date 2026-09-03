@@ -103,11 +103,7 @@ export function observeAfterAction(config: BenchConfigId, ctx: StepContext = {})
   }
 }
 
-/**
- * How the final success assertion (element present) is read. `query` where the
- * backend has it (B2/O1–O5); B1 (proprietary) has no query RPC, so it scans the
- * element out of a `describe`.
- */
-export function assertionObservation(config: BenchConfigId): ObservationKind {
-  return config === "B1" ? "describe" : "query";
-}
+// NOTE: the per-config `assertionObservation` was removed in Phase C.1 — the
+// success oracle is now ONE on-device `query` for every config (B1 via an
+// instrumentation switch), so there is no longer a per-config assertion read.
+// See `bench/oracle.ts` and `scripts/bench-screen-graph.ts` (runAssertion).

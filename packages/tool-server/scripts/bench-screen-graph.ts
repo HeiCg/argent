@@ -63,11 +63,9 @@ import type { BenchSelector, BenchStep, BenchTask } from "../src/screen-graph/be
 import { BENCH_CONFIG_IDS } from "../src/screen-graph/bench/types";
 import type { BenchConfigId } from "../src/screen-graph/bench/types";
 import {
-  assertionObservation,
   observeAfterAction,
   usesGraph,
   usesOpenServer,
-  usesOutcomes,
   type ObservationKind,
 } from "../src/screen-graph/bench/policy";
 import {
@@ -77,6 +75,13 @@ import {
   summarize,
   tokenizerName,
 } from "../src/screen-graph/bench/tokens";
+import {
+  accountSuccess,
+  evaluateAssertion,
+  isExcludedRun,
+  type AssertionMatch,
+  type OracleNode,
+} from "../src/screen-graph/bench/oracle";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
@@ -326,75 +331,122 @@ interface Located {
   found: boolean;
 }
 
-/** XML entity unescape for uiautomator-dump text (`&amp;` → `&`, etc.). */
-function unescapeXml(s: string): string {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
 /**
  * Locate an element's normalized centre for a tap. Backend-neutral test plumbing
  * (NOT counted as an observation): the scripted policy already "knows" the
  * target, this only turns it into coordinates so the tap is identical across
  * every config.
  *
- * For open configs the open-device-server instrumentation holds UiAutomation, so
- * a concurrent `adb shell uiautomator dump` is unreliable — locate via the
- * server's own `query` (returns node pixel bounds), normalized by `getInfo`.
- * B1 (proprietary, open server NOT running) falls back to a dump parse.
+ * ONLY the open-device-server path exists (ticket §1): every config locates via
+ * the server's own `query` (node pixel bounds, normalized by `getInfo`). B1's
+ * proprietary run replays coordinates precomputed by `precomputeB1Coords` in a
+ * separate open-server pass and never calls this — the old `uiautomator dump`
+ * fallback (which contended with ADT's UiAutomation and produced the stale/miss
+ * taps the C.1 ticket set out to kill) has been removed. Calling this on a
+ * non-open config is a harness bug and throws.
  */
 async function locateNorm(reg: Reg, config: BenchConfigId, sel: BenchSelector): Promise<Located> {
-  if (usesOpenServer(config)) {
-    try {
-      const server = await openServer(reg);
-      const q = await server.query(toOpenSelector(sel), { limit: 5 });
-      if (q.nodes.length > 0) {
-        const b = q.nodes[0]!.bounds;
-        const info = await server.getInfo();
-        const w = info.screenWidth || 1080;
-        const h = info.screenHeight || 2400;
-        return { xNorm: (b.x1 + b.x2) / 2 / w, yNorm: (b.y1 + b.y2) / 2 / h, found: true };
-      }
-      return { xNorm: 0.5, yNorm: 0.5, found: false };
-    } catch {
-      return { xNorm: 0.5, yNorm: 0.5, found: false };
-    }
+  if (!usesOpenServer(config)) {
+    throw new Error(`locateNorm called for non-open config ${config}; B1 must use precomputed coords`);
   }
-  return locateViaDump(sel);
+  try {
+    const server = await openServer(reg);
+    const q = await server.query(toOpenSelector(sel), { limit: 5 });
+    if (q.nodes.length > 0) {
+      const b = q.nodes[0]!.bounds;
+      const info = await server.getInfo();
+      const w = info.screenWidth || 1080;
+      const h = info.screenHeight || 2400;
+      return { xNorm: (b.x1 + b.x2) / 2 / w, yNorm: (b.y1 + b.y2) / 2 / h, found: true };
+    }
+    return { xNorm: 0.5, yNorm: 0.5, found: false };
+  } catch {
+    return { xNorm: 0.5, yNorm: 0.5, found: false };
+  }
 }
 
-function locateViaDump(sel: BenchSelector): Located {
-  adbTry(["shell", "uiautomator dump /sdcard/window_dump.xml"], 10_000);
-  const xml = adbTry(["shell", "cat /sdcard/window_dump.xml"], 10_000);
-  if (!xml) return { xNorm: 0.5, yNorm: 0.5, found: false };
-  const nodes = xml.split("<node ").slice(1);
-  const idRe = sel.id ? new RegExp(`:id/${sel.id}("|$|\\b)`) : null;
-  const textLc = sel.text?.toLowerCase();
-  const wm = adbTry(["shell", "wm size"]).match(/(\d+)x(\d+)/);
-  const w = Number(wm?.[1] ?? 1080);
-  const h = Number(wm?.[2] ?? 2400);
-  for (const n of nodes) {
-    const attr = (name: string): string =>
-      unescapeXml(n.match(new RegExp(`${name}="([^"]*)"`))?.[1] ?? "");
-    const rid = attr("resource-id");
-    const text = attr("text");
-    const desc = attr("content-desc");
-    const idHit = idRe ? idRe.test(rid) : false;
-    const textHit = textLc
-      ? text.toLowerCase().includes(textLc) || desc.toLowerCase().includes(textLc)
-      : false;
-    if (idHit || textHit) {
-      const b = attr("bounds").match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
-      if (!b) continue;
-      const [x1, y1, x2, y2] = [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])];
-      return { xNorm: (x1 + x2) / 2 / w, yNorm: (y1 + y2) / 2 / h, found: true };
+/** Key for a precomputed tap coordinate: task id + step index. */
+function coordKey(taskId: string, stepIndex: number): string {
+  return `${taskId}#${stepIndex}`;
+}
+
+/**
+ * B1 locate plumbing (ticket §1). The proprietary android-devtools holds
+ * UiAutomation exclusively, so a per-step "stop ADT → start ours → locate →
+ * restart ADT" switch would cost far more than the 3 s/step budget the ticket
+ * sets. We take the sanctioned alternative: ONE open-server pass up front that
+ * navigates each task deterministically (fresh emulator + animations off) and
+ * records the pixel-normalized centre of every tap target. B1 then replays those
+ * coordinates through its proprietary tap path. The whole pass is plumbing —
+ * excluded from every metric and reported as `plumbingMs`.
+ *
+ * Runs once (screens are deterministic), keyed by `taskId#stepIndex`, reused for
+ * all reps. A target that cannot be located here yields `found:false`, which
+ * makes the B1 run record a `locateFailed` for that task (honest, not a centre
+ * tap).
+ */
+async function precomputeB1Coords(): Promise<{ coords: Map<string, Located>; plumbingMs: number }> {
+  const t0 = Date.now();
+  const coords = new Map<string, Located>();
+  forceStopInstrumentation();
+  killSimServerForEmulator();
+  setFlag("open-device-server", true, "project");
+  const reg = createRegistry();
+  try {
+    for (const task of TASKS) {
+      for (let i = 0; i < task.steps.length; i++) {
+        const a = task.steps[i]!.action;
+        if (a.kind === "launch") {
+          await launchApp(reg, task.app);
+          continue;
+        }
+        if (a.kind === "tap") {
+          const loc = await locateNorm(reg, "B2", a.selector);
+          coords.set(coordKey(task.id, i), loc);
+          if (loc.found) {
+            await reg
+              .invokeTool("gesture-tap", { udid: SERIAL, x: loc.xNorm, y: loc.yNorm })
+              .catch(() => undefined);
+            await reg
+              .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 2500 })
+              .catch(() => undefined);
+          } else {
+            realDebug(`[bench-sg] B1 precompute: ${task.id} step ${i} locate MISS (${JSON.stringify(a.selector)})`);
+          }
+        } else if (a.kind === "swipe") {
+          const [fromY, toY] = a.direction === "up" ? [0.7, 0.3] : [0.3, 0.7];
+          await reg
+            .invokeTool("gesture-swipe", {
+              udid: SERIAL,
+              fromX: 0.5,
+              fromY,
+              toX: 0.5,
+              toY,
+              durationMs: BENCH_GESTURE_PARAMS.swipeDurationMs,
+            })
+            .catch(() => undefined);
+          await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 2500 }).catch(() => undefined);
+        } else if (a.kind === "tapXY") {
+          // Same-screen no-op tap: execute so the screen state matches for any
+          // later `tap` step; no coordinate to record (it carries its own x/y).
+          await reg.invokeTool("gesture-tap", { udid: SERIAL, x: a.x, y: a.y }).catch(() => undefined);
+          await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 2500 }).catch(() => undefined);
+        } else if (a.kind === "back") {
+          adbTry(["shell", "input keyevent 4"], 6_000);
+          await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 2500 }).catch(() => undefined);
+        } else if (a.kind === "type") {
+          await reg.invokeTool("keyboard", { udid: SERIAL, text: a.text }).catch(() => undefined);
+          await sleep(800);
+        }
+      }
     }
+  } finally {
+    await reg.dispose().catch(() => undefined);
+    forceStopInstrumentation();
+    killSimServerForEmulator();
+    unsetFlag("open-device-server", "project"); // restore B1 (proprietary)
   }
-  return { xNorm: 0.5, yNorm: 0.5, found: false };
+  return { coords, plumbingMs: Date.now() - t0 };
 }
 
 /** Current screen structural hash via the open server (empty string on B1). */
@@ -502,6 +554,12 @@ interface StepRecord {
   usedNavigate: boolean;
   /** revisited = the resulting screen was already known when the step ran. */
   revisited: boolean;
+  /** the tap target could not be located; the task aborts here (ticket §2). */
+  locateFailed: boolean;
+  /** an action tool call (tap/gesture) threw; the task aborts (review MEDIUM-8). */
+  actionFailed: boolean;
+  /** this step is INTENDED to keep the same screen (H2 same-screen subset). */
+  sameScreen: boolean;
 }
 
 interface TaskRecord {
@@ -511,9 +569,35 @@ interface TaskRecord {
   rep: number;
   steps: StepRecord[];
   success: boolean;
+  /**
+   * The run was aborted because a tap target could not be located — plumbing,
+   * not an agent/backend deficiency. Excluded from the success denominator and
+   * counted separately (ticket §2).
+   */
+  locateFailed: boolean;
+  /** an action tool call threw mid-task — the run is invalid (review MEDIUM-8). */
+  actionFailed: boolean;
+  /** the success oracle could not be read — the run is invalid (review MEDIUM-7). */
+  oracleError: boolean;
+  /** the task threw before producing a usable record (backend down; review HIGH-4). */
+  taskError: boolean;
   assertionObs: ObservationKind;
   assertionTokensTiktoken: number;
   assertionTokensCharsDiv4: number;
+  /** The needle the success oracle looked for on the final screen. */
+  assertionNeedle: string;
+  /**
+   * Every VISIBLE node whose text/contentDescription carried the needle, from
+   * the ONE oracle used for all configs (ticket §3). Empty when unmet — its
+   * emptiness IS the evidence.
+   */
+  assertionMatches: AssertionMatch[];
+  /**
+   * Off-metric plumbing time for this run: the B1 instrumentation switch that
+   * lets the proprietary config be read by the same on-device `query` oracle
+   * (0 for open configs, whose server is already serving).
+   */
+  plumbingMs: number;
   wallMs: number;
   gestureParams: BenchGestureParams;
 }
@@ -526,13 +610,18 @@ interface ActionResult {
   rttMs: number;
   outcome?: { changed: boolean; newScreen: boolean };
   usedNavigate: boolean;
+  /** tap target could not be located — the task aborts (ticket §2). */
+  locateFailed: boolean;
+  /** the action tool call threw — the task aborts, run invalid (review MEDIUM-8). */
+  actionFailed: boolean;
 }
 
 async function runAction(
   reg: Reg,
   config: BenchConfigId,
   step: BenchStep,
-  useNavigate: boolean
+  useNavigate: boolean,
+  located: Located | null
 ): Promise<ActionResult> {
   const a = step.action;
   const t0 = Date.now();
@@ -542,7 +631,7 @@ async function runAction(
   if (useNavigate && a.kind === "tap") {
     try {
       await reg.invokeTool("navigate-to", { udid: SERIAL, target: toBenchTarget(a.selector) });
-      return { rttMs: Date.now() - t0, usedNavigate: true };
+      return { rttMs: Date.now() - t0, usedNavigate: true, locateFailed: false, actionFailed: false };
     } catch {
       /* fall through to a plain tap on divergence */
     }
@@ -550,44 +639,84 @@ async function runAction(
 
   if (a.kind === "launch") {
     // launch handled by the caller (app reset); this is a no-op timing anchor.
-    return { rttMs: 0, usedNavigate: false };
+    return { rttMs: 0, usedNavigate: false, locateFailed: false, actionFailed: false };
   }
   if (a.kind === "back") {
-    adbTry(["shell", "input keyevent 4"], 6_000);
-    return { rttMs: Date.now() - t0, usedNavigate: false };
+    try {
+      adb(["shell", "input keyevent 4"], 6_000);
+    } catch (e) {
+      realDebug(`[bench-sg] back keyevent failed: ${String(e)}`);
+      return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: true };
+    }
+    return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: false };
   }
   if (a.kind === "swipe") {
     const [fromY, toY] = a.direction === "up" ? [0.7, 0.3] : [0.3, 0.7];
-    await reg
-      .invokeTool("gesture-swipe", {
+    try {
+      await reg.invokeTool("gesture-swipe", {
         udid: SERIAL,
         fromX: 0.5,
         fromY,
         toX: 0.5,
         toY,
         durationMs: BENCH_GESTURE_PARAMS.swipeDurationMs,
-      })
-      .catch(() => undefined);
-    return { rttMs: Date.now() - t0, usedNavigate: false };
+      });
+    } catch (e) {
+      realDebug(`[bench-sg] swipe failed: ${String(e)}`);
+      return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: true };
+    }
+    return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: false };
   }
   if (a.kind === "type") {
     // A `type` follows a tap that opened + focused the field (e.g. the Settings
     // search box); type straight into it. `adb input text` needs spaces escaped.
-    await reg.invokeTool("keyboard", { udid: SERIAL, text: a.text }).catch(() => undefined);
+    try {
+      await reg.invokeTool("keyboard", { udid: SERIAL, text: a.text });
+    } catch (e) {
+      realDebug(`[bench-sg] keyboard failed: ${String(e)}`);
+      return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: true };
+    }
     await sleep(800); // async search results populate off the main thread
-    return { rttMs: Date.now() - t0, usedNavigate: false };
+    return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: false };
   }
-  // tap
-  const loc = await locateNorm(reg, config, a.selector);
-  const res = (await reg
-    .invokeTool("gesture-tap", { udid: SERIAL, x: loc.xNorm, y: loc.yNorm })
-    .catch(() => ({}))) as {
-    outcome?: { changed: boolean; newScreen: boolean };
-  };
+  if (a.kind === "tapXY") {
+    // Fixed-coordinate tap (no locate) for the same-screen H2 no-op taps.
+    let res: { outcome?: { changed: boolean; newScreen: boolean } };
+    try {
+      res = (await reg.invokeTool("gesture-tap", { udid: SERIAL, x: a.x, y: a.y })) as {
+        outcome?: { changed: boolean; newScreen: boolean };
+      };
+    } catch (e) {
+      realDebug(`[bench-sg] tapXY failed: ${String(e)}`);
+      return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: true };
+    }
+    const outcome = res.outcome
+      ? { changed: res.outcome.changed, newScreen: res.outcome.newScreen }
+      : undefined;
+    return { rttMs: Date.now() - t0, outcome, usedNavigate: false, locateFailed: false, actionFailed: false };
+  }
+  // tap. `located` is resolved by the caller (open `query` for every config;
+  // for B1 a precomputed coordinate — locate is identical plumbing, ticket §1).
+  // A failed locate ABORTS the task instead of tapping screen centre (ticket §2)
+  // — a centre tap silently corrupts every downstream step and the assertion.
+  if (!located || !located.found) {
+    return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: true, actionFailed: false };
+  }
+  // A gesture-tap tool THROW must abort the run, never be swallowed into a false
+  // success (review MEDIUM-8): mark actionFailed and exclude the run.
+  let res: { outcome?: { changed: boolean; newScreen: boolean } };
+  try {
+    res = (await reg.invokeTool("gesture-tap", { udid: SERIAL, x: located.xNorm, y: located.yNorm })) as {
+      outcome?: { changed: boolean; newScreen: boolean };
+    };
+  } catch (e) {
+    realDebug(`[bench-sg] gesture-tap failed: ${String(e)}`);
+    return { rttMs: Date.now() - t0, usedNavigate: false, locateFailed: false, actionFailed: true };
+  }
   const outcome = res.outcome
     ? { changed: res.outcome.changed, newScreen: res.outcome.newScreen }
     : undefined;
-  return { rttMs: Date.now() - t0, outcome, usedNavigate: false };
+  return { rttMs: Date.now() - t0, outcome, usedNavigate: false, locateFailed: false, actionFailed: false };
 }
 
 function toBenchTarget(sel: BenchSelector): { id?: string; text?: string } {
@@ -601,49 +730,128 @@ function toBenchTarget(sel: BenchSelector): { id?: string; text?: string } {
 /* assertion (success)                                                         */
 /* -------------------------------------------------------------------------- */
 
+interface OracleReadout {
+  matched: boolean;
+  matches: AssertionMatch[];
+  /** JSON of the matched nodes — off the metric path, persisted as evidence. */
+  tokensTiktoken: number;
+  tokensCharsDiv4: number;
+}
+
+/**
+ * The ONE success oracle for every config (ticket §3), run over an OPEN-server
+ * registry (`reg` is the config's own registry for open configs, a temporary
+ * open registry for the B1 switch). Fetches EVERY node once (empty selector so
+ * text- and content-description-only matches are both reachable — the Kotlin
+ * `query` matcher folds only case and matches `text` alone), then applies the
+ * pure `evaluateAssertion` rule. Fix §4: one settle (`await-screen-idle`) + one
+ * re-query when the first read is unmet, identically for all configs.
+ */
+async function oracleRead(reg: Reg, needle: string): Promise<OracleReadout> {
+  const server = await openServer(reg);
+  let screen: { width: number; height: number };
+  try {
+    const info = await server.getInfo();
+    screen = { width: info.screenWidth || 1080, height: info.screenHeight || 2400 };
+  } catch {
+    screen = { width: 1080, height: 2400 };
+  }
+  const fetchNodes = async (): Promise<OracleNode[]> => {
+    const res = await server.query({}, { limit: 1000 });
+    // Structural map to the oracle's node shape (no blind cast): the open-server
+    // compact node carries id/text/cd/bounds among other fields.
+    return res.nodes.map((n) => ({ id: n.id, text: n.text, cd: n.cd, bounds: n.bounds }));
+  };
+  let nodes = await fetchNodes();
+  let result = evaluateAssertion(nodes, needle, { screen });
+  if (!result.matched) {
+    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
+    await sleep(300);
+    nodes = await fetchNodes();
+    result = evaluateAssertion(nodes, needle, { screen });
+  }
+  const both = countBoth(JSON.stringify(result.matches));
+  return {
+    matched: result.matched,
+    matches: result.matches,
+    tokensTiktoken: both.tiktoken,
+    tokensCharsDiv4: both.charsDiv4,
+  };
+}
+
+interface AssertionResult {
+  obs: ObservationKind;
+  success: boolean;
+  matches: AssertionMatch[];
+  tokensTiktoken: number;
+  tokensCharsDiv4: number;
+  /** off-metric B1 instrumentation-switch time; 0 for open configs. */
+  plumbingMs: number;
+  /** the oracle could not be read (query / B1 switch threw) — run invalid. */
+  error: boolean;
+}
+
+/**
+ * Success assertion, judged by the SAME on-device `query` oracle for every
+ * config (ticket §3). Open configs read their already-serving server. B1
+ * (proprietary android-devtools holds UiAutomation) switches: stop ADT → bring
+ * our server up on a temporary registry → read → stop ours → restore the B1
+ * flag; the next task's launch restarts ADT. The whole switch is plumbing,
+ * excluded from every metric and reported as `plumbingMs`.
+ */
 async function runAssertion(
   reg: Reg,
   config: BenchConfigId,
   assertion: BenchSelector
-): Promise<{ obs: ObservationKind; success: boolean; tokensTiktoken: number; tokensCharsDiv4: number }> {
-  const obs = assertionObservation(config);
-  if (obs === "query") {
+): Promise<AssertionResult> {
+  const needle = assertion.text ?? assertion.id ?? "";
+  if (usesOpenServer(config)) {
     try {
-      const server = await openServer(reg);
-      let res = await server.query(toOpenSelector(assertion), { limit: 5 });
-      // The final screen may still be settling (e.g. async search results); give
-      // it one idle wait + re-query before calling the assertion unmet.
-      if (res.nodes.length === 0) {
-        await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
-        await sleep(300);
-        res = await server.query(toOpenSelector(assertion), { limit: 5 });
-      }
-      const text = JSON.stringify(res.nodes);
-      const both = countBoth(text);
+      const r = await oracleRead(reg, needle);
       return {
-        obs,
-        success: res.nodes.length > 0,
-        tokensTiktoken: both.tiktoken,
-        tokensCharsDiv4: both.charsDiv4,
+        obs: "query",
+        success: r.matched,
+        matches: r.matches,
+        tokensTiktoken: r.tokensTiktoken,
+        tokensCharsDiv4: r.tokensCharsDiv4,
+        plumbingMs: 0,
+        error: false,
       };
-    } catch {
-      return { obs, success: false, tokensTiktoken: 0, tokensCharsDiv4: 0 };
+    } catch (e) {
+      realDebug(`[bench-sg] ${config} oracle read failed: ${String(e)}`);
+      return { obs: "query", success: false, matches: [], tokensTiktoken: 0, tokensCharsDiv4: 0, plumbingMs: 0, error: true };
     }
   }
-  // B1: scan the describe text for the asserted element.
+  // B1: instrumentation switch so the proprietary screen is judged by the same
+  // on-device query oracle as every open config. Fully reset the device-side
+  // backends on the way in AND out so neither instrumentation stays holding
+  // UiAutomation; the next task's proprietary tool call respawns ADT cleanly.
+  const t0 = Date.now();
+  forceStopInstrumentation();
+  killSimServerForEmulator();
+  await sleep(500);
+  setFlag("open-device-server", true, "project");
+  const tmp = createRegistry();
   try {
-    const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
-    const text = d.description ?? "";
-    const both = countBoth(text);
-    const needle = (assertion.text ?? assertion.id ?? "").toLowerCase();
+    const r = await oracleRead(tmp, needle);
     return {
-      obs,
-      success: needle.length > 0 && text.toLowerCase().includes(needle),
-      tokensTiktoken: both.tiktoken,
-      tokensCharsDiv4: both.charsDiv4,
+      obs: "query",
+      success: r.matched,
+      matches: r.matches,
+      tokensTiktoken: r.tokensTiktoken,
+      tokensCharsDiv4: r.tokensCharsDiv4,
+      plumbingMs: Date.now() - t0,
+      error: false,
     };
-  } catch {
-    return { obs, success: false, tokensTiktoken: 0, tokensCharsDiv4: 0 };
+  } catch (e) {
+    realDebug(`[bench-sg] B1 oracle switch failed: ${String(e)}`);
+    return { obs: "query", success: false, matches: [], tokensTiktoken: 0, tokensCharsDiv4: 0, plumbingMs: Date.now() - t0, error: true };
+  } finally {
+    await tmp.dispose().catch(() => undefined);
+    forceStopInstrumentation();
+    killSimServerForEmulator();
+    unsetFlag("open-device-server", "project"); // restore B1 (proprietary) for the next task
+    await sleep(500);
   }
 }
 
@@ -656,10 +864,12 @@ async function runTask(
   config: BenchConfigId,
   task: BenchTask,
   rep: number,
-  knownBefore: Set<string>
+  knownBefore: Set<string>,
+  precomputed: Map<string, Located> | null
 ): Promise<TaskRecord> {
   const wall0 = Date.now();
   const steps: StepRecord[] = [];
+  let abortReason: "locate" | "action" | null = null;
 
   for (let i = 0; i < task.steps.length; i++) {
     const step = task.steps[i]!;
@@ -674,10 +884,21 @@ async function runTask(
     });
     const useNavigate = preDecision.useNavigate && step.action.kind === "tap";
 
+    // Resolve the tap target's coordinate — plumbing, identical for every config
+    // (ticket §1): open configs locate via the live `query`; B1 replays the
+    // precomputed coordinate. Skipped for O5 navigate (routes by target, not xy)
+    // and for `tapXY`, which already carries fixed normalized coordinates.
+    let located: Located | null = null;
+    if (step.action.kind === "tap" && !useNavigate) {
+      located = precomputed
+        ? precomputed.get(coordKey(task.id, i)) ?? { xNorm: 0.5, yNorm: 0.5, found: false }
+        : await locateNorm(reg, config, step.action.selector);
+    }
+
     const tBefore = await traversals(reg, config);
     const action = isLaunch
-      ? { rttMs: 0, usedNavigate: false }
-      : await runAction(reg, config, step, useNavigate);
+      ? { rttMs: 0, usedNavigate: false, locateFailed: false, actionFailed: false }
+      : await runAction(reg, config, step, useNavigate, located);
 
     // Resulting screen hash → known/revisited bookkeeping.
     const hash = await currentHash(reg, config);
@@ -723,7 +944,48 @@ async function runTask(
       knownScreen,
       usedNavigate: action.usedNavigate,
       revisited,
+      locateFailed: action.locateFailed,
+      actionFailed: action.actionFailed,
+      sameScreen: step.sameScreen === true,
     });
+
+    // A failed locate (ticket §2) or a thrown action (review MEDIUM-8) aborts the
+    // task — the rest of the steps and the oracle would run on a corrupted state.
+    // The run is excluded from the success denominator and counted by reason.
+    if (action.locateFailed) {
+      abortReason = "locate";
+      realDebug(`[bench-sg] ${config}/${task.id}/rep${rep}: locate failed at step ${i}; aborting task`);
+      break;
+    }
+    if (action.actionFailed) {
+      abortReason = "action";
+      realDebug(`[bench-sg] ${config}/${task.id}/rep${rep}: action failed at step ${i}; aborting task`);
+      break;
+    }
+  }
+
+  const needleText = task.assertion.text ?? task.assertion.id ?? "";
+  if (abortReason) {
+    return {
+      config,
+      task: task.id,
+      app: task.app,
+      rep,
+      steps,
+      success: false,
+      locateFailed: abortReason === "locate",
+      actionFailed: abortReason === "action",
+      oracleError: false,
+      taskError: false,
+      assertionObs: "none",
+      assertionTokensTiktoken: 0,
+      assertionTokensCharsDiv4: 0,
+      assertionNeedle: needleText,
+      assertionMatches: [],
+      plumbingMs: 0,
+      wallMs: Date.now() - wall0,
+      gestureParams: BENCH_GESTURE_PARAMS,
+    };
   }
 
   await sleep(400); // brief settle so the final assertion reads the arrived screen
@@ -735,11 +997,43 @@ async function runTask(
     app: task.app,
     rep,
     steps,
-    success: assertion.success,
+    success: assertion.error ? false : assertion.success,
+    locateFailed: false,
+    actionFailed: false,
+    oracleError: assertion.error,
+    taskError: false,
     assertionObs: assertion.obs,
     assertionTokensTiktoken: assertion.tokensTiktoken,
     assertionTokensCharsDiv4: assertion.tokensCharsDiv4,
-    wallMs: Date.now() - wall0,
+    assertionNeedle: needleText,
+    assertionMatches: assertion.matches,
+    plumbingMs: assertion.plumbingMs,
+    // HIGH-3: wall time excludes the off-metric B1 oracle-switch plumbing.
+    wallMs: Date.now() - wall0 - assertion.plumbingMs,
+    gestureParams: BENCH_GESTURE_PARAMS,
+  };
+}
+
+/** A minimal record for a task-run that THREW before producing data (HIGH-4). */
+function erroredTaskRecord(config: BenchConfigId, task: BenchTask, rep: number): TaskRecord {
+  return {
+    config,
+    task: task.id,
+    app: task.app,
+    rep,
+    steps: [],
+    success: false,
+    locateFailed: false,
+    actionFailed: false,
+    oracleError: false,
+    taskError: true,
+    assertionObs: "none",
+    assertionTokensTiktoken: 0,
+    assertionTokensCharsDiv4: 0,
+    assertionNeedle: task.assertion.text ?? task.assertion.id ?? "",
+    assertionMatches: [],
+    plumbingMs: 0,
+    wallMs: 0,
     gestureParams: BENCH_GESTURE_PARAMS,
   };
 }
@@ -752,31 +1046,55 @@ interface ConfigAgg {
   config: BenchConfigId;
   tasks: number;
   reps: number;
+  /** ok / scored, where scored excludes every excluded run (ticket §2, MEDIUM-7/8). */
   successRate: number;
+  /** all task-runs. */
+  total: number;
+  /** runs judged by the oracle (total − excluded). */
+  scored: number;
+  /** runs excluded from the denominator, by reason. */
+  excluded: number;
+  locateFailed: number;
+  actionFailed: number;
+  oracleError: number;
+  taskError: number;
   perStepTokensTiktoken: ReturnType<typeof summarize>;
   perStepTokensCharsDiv4: ReturnType<typeof summarize>;
   perStepRtt: ReturnType<typeof summarize>;
   rttCountPerStep: ReturnType<typeof summarize>;
+  /** RTT count/step over SAME-SCREEN steps only (H2 subset; review addendum). */
+  rttCountSameScreen: ReturnType<typeof summarize>;
   /** tokens on steps reaching a NOVEL screen (cold: describe/query). */
   coldTokensTiktoken: ReturnType<typeof summarize>;
   /** tokens on steps reaching a KNOWN screen (warm: graph-lookup). */
   warmTokensTiktoken: ReturnType<typeof summarize>;
   wallMs: ReturnType<typeof summarize>;
+  /** off-metric plumbing ms (B1 precompute + oracle switches; 0 elsewhere). */
+  plumbingMs: number;
   fallbacks: number;
   skipped?: string;
 }
 
-function aggregate(config: BenchConfigId, records: TaskRecord[], fallbacks: number): ConfigAgg {
+function aggregate(
+  config: BenchConfigId,
+  records: TaskRecord[],
+  fallbacks: number,
+  extraPlumbingMs = 0
+): ConfigAgg {
   const stepTk: number[] = [];
   const stepC4: number[] = [];
   const stepRtt: number[] = [];
   const rttCount: number[] = [];
+  const rttCountSS: number[] = [];
   const coldTk: number[] = [];
   const warmTk: number[] = [];
   const walls: number[] = [];
-  let ok = 0;
+  let plumbingMs = extraPlumbingMs;
   for (const r of records) {
-    if (r.success) ok++;
+    plumbingMs += r.plumbingMs ?? 0;
+    // Excluded runs (locate/action/oracle/task failures) never produced an honest
+    // observation/oracle — keep their steps and wall time out of the metrics.
+    if (isExcludedRun(r)) continue;
     walls.push(r.wallMs);
     for (const s of r.steps) {
       if (s.actionKind === "launch") continue;
@@ -784,24 +1102,35 @@ function aggregate(config: BenchConfigId, records: TaskRecord[], fallbacks: numb
       stepC4.push(s.tokensCharsDiv4);
       stepRtt.push(s.rttMs);
       rttCount.push(s.rttCount);
+      if (s.sameScreen) rttCountSS.push(s.rttCount);
       // A step reaching a screen already in the graph is warm; a novel screen is
       // cold. In O3 (cold store) most steps are cold; in O4/O5 (preloaded) warm.
       if (s.knownScreen) warmTk.push(s.tokensTiktoken);
       else coldTk.push(s.tokensTiktoken);
     }
   }
+  const acct = accountSuccess(records);
   return {
     config,
     tasks: new Set(records.map((r) => r.task)).size,
     reps: REPS,
-    successRate: records.length ? Number((ok / records.length).toFixed(3)) : 0,
+    successRate: acct.successRate,
+    total: acct.total,
+    scored: acct.scored,
+    excluded: acct.excluded,
+    locateFailed: acct.locateFailed,
+    actionFailed: acct.actionFailed,
+    oracleError: acct.oracleError,
+    taskError: acct.taskError,
     perStepTokensTiktoken: summarize(stepTk),
     perStepTokensCharsDiv4: summarize(stepC4),
     perStepRtt: summarize(stepRtt),
     rttCountPerStep: summarize(rttCount),
+    rttCountSameScreen: summarize(rttCountSS),
     coldTokensTiktoken: summarize(coldTk),
     warmTokensTiktoken: summarize(warmTk),
     wallMs: summarize(walls),
+    plumbingMs,
     fallbacks,
   };
 }
@@ -831,8 +1160,11 @@ function buildReport(
   const perRepSuccess = (c: BenchConfigId): number[] => {
     const out: number[] = [];
     for (let rep = 0; rep < REPS; rep++) {
-      const rs = records.filter((r) => r.config === c && r.rep === rep);
-      if (rs.length) out.push(Number(((rs.filter((r) => r.success).length / rs.length) * 100).toFixed(0)));
+      // Denominator excludes locate-failed runs (ticket §2), matching successRate.
+      const scored = records.filter((r) => r.config === c && r.rep === rep && !r.locateFailed);
+      if (scored.length) {
+        out.push(Number(((scored.filter((r) => r.success).length / scored.length) * 100).toFixed(0)));
+      }
     }
     return out;
   };
@@ -856,17 +1188,30 @@ function buildReport(
   }
   L.push("## Per-step observation tokens (o200k_base) — p50 / p95");
   L.push("");
-  L.push("| Config | n steps | tok p50 | tok p95 | chars/4 p50 | RTT p50 (ms) | RTT count/step p50 | success |");
-  L.push("|---|---|---|---|---|---|---|---|");
+  L.push(
+    "`success` = ok / scored, where scored EXCLUDES every plumbing/infra failure " +
+      "(locate / action / oracle / task — ticket §2, review MEDIUM-7/8). `excluded` shows " +
+      "the count and reason breakdown `L`ocate/`A`ction/`O`racle/`T`ask. `fallbacks` counts " +
+      "describe/tree fallbacks — for B1 any fallback means the proprietary path was NOT " +
+      "exercised and its metrics are INVALID (review HIGH-5). `plumb ms` is off-metric " +
+      "plumbing time (B1 coordinate precompute + per-task oracle instrumentation switch)."
+  );
+  L.push("");
+  L.push(
+    "| Config | n steps | tok p50 | tok p95 | chars/4 p50 | RTT p50 (ms) | RTT count/step p50 | success | scored | excluded (L/A/O/T) | fallbacks | plumb ms |"
+  );
+  L.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const c of REPORT_ORDER) {
     const a = by(c);
     if (!a) continue;
+    const exc = `${a.excluded} (${a.locateFailed}/${a.actionFailed}/${a.oracleError}/${a.taskError})`;
+    const fbCell = c === "B1" && a.fallbacks > 0 ? `**${a.fallbacks}** ⚠` : String(a.fallbacks);
     L.push(
       `| ${c} | ${a.perStepTokensTiktoken.n} | ${fmt(a.perStepTokensTiktoken.p50)} | ${fmt(
         a.perStepTokensTiktoken.p95
       )} | ${fmt(a.perStepTokensCharsDiv4.p50)} | ${fmt(a.perStepRtt.p50)} | ${fmt(
         a.rttCountPerStep.p50
-      )} | ${(a.successRate * 100).toFixed(0)}% |`
+      )} | ${(a.successRate * 100).toFixed(0)}% | ${a.scored}/${a.total} | ${exc} | ${fbCell} | ${a.plumbingMs} |`
     );
   }
   L.push("");
@@ -879,15 +1224,18 @@ function buildReport(
   const o4 = by("O4");
   const b1 = by("B1");
   const h1 = o1 && b2 ? ratio(o1.perStepTokensTiktoken.p50, b2.perStepTokensTiktoken.p50) : NaN;
-  const h2 =
-    o2 && b2 ? b2.rttCountPerStep.p50 - o2.rttCountPerStep.p50 : NaN;
+  const h2 = o2 && b2 ? b2.rttCountPerStep.p50 - o2.rttCountPerStep.p50 : NaN;
+  // H2 (review addendum): the honest test is over SAME-SCREEN steps only — the
+  // navigation tasks change the screen every step, so O2's outcome has nothing to
+  // skip there. Same-screen steps are where an unchanged outcome removes the read.
+  const h2ss =
+    o2 && b2 ? b2.rttCountSameScreen.p50 - o2.rttCountSameScreen.p50 : NaN;
   // H3: warm cost (O4, all screens preloaded → graph-lookup) vs cold cost
   // (O3, novel screens → describe). Falls back to overall per-step if a side has
   // no cold/warm samples.
   const o3Cold = o3 && isFinite(o3.coldTokensTiktoken.p50) ? o3.coldTokensTiktoken.p50 : o3?.perStepTokensTiktoken.p50 ?? NaN;
   const o4Warm = o4 && isFinite(o4.warmTokensTiktoken.p50) ? o4.warmTokensTiktoken.p50 : o4?.perStepTokensTiktoken.p50 ?? NaN;
   const h3 = ratio(o4Warm, o3Cold);
-  const successBase = b1 ? b1.successRate : b2 ? b2.successRate : NaN;
   L.push("| Hypothesis | Target | Measured | Verdict |");
   L.push("|---|---|---|---|");
   L.push(
@@ -896,21 +1244,97 @@ function buildReport(
     } |`
   );
   L.push(
-    `| H2 O2 removes ≥1 RTT/step vs B2 | ≥ 1 | ${fmt(h2)} | ${h2 >= 1 ? "PASS" : "FAIL"} |`
+    `| H2 O2 removes ≥1 RTT/step vs B2 (ALL steps) | ≥ 1 | ${fmt(h2)} | ${h2 >= 1 ? "PASS" : "FAIL"} |`
+  );
+  const h2ssN = o2 ? o2.rttCountSameScreen.n : 0;
+  L.push(
+    `| H2 O2 removes ≥1 RTT/step vs B2 (SAME-SCREEN steps, n=${h2ssN}) | ≥ 1 | ${fmt(h2ss)} | ${
+      h2ssN === 0 ? "NO DATA" : h2ss >= 1 ? "PASS" : "FAIL"
+    } |`
   );
   L.push(
     `| H3 O4 tokens/step vs O3 (revisited) | ≤ 0.2× | ${fmt(h3)}× | ${
       h3 <= 0.2 ? "PASS" : "FAIL"
     } |`
   );
-  const inferior = aggs
-    .filter((a) => a.config.startsWith("O"))
-    .filter((a) => isFinite(successBase) && a.successRate < successBase - 0.02);
+  L.push("");
+  // H4 (review HIGH-6): compare each open config to a baseline over the (task,rep)
+  // pairs BOTH sides actually SCORED (neither excluded). No verdict when the
+  // intersection is empty. B1 with any describe fallback is an invalid baseline.
+  const scoredPairs = (c: BenchConfigId): Set<string> => {
+    const s = new Set<string>();
+    for (const r of records) {
+      if (r.config === c && !isExcludedRun(r)) s.add(`${r.task}#${r.rep}`);
+    }
+    return s;
+  };
+  const successAt = (c: BenchConfigId, key: string): boolean => {
+    const [task, repStr] = key.split("#");
+    const r = records.find((x) => x.config === c && x.task === task && x.rep === Number(repStr));
+    return Boolean(r && !isExcludedRun(r) && r.success);
+  };
+  const b1Invalid = Boolean(b1 && b1.fallbacks > 0);
+  const h4Row = (base: ConfigAgg | undefined, invalid: boolean): string => {
+    if (!base) return "baseline absent";
+    if (invalid) return "INVALID BASELINE (describe fallback → proprietary path not exercised)";
+    const basePairs = scoredPairs(base.config);
+    const parts: string[] = [];
+    let worst = false;
+    for (const a of aggs.filter((x) => x.config.startsWith("O"))) {
+      const inter = [...scoredPairs(a.config)].filter((k) => basePairs.has(k));
+      if (inter.length === 0) {
+        parts.push(`${a.config}: no shared scored pairs`);
+        continue;
+      }
+      const aOk = inter.filter((k) => successAt(a.config, k)).length / inter.length;
+      const bOk = inter.filter((k) => successAt(base.config, k)).length / inter.length;
+      const nonInferior = aOk >= bOk - 0.02;
+      if (!nonInferior) worst = true;
+      parts.push(
+        `${a.config} ${(aOk * 100).toFixed(0)}% vs ${(bOk * 100).toFixed(0)}% (n=${inter.length})${
+          nonInferior ? "" : " ✗"
+        }`
+      );
+    }
+    return `${worst ? "FAIL" : "PASS"} — ${parts.join("; ")}`;
+  };
   L.push(
-    `| H4 success non-inferior (±2 pp) to ${b1 ? "B1" : "B2"} | ≥ base − 2pp | base ${
-      isFinite(successBase) ? (successBase * 100).toFixed(0) + "%" : "—"
-    } | ${inferior.length === 0 ? "PASS" : "FAIL (" + inferior.map((a) => a.config).join(",") + ")"} |`
+    "**H4 — success non-inferior (±2 pp) to each baseline, ONE oracle for every config**, " +
+      "computed over the (task, rep) pairs BOTH sides scored (review HIGH-6); B1 read via the " +
+      "instrumentation switch, not the old describe substring scan:"
   );
+  L.push("");
+  L.push("| Baseline | Baseline success (overall) | Verdict (O1..O5, intersection) |");
+  L.push("|---|---|---|");
+  L.push(
+    `| B1 (argent proprietary) | ${b1 ? (b1.successRate * 100).toFixed(0) + `% (${b1.scored}/${b1.total})` : "—"}${
+      b1Invalid ? " ⚠INVALID" : ""
+    } | ${h4Row(b1, b1Invalid)} |`
+  );
+  L.push(
+    `| B2 (open server, no graph) | ${b2 ? (b2.successRate * 100).toFixed(0) + `% (${b2.scored}/${b2.total})` : "—"} | ${h4Row(b2, false)} |`
+  );
+  L.push("");
+  L.push("## H2 detail — RTT count/step, all steps vs same-screen only");
+  L.push("");
+  L.push(
+    "The navigation tasks change the screen every step, so O2's unchanged-outcome " +
+      "skip has nothing to act on there — H2 is only visible on the SAME-SCREEN tasks " +
+      "(review addendum). B2 always issues action + describe (2); O2 drops the read to " +
+      "action-only (1) on a step whose outcome reports no change."
+  );
+  L.push("");
+  L.push("| Config | RTT/step p50 (all) | RTT/step mean (all) | RTT/step p50 (same-screen) | RTT/step mean (same-screen) | same-screen n |");
+  L.push("|---|---|---|---|---|---|");
+  for (const c of REPORT_ORDER) {
+    const a = by(c);
+    if (!a) continue;
+    L.push(
+      `| ${c} | ${fmt(a.rttCountPerStep.p50)} | ${fmt(a.rttCountPerStep.mean)} | ${fmt(
+        a.rttCountSameScreen.p50
+      )} | ${fmt(a.rttCountSameScreen.mean)} | ${a.rttCountSameScreen.n} |`
+    );
+  }
   L.push("");
   L.push("## Cold vs warm (O3 vs O4)");
   L.push("");
@@ -958,17 +1382,160 @@ function buildReport(
     "- O3 is the cold baseline (empty store, never reuses the graph); O4/O5 preload " +
       "the graph O3 persisted. cold/warm compares O3 novel-screen describe vs O4 known-screen graph-lookup.");
   L.push(
-    "- H2 counts action + observation round-trips. The open baseline (B2) already folds " +
-      "idle+tree into one describe RPC, and the navigation tasks change the screen every " +
-      "step, so O2's outcome has no unchanged step to skip against it — hence no RTT " +
-      "removed here. The saving materializes only on steps whose outcome reports no change.");
+    "- H2 counts action + observation round-trips. B2 always issues action + describe; O2 " +
+      "drops the read when the outcome reports no change. On the navigation tasks every step " +
+      "changes the screen, so O2 saves nothing there (all-steps H2 ≈ 0) — the saving is real " +
+      "only on the SAME-SCREEN tasks (see the H2 detail table), where an unchanged step costs " +
+      "1 RTT for O2 vs 2 for B2.");
   L.push(
-    "- B1 (argent proprietary) success is a harness artifact, not an argent deficiency: " +
-      "B1 locates tap targets via `uiautomator dump`, which contends with the android-devtools " +
-      "instrumentation's UiAutomation and often returns stale/failed dumps, so taps miss. " +
-      "Read H4 against B2 (100%) too — every open config matches it.");
+    "- Locate is backend-neutral plumbing, identical for every config (ticket §1): open " +
+      "configs locate via the live open-server `query`; B1 replays coordinates precomputed in " +
+      "ONE up-front open-server pass (per-step ADT↔ours switching exceeds the 3 s/step budget). " +
+      "A failed locate ABORTS the task (`locate-fail`) instead of tapping screen centre, and is " +
+      "excluded from the success denominator.");
+  L.push(
+    "- ONE success oracle for every config (ticket §3): a needle counts as present when it " +
+      "appears case-insensitively in the `text` OR `contentDescription` of a VISIBLE node " +
+      "(geometry-gated), read by the on-device `query`. B1 is read through an instrumentation " +
+      "switch (stop ADT → bring our server up → query → restore B1) so it is judged by the same " +
+      "rule as the open configs, not the old describe substring scan. The matched node text is " +
+      "persisted per assertion (below) as evidence.");
   L.push("- Emulator torn down after the run (see harness teardown).");
   L.push("");
+
+  // Per-task success matrix (ticket §Output). Y=success, N=oracle unmet,
+  // L=locate-failed (aborted, excluded from denominator), .=config absent.
+  L.push("## Per-task success matrix (per config)");
+  L.push("");
+  L.push("Legend: `Y` oracle met · `N` oracle unmet · `L` locate-failed (aborted, not scored).");
+  L.push("");
+  const taskIds = [...new Set(records.map((r) => r.task))];
+  const cell = (c: BenchConfigId, task: string): string => {
+    const rs = records.filter((r) => r.config === c && r.task === task);
+    if (rs.length === 0) return ".";
+    return rs
+      .sort((a, b) => a.rep - b.rep)
+      .map((r) => (r.locateFailed ? "L" : r.success ? "Y" : "N"))
+      .join("");
+  };
+  const presentConfigs = REPORT_ORDER.filter((c) => by(c));
+  L.push(`| Task | ${presentConfigs.join(" | ")} |`);
+  L.push(`|---|${presentConfigs.map(() => "---").join("|")}|`);
+  for (const task of taskIds) {
+    L.push(`| ${task} | ${presentConfigs.map((c) => cell(c, task)).join(" | ")} |`);
+  }
+  L.push("");
+
+  // Assertion evidence: the matched node text for every assertion (ticket
+  // §Output). One representative rep (0) per config/task; empty ⇒ unmet.
+  L.push("## Assertion evidence — matched node text (rep 0)");
+  L.push("");
+  L.push("| Config | Task | Needle | Met | Field | Matched node text (first match) |");
+  L.push("|---|---|---|---|---|---|");
+  for (const c of presentConfigs) {
+    for (const task of taskIds) {
+      const r = records.find((x) => x.config === c && x.task === task && x.rep === 0);
+      if (!r) continue;
+      if (r.locateFailed) {
+        L.push(`| ${c} | ${task} | ${r.assertionNeedle} | locate-fail | — | (task aborted on locate) |`);
+        continue;
+      }
+      const m = r.assertionMatches[0];
+      const text = m ? m.text.replace(/\s+/g, " ").slice(0, 80).replace(/\|/g, "\\|") : "";
+      L.push(
+        `| ${c} | ${task} | ${r.assertionNeedle} | ${r.success ? "Y" : "N"} | ${
+          m ? m.field : "—"
+        } | ${text || "(none)"} |`
+      );
+    }
+  }
+  L.push("");
+
+  // B1 per-task failure evidence (ticket §Acceptance): if B1 < 90 %, each open
+  // failure must name a real proprietary-path failure with the node text.
+  if (b1) {
+    const b1Fails = taskIds.filter((task) =>
+      records.some((r) => r.config === "B1" && r.task === task && !r.locateFailed && !r.success)
+    );
+    if (b1Fails.length) {
+      L.push("## B1 per-task failure evidence (proprietary path)");
+      L.push("");
+      L.push(
+        "Each B1 task whose oracle was unmet (scored, not locate-failed), with the same " +
+          "on-device query readout used for every config. An empty match set on a screen where " +
+          "the open configs matched is the evidence of a real proprietary-path divergence."
+      );
+      L.push("");
+      L.push("| Task | Needle | B1 met | B2 met | B1 matched text | B2 matched text |");
+      L.push("|---|---|---|---|---|---|");
+      for (const task of b1Fails) {
+        const rb1 = records.find((r) => r.config === "B1" && r.task === task && r.rep === 0);
+        const rb2 = records.find((r) => r.config === "B2" && r.task === task && r.rep === 0);
+        const txt = (r?: TaskRecord): string =>
+          r?.assertionMatches[0]
+            ? r.assertionMatches[0].text.replace(/\s+/g, " ").slice(0, 60).replace(/\|/g, "\\|")
+            : "(none)";
+        L.push(
+          `| ${task} | ${rb1?.assertionNeedle ?? ""} | ${rb1?.success ? "Y" : "N"} | ${
+            rb2?.success ? "Y" : "N"
+          } | ${txt(rb1)} | ${txt(rb2)} |`
+        );
+      }
+      L.push("");
+    }
+  }
+
+  // Optional pass1 provenance appendix (ticket §Output: keep the old H1/H3
+  // numbers for provenance). Reads a prior full-pass JSON named by env.
+  const pass1Path = process.env.BENCH_PASS1_APPENDIX;
+  if (pass1Path && existsSync(pass1Path)) {
+    try {
+      const prior = JSON.parse(readFileSync(pass1Path, "utf8")) as { aggregates: ConfigAgg[] };
+      const p = (c: BenchConfigId): ConfigAgg | undefined => prior.aggregates.find((a) => a.config === c);
+      const pB2 = p("B2");
+      const pO1 = p("O1");
+      const pO3 = p("O3");
+      const pO4 = p("O4");
+      const pH1 =
+        pO1 && pB2 ? ratio(pO1.perStepTokensTiktoken.p50, pB2.perStepTokensTiktoken.p50) : NaN;
+      const pColdSrc = pO3 && isFinite(pO3.coldTokensTiktoken.p50)
+        ? pO3.coldTokensTiktoken.p50
+        : pO3?.perStepTokensTiktoken.p50 ?? NaN;
+      const pWarmSrc = pO4 && isFinite(pO4.warmTokensTiktoken.p50)
+        ? pO4.warmTokensTiktoken.p50
+        : pO4?.perStepTokensTiktoken.p50 ?? NaN;
+      const pH3 = ratio(pWarmSrc, pColdSrc);
+      L.push("## Appendix: pass1 provenance (pre-C.1 harness)");
+      L.push("");
+      L.push(
+        `Source: \`${pass1Path.split("/").pop()}\`. The C.1 oracle/locate fixes do not touch the ` +
+          "token metric path, so H1/H3 should sit within ±10 % of these.");
+      L.push("");
+      L.push("| Metric | pass1 | this pass |");
+      L.push("|---|---|---|");
+      L.push(`| H1 (O1/B2 tokens/step) | ${fmt(pH1)}× | ${fmt(h1)}× |`);
+      L.push(`| H3 (O4 warm / O3 cold) | ${fmt(pH3)}× | ${fmt(h3)}× |`);
+      L.push(
+        `| O1 tok/step p50 | ${fmt(pO1?.perStepTokensTiktoken.p50 ?? NaN)} | ${fmt(
+          o1?.perStepTokensTiktoken.p50 ?? NaN
+        )} |`
+      );
+      L.push(`| O3 cold tok/step p50 | ${fmt(pColdSrc)} | ${fmt(o3Cold)} |`);
+      L.push(`| O4 warm tok/step p50 | ${fmt(pWarmSrc)} | ${fmt(o4Warm)} |`);
+      L.push(
+        `| B2 tok/step p50 | ${fmt(pB2?.perStepTokensTiktoken.p50 ?? NaN)} | ${fmt(
+          b2?.perStepTokensTiktoken.p50 ?? NaN
+        )} |`
+      );
+      L.push("");
+      L.push(
+        "pass1 H4/B1 (33 %) is intentionally omitted: it was the pre-C.1 artifact " +
+          "(centre taps + a describe-scan oracle) this ticket replaces.");
+      L.push("");
+    } catch (e) {
+      realDebug(`[bench-sg] pass1 appendix skipped: ${String(e)}`);
+    }
+  }
   return L.join("\n");
 }
 
@@ -1016,6 +1583,21 @@ async function main(): Promise<void> {
       }
     }
 
+    // B1 locate plumbing: precompute every tap coordinate in ONE open-server
+    // pass BEFORE switching to the proprietary backend (ticket §1).
+    let precomputed: Map<string, Located> | null = null;
+    let precomputeMs = 0;
+    if (config === "B1") {
+      const pc = await precomputeB1Coords();
+      precomputed = pc.coords;
+      precomputeMs = pc.plumbingMs;
+      const missed = [...pc.coords.entries()].filter(([, v]) => !v.found).map(([k]) => k);
+      realDebug(
+        `[bench-sg] B1 precompute done in ${precomputeMs}ms: ${pc.coords.size} coords, ${missed.length} miss` +
+          (missed.length ? ` (${missed.join(",")})` : "")
+      );
+    }
+
     applyFlags(config);
     await teardownBackend();
 
@@ -1036,12 +1618,17 @@ async function main(): Promise<void> {
       usesGraph(config) && config !== "O3" ? loadKnownHashes() : new Set<string>();
     const records: TaskRecord[] = [];
 
+    // HIGH-4: abort a config after N CONSECUTIVE task throws (backend down /
+    // UiAutomation contended), not just on the first task. Errored runs are
+    // recorded explicitly (taskError:true) so they show up excluded, not missing.
+    const MAX_CONSECUTIVE_ERRORS = 3;
     let aborted: string | undefined;
+    let consecutiveErrors = 0;
     try {
       loop: for (let rep = 0; rep < REPS; rep++) {
         for (const task of TASKS) {
           let err: unknown;
-          const rec = await runTask(reg, config, task, rep, knownBefore).catch((e) => {
+          const rec = await runTask(reg, config, task, rep, knownBefore, precomputed).catch((e) => {
             err = e;
             realDebug(`[bench-sg] ${config}/${task.id}/rep${rep} error: ${String(e)}`);
             return null;
@@ -1049,13 +1636,19 @@ async function main(): Promise<void> {
           if (rec) {
             records.push(rec);
             allRecords.push(rec);
-          } else if (records.length === 0) {
-            // Fail fast: the config's FIRST task errored — the backend is down
-            // (open server not serving, UiAutomation contended). Abort this
-            // config instead of logging REPS×TASKS identical failures.
-            aborted = `aborted: first task (${task.id}) errored: ${String(err)}`;
-            realDebug(`[bench-sg] ${config} ${aborted}`);
-            break loop;
+            consecutiveErrors = 0;
+          } else {
+            const errored = erroredTaskRecord(config, task, rep);
+            records.push(errored);
+            allRecords.push(errored);
+            consecutiveErrors++;
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              aborted =
+                `aborted after ${consecutiveErrors} consecutive task errors ` +
+                `(last: ${task.id}/rep${rep}: ${String(err)})`;
+              realDebug(`[bench-sg] ${config} ${aborted}`);
+              break loop;
+            }
           }
         }
       }
@@ -1065,12 +1658,23 @@ async function main(): Promise<void> {
     if (aborted) skipped[config] = aborted;
 
     const fb = fallbacksSince(mark);
-    aggs.push(aggregate(config, records, fb.count));
+    // HIGH-5: a describe/tree FALLBACK on B1 means the proprietary path was not
+    // actually exercised (it silently ran the generic uiautomator dump after our
+    // per-task ADT force-stop) — B1's metrics are then invalid. Flag it loudly.
+    if (config === "B1" && fb.count > 0) {
+      skipped["B1-invalid"] =
+        `${fb.count} describe/tree fallback(s) — proprietary path NOT exercised; ` +
+        `B1 metrics INVALID. Samples: ${fb.samples.join(" | ")}`;
+      realDebug(`[bench-sg] B1 INVALID: ${fb.count} fallbacks — ${fb.samples.join(" | ")}`);
+    }
+    const agg = aggregate(config, records, fb.count, precomputeMs);
+    aggs.push(agg);
     blockParams.push({ block: config, gestureParams: BENCH_GESTURE_PARAMS });
     realDebug(
-      `[bench-sg] ${config} done: ${records.length} task-runs, success ${
-        aggregate(config, records, fb.count).successRate
-      }`
+      `[bench-sg] ${config} done: ${records.length} task-runs, success ${agg.successRate} ` +
+        `(scored ${agg.scored}/${agg.total}, excluded ${agg.excluded} ` +
+        `[loc ${agg.locateFailed}/act ${agg.actionFailed}/ora ${agg.oracleError}/task ${agg.taskError}], ` +
+        `fallbacks ${agg.fallbacks}, plumb ${agg.plumbingMs}ms)`
     );
   }
 

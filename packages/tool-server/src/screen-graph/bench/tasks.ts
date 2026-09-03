@@ -166,7 +166,9 @@ export const CHROME_TASKS: BenchTask[] = [
   {
     id: "chrome-scroll-doc",
     app: "chrome",
-    description: "Scroll the page and confirm the 'documentation' body word",
+    // Needle to be confirmed against the real example.com AX-tree dump by the
+    // C.1 pre-flight (BLOCKER-2) before the matrix — not assumption.
+    description: "Scroll the page and confirm a real body word",
     steps: [
       { action: { kind: "launch" } },
       { action: { kind: "swipe", direction: "up" } },
@@ -175,7 +177,83 @@ export const CHROME_TASKS: BenchTask[] = [
   },
 ];
 
-export const ALL_TASKS: BenchTask[] = [...SETTINGS_TASKS, ...CHROME_TASKS];
+/**
+ * SAME-SCREEN tasks (review addendum for H2). Each ends up on one screen and
+ * then issues steps that do NOT navigate away, so O2's outcome has an unchanged
+ * step to skip the read on (H2 is measured over `sameScreen` steps only — the
+ * navigation tasks change the screen every step). No-op taps land on inert areas
+ * (page whitespace, a screen title, empty list gutter); the search task types
+ * two words into one search field; the slider task nudges the brightness bar.
+ *
+ * Coordinates and the exact inert areas are confirmed against the API-35 AVD by
+ * the C.1 pre-flight BEFORE the matrix (the dump verifies the no-op taps report
+ * `changed:false` and the needle is unique to the destination screen state, not
+ * the launch screen). Placeholder coordinates until the pre-flight finalizes them.
+ */
+export const SAME_SCREEN_TASKS: BenchTask[] = [
+  {
+    id: "same-settings-search",
+    app: "settings",
+    description: "Settings search: type two words into the one search field (same screen)",
+    steps: [
+      { action: { kind: "launch" } },
+      { action: { kind: "tap", selector: t("Search settings") } },
+      { action: { kind: "type", selector: t("Search"), text: "blue" }, sameScreen: true },
+      { action: { kind: "type", selector: t("Search"), text: "tooth" }, sameScreen: true },
+    ],
+    assertion: t("Bluetooth"),
+  },
+  {
+    id: "same-sound-noop",
+    app: "settings",
+    description: "Sound & vibration: two no-op taps on inert area (same screen)",
+    steps: [
+      { action: { kind: "launch" } },
+      { action: { kind: "tap", selector: t("Sound & vibration") } },
+      { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
+      { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
+    ],
+    assertion: t("volume"),
+  },
+  {
+    id: "same-chrome-noop",
+    app: "chrome",
+    description: "example.com: two no-op taps on page whitespace (same screen)",
+    steps: [
+      { action: { kind: "launch" } },
+      { action: { kind: "tapXY", x: 0.5, y: 0.5, label: "page-body" }, sameScreen: true },
+      { action: { kind: "tapXY", x: 0.5, y: 0.5, label: "page-body" }, sameScreen: true },
+    ],
+    assertion: t("Example Domain"),
+  },
+  {
+    id: "same-display-slider",
+    app: "settings",
+    description: "Display: nudge the brightness slider twice (same screen, content changes)",
+    steps: [
+      { action: { kind: "launch" } },
+      { action: { kind: "swipe", direction: "up" } },
+      { action: { kind: "tap", selector: t("Display") } },
+      { action: { kind: "tapXY", x: 0.4, y: 0.2, label: "brightness-slider" }, sameScreen: true },
+      { action: { kind: "tapXY", x: 0.7, y: 0.2, label: "brightness-slider" }, sameScreen: true },
+    ],
+    assertion: t("brightness"),
+  },
+  {
+    id: "same-apps-noop",
+    app: "settings",
+    description: "Apps: two no-op taps on the screen title/header (same screen)",
+    steps: [
+      { action: { kind: "launch" } },
+      { action: { kind: "tap", selector: t("Apps") } },
+      { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
+      { action: { kind: "tapXY", x: 0.5, y: 0.12, label: "screen-title" }, sameScreen: true },
+    ],
+    assertion: t("app"),
+  },
+];
+
+export const ALL_TASKS: BenchTask[] = [...SETTINGS_TASKS, ...CHROME_TASKS, ...SAME_SCREEN_TASKS];
 
 /**
  * Structural validation of a task list (device-free): every task has a unique
@@ -204,6 +282,17 @@ export function validateTasks(tasks: BenchTask[] = ALL_TASKS): void {
       }
       if (a.kind === "type" && (!selectorOk(a.selector) || a.text.length === 0)) {
         throw new Error(`task ${task.id} type step is missing a selector or text`);
+      }
+      if (a.kind === "tapXY") {
+        const inUnit = (v: number): boolean => Number.isFinite(v) && v >= 0 && v <= 1;
+        if (!inUnit(a.x) || !inUnit(a.y)) {
+          throw new Error(`task ${task.id} tapXY x/y must be normalized 0–1 (got ${a.x},${a.y})`);
+        }
+      }
+      // A same-screen step must be an action that can plausibly stay on-screen
+      // (never a launch/back, which navigate by definition).
+      if (step.sameScreen && (a.kind === "launch" || a.kind === "back")) {
+        throw new Error(`task ${task.id} sameScreen step cannot be a ${a.kind} action`);
       }
     }
     if (task.navTarget && !selectorOk(task.navTarget)) {

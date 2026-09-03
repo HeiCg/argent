@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  assertionObservation,
   observeAfterAction,
   usesGraph,
   usesOutcomes,
   usesOpenServer,
 } from "../src/screen-graph/bench/policy";
-import type { BenchConfigId } from "../src/screen-graph/bench/types";
 
 describe("screen-graph bench policy — per-config observations", () => {
   it("B1/B2 re-read the whole screen (describe) after every action", () => {
@@ -62,13 +60,6 @@ describe("screen-graph bench policy — per-config observations", () => {
     });
     expect(noNav.useNavigate).toBe(false);
     expect(noNav.observations).toEqual(["graph-lookup"]);
-  });
-
-  it("assertion is read via query for every open config and via describe for B1", () => {
-    expect(assertionObservation("B1")).toBe("describe");
-    for (const c of ["B2", "O1", "O2", "O3", "O4", "O5"] as BenchConfigId[]) {
-      expect(assertionObservation(c)).toBe("query");
-    }
   });
 
   it("capability predicates match the config semantics", () => {
