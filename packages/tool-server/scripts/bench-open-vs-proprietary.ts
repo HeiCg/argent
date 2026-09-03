@@ -48,8 +48,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import * as net from "node:net";
 import { performance } from "node:perf_hooks";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
@@ -57,6 +55,13 @@ import { resolveDevice } from "../src/utils/device-info";
 import { isAndroidTv, isAndroidTvCached } from "../src/utils/adb";
 import { openDeviceServerRef, type OpenDeviceServerApi } from "../src/blueprints/android-open-server";
 import { AndroidOpenServerClient } from "../src/utils/android-open-server-client";
+import {
+  emulatorConsolePort,
+  readConsoleAuthToken,
+  freeHostPort,
+  redirAdd,
+  redirDel,
+} from "../src/utils/open-server-transport";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
@@ -844,81 +849,11 @@ interface Phase3jResults {
   transport: TransportExperiment;
 }
 
-/** Grab a free host TCP port (for the redir experiment's host side). */
-async function freeHostPort(): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      srv.close(() => (port ? resolve(port) : reject(new Error("no free port"))));
-    });
-  });
-}
-
-/**
- * Drive the emulator console (127.0.0.1:<consolePort>): authenticate with the
- * token file, then run each command, resolving once the last one is acknowledged.
- * The console prints an `OK` after the banner, after `auth`, and after each command
- * (or `KO` on error), so progress is tracked by counting `OK` lines. Phase 3j
- * redir experiment only.
- */
-async function emulatorConsole(consolePort: number, commands: string[]): Promise<void> {
-  const token = readFileSync(join(homedir(), ".emulator_console_auth_token"), "utf8").trim();
-  await new Promise<void>((resolve, reject) => {
-    const sock = net.createConnection({ host: "127.0.0.1", port: consolePort });
-    let buf = "";
-    let authed = false;
-    let sent = 0; // commands issued so far
-    const okTarget = () => 1 /* banner */ + 1 /* auth */ + commands.length;
-    const okCount = (): number => (buf.match(/^OK\s*$/gm) || []).length;
-    const cleanup = (): void => {
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-    };
-    sock.setTimeout(6000, () => {
-      cleanup();
-      reject(new Error("emulator console timed out"));
-    });
-    sock.on("error", (e) => {
-      cleanup();
-      reject(e);
-    });
-    sock.on("data", (d) => {
-      buf += d.toString("utf8");
-      if (/^KO\b/m.test(buf)) {
-        cleanup();
-        reject(new Error(`console KO: ${buf.trim().slice(-200)}`));
-        return;
-      }
-      const oks = okCount();
-      if (!authed && oks >= 1) {
-        authed = true;
-        sock.write(`auth ${token}\n`);
-        return;
-      }
-      // After auth's OK (oks>=2), issue each command as its predecessor's OK lands.
-      while (authed && sent < commands.length && oks >= 2 + sent) {
-        sock.write(commands[sent] + "\n");
-        sent++;
-      }
-      if (authed && sent === commands.length && oks >= okTarget()) {
-        sock.write("quit\n");
-        cleanup();
-        resolve();
-      }
-    });
-  });
-}
-
-/** N getNestedState round-trips over `client`, returning the host timeline stats. */
+/** N getNestedState round-trips over an EXPLICIT `client`, returning host stats. */
 async function measureClientTransport(
   client: AndroidOpenServerClient,
-  n: number
+  n: number,
+  extraParams: Record<string, unknown> = {}
 ): Promise<{ rtt: StageStat; recv: StageStat; wire: StageStat }> {
   for (let i = 0; i < 3; i++) await client.request("ping").catch(() => undefined);
   const rtt: number[] = [];
@@ -932,6 +867,7 @@ async function measureClientTransport(
         compact: true,
         maxElements: 3000,
         waitTimeoutMs: 0,
+        ...extraParams,
       });
       rtt.push(r.hostRoundTripMs);
       recv.push(r.hostFirstToLastByteMs);
@@ -944,92 +880,82 @@ async function measureClientTransport(
 }
 
 /**
- * (b) The redir transport arm: bypass adbd + the host adb server by forwarding a
- * host port straight to the guest's 0.0.0.0 listener via the emulator console's
- * `redir` (sender on the last hop is qemu slirp, not the Nagling adb server). Needs
- * the server spawned with bindAll (ARGENT_OPEN_SERVER_BIND_ALL=1) so a routable
- * listener exists — redir cannot reach the default loopback-only bind. Best-effort:
- * any failure returns `available:false` with the reason, never throws.
- */
-async function measureRedirArm(reg: Reg, n: number): Promise<TransportArm> {
-  const empty = (): StageStat => stageStat([]);
-  const arm = (available: boolean, note: string, s?: { rtt: StageStat; recv: StageStat; wire: StageStat }): TransportArm => ({
-    label: "redir (emulator console)",
-    available,
-    note,
-    rtt: s?.rtt ?? empty(),
-    recv: s?.recv ?? empty(),
-    wire: s?.wire ?? empty(),
-  });
-  try {
-    const device = resolveDevice(SERIAL);
-    const ref = openDeviceServerRef(device);
-    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const ports = server.getTransportPorts();
-    if (ports.allPort === undefined) {
-      return arm(
-        false,
-        "server has no 0.0.0.0 listener (spawn with ARGENT_OPEN_SERVER_BIND_ALL=1); " +
-          "redir connects to the guest's routable IP and cannot reach a loopback-only bind"
-      );
-    }
-    const m = /^emulator-(\d+)$/.exec(SERIAL);
-    if (!m) return arm(false, `serial ${SERIAL} is not emulator-NNNN, so no console port`);
-    const consolePort = parseInt(m[1]!, 10);
-    const hostPort = await freeHostPort();
-    await emulatorConsole(consolePort, [`redir add tcp:${hostPort}:${ports.allPort}`]);
-    const client = new AndroidOpenServerClient("127.0.0.1", hostPort);
-    try {
-      const s = await measureClientTransport(client, n);
-      return arm(true, `redir tcp:${hostPort} -> guest 0.0.0.0:${ports.allPort} (bypasses adb server)`, s);
-    } finally {
-      client.close();
-      await emulatorConsole(consolePort, [`redir del tcp:${hostPort}`]).catch(() => undefined);
-    }
-  } catch (e) {
-    return arm(false, `redir probe failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-/**
  * The phase 3j transport experiment (item 3), all in ONE run, N each: (a) the
  * `adb forward` baseline, (b) the emulator-console `redir` path, (c) the padding
  * diagnostic (`_padTo` a full MSS multiple so the reply has no final partial
- * segment). Comparing the recv gap across the three isolates the fixed ~40 ms
- * host-recv cost's cause.
+ * segment). Each arm uses its OWN explicit client so the measurement is
+ * independent of whichever transport the blueprint selected as the session default
+ * — (a)/(c) dial the adb-forwarded loopback port directly, (b) dials a fresh
+ * console `redir` mapping. Comparing the recv gap across the three isolates the
+ * ~40 ms host-recv cost's cause.
  */
 async function measureTransportExperiment(reg: Reg, n: number): Promise<TransportExperiment> {
   const PAD = 1448;
   const arms: TransportArm[] = [];
-  const toArm = (
-    label: string,
-    b: RpcBreakdown | null,
-    note: string
-  ): TransportArm =>
-    b
-      ? { label, available: true, note, rtt: b.hostRttMs, recv: b.hostRecvMs, wire: b.wireBytes }
-      : { label, available: false, note: `${note} — probe returned no samples`, rtt: stageStat([]), recv: stageStat([]), wire: stageStat([]) };
+  const empty = (): StageStat => stageStat([]);
+  const naArm = (label: string, note: string): TransportArm => ({
+    label,
+    available: false,
+    note,
+    rtt: empty(),
+    recv: empty(),
+    wire: empty(),
+  });
 
-  // (a) baseline over adb forward.
-  const baseline = await measureRpcBreakdown(reg, "transport a: adb-forward", n, (s) =>
-    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
-  );
-  arms.push(toArm("adb-forward", baseline, "baseline (adb server on the last hop)"));
+  let ports: { localPort: number; devicePort: number; allPort?: number } | null = null;
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    ports = server.getTransportPorts();
+  } catch (e) {
+    arms.push(naArm("adb-forward", `could not resolve open server: ${e instanceof Error ? e.message : String(e)}`));
+    return { paddingTarget: PAD, arms };
+  }
 
-  // (b) redir, best-effort.
-  arms.push(await measureRedirArm(reg, n));
+  // (a) baseline + (c) padding — explicit client on the adb-forwarded loopback port.
+  {
+    const client = new AndroidOpenServerClient("127.0.0.1", ports.localPort);
+    try {
+      const a = await measureClientTransport(client, n);
+      arms.push({ label: "adb-forward", available: true, note: "baseline (adb server on the last hop)", ...a });
+      const c = await measureClientTransport(client, n, { _padTo: PAD });
+      arms.push({ label: `adb-forward +pad${PAD}`, available: true, note: "diagnostic: reply padded to a full-MSS multiple (never shipped)", ...c });
+    } catch (e) {
+      arms.push(naArm("adb-forward", `probe failed: ${e instanceof Error ? e.message : String(e)}`));
+    } finally {
+      client.close();
+    }
+  }
 
-  // (c) padding diagnostic: pad the reply to a multiple of one MSS.
-  const padded = await measureRpcBreakdown(reg, "transport c: adb-forward +pad", n, (s) =>
-    s.getNestedState({ waitTimeoutMs: 0, compact: true, _padTo: PAD }) as Promise<RpcTimedReply>
-  );
-  arms.push(
-    toArm(
-      `adb-forward +pad${PAD}`,
-      padded,
-      "diagnostic: reply padded to a full-MSS multiple (never shipped)"
-    )
-  );
+  // (b) redir — a fresh console mapping to the guest 0.0.0.0 listener, bypassing
+  // adbd + the adb server. Best-effort; any miss records the reason.
+  {
+    const consolePort = emulatorConsolePort(SERIAL);
+    const token = readConsoleAuthToken();
+    if (ports.allPort === undefined) {
+      arms.push(naArm("redir (emulator console)", "server has no 0.0.0.0 listener (not an emulator bind); redir cannot reach loopback-only"));
+    } else if (consolePort === null) {
+      arms.push(naArm("redir (emulator console)", `serial ${SERIAL} is not emulator-NNNN`));
+    } else if (token === null) {
+      arms.push(naArm("redir (emulator console)", "no emulator console auth token"));
+    } else {
+      let hostPort: number | undefined;
+      let client: AndroidOpenServerClient | null = null;
+      try {
+        hostPort = await freeHostPort();
+        await redirAdd(consolePort, hostPort, ports.allPort, token);
+        client = new AndroidOpenServerClient("127.0.0.1", hostPort);
+        const s = await measureClientTransport(client, n);
+        arms.push({ label: "redir (emulator console)", available: true, note: `redir tcp:${hostPort} -> guest 0.0.0.0:${ports.allPort} (bypasses adb server)`, ...s });
+      } catch (e) {
+        arms.push(naArm("redir (emulator console)", `probe failed: ${e instanceof Error ? e.message : String(e)}`));
+      } finally {
+        if (client) client.close();
+        if (hostPort !== undefined) await redirDel(consolePort, hostPort, token).catch(() => undefined);
+      }
+    }
+  }
 
   return { paddingTarget: PAD, arms };
 }
