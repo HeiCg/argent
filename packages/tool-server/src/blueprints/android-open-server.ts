@@ -17,6 +17,16 @@ import type { ScrcpyInjectBackend } from "../utils/scrcpy-inject-backend";
 import { resolveAndroidBinary } from "../utils/android-binary";
 import { ensureOpenDeviceServerInstalled } from "../utils/android-helper-install";
 import { AndroidOpenServerClient } from "../utils/android-open-server-client";
+import {
+  type Transport,
+  isEmulatorSerial,
+  emulatorConsolePort,
+  readConsoleAuthToken,
+  decideTransport,
+  freeHostPort,
+  redirAdd,
+  redirDel,
+} from "../utils/open-server-transport";
 import { invalidateScreenSize } from "../utils/open-server-screen-cache";
 import { invalidateClipboardSupport } from "../utils/open-server-clipboard-cache";
 import type {
@@ -549,7 +559,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
     let ready = false;
     let disposed = false;
 
-    const client = new AndroidOpenServerClient("127.0.0.1", spawned.localPort);
+    let client = new AndroidOpenServerClient("127.0.0.1", spawned.localPort);
 
     // A forwarded port doesn't prove the server answers; ping is the gate.
     try {
@@ -564,6 +574,69 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       }
       await removeAdbForward(serial, spawned.localPort);
       throw err;
+    }
+
+    // Transport selection (phase 3j). For EMULATORS ONLY, prefer the console
+    // `redir` path (host port -> guest 0.0.0.0 listener via qemu user-mode net),
+    // which bypasses the adb server hop that stalls the reply ~40 ms on the tail.
+    // Any precondition miss or setup failure falls back to the adb-forward client
+    // already proven above. Physical devices always stay on adb forward.
+    let activeTransport: Transport = "adb-forward";
+    let redirHostPort: number | undefined;
+    let redirConsolePort: number | undefined;
+    const consoleToken = readConsoleAuthToken();
+    if (isEmulatorSerial(serial) && spawned.allPort !== undefined && consoleToken !== null) {
+      const consolePort = emulatorConsolePort(serial)!;
+      let redirClient: AndroidOpenServerClient | null = null;
+      let redirOk = false;
+      try {
+        const hostPort = await freeHostPort();
+        await redirAdd(consolePort, hostPort, spawned.allPort, consoleToken);
+        redirClient = new AndroidOpenServerClient("127.0.0.1", hostPort);
+        await redirClient.request("ping"); // redir proves out only when the server answers
+        redirOk = true;
+        redirHostPort = hostPort;
+        redirConsolePort = consolePort;
+      } catch (e) {
+        redirOk = false;
+        if (redirClient) redirClient.close();
+        redirClient = null;
+        // Best-effort: drop a half-created redir mapping so it doesn't leak.
+        if (redirHostPort !== undefined) {
+          await redirDel(consolePort, redirHostPort, consoleToken).catch(() => undefined);
+          redirHostPort = undefined;
+        }
+        // eslint-disable-next-line no-console
+        console.debug(
+          `[open-device-server] redir setup failed, using adb forward: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+      const decision = decideTransport({
+        serial,
+        tokenExists: consoleToken !== null,
+        allPort: spawned.allPort,
+        redirOk,
+      });
+      if (decision.transport === "redir" && redirClient) {
+        client.close(); // switch the whole session onto redir; adb forward stays as the port mapping
+        client = redirClient;
+        activeTransport = "redir";
+      } else if (redirClient) {
+        redirClient.close();
+      }
+      // eslint-disable-next-line no-console
+      console.debug(`[open-device-server] transport=${activeTransport} (${decision.reason})`);
+    } else {
+      const decision = decideTransport({
+        serial,
+        tokenExists: consoleToken !== null,
+        allPort: spawned.allPort,
+        redirOk: false,
+      });
+      // eslint-disable-next-line no-console
+      console.debug(`[open-device-server] transport=${activeTransport} (${decision.reason})`);
     }
 
     spawned.proc.on("exit", (code, signal) => {
@@ -646,7 +719,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         });
         return {
           ...result,
-          transport: "adb-forward" as const,
+          transport: activeTransport,
           wireBytes,
           hostParseMs: parseMs,
           hostSentToFirstByteMs,
@@ -864,6 +937,11 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           spawned.proc.kill();
         } catch {
           /* ignore */
+        }
+        // Drop the console redir mapping (phase 3j) before the adb forward, so a
+        // later session on the same emulator doesn't inherit a stale forward.
+        if (redirHostPort !== undefined && redirConsolePort !== undefined && consoleToken !== null) {
+          await redirDel(redirConsolePort, redirHostPort, consoleToken).catch(() => undefined);
         }
         await removeAdbForward(serial, spawned.localPort);
       },

@@ -77,14 +77,25 @@ class DeviceControlInstrumentation : Instrumentation() {
         val port = tcp.boundPort
         Log.i(TAG, "Device control server listening on ephemeral port $port")
 
-        // Phase 3j redir experiment (gated by `-e bindAll true`): also bind a second
-        // listener on 0.0.0.0 so the emulator console `redir add tcp:h:allPort` — which
-        // connects to the guest's routable IP, not loopback — can reach the server, and
-        // the host can measure that transport against `adb forward`. Its own handler so
-        // its per-request state never interleaves with the loopback one's (the host uses
-        // one transport at a time). Off by default; never exposed in normal operation.
+        // Phase 3j redir transport: on an EMULATOR also bind a second listener on
+        // 0.0.0.0 so the host's emulator-console `redir` (which connects to the
+        // guest's routable IP, not loopback) can reach the server. The decision is
+        // made ON DEVICE from the qemu system properties — never from a host env var;
+        // `-e bindAll true` is only a CI/debug override, logged loudly. Physical
+        // devices stay loopback-only. Its own handler so per-request state never
+        // interleaves with the loopback one's (the host uses one transport at a time).
         var allPort = -1
-        val bindAll = startArgs?.getString("bindAll") == "true"
+        val argOverride = startArgs?.getString("bindAll") == "true"
+        val bindDecision = EmulatorDetect.shouldBindAll(
+            EmulatorDetect.systemProperty("ro.kernel.qemu"),
+            EmulatorDetect.systemProperty("ro.boot.qemu"),
+            argOverride
+        )
+        if (argOverride) {
+            Log.w(TAG, "bindAll debug override is SET — ${bindDecision.reason}; device control exposed beyond loopback")
+        }
+        Log.i(TAG, "bindAll=${bindDecision.bindAll} (${bindDecision.reason})")
+        val bindAll = bindDecision.bindAll
         if (bindAll) {
             try {
                 val allHandler = JsonRpcHandler(uiDevice, uiAutomation, this) { requestShutdown() }
