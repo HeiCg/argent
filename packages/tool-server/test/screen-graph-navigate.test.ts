@@ -45,6 +45,19 @@ describe("runNavigation", () => {
     // No further steps attempted.
     expect(call).toBe(2);
   });
+
+  it("accepts a drifted arrival via the tolerant `matches` predicate (C.4)", async () => {
+    // The device lands on a hash that DIFFERS from the plan's `to`, but a tolerant
+    // matcher (resource-id Jaccard in the tool) accepts it as the same screen.
+    const steps = [step("b"), step("c")];
+    const result = await runNavigation("a", steps, {
+      execute: async (_action, s) => ({ afterHash: `${s.to}-drifted`, afterResourceIds: [s.to] }),
+      matches: (s, outcome) => (outcome.afterResourceIds ?? []).includes(s.to),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.completedSteps).toBe(2);
+    expect(result.finalHash).toBe("c-drifted");
+  });
 });
 
 describe("navigate-to tool flag gating", () => {

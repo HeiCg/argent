@@ -15,6 +15,8 @@ export interface FetchedScreen {
   /** Device AX version clock the screen was captured at (Phase B leftover B1). */
   version?: number;
   index: ScreenNode["index"];
+  /** Resource-id multiset for stable re-localization (C.4 work item C). */
+  resourceIds?: string[];
   label?: string;
   /** A secret was on screen — the store will redact the compact text. */
   secret?: boolean;
@@ -60,6 +62,7 @@ export async function recordObservation(ctx: ObserveContext): Promise<void> {
       stateHash: screen.stateHash,
       ...(screen.version !== undefined ? { version: screen.version } : {}),
       index: screen.index,
+      ...(screen.resourceIds !== undefined ? { resourceIds: screen.resourceIds } : {}),
       ...(screen.label !== undefined ? { label: screen.label } : {}),
       ...(screen.secret ? { secret: true } : {}),
     });

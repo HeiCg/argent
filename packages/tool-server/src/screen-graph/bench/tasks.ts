@@ -27,9 +27,12 @@ export const SETTINGS_TASKS: BenchTask[] = [
     // Destination-unique (C.3): "Calls & SMS" is on the Network & internet
     // sub-screen and NOT on the Settings root (capture run 33767073864). The old
     // "Internet" matched the root's "Network & internet" — a missed tap would
-    // false-pass. navTarget is the same exact text so O5 routes root→sub-screen.
+    // false-pass. C.4: navTarget is now a SCREEN IDENTITY distinct from the
+    // oracle — "Internet" is the top row of the Network & internet screen (indexed
+    // there, absent as an exact-text key on the root) so O5 routes root→sub-screen
+    // without being handed the oracle string.
     assertion: t("Calls & SMS"),
-    navTarget: t("Calls & SMS"),
+    navTarget: t("Internet"),
   },
   {
     id: "settings-connected",
@@ -40,8 +43,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "tap", selector: t("Connected devices") }, knownTarget: true },
     ],
     // "Pair new device" is on the Connected devices screen, not the root.
+    // navTarget (C.4): a distinct destination identity, "Saved devices".
     assertion: t("Pair new device"),
-    navTarget: t("Pair new device"),
+    navTarget: t("Saved devices"),
   },
   {
     id: "settings-apps",
@@ -53,8 +57,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
     ],
     // "Special app access" is on the Apps screen, not the root (whose "Apps"
     // item made the old bare-"app" needle a guaranteed false-pass).
+    // navTarget (C.4): "Recently opened apps", a top-of-screen destination identity.
     assertion: t("Special app access"),
-    navTarget: t("Special app access"),
+    navTarget: t("Recently opened apps"),
   },
   {
     id: "settings-notifications",
@@ -65,8 +70,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "tap", selector: t("Notifications") }, knownTarget: true },
     ],
     // "App notifications" is on the Notifications screen, not the root.
+    // navTarget (C.4): "Notification history", a distinct destination identity.
     assertion: t("App notifications"),
-    navTarget: t("App notifications"),
+    navTarget: t("Notification history"),
   },
   {
     id: "settings-battery",
@@ -78,8 +84,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
     ],
     // "Battery usage" is on the Battery screen, not the root (whose "Battery"
     // item made the old bare-"battery" needle a false-pass).
+    // navTarget (C.4): "Battery Saver", a distinct destination identity.
     assertion: t("Battery usage"),
-    navTarget: t("Battery usage"),
+    navTarget: t("Battery Saver"),
   },
   {
     id: "settings-storage",
@@ -90,8 +97,10 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "tap", selector: t("Storage") }, knownTarget: true },
     ],
     // "Free up space" is on the Storage screen, not the root.
+    // navTarget (C.4): "Trash", a distinct Storage-screen identity (absent as an
+    // exact-text key on the root, unlike "System"/"Apps" which are also root rows).
     assertion: t("Free up space"),
-    navTarget: t("Free up space"),
+    navTarget: t("Trash"),
   },
   {
     id: "settings-sound",
@@ -103,8 +112,9 @@ export const SETTINGS_TASKS: BenchTask[] = [
     ],
     // "Media volume" is on the Sound & vibration screen, not the root (whose
     // "Volume, haptics, Do Not Disturb" made the old "volume" needle a false-pass).
+    // navTarget (C.4): "Call volume", a distinct Sound-screen identity.
     assertion: t("Media volume"),
-    navTarget: t("Media volume"),
+    navTarget: t("Call volume"),
   },
   {
     id: "settings-display",
@@ -115,11 +125,17 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "swipe", direction: "up" } },
       { action: { kind: "tap", selector: t("Display") }, knownTarget: true },
     ],
-    // "brightness" is already destination-unique (not on the root). navTarget is
-    // a Display-screen exact text ("Brightness level"), NOT "Display" — "Display"
-    // is on the root too, so it would route O5 0 steps and never open the screen.
-    assertion: t("brightness"),
-    navTarget: t("Brightness level"),
+    // C.4 work item E: the old "brightness" needle IS in the Settings root's FULL
+    // tree ("Dark theme, font size, brightness", the Display row subtitle, below
+    // the fold) — it only passed the C.3 gate because that gate checked visible
+    // nodes. Over the full-tree gate it is BAD, so the needle is now the Display
+    // screen's own control title "Brightness level" (present on Display, absent as
+    // a substring from the whole root). navTarget is a distinct screen identity —
+    // "Brightness" (the section header on Display; NOT an exact-text key on the
+    // root, whose only match is the combined subtitle) — so O5 routes into Display.
+    assertion: t("Brightness level"),
+    navTarget: t("Brightness"),
+    query: t("Display"),
   },
   {
     id: "settings-network-internet",
@@ -131,9 +147,10 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "tap", selector: t("Internet") }, knownTarget: true },
     ],
     // "SIMs" is destination-unique vs the root (existing pre-flight ok). navTarget
-    // "SIMs" routes O5 to the nearest screen holding it (Network & internet).
+    // (C.4) is a distinct identity, "Internet" (top row of Network & internet),
+    // routing O5 to that screen without being handed the oracle string.
     assertion: t("SIMs"),
-    navTarget: t("SIMs"),
+    navTarget: t("Internet"),
   },
   {
     id: "settings-battery-then-back",
@@ -151,8 +168,11 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "back" } },
       { action: { kind: "tap", selector: t("Battery") }, knownTarget: true },
     ],
+    // navTarget (C.4): "Battery Saver", a distinct Battery-screen identity.
+    // `query` gives the `back` step a needle-independent observation selector.
     assertion: t("Battery usage"),
-    navTarget: t("Battery usage"),
+    navTarget: t("Battery Saver"),
+    query: t("Battery"),
   },
 ];
 
@@ -187,6 +207,8 @@ export const CHROME_TASKS: BenchTask[] = [
       { action: { kind: "swipe", direction: "up" } },
     ],
     assertion: t("permission"),
+    // Needle-independent observation anchor for the swipe step (C.4 work item D).
+    query: t("Example"),
   },
   {
     id: "chrome-scroll-doc",
@@ -202,6 +224,7 @@ export const CHROME_TASKS: BenchTask[] = [
       { action: { kind: "swipe", direction: "up" } },
     ],
     assertion: t("documentation"),
+    query: t("Example"),
   },
 ];
 
@@ -251,6 +274,7 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
     ],
     // "Media volume" is on the Sound & vibration screen, not the root.
     assertion: t("Media volume"),
+    query: t("Sound & vibration"),
   },
   {
     id: "same-chrome-noop",
@@ -262,6 +286,7 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
       { action: { kind: "tapXY", x: 0.5, y: 0.5, label: "page-body" }, sameScreen: true },
     ],
     assertion: t("Example Domain"),
+    query: t("Example"),
   },
   {
     id: "same-display-slider",
@@ -274,7 +299,10 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
       { action: { kind: "tapXY", x: 0.4, y: 0.2, label: "brightness-slider" }, sameScreen: true },
       { action: { kind: "tapXY", x: 0.7, y: 0.2, label: "brightness-slider" }, sameScreen: true },
     ],
-    assertion: t("brightness"),
+    // C.4: "brightness" is in the root's FULL tree (below-fold subtitle), so the
+    // needle is the Display screen's own "Brightness level" (see settings-display).
+    assertion: t("Brightness level"),
+    query: t("Display"),
   },
   {
     id: "same-apps-noop",
@@ -288,6 +316,7 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
     ],
     // "Special app access" is on the Apps screen, not the root.
     assertion: t("Special app access"),
+    query: t("Apps"),
   },
 ];
 
@@ -333,8 +362,25 @@ export function validateTasks(tasks: BenchTask[] = ALL_TASKS): void {
         throw new Error(`task ${task.id} sameScreen step cannot be a ${a.kind} action`);
       }
     }
-    if (task.navTarget && !selectorOk(task.navTarget)) {
-      throw new Error(`task ${task.id} navTarget names neither id nor text`);
+    const selEq = (a?: { id?: string; text?: string }, b?: { id?: string; text?: string }): boolean =>
+      Boolean(a && b && (a.id ?? "") === (b.id ?? "") && (a.text ?? "") === (b.text ?? ""));
+    if (task.navTarget) {
+      if (!selectorOk(task.navTarget)) {
+        throw new Error(`task ${task.id} navTarget names neither id nor text`);
+      }
+      // C.4 work item E: navTarget is a SCREEN IDENTITY, never the oracle needle.
+      if (selEq(task.navTarget, task.assertion)) {
+        throw new Error(`task ${task.id} navTarget must not equal the assertion needle`);
+      }
+    }
+    if (task.query) {
+      if (!selectorOk(task.query)) {
+        throw new Error(`task ${task.id} query names neither id nor text`);
+      }
+      // C.4 work item D: the observation anchor must be needle-independent.
+      if (selEq(task.query, task.assertion)) {
+        throw new Error(`task ${task.id} query must not equal the assertion needle`);
+      }
     }
   }
 }

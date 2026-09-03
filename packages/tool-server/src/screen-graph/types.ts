@@ -82,6 +82,18 @@ export interface ScreenNode {
   version?: number;
   /** resource-id / text → last-known bounds + flags. */
   index: Record<SelectorKey, IndexEntry>;
+  /**
+   * The screen's resource-id MULTISET (one entry per node that carries a
+   * resource-id, WITH repeats), captured when the node is (re)rendered. This is
+   * the stable structural fingerprint the host uses to re-localize a live screen
+   * whose exact structural hash `H` drifted between runs (Phase C.4, work item C):
+   * the device `H` excludes text but is still perturbed by quantized-bounds
+   * bucket crossings, the `focused` flag, the RecyclerView first-child rule and
+   * volatile node insert/remove — none of which move the resource-id multiset by
+   * much, so a Jaccard match on it recovers the node when `H` misses. Absent on
+   * pre-C.4 nodes (a warm graph from before this field degrades to exact-hash).
+   */
+  resourceIds?: string[];
   /** Path to a stored thumbnail, when captured. */
   thumbnailPath?: string;
   /** `compact` text was dropped because the screen held a secret. */

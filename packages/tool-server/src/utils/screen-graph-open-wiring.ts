@@ -106,8 +106,32 @@ function buildIndex(elements: OpenServerElement[]): ScreenNode["index"] {
     if (el.resourceId) index[selectorKeyForId(el.resourceId)] = { bounds, flags };
     const text = (el.text ?? "").trim();
     if (text) index[selectorKeyForText(text)] = { bounds, flags };
+    // C.4: also index the content-description under a text key when the node has
+    // no visible text, so a `navTarget` / selector that lives only in a cd (e.g.
+    // an icon-only control) is still routable. A cd never overwrites a real text
+    // key of the same string.
+    const cd = (el.contentDesc ?? "").trim();
+    if (cd && !text) {
+      const key = selectorKeyForText(cd);
+      if (!(key in index)) index[key] = { bounds, flags };
+    }
   }
   return index;
+}
+
+/**
+ * The screen's resource-id MULTISET (C.4 work item C): one entry per element that
+ * carries a resource-id, WITH repeats, in tree order. This is the match key the
+ * host uses to re-localize a live screen whose structural hash `H` drifted (see
+ * `screen-graph/types.ts` `ScreenNode.resourceIds`).
+ */
+function buildResourceIds(elements: OpenServerElement[]): string[] {
+  const ids: string[] = [];
+  for (const el of elements) {
+    const id = (el.resourceId ?? "").trim();
+    if (id) ids.push(id);
+  }
+  return ids;
 }
 
 /** Render a screen payload (compact text + index + label) from a tree snapshot. */
@@ -122,6 +146,7 @@ export function buildScreenPayload(
   const tree = openServerElementsToDescribeNode(elements, screenW, screenH);
   const compact = formatDescribeTree(tree, { source: "open-device-server" });
   const index = buildIndex(elements);
+  const resourceIds = buildResourceIds(elements);
   const label = deriveLabel({
     activity,
     nodes: elements.map((el) => ({ id: el.resourceId, text: el.text, bounds: el.bounds })),
@@ -132,6 +157,7 @@ export function buildScreenPayload(
     stateHash,
     ...(version !== undefined ? { version } : {}),
     index,
+    resourceIds,
     ...(label !== undefined ? { label } : {}),
   };
 }

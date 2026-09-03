@@ -97,6 +97,40 @@ describe("screen-graph bench tasks", () => {
     expect(() => validateTasks(bad)).toThrow(/must start with a launch/);
   });
 
+  it("no shipped task hands O5 the oracle string: navTarget !== assertion (C.4 work item E)", () => {
+    for (const task of ALL_TASKS) {
+      if (!task.navTarget) continue;
+      const same =
+        (task.navTarget.id ?? "") === (task.assertion.id ?? "") &&
+        (task.navTarget.text ?? "") === (task.assertion.text ?? "");
+      expect(same, `${task.id} navTarget equals its assertion`).toBe(false);
+    }
+  });
+
+  it("no shipped task's query anchor is the oracle needle (C.4 work item D)", () => {
+    for (const task of ALL_TASKS) {
+      if (!task.query) continue;
+      const same =
+        (task.query.id ?? "") === (task.assertion.id ?? "") &&
+        (task.query.text ?? "") === (task.assertion.text ?? "");
+      expect(same, `${task.id} query equals its assertion`).toBe(false);
+    }
+  });
+
+  it("rejects a navTarget equal to the assertion", () => {
+    const bad: BenchTask[] = [
+      {
+        id: "bad",
+        app: "settings",
+        description: "navTarget == assertion",
+        steps: [{ action: { kind: "launch" } }, { action: { kind: "tap", selector: { text: "X" } } }],
+        assertion: { text: "Y" },
+        navTarget: { text: "Y" },
+      },
+    ];
+    expect(() => validateTasks(bad)).toThrow(/navTarget must not equal the assertion/);
+  });
+
   it("rejects an empty selector on a tap step", () => {
     const bad: BenchTask[] = [
       {

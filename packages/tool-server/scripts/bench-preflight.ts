@@ -335,14 +335,19 @@ async function main(): Promise<number> {
     for (const task of ALL_TASKS) {
       const needle = task.assertion.text ?? task.assertion.id ?? "";
       const launch = task.app === "settings" ? out.settingsRoot! : out.exampleCom!;
-      const r = evaluateAssertion(launch.nodes, needle, { screen: launch.screen });
       const navigates = navigatesAwayFromLaunch(task.id);
-      // A navigating task must NOT match its launch screen. A launch-only chrome
-      // task MUST match (its launch screen is its destination).
+      // C.4 work item E: a navigating task's needle must be absent from the FULL
+      // launch tree (visible OR below-fold), because those tasks swipe the root
+      // before tapping and would bring a below-fold row on-screen — the C.3 gate
+      // checked only visible nodes and false-passed "brightness". A launch-only
+      // task's needle must be PRESENT on its (visible) launch==destination screen.
+      const r = navigates
+        ? evaluateAssertion(launch.nodes, needle, { ignoreVisibility: true })
+        : evaluateAssertion(launch.nodes, needle, { screen: launch.screen });
       const verdict = navigates
         ? r.matched
-          ? "BAD (needle on launch screen a navigating task leaves — false-pass risk)"
-          : "ok (unique to destination)"
+          ? "BAD (needle in launch tree a navigating task leaves — false-pass risk, full-tree gate)"
+          : "ok (unique to destination, full-tree gate)"
         : r.matched
           ? "ok (launch == destination; needle present)"
           : "MISSING (launch-only task but needle not on screen)";

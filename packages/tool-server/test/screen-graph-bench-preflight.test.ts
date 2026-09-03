@@ -43,8 +43,10 @@ describe.skipIf(!present)("screen-graph bench pre-flight — launch-screen needl
       if (!e.navigates) continue;
       const launch = e.app === "settings" ? fx.settingsRoot : fx.exampleCom;
       if (!launch) continue;
-      const r = evaluateAssertion(launch.nodes, e.needle, { screen: launch.screen });
-      if (r.matched) offenders.push(`${e.task} (needle "${e.needle}" on ${e.app} launch)`);
+      // C.4 work item E: navigating tasks are gated over the FULL launch tree
+      // (visible OR below-fold), since they swipe the root before tapping.
+      const r = evaluateAssertion(launch.nodes, e.needle, { ignoreVisibility: true });
+      if (r.matched) offenders.push(`${e.task} (needle "${e.needle}" in ${e.app} launch tree)`);
     }
     expect(offenders, `needles present on the launch screen: ${offenders.join("; ")}`).toEqual([]);
   });

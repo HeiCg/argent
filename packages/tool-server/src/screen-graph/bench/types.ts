@@ -65,8 +65,22 @@ export interface BenchTask {
    * `describe` (B1 proprietary has no query RPC).
    */
   assertion: BenchSelector;
-  /** Ultimate target for O5 `navigate-to` (a screen the graph can plan to). */
+  /**
+   * Ultimate target for O5 `navigate-to` (a screen the graph can plan to). It is
+   * a SCREEN IDENTITY — a selector present on the destination screen — and MUST
+   * NOT equal the `assertion` needle (C.4 work item E: handing O5 the exact oracle
+   * string was an information asymmetry). Routing plans to the nearest node whose
+   * index holds it.
+   */
   navTarget?: BenchSelector;
+  /**
+   * Fixed observation selector for this task's NON-tap, non-type steps
+   * (swipe / back / tapXY / launch), so O1/O2 per-step tokens do not depend on the
+   * `assertion` needle (C.4 work item D). Tap/type steps observe their own action
+   * target; a task without this falls back to its first tap selector, else an
+   * app anchor — never the assertion. NEVER set this to the assertion needle.
+   */
+  query?: BenchSelector;
 }
 
 /**

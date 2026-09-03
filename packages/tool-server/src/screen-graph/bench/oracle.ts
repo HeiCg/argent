@@ -58,6 +58,14 @@ export interface OracleOptions {
    * visible. Omit to skip the on-screen check (geometry area check still runs).
    */
   screen?: { width: number; height: number };
+  /**
+   * Match over the FULL tree — every node in the dump, visible or not (C.4 work
+   * item E). The SUCCESS oracle keeps the visibility gate (a scrolled-away needle
+   * must not count as met), but the pre-flight's launch-screen ABSENCE check uses
+   * this so a below-fold needle like "brightness" (in the Settings root's Display
+   * subtitle) is caught as a false-pass risk for a task that swipes the root.
+   */
+  ignoreVisibility?: boolean;
 }
 
 /**
@@ -98,7 +106,7 @@ export function evaluateAssertion(
   if (needleLc.length === 0) return { matched: false, matches: [] };
   const matches: AssertionMatch[] = [];
   for (const n of nodes) {
-    if (!isVisibleNode(n, opts.screen)) continue;
+    if (!opts.ignoreVisibility && !isVisibleNode(n, opts.screen)) continue;
     const text = n.text ?? "";
     const cd = n.cd ?? "";
     let field: "text" | "contentDescription" | null = null;

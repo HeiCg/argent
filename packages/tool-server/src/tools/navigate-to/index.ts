@@ -17,12 +17,15 @@ import {
 } from "../../blueprints/android-open-server";
 import { resolveStoreForCurrentApp } from "../../utils/screen-graph-open-wiring";
 import {
+  DEFAULT_STABLE_MATCH_THRESHOLD,
   GRID,
   buildSummary,
   hash8,
+  multisetJaccard,
+  nodeResourceIds,
   parseSelectorKey,
   plan,
-  planToSelector,
+  planToSelectorStable,
   renderSummary,
   runNavigation,
   type CanonicalAction,
@@ -31,6 +34,7 @@ import {
   type ScreenGraphStore,
   type ScreenNode,
 } from "../../screen-graph";
+import type { OpenServerElement } from "../describe/platforms/android/open-server-tree";
 
 export const NAVIGATE_TO_TOOL_ID = "navigate-to";
 
@@ -71,6 +75,24 @@ export interface NavigateToResult {
   divergence?: { reachedStep: number; expected: string; actual: string };
   /** Present when no plan could be produced. */
   error?: string;
+  /**
+   * How the CURRENT screen was localized to a graph node before planning (C.4):
+   * `exact` (its hash was a node), `jaccard` (a resource-id match recovered a
+   * drifted node), or `none` (no node matched — planning ran from the raw hash).
+   */
+  fromVia?: "exact" | "jaccard" | "none";
+  /** Resource-id Jaccard score when `fromVia === "jaccard"`. */
+  fromScore?: number;
+}
+
+/** Resource-id multiset of a live open-server tree (C.4 stable localization). */
+function resourceIdsOf(tree: OpenServerElement[]): string[] {
+  const ids: string[] = [];
+  for (const el of tree) {
+    const id = (el.resourceId ?? "").trim();
+    if (id) ids.push(id);
+  }
+  return ids;
 }
 
 const capability: ToolCapability = {
@@ -277,11 +299,22 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       const state = await server.getState({ includeScreenshot: false });
       const currentHash = state.hash ?? "";
       const size = { width: state.info.screenWidth, height: state.info.screenHeight };
+      const liveResourceIds = resourceIdsOf(state.tree);
 
       const graph = { edges: store.edges, nodes: store.nodes };
+      // C.4 work item C: localize the FROM screen through a resource-id Jaccard
+      // fallback (the live Settings root drifts to a near-duplicate `H` between
+      // runs, scattering root→sub-screen edges across several root nodes) and
+      // match the target selector case-insensitively. Screen-hash targets still
+      // plan exactly.
+      const stablePlan = params.target.selector
+        ? planToSelectorStable(graph, currentHash, liveResourceIds, params.target.selector)
+        : null;
       const planned: PlanResult | null = params.target.screen
         ? plan(graph, currentHash, params.target.screen)
-        : planToSelector(graph, currentHash, params.target.selector!);
+        : stablePlan;
+      const fromVia = stablePlan?.fromVia ?? (currentHash && graph.nodes[currentHash] ? "exact" : "none");
+      const fromScore = stablePlan?.fromScore;
 
       if (!planned) {
         const { name, summary } = finalSummary(store, currentHash);
@@ -291,6 +324,8 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
           completedSteps: 0,
           totalSteps: 0,
           error: "no known path from the current screen to the target",
+          fromVia,
+          ...(fromScore !== undefined ? { fromScore } : {}),
           ...(summary ? { summary } : {}),
         };
       }
@@ -303,9 +338,24 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       const nav = await runNavigation(currentHash, planned.steps, {
         execute: async (action, step) => {
           const fromIndex = store.getNode(stepFrom)?.index;
-          const afterHash = await executeCanonicalAction(server, size, action, fromIndex);
+          await executeCanonicalAction(server, size, action, fromIndex);
+          // Re-read the landed screen for both its hash and its resource-id
+          // multiset, so a drifted-but-equivalent arrival still verifies (below).
+          const after = await server.getState({ includeScreenshot: false });
           stepFrom = step.to;
-          return { afterHash };
+          return { afterHash: after.hash ?? "", afterResourceIds: resourceIdsOf(after.tree) };
+        },
+        // Tolerant arrival check: exact hash OR a resource-id Jaccard match
+        // against the recorded target node (C.4 — exact-hash-only verification
+        // failed whenever the sub-screen hash drifted, even on a correct tap).
+        matches: (step, outcome) => {
+          if (outcome.afterHash && outcome.afterHash === step.to) return true;
+          const node = store.getNode(step.to);
+          if (!node || !outcome.afterResourceIds) return false;
+          return (
+            multisetJaccard(outcome.afterResourceIds, nodeResourceIds(node)) >=
+            DEFAULT_STABLE_MATCH_THRESHOLD
+          );
         },
       });
 
@@ -315,6 +365,8 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         finalScreen: name,
         completedSteps: nav.completedSteps,
         totalSteps: planned.steps.length,
+        fromVia,
+        ...(fromScore !== undefined ? { fromScore } : {}),
         ...(nav.divergence ? { divergence: nav.divergence } : {}),
         ...(summary ? { summary } : {}),
       };
