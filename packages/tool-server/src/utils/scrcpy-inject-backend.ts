@@ -211,6 +211,13 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     this.client = client;
     this.controller = controller;
 
+    // Surface the scrcpy server's own stdout (the `Ln` log: coordinate-mapping
+    // rejects like "Ignore positional event", inject errors, the "Device: …" banner)
+    // through our log callback. Control-only clients otherwise leave this stream
+    // unread; draining it both prevents backpressure and gives operators/CI the
+    // server-side reason a touch did or didn't land.
+    void this.pumpServerOutput(client);
+
     // Drop cached handles if the scrcpy process exits, so the next action redials.
     void client.exited
       .catch(() => undefined)
@@ -222,6 +229,28 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
         }
       });
     this.log(`scrcpy control channel up for ${this.serial} (server ${VERSION}, scid=${scid})`);
+  }
+
+  /** Drain the scrcpy server's stdout stream, logging each non-empty line. */
+  private async pumpServerOutput(
+    client: AdbScrcpyClient<AdbScrcpyOptionsLatest<false>>
+  ): Promise<void> {
+    const out = client.output;
+    if (!out) return;
+    const reader = out.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (this.client !== client) break; // superseded by a reconnect/dispose
+        const line = String(value).replace(/\s+$/, "");
+        if (line) this.log(`[scrcpy-server] ${line}`);
+      }
+    } catch {
+      /* stream closed on process exit — nothing to do */
+    } finally {
+      reader.releaseLock?.();
+    }
   }
 
   private async ensureServerPushed(adb: Adb): Promise<void> {
