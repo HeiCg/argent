@@ -234,10 +234,12 @@ jobs:
 
       # ---- (1) device test ----
       - name: Open-server on-device test (OPEN_SERVER_DEVICE_TESTS=1)
-        # Validation smoke, not the measurement. The fast-inject (scrcpy) suite is
-        # heavy on a contended hosted x86 emulator, so this is surfaced but
-        # non-blocking — the measurement artifacts below are the deliverable and
-        # must be produced even if a smoke assertion flakes.
+        id: devtest
+        # Validation smoke, not the measurement. The measurement artifacts below are
+        # the deliverable and must be produced even if a smoke assertion flakes, so
+        # this stays non-blocking here (continue-on-error) — but its failure is no
+        # longer masked: a final gated step fails the job AFTER artifacts upload
+        # (phase 3i #8b). Run 33768547622 had 4/17 device tests failing, hidden.
         continue-on-error: true
         env:
           OPEN_SERVER_DEVICE_TESTS: "1"
@@ -257,6 +259,10 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=2048"
         run: |
           set -e
+          # pipefail so `run_block`'s `node … | tee` returns the bench's exit, not
+          # tee's 0 — otherwise the OFF `if run_block` guard and a failing ON block
+          # are both silently green (phase 3i #8a).
+          set -o pipefail
           export BENCH_OUT="$PWD/.bench-results"
           mkdir -p "$BENCH_OUT"
           run_block () {
@@ -350,6 +356,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Fail the job if device tests failed
+        # Gated AFTER artifact upload (phase 3i #8b): the measurement is preserved,
+        # but a device-test failure — which continue-on-error would otherwise mask
+        # to green — now fails the job. `devtest` is continue-on-error, so its
+        # `outcome` carries the real result while its `conclusion` is success.
+        if: always() && steps.devtest.outcome == 'failure'
+        run: |
+          echo "::error::open-server on-device tests failed (see logs/device-test.log in the bench-latency artifact)"
+          exit 1
 
   # ── Screen-graph matrix (optional, own emulator, runs in parallel) ─────────
   screen-graph:
