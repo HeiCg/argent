@@ -731,6 +731,11 @@ async function runAction(
         target: { selector: toBenchTarget(target) },
       })) as { reached?: boolean; completedSteps?: number; totalSteps?: number };
       if (nav?.reached) {
+        // Let the arrival screen settle before the success oracle reads it — the
+        // tool taps internally and returns without the per-step idle wait the
+        // plain-tap path gets (settings-apps O5 read a half-rendered screen in
+        // run 33779983434).
+        await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
         return { rttMs: Date.now() - t0, usedNavigate: true, locateFailed: false, actionFailed: false };
       }
       realDebug(

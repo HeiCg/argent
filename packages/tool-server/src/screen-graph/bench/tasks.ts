@@ -229,11 +229,15 @@ export const SAME_SCREEN_TASKS: BenchTask[] = [
       { action: { kind: "type", selector: t("Search"), text: "blue" }, sameScreen: true },
       { action: { kind: "type", selector: t("Search"), text: "tooth" }, sameScreen: true },
     ],
-    // "Settings Services" is on the search screen but NOT the root, so it confirms
-    // the search-field tap navigated without false-passing. The old "Bluetooth"
-    // matched the root's "Bluetooth, pairing". (The Settings search result rows do
-    // not surface as queryable nodes over the open server — capture 33767073864.)
-    assertion: t("Settings Services"),
+    // "Clear text" is the content-description of the search field's clear (X)
+    // button, which appears ONLY once text has been typed and sits at the top of
+    // the field (never under the keyboard). It is absent from the root, so it
+    // confirms BOTH that the search-field tap navigated AND that text was entered
+    // — without false-passing on the root's "Bluetooth, pairing" (the old needle).
+    // The Settings search RESULT rows do not surface as queryable nodes over the
+    // open server, and the "Settings Services" footer is covered by the keyboard
+    // (matrix run 33779983434: it read N for every config) — capture 33767073864.
+    assertion: t("Clear text"),
   },
   {
     id: "same-sound-noop",
