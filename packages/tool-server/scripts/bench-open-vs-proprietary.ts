@@ -1115,6 +1115,39 @@ async function runBlock(
       rpcBreakdowns.push(withShot);
       realDebug(formatRpcBreakdown(withShot));
     }
+    // Capture ONE real nested reply into the artifact (phase 3i #7), in the exact
+    // HostBenchFixture shape, so the next phase can commit a real fixture in place
+    // of the synthetic one. ON-uiautomation only (the plain describe path).
+    if (!fastInject) {
+      try {
+        const device = resolveDevice(SERIAL);
+        const ref = openDeviceServerRef(device);
+        const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+        const state = (await server.getNestedState({ waitTimeoutMs: 0 })) as {
+          tree: unknown;
+          info: { screenWidth: number; screenHeight: number };
+          wireBytes?: number;
+        };
+        const capturePath = join(OUT_DIR, "real-nested-reply.json");
+        writeFileSync(
+          capturePath,
+          JSON.stringify(
+            {
+              description:
+                "Real idle-Settings nested reply captured by the CI latency bench (phase 3i). " +
+                "Drop-in HostBenchFixture for bench-describe-host — replaces the synthetic fixture.",
+              screen: { width: state.info.screenWidth, height: state.info.screenHeight },
+              tree: state.tree,
+            },
+            null,
+            2
+          ) + "\n"
+        );
+        realDebug(`[bench] captured real nested reply -> ${capturePath} (wireBytes=${state.wireBytes ?? "?"})`);
+      } catch (e) {
+        realDebug(`[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
   }
 
   // screenshot — NOT a latency verb (F6). The two backends return different-sized
