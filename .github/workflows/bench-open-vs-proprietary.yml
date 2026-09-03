@@ -265,11 +265,11 @@ jobs:
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
           BENCH_SERIAL: emulator-5554
-          # Phase 3j: spawn the on-device server with a second 0.0.0.0 listener so
-          # the transport experiment's emulator-console `redir` arm has a routable
-          # target (it cannot reach the default loopback-only bind). CI-only; the
-          # normal product path never sets this.
-          ARGENT_OPEN_SERVER_BIND_ALL: "1"
+          # Phase 3j (3d shipped): the on-device server now decides the 0.0.0.0 bind
+          # itself from the qemu system properties (EmulatorDetect), so redir engages
+          # on this emulator with NO host env — this run validates that shipped path.
+          # ARGENT_OPEN_SERVER_BIND_ALL stays available only as a loud CI/debug
+          # override and is deliberately NOT set here.
           NODE_OPTIONS: "--max-old-space-size=2048"
         run: |
           set -e
