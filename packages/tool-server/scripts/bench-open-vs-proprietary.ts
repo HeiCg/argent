@@ -107,9 +107,15 @@ const realDebug = console.debug.bind(console);
 console.debug = (...a: unknown[]): void => {
   debugLines.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
 };
+// Count ONLY fast-inject (scrcpy → Kotlin) fallbacks, i.e. the blueprint's
+// "[open-server-fast-inject] scrcpy <verb> failed; falling back to the Kotlin ..."
+// line — the ON-scrcpy gate's concern. It must NOT count the describe path's own
+// "[describe.android] ... falling back to uiautomator" (an empty-tree retry that
+// happens on every ON block during rapid effect-check describes) — conflating the
+// two failed a clean scrcpy arm on benign describe retries.
 function fallbackCountSince(mark: number): { count: number; samples: string[] } {
   const slice = debugLines.slice(mark);
-  const hits = slice.filter((l) => /falling back|fell back|fallback/i.test(l));
+  const hits = slice.filter((l) => /\[open-server-fast-inject\].*falling back/i.test(l));
   return { count: hits.length, samples: hits.slice(0, 3) };
 }
 

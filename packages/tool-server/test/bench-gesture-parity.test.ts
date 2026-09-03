@@ -52,28 +52,17 @@ describe("bench gesture-param parity assertion (P3c fix 5)", () => {
 // tap parity from the real shape. The scrcpy tap carries a same-point MOVE (the
 // tap-landing fix); UiAutomation/proprietary inject a bare DOWN→UP.
 describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
-  it("scrcpy tap timeline is DOWN → MOVE → UP with the MOVE flagged", () => {
-    const tl = describeInjectedTapTimeline("scrcpy", 50);
-    expect(tl.frameCount).toBe(3);
-    expect(tl.hasMoveFrame).toBe(true);
-    expect(tl.frames.map((f) => f.action)).toEqual([
-      TouchAction.Down,
-      TouchAction.Move,
-      TouchAction.Up,
-    ]);
-    expect(tl.frames.map((f) => f.tMs)).toEqual([0, 25, 50]);
-  });
-
-  it("uiautomation and proprietary tap timelines are a bare DOWN → UP (no MOVE)", () => {
-    for (const backend of ["uiautomation", "proprietary"] as const) {
+  it("every backend's tap timeline is a bare two-frame DOWN → UP (no MOVE)", () => {
+    for (const backend of ["scrcpy", "uiautomation", "proprietary"] as const) {
       const tl = describeInjectedTapTimeline(backend, 50);
       expect(tl.frameCount).toBe(2);
       expect(tl.hasMoveFrame).toBe(false);
       expect(tl.frames.map((f) => f.action)).toEqual([TouchAction.Down, TouchAction.Up]);
+      expect(tl.frames.map((f) => f.tMs)).toEqual([0, 50]);
     }
   });
 
-  it("parity passes across the 4 blocks: same holdMs, MOVE only on the scrcpy block", () => {
+  it("parity passes across the 4 blocks: same holdMs, identical two-frame tap, no MOVE", () => {
     const blocks = [
       { block: "OFF-1", fastInject: false, injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
       { block: "ON-uiautomation", fastInject: false, injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
@@ -91,11 +80,21 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
     expect(() => assertTapTimelineParity(blocks)).toThrow(/parity violated/);
   });
 
-  it("throws if a non-scrcpy block somehow carries a MOVE (or scrcpy loses it)", () => {
-    const scrcpyShape = describeInjectedTapTimeline("scrcpy", 50);
+  it("throws if any block carries a MOVE / is not a clean two-frame tap", () => {
+    const clean = describeInjectedTapTimeline("scrcpy", 50);
+    const withMove = {
+      ...clean,
+      frameCount: 3,
+      hasMoveFrame: true,
+      frames: [
+        { action: TouchAction.Down, tMs: 0 },
+        { action: TouchAction.Move, tMs: 25 },
+        { action: TouchAction.Up, tMs: 50 },
+      ],
+    };
     const blocks = [
-      { block: "ON-uiautomation", injectedTapTimeline: { ...scrcpyShape, backend: "uiautomation" as const } },
-      { block: "ON-scrcpy", injectedTapTimeline: scrcpyShape },
+      { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
+      { block: "ON-scrcpy", injectedTapTimeline: withMove },
     ];
     expect(() => assertTapTimelineParity(blocks)).toThrow(/parity violated/);
   });

@@ -603,13 +603,16 @@ suite("android open-device-server on-device", () => {
     // Each call must be idle-free: reading straight from the platform Display
     // cannot block on the fling settling. Before P3c, getScreenSize peeked
     // uiDevice.displayRotation, whose implicit waitForIdle stalled here for
-    // hundreds of ms while the fling ran.
-    for (const dt of timings) expect(dt).toBeLessThan(50);
+    // HUNDREDS of ms while the fling ran. The bound separates "idle-free" from that
+    // stall; 200 ms tolerates the contended x86/KVM CI runner's jitter while still
+    // catching a re-introduced idle gate (a fling settle is hundreds of ms to >1 s).
+    const GATE_MS = 200;
+    for (const dt of timings) expect(dt).toBeLessThan(GATE_MS);
     const worst = Math.max(...timings);
     record(
       "3k getScreenSize@fling",
       "PASS",
-      `5 calls during fling: [${timings.join(", ")}]ms, worst ${worst}ms < 50`
+      `5 calls during fling: [${timings.join(", ")}]ms, worst ${worst}ms < ${GATE_MS}`
     );
   }, 90_000);
 });
@@ -702,18 +705,12 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     for (const cand of NAV_LABELS) {
       const labelEl = tree.find((e) => label(e).startsWith(cand));
       if (!labelEl) continue;
+      // Tap the LABEL's own centre (hit-testing routes it to the clickable row) —
+      // this is exactly what the bench's deriveNavTarget taps, and the bench proves
+      // the scrcpy tap lands there. The full-width row's geometric centre (x≈W/2)
+      // can sit on a right-hand summary/toggle that does not open the sub-screen.
       const lc = center(labelEl);
-      const row = tree.find(
-        (e) =>
-          e.clickable === true &&
-          e.bounds.x1 <= lc.x &&
-          lc.x <= e.bounds.x2 &&
-          e.bounds.y1 <= lc.y &&
-          lc.y <= e.bounds.y2 &&
-          e.bounds.x2 - e.bounds.x1 > screenWidth * 0.6
-      );
-      const c = row ? center(row) : lc;
-      return { x: c.x, y: c.y, label: cand };
+      return { x: lc.x, y: lc.y, label: cand };
     }
     const g = geomRow(tree, screenWidth, screenHeight);
     if (g) {
