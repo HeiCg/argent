@@ -276,6 +276,18 @@ async function ensureSettings(reg: Reg): Promise<void> {
   await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
 }
 
+// LIGHT reset for the tap effect loop: force-stop + relaunch WITHOUT `pm clear`
+// (the effect check captures a fresh origin each iteration, so it needs a stable
+// root to return to, not a pristine paste/search state). ~2-3 s vs ensureSettings'
+// ~6-8 s — pm clear per originLost was what dragged a bench block to many minutes.
+async function relaunchSettings(reg: Reg): Promise<void> {
+  dismissSystemDialogs();
+  adbShell(`am force-stop ${SETTINGS}`, 8_000);
+  adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
+  await sleep(700);
+  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+}
+
 // A describe validated to be the real Settings root: not a crash dialog, and
 // carrying at least one canonical root row. Retries the screen reset a few times
 // so a transient ADT crash can't poison the byte/element/fidelity numbers.
@@ -466,7 +478,8 @@ async function timeTapEffect(
     // UNTIMED: restore the origin for the next iteration.
     if (changed) {
       await restoreBack().catch(() => undefined);
-      const restored = await pollUntil(fingerprint, (f) => f === originFp, 3000, 150);
+      // Origin renders fast after BACK; if it is not back in ~2 s, hard-reset.
+      const restored = await pollUntil(fingerprint, (f) => f === originFp, 2000, 150);
       if (!restored) {
         originLost++;
         await ensureOrigin().catch(() => undefined);
@@ -703,7 +716,7 @@ async function destinationVisibleRate(
   const waited: number[] = [];
   const markers = new Set(nav.markers);
   for (let i = 0; i < n; i++) {
-    await ensureSettings(reg);
+    await relaunchSettings(reg); // light reset (no pm clear) — this loop runs N×2 on ON
     try {
       await reg.invokeTool("gesture-tap", { udid: SERIAL, x: nav.x, y: nav.y });
       const d = (await reg.invokeTool("describe", {
@@ -909,8 +922,9 @@ async function runBlock(
   // does not read as a change); origin restore = a system BACK keyevent (adb, not
   // the backend under test), hard-reset = ensureSettings.
   const fingerprint = (): Promise<string | undefined> => describeLabelHash(reg);
+  // Light reset (no pm clear) for the tap loop — fast enough to run per originLost.
   const ensureOrigin = async (): Promise<void> => {
-    await ensureSettings(reg);
+    await relaunchSettings(reg);
   };
   const restoreBack = async (): Promise<void> => {
     adbShell("input keyevent KEYCODE_BACK", 5000);
