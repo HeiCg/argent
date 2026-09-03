@@ -1,0 +1,464 @@
+name: bench-open-vs-proprietary
+
+# Runs the "open Kotlin android-device-server vs proprietary simulator-server"
+# Android backend benches off-host, on a GitHub-hosted ubuntu-latest runner with
+# nested-virt KVM. The local dev box (24 GB RAM, exhausted) can no longer boot an
+# emulator, so the KVM + SDK + AVD boot steps here are lifted from wayland-e2e.yml
+# and its composite actions. The emulator is booted DIRECTLY (not via the
+# tool-server) so the proprietary `android` controller can discover it over gRPC
+# with a token — `-grpc 8554 -grpc-use-token`, exactly what
+# bench-open-vs-proprietary.ts documents it needs.
+#
+# x86_64 / KVM here is NOT comparable to the local arm64 / HVF numbers; only OFF
+# vs ON within a single run is like-for-like. The proprietary simulator-server
+# ships bin/linux/ (x86_64); if it refuses to run on the hosted runner the OFF
+# arm is skipped and the run is scored ON-only (acceptance allows this).
+
+on:
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: "Latency blocks to run (comma list)"
+        required: false
+        default: "OFF-1,ON-uiautomation,ON-scrcpy,OFF-2"
+      n:
+        description: "Iterations per verb (BENCH_N)"
+        required: false
+        default: "20"
+      suite:
+        description: "Which suite(s) to run"
+        required: false
+        default: "latency"
+        type: choice
+        options:
+          - latency
+          - screen-graph
+          - both
+
+jobs:
+  # ── Latency bench (4 blocks) + device smoke + fling A/B ────────────────────
+  latency:
+    name: Latency bench (OFF/ON, x86_64 KVM)
+    if: ${{ github.event.inputs.suite == 'latency' || github.event.inputs.suite == 'both' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      # Pin AVDs to the legacy ~/.android location (see wayland-e2e.yml for the
+      # ANDROID_USER_HOME rationale — newer cmdline-tools default it to
+      # $XDG_CONFIG_HOME/.android and diverge from the sed/grep paths below).
+      ANDROID_USER_HOME: /home/runner/.android
+      # Emulator's bundled Qt has no wayland plugin and no display here; offscreen
+      # keeps Qt happy for a `-no-window` boot without a real display server.
+      QT_QPA_PLATFORM: offscreen
+      # gRPC discovery: the emulator registers its running gRPC endpoint under a
+      # temp dir; force a stable XDG_RUNTIME_DIR so the proprietary android
+      # controller and the emulator agree on where the discovery ini lives.
+      XDG_RUNTIME_DIR: /tmp/xdg-runtime
+      BENCH_N: ${{ github.event.inputs.n }}
+      BENCH_BLOCKS: ${{ github.event.inputs.blocks }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      # ---- KVM + SDK + AVD: lifted verbatim from wayland-e2e.yml ----
+      - name: Enable KVM (nested virt on ubuntu-latest)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install emulator native deps
+        # libgoogle-perftools4t64 ships libtcmalloc_minimal.so.4 which
+        # qemu-system-x86_64 links against (verbatim from wayland-e2e.yml).
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            weston xkb-data libxkbcommon0 seatd libgoogle-perftools4t64
+
+      - name: Install Android SDK packages
+        run: |
+          set -e
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "emulator" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "system-images;android-34;google_apis;x86_64" >/dev/null
+          SYSIMG="$ANDROID_HOME/system-images/android-34/google_apis/x86_64"
+          test -f "$SYSIMG/system.img" || test -f "$SYSIMG/userdata.img" || {
+            echo "::error::system image not installed under $SYSIMG"
+            ls -la "$ANDROID_HOME/system-images/android-34" 2>&1 || true
+            exit 1
+          }
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+
+      - name: Create AVD (4 GB / 2 vCPUs)
+        run: |
+          set -e
+          mkdir -p "$HOME/.android"
+          echo no | avdmanager -v create avd \
+            -n argent-test \
+            -k "system-images;android-34;google_apis;x86_64" \
+            -d "pixel_6" 2>&1 | tee /tmp/avdmanager.log
+          AVD_RC=${PIPESTATUS[1]}
+          CFG=$HOME/.android/avd/argent-test.avd/config.ini
+          if [ "$AVD_RC" -ne 0 ] || [ ! -f "$CFG" ]; then
+            echo "::error::avdmanager exit=$AVD_RC, config.ini=$([ -f "$CFG" ] && echo present || echo missing)"
+            cat /tmp/avdmanager.log
+            exit 1
+          fi
+          sed -i 's/^hw.ramSize.*$/hw.ramSize = 4096/' "$CFG" || echo "hw.ramSize = 4096" >> "$CFG"
+          sed -i 's/^hw.cpu.ncore.*$/hw.cpu.ncore = 2/' "$CFG" || echo "hw.cpu.ncore = 2" >> "$CFG"
+          grep -E "^(hw\.ramSize|hw\.cpu\.ncore|hw\.gpu)" "$CFG"
+
+      - name: Boot emulator with gRPC + token
+        # Direct boot (not the tool-server) so the proprietary android controller
+        # can discover the emulator via the grpc.port/grpc.token it needs. Headless
+        # + swiftshader like wayland-e2e, but with `-grpc 8554 -grpc-use-token`.
+        run: |
+          set -e
+          mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+          nohup $ANDROID_HOME/emulator/emulator @argent-test \
+            -no-window -no-audio -no-boot-anim -no-snapshot -read-only \
+            -gpu swiftshader_indirect -grpc 8554 -grpc-use-token \
+            -no-metrics -camera-back none -camera-front none \
+            > /tmp/emulator.log 2>&1 &
+          echo "emulator pid=$!"
+          adb start-server
+          # Wait for the device node.
+          timeout 300 adb wait-for-device
+          # Wait for full boot.
+          for i in $(seq 1 180); do
+            BC=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')
+            if [ "$BC" = "1" ]; then echo "boot_completed at t+${i}s"; break; fi
+            sleep 2
+          done
+          [ "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '[:space:]')" = "1" ] || {
+            echo "::error::emulator did not finish booting"; tail -100 /tmp/emulator.log; exit 1; }
+          # Settle + disable animations for stable, fast gestures.
+          adb -s emulator-5554 shell input keyevent 82 || true
+          adb -s emulator-5554 shell settings put global window_animation_scale 0 || true
+          adb -s emulator-5554 shell settings put global transition_animation_scale 0 || true
+          adb -s emulator-5554 shell settings put global animator_duration_scale 0 || true
+          adb devices -l
+          # Verify the gRPC discovery ini the proprietary android controller reads
+          # (linux: $XDG_RUNTIME_DIR/avd/running/pid_*.ini, else /run/user/<uid>/…).
+          echo "=== discovery dir $XDG_RUNTIME_DIR/avd/running ==="
+          ls -la "$XDG_RUNTIME_DIR/avd/running/" 2>&1 || echo "(none in XDG_RUNTIME_DIR)"
+          ls -la "/run/user/$(id -u)/avd/running/" 2>&1 || echo "(none in /run/user)"
+          for f in "$XDG_RUNTIME_DIR"/avd/running/pid_*.ini "/run/user/$(id -u)"/avd/running/pid_*.ini; do
+            [ -f "$f" ] && { echo "--- $f ---"; grep -E '^(grpc\.port|port\.serial)' "$f" || true; }
+          done
+
+      - name: Install argent deps + build TS
+        # `npm ci` MUST run lifecycle scripts: the @argent/tool-server postinstall
+        # fetches the scrcpy-server 3.3.1 jar the fast-inject path needs. Rollup's
+        # native binary is an optional dep npm can skip, so install it explicitly.
+        run: |
+          npm ci
+          npm install @rollup/rollup-linux-x64-gnu --no-save
+          npx tsc --build
+
+      - name: Build open device-server APK (Kotlin, Java 17)
+        # ON path installs packages/android-device-server/bin/argent-device-control-<ver>.apk
+        # via adb; nothing builds it on the fly, so build it here (gradle assembleDebug).
+        run: |
+          npm run build:android-device-server
+          ls -la packages/android-device-server/bin/
+
+      - name: Fetch proprietary binaries (npm pack @swmansion/argent@0.22.1)
+        # OFF path. Their LICENSE forbids redistribution, not use — download at run
+        # time, never commit. bin/linux/ is the x86_64 build for this runner.
+        run: |
+          set -e
+          PKGTMP="$RUNNER_TEMP/argent-pkg"
+          mkdir -p "$PKGTMP"
+          ( cd "$PKGTMP" && npm pack @swmansion/argent@0.22.1 )
+          TARBALL=$(ls "$PKGTMP"/*.tgz | head -n1)
+          mkdir -p "$PKGTMP/extracted"
+          tar -xzf "$TARBALL" -C "$PKGTMP/extracted"
+          PKG="$PKGTMP/extracted/package"
+          chmod +x "$PKG/bin/linux/simulator-server" 2>/dev/null || true
+          echo "PROP_PKG=$PKG" >> "$GITHUB_ENV"
+          echo "=== proprietary bin/linux ==="; ls -la "$PKG/bin/linux" || true
+          echo "=== file(1) on the linux binary ==="; file "$PKG/bin/linux/simulator-server" || true
+          # Best-effort probe: does the x86_64 binary even exec on this runner?
+          if "$PKG/bin/linux/simulator-server" --version >/tmp/prop-probe.txt 2>&1 \
+             || "$PKG/bin/linux/simulator-server" --help >>/tmp/prop-probe.txt 2>&1; then
+            echo "PROP_EXECUTABLE=1" >> "$GITHUB_ENV"
+            echo "proprietary binary executes on this runner"
+          else
+            echo "PROP_EXECUTABLE=0" >> "$GITHUB_ENV"
+            echo "::warning::proprietary simulator-server did not exec cleanly — OFF arm is best-effort"
+          fi
+          cat /tmp/prop-probe.txt || true
+
+      - name: Record CI runner env facts
+        run: |
+          mkdir -p .bench-results
+          NPROC=$(nproc)
+          MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+          MEM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
+          SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
+          KVM=$([ -e /dev/kvm ] && echo true || echo false)
+          node -e "const fs=require('fs');fs.writeFileSync('.bench-results/ci-runner-env.json',JSON.stringify({runner:'ubuntu-latest',nproc:${NPROC},memTotalMb:${MEM_TOTAL},memAvailMb:${MEM_AVAIL},swapTotalMb:${SWAP_TOTAL},kvm:${KVM},emulatorImage:'system-images;android-34;google_apis;x86_64',emulatorArch:'x86_64',propExecutable:process.env.PROP_EXECUTABLE==='1',note:'x86_64/KVM hosted runner — NOT comparable to local arm64/HVF'},null,2))"
+          cat .bench-results/ci-runner-env.json
+
+      # ---- (1) device test ----
+      - name: Open-server on-device test (OPEN_SERVER_DEVICE_TESTS=1)
+        # Validation smoke, not the measurement. The fast-inject (scrcpy) suite is
+        # heavy on a contended hosted x86 emulator, so this is surfaced but
+        # non-blocking — the measurement artifacts below are the deliverable and
+        # must be produced even if a smoke assertion flakes.
+        continue-on-error: true
+        env:
+          OPEN_SERVER_DEVICE_TESTS: "1"
+          OPEN_SERVER_DEVICE_SERIAL: emulator-5554
+        run: |
+          cd packages/tool-server
+          npx vitest run test/blueprints/android-open-server.device.test.ts 2>&1 \
+            | tee "$RUNNER_TEMP/device-test.log"
+
+      # ---- (2) latency bench: 4 blocks via BENCH_ONLY, then merge ----
+      - name: Latency bench — 4 blocks + merge
+        env:
+          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+          BENCH_SERIAL: emulator-5554
+          NODE_OPTIONS: "--max-old-space-size=2048"
+        run: |
+          set -e
+          export BENCH_OUT="$PWD/.bench-results"
+          mkdir -p "$BENCH_OUT"
+          run_block () {
+            local b="$1"
+            echo "########## BLOCK $b ##########"
+            BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
+              2>&1 | tee "$BENCH_OUT/bench-log-$b.txt"
+          }
+          OFF_OK=1
+          # OFF-1 — best-effort: a proprietary refusal on Linux downgrades to ON-only.
+          if echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
+            if run_block "OFF-1"; then :; else
+              OFF_OK=0
+              echo "::warning::OFF-1 (proprietary) failed — running ON blocks only"
+            fi
+            sleep 3
+          fi
+          # ON blocks — hard requirement.
+          if echo "$BENCH_BLOCKS" | grep -q "ON-uiautomation"; then run_block "ON-uiautomation"; sleep 3; fi
+          if echo "$BENCH_BLOCKS" | grep -q "ON-scrcpy"; then run_block "ON-scrcpy"; sleep 3; fi
+          # OFF-2 — best-effort drift arm; skip if OFF-1 refused.
+          if echo "$BENCH_BLOCKS" | grep -q "OFF-2" && [ "$OFF_OK" = "1" ]; then
+            if run_block "OFF-2"; then :; else echo "::warning::OFF-2 failed — drift arm dropped"; fi
+            sleep 3
+          fi
+          echo "########## MERGE ##########"
+          node .github/bench-ci/merge-blocks.js
+
+      # ---- (3) fling A/B (Kotlin vs scrcpy) when ON-scrcpy is in blocks ----
+      - name: Fling A/B (uiautomation vs scrcpy)
+        if: ${{ contains(github.event.inputs.blocks, 'ON-scrcpy') }}
+        env:
+          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+          BENCH_SERIAL: emulator-5554
+          FLING_N: "12"
+          NODE_OPTIONS: "--max-old-space-size=2048"
+        run: |
+          set -e
+          export BENCH_OUT="$PWD/.bench-results"
+          for cfg in ON-uiautomation ON-scrcpy OFF; do
+            echo "########## FLING $cfg ##########"
+            if [ "$cfg" = "OFF" ] && [ "${PROP_EXECUTABLE:-0}" != "1" ]; then
+              echo "skipping OFF fling reference (proprietary not executable)"; continue
+            fi
+            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then :; else
+              if [ "$cfg" = "OFF" ]; then echo "::warning::OFF fling reference failed — dropping"; else exit 1; fi
+            fi
+            sleep 3
+          done
+          node .github/bench-ci/merge-fling.js
+
+      # ---- (4) 3g stage-timing table is emitted inline by the bench (captured in
+      #          bench-log-*.txt above). No separate step needed. ----
+
+      # ---- scoreboard into the job summary ----
+      - name: Scoreboard → job summary
+        if: always()
+        run: |
+          export BENCH_OUT="$PWD/.bench-results"
+          node .github/bench-ci/scoreboard.js | tee "$BENCH_OUT/scoreboard.md" >> "$GITHUB_STEP_SUMMARY" || \
+            echo "scoreboard generation failed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-latency
+          path: |
+            .bench-results/**
+            /tmp/emulator.log
+            /tmp/avdmanager.log
+            /tmp/prop-probe.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── Screen-graph matrix (optional, own emulator, runs in parallel) ─────────
+  screen-graph:
+    name: Screen-graph matrix (x86_64 KVM)
+    if: ${{ github.event.inputs.suite == 'screen-graph' || github.event.inputs.suite == 'both' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_USER_HOME: /home/runner/.android
+      QT_QPA_PLATFORM: offscreen
+      XDG_RUNTIME_DIR: /tmp/xdg-runtime
+
+    steps:
+      - name: Checkout feat/screen-graph @ 5b1e6e98
+        uses: actions/checkout@v4
+        with:
+          ref: 5b1e6e98eb307354581d0f5ce24cd397d3bb86e1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install emulator native deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            weston xkb-data libxkbcommon0 seatd libgoogle-perftools4t64
+
+      - name: Install Android SDK packages
+        run: |
+          set -e
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "emulator" "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
+            "system-images;android-34;google_apis;x86_64" >/dev/null
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+
+      - name: Create AVD
+        run: |
+          set -e
+          mkdir -p "$HOME/.android"
+          echo no | avdmanager -v create avd -n argent-test \
+            -k "system-images;android-34;google_apis;x86_64" -d "pixel_6" 2>&1 | tee /tmp/avdmanager.log
+          CFG=$HOME/.android/avd/argent-test.avd/config.ini
+          sed -i 's/^hw.ramSize.*$/hw.ramSize = 4096/' "$CFG" || echo "hw.ramSize = 4096" >> "$CFG"
+          sed -i 's/^hw.cpu.ncore.*$/hw.cpu.ncore = 2/' "$CFG" || echo "hw.cpu.ncore = 2" >> "$CFG"
+
+      - name: Boot emulator with gRPC + token
+        run: |
+          set -e
+          mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+          nohup $ANDROID_HOME/emulator/emulator @argent-test \
+            -no-window -no-audio -no-boot-anim -no-snapshot -read-only \
+            -gpu swiftshader_indirect -grpc 8554 -grpc-use-token -no-metrics \
+            > /tmp/emulator.log 2>&1 &
+          adb start-server
+          timeout 300 adb wait-for-device
+          for i in $(seq 1 180); do
+            [ "$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')" = "1" ] && break
+            sleep 2
+          done
+          adb -s emulator-5554 shell settings put global window_animation_scale 0 || true
+          adb -s emulator-5554 shell settings put global transition_animation_scale 0 || true
+          adb -s emulator-5554 shell settings put global animator_duration_scale 0 || true
+
+      - name: Install deps + build (screen-graph tree)
+        run: |
+          npm ci
+          npm install @rollup/rollup-linux-x64-gnu --no-save
+          npx tsc --build
+          npm run build:android-device-server
+          ls -la packages/android-device-server/bin/
+
+      - name: Fetch proprietary binaries (B1 config)
+        run: |
+          set -e
+          PKGTMP="$RUNNER_TEMP/argent-pkg"; mkdir -p "$PKGTMP"
+          ( cd "$PKGTMP" && npm pack @swmansion/argent@0.22.1 )
+          TARBALL=$(ls "$PKGTMP"/*.tgz | head -n1)
+          mkdir -p "$PKGTMP/extracted"; tar -xzf "$TARBALL" -C "$PKGTMP/extracted"
+          echo "PROP_PKG=$PKGTMP/extracted/package" >> "$GITHUB_ENV"
+          chmod +x "$PKGTMP/extracted/package/bin/linux/simulator-server" 2>/dev/null || true
+
+      - name: Pre-flight (BLOCKER-1/2 oracle check)
+        env:
+          BENCH_SERIAL: emulator-5554
+          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+        run: |
+          node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-preflight.ts");' \
+            2>&1 | tee "$RUNNER_TEMP/sg-preflight.log"
+
+      - name: Screen-graph matrix
+        env:
+          BENCH_SERIAL: emulator-5554
+          BENCH_REPS: "3"
+          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+          NODE_OPTIONS: "--max-old-space-size=3072"
+        run: |
+          node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
+            2>&1 | tee "$RUNNER_TEMP/sg-matrix.log"
+
+      - name: Upload screen-graph artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-screen-graph
+          path: |
+            .bench-results/**
+            ${{ runner.temp }}/sg-preflight.log
+            ${{ runner.temp }}/sg-matrix.log
+            /tmp/emulator.log
+          if-no-files-found: warn
+          retention-days: 14
