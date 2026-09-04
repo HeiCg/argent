@@ -374,14 +374,13 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
 
     steps:
-      # C.4 (review C-L3): check out the bench tree by BRANCH NAME, not a pinned
-      # SHA, so the job always reads the branch head — root cause #1 of the stuck
-      # C.2/C.3 runs was a stale SHA pin that never moved to the fixed branch.
-      # Current head at authoring: 212d7d58 (feat/screen-graph-c4).
-      - name: Checkout feat/screen-graph-c4 (branch head)
+      # Check out the bench tree by BRANCH NAME, not a pinned SHA, so the job
+      # always reads the branch head (review C-L3). Phase D bench tree:
+      # feat/screen-graph-d (H_id keying + selector-carrying edges + honest accounting).
+      - name: Checkout feat/screen-graph-d (branch head)
         uses: actions/checkout@v4
         with:
-          ref: feat/screen-graph-c4
+          ref: feat/screen-graph-d
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -512,6 +511,9 @@ jobs:
           mkdir -p "$STAGE/logs"
           cp -r .bench-results "$STAGE/" 2>/dev/null || true
           cp "$RUNNER_TEMP/sg-preflight.log" "$RUNNER_TEMP/sg-matrix.log" /tmp/emulator.log "$STAGE/logs/" 2>/dev/null || true
+          # Phase D C-M3: stage the device-captured pre-flight fixture so it can be
+          # committed to the bench tree (the two BLOCKER-1 tests skip until it is).
+          cp packages/tool-server/test/fixtures/preflight-launch-screens.json "$STAGE/" 2>/dev/null || true
           find "$STAGE" -type f | sed "s|$STAGE/||" | sort
 
       - name: Upload screen-graph artifacts
