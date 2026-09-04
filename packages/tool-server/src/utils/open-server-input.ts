@@ -19,11 +19,56 @@ import {
   __resetOpenServerScreenSizeCache,
 } from "./open-server-screen-cache";
 import { recordOpenServerObservation } from "./screen-graph-open-wiring";
+import type { EdgeSelector } from "../screen-graph";
+import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
 
 // Defaults for the multi-tap timeline the on-device server builds (F1/F8/F9).
 // Kept in sync with the host constants of the same name in `gesture-tap`.
 const TAP_HOLD_MS = 50;
 const MULTI_TAP_GAP_MS = 100;
+
+const SCREEN_GRAPH_FLAG = "screen-graph";
+/** 1/16 grid for the edge selector's bounds bucket (mirrors canonical.ts GRID). */
+const EDGE_BUCKET_GRID = 16;
+
+/**
+ * The acted element's selector for a coordinate tap (phase D §2): the smallest
+ * node in the BEFORE tree whose bounds contain (x, y) and that carries a
+ * resource-id / text / content-description. Recorded on the edge so replay
+ * re-resolves the element instead of replaying a bare coordinate.
+ */
+function tappedSelectorFromTree(
+  tree: OpenServerElement[],
+  x: number,
+  y: number,
+  size: { width: number; height: number }
+): EdgeSelector | undefined {
+  let best: OpenServerElement | undefined;
+  let bestArea = Infinity;
+  for (const el of tree) {
+    const b = el.bounds;
+    if (x < b.x1 || x > b.x2 || y < b.y1 || y > b.y2) continue;
+    if (!(el.resourceId?.trim() || el.text?.trim() || el.contentDesc?.trim())) continue;
+    const area = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+    if (area < bestArea) {
+      bestArea = area;
+      best = el;
+    }
+  }
+  if (!best) return undefined;
+  const bucket = {
+    x: Math.min(EDGE_BUCKET_GRID - 1, Math.max(0, Math.floor((x * EDGE_BUCKET_GRID) / Math.max(1, size.width)))),
+    y: Math.min(EDGE_BUCKET_GRID - 1, Math.max(0, Math.floor((y * EDGE_BUCKET_GRID) / Math.max(1, size.height)))),
+  };
+  const sel: EdgeSelector = { className: best.className, indexInParent: best.index, boundsBucket: bucket };
+  const id = best.resourceId?.trim();
+  if (id) sel.resourceId = id;
+  const text = best.text?.trim();
+  if (text) sel.text = text;
+  const cd = best.contentDesc?.trim();
+  if (cd) sel.contentDescription = cd;
+  return sel;
+}
 
 /** Drop the action's own `{success}` and keep the outcome fingerprint delta. */
 function toOutcome(r: OpenServerActionOutcome & { success?: unknown }): OpenServerActionOutcome {
@@ -192,6 +237,19 @@ export function openServerTapWithOutcome(
 ): Promise<OpenServerActionOutcome> {
   return withServer(registry, device, async (server, size) => {
     const { x, y } = toPixels(size, xNorm, yNorm);
+    // Phase D §2: when the screen graph is recording, read the BEFORE tree once so
+    // the edge can carry the acted element's selector (re-resolved on replay). The
+    // extra read is an internal RPC (not a counted bench round-trip) and only runs
+    // while the graph flag is on.
+    let actedSelector: EdgeSelector | undefined;
+    if (isFlagEnabled(SCREEN_GRAPH_FLAG)) {
+      try {
+        const before = await server.getState({ includeScreenshot: false });
+        actedSelector = tappedSelectorFromTree(before.tree, x, y, size);
+      } catch {
+        /* best-effort — a coordinate edge without a selector still records */
+      }
+    }
     // ONE `tap` RPC carries the whole multi-tap timeline (F1/F8/F9 —
     // `clickCount` presses each held `holdMs`, spaced `gapMs` apart, built
     // server-side) AND the outcome request, so a double-tap is a single
@@ -205,7 +263,14 @@ export function openServerTapWithOutcome(
         ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
       })
     );
-    await recordOpenServerObservation(device, server, size, { kind: "tap", x, y }, outcome);
+    await recordOpenServerObservation(
+      device,
+      server,
+      size,
+      { kind: "tap", x, y },
+      outcome,
+      actedSelector ? { actedSelector } : {}
+    );
     return outcome;
   });
 }

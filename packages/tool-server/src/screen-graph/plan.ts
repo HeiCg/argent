@@ -4,7 +4,7 @@
  *   `w(e) = 1/(successes + 1) + staleness(days) / 30`
  * so a well-trodden, recent edge is cheap and a flaky or stale one is dear.
  */
-import type { CanonicalAction, Edge, GraphSelector, ScreenNode } from "./types";
+import type { CanonicalAction, Edge, EdgeSelector, GraphSelector, ScreenNode } from "./types";
 import { parseSelectorKey, selectorKeys } from "./types";
 
 const MS_PER_DAY = 86_400_000;
@@ -37,6 +37,8 @@ export interface PlanGraph {
 export interface PlanStep {
   action: CanonicalAction;
   to: string;
+  /** The acted element's recorded selector (phase D §2), for live re-resolution. */
+  selector?: EdgeSelector;
 }
 
 export interface PlanResult {
@@ -119,7 +121,7 @@ function reconstruct(
   let cur = target;
   while (prev.has(cur)) {
     const { node, edge } = prev.get(cur)!;
-    steps.push({ action: edge.action, to: edge.to });
+    steps.push({ action: edge.action, to: edge.to, ...(edge.selector ? { selector: edge.selector } : {}) });
     cur = node;
   }
   steps.reverse();

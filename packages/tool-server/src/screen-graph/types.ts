@@ -49,10 +49,39 @@ export const FLAG_PASSWORD = 1 << 6;
 /** A `selectorKey` in a node's `index` — a stable string form of a selector. */
 export type SelectorKey = string;
 
-/** A screen: a structural fingerprint with its cached rendering and index. */
+/**
+ * The acted element's selector, recorded on the edge it produced (phase D §2).
+ * Captured from the tree AT ACTION TIME so replay can re-resolve the element on
+ * the live screen (exact resource-id / text, then content-description) instead of
+ * replaying a bare coordinate that lands on an arbitrary sibling. `boundsBucket`
+ * is the 1/16 grid cell of the tapped centre — the last-resort fallback used only
+ * when no selector field resolved.
+ */
+export interface EdgeSelector {
+  resourceId?: string;
+  text?: string;
+  contentDescription?: string;
+  className?: string;
+  indexInParent?: number;
+  boundsBucket?: { x: number; y: number };
+}
+
+/** A screen: an identity fingerprint with its cached rendering and index. */
 export interface ScreenNode {
-  /** Structural hash `H` — the node's identity. */
+  /**
+   * The node's IDENTITY — the device screen-identity hash `H_id` (phase D §1):
+   * stable across scroll/focus, distinct across sibling screens. (Before phase D
+   * this was the structural hash `H`; the graph now keys on `H_id` so sibling
+   * detail screens no longer collapse onto one node.) The field name stays `hash`
+   * so the store/plan/navigate identity plumbing is unchanged.
+   */
   hash: string;
+  /**
+   * The structural hash `H` (text-free, scroll-sensitive) most recently observed
+   * for this identity. Diagnostic only — two `H` for one screen is the drift
+   * `H_id` collapses. Absent on pre-phase-D nodes.
+   */
+  structuralHash?: string;
   /** epoch ms of first / most recent observation. */
   firstSeen: number;
   lastSeen: number;
@@ -105,6 +134,12 @@ export interface Edge {
   from: string;
   action: CanonicalAction;
   to: string;
+  /**
+   * The acted element's selector at action time (phase D §2). Planning PREFERS an
+   * edge that carries one; replay re-resolves it on the live screen. Absent on a
+   * pure-coordinate edge (and on pre-phase-D graphs).
+   */
+  selector?: EdgeSelector;
   /** Times this (from, action) was observed. */
   count: number;
   /** Times it landed on `to` (used for the plan weight). */

@@ -28,9 +28,12 @@ import {
   planToSelectorStable,
   renderSummary,
   runNavigation,
+  selectorKeys,
   type CanonicalAction,
+  type EdgeSelector,
   type GraphSelector,
   type PlanResult,
+  type PlanStep,
   type ScreenGraphStore,
   type ScreenNode,
 } from "../../screen-graph";
@@ -141,70 +144,96 @@ export function indexEntryForBucket(
 /** A resolved tap point, or a signal to diverge (the stored element is gone). */
 type TapResolution = { cx: number; cy: number } | { diverge: true };
 
-/** Execute one canonical action on the device, returning the resulting hash. */
+/** The resulting screen's IDENTITY hash `H_id` (phase D §1), else the raw hash. */
+function idOf(state: { idHash?: string; hash?: string }): string {
+  return state.idHash ?? state.hash ?? "";
+}
+
+/** Execute one canonical action on the device, returning the resulting H_id. */
 async function executeCanonicalAction(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
   action: CanonicalAction,
-  fromIndex?: ScreenNode["index"]
+  fromIndex?: ScreenNode["index"],
+  selector?: EdgeSelector
 ): Promise<string> {
   switch (action.kind) {
     case "tap":
     case "longPress": {
-      const point = await resolveTapPoint(server, size, action, fromIndex);
+      const point = await resolveTapPoint(server, size, action, fromIndex, selector);
       if ("diverge" in point) {
-        // The bucketed target is no longer on screen: don't tap blindly. Report
-        // the current hash so runNavigation records a divergence and stops.
-        const state = await server.getState({ includeScreenshot: false });
-        return state.hash ?? "";
+        // The acted element could not be re-resolved on the live screen: don't tap
+        // blindly (phase D §2 — "an edge whose selector cannot be resolved is not
+        // taken"). Report the current H_id so runNavigation records a divergence.
+        return idOf(await server.getState({ includeScreenshot: false }));
       }
       const { cx, cy } = point;
       const res =
         action.kind === "tap"
           ? await server.tapWithOutcome(cx, cy)
           : await server.longPressWithOutcome(cx, cy);
-      return res.after.hash;
+      return res.after.idHash ?? res.after.hash;
     }
     case "swipe": {
       const { sx, sy, ex, ey } = swipeVector(size, action.dir);
       const res = await server.swipeWithOutcome(sx, sy, ex, ey, 10);
-      return res.after.hash;
+      return res.after.idHash ?? res.after.hash;
     }
     case "back": {
       const res = await server.keyWithOutcome("KEYCODE_BACK");
-      return res.after.hash;
+      return res.after.idHash ?? res.after.hash;
     }
     case "key": {
       const res = await server.keyWithOutcome(action.key ?? "KEYCODE_ENTER");
-      return res.after.hash;
+      return res.after.idHash ?? res.after.hash;
     }
     case "typeText": {
       if (action.target?.text) {
         const res = await server.typeTextWithOutcome(action.target.text);
-        return res.after.hash;
+        return res.after.idHash ?? res.after.hash;
       }
-      // Nothing to type without stored text — read the current hash instead.
-      const state = await server.getState({ includeScreenshot: false });
-      return state.hash ?? "";
+      // Nothing to type without stored text — read the current H_id instead.
+      return idOf(await server.getState({ includeScreenshot: false }));
     }
   }
 }
 
+/**
+ * Live tap point for a canonical action. Phase D §2: PREFER the recorded edge
+ * selector — re-resolve it on the live screen by resource-id, then text, then
+ * content-description — and DIVERGE when a selector was recorded but none of its
+ * fields resolve (never replay the stale coordinate). Fall back to the bucket only
+ * when the edge carries no selector at all.
+ */
 export async function resolveTapPoint(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
   action: CanonicalAction,
-  fromIndex?: ScreenNode["index"]
+  fromIndex?: ScreenNode["index"],
+  selector?: EdgeSelector
 ): Promise<TapResolution> {
-  if (action.target) {
-    const q = await server.query(toOpenSelector(action.target), { limit: 1 });
-    const node = q.nodes[0];
-    if (node) {
-      return {
-        cx: Math.round((node.bounds.x1 + node.bounds.x2) / 2),
-        cy: Math.round((node.bounds.y1 + node.bounds.y2) / 2),
-      };
+  const centreOf = (n: { bounds: { x1: number; y1: number; x2: number; y2: number } }): TapResolution => ({
+    cx: Math.round((n.bounds.x1 + n.bounds.x2) / 2),
+    cy: Math.round((n.bounds.y1 + n.bounds.y2) / 2),
+  });
+  // Ordered candidate selectors: resource-id (most specific), then text, then
+  // content-description. `action.target` (folded from the selector at record
+  // time) is included so a plan step without an explicit `selector` still routes.
+  const candidates: OpenServerSelector[] = [];
+  const rid = selector?.resourceId ?? action.target?.id;
+  const txt = selector?.text ?? action.target?.text;
+  const cd = selector?.contentDescription;
+  if (rid) candidates.push({ id: rid });
+  if (txt) candidates.push({ text: txt });
+  if (cd) candidates.push({ text: cd });
+  if (candidates.length > 0) {
+    for (const c of candidates) {
+      const q = await server.query(c, { limit: 1 });
+      const node = q.nodes[0];
+      if (node) return centreOf(node);
     }
+    // A selector was recorded but nothing matched live — the edge is not taken.
+    return { diverge: true };
   }
   if (action.bucket) {
     // Phase B leftover B1: a bucketed tap has no id/text. If the FROM node's
@@ -297,15 +326,39 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
       const { store } = await resolveStoreForCurrentApp(device.id, server);
       const state = await server.getState({ includeScreenshot: false });
-      const currentHash = state.hash ?? "";
+      // The graph keys nodes by H_id (phase D §1): localize, plan and verify on
+      // the identity hash, which is stable across scroll/focus so the FROM screen
+      // matches its node exactly (the C.4 structural-`H` drift is gone).
+      const currentHash = idOf(state);
       const size = { width: state.info.screenWidth, height: state.info.screenHeight };
       const liveResourceIds = resourceIdsOf(state.tree);
 
       const graph = { edges: store.edges, nodes: store.nodes };
-      // C.4 work item C: localize the FROM screen through a resource-id Jaccard
-      // fallback (the live Settings root drifts to a near-duplicate `H` between
-      // runs, scattering root→sub-screen edges across several root nodes) and
-      // match the target selector case-insensitively. Screen-hash targets still
+
+      // Phase D §3: route only when the target is UNAMBIGUOUS — a selector that
+      // several distinct screens index cannot identify one destination, so refuse
+      // rather than route to an arbitrary one.
+      if (params.target.selector) {
+        const keys = selectorKeys(params.target.selector);
+        const holders = Object.values(graph.nodes).filter((n) =>
+          keys.some((k) => k in n.index)
+        );
+        if (holders.length > 1) {
+          const { name, summary } = finalSummary(store, currentHash);
+          return {
+            reached: false,
+            finalScreen: name,
+            completedSteps: 0,
+            totalSteps: 0,
+            error: `ambiguous target: ${holders.length} screens index this selector`,
+            fromVia: currentHash && graph.nodes[currentHash] ? "exact" : "none",
+            ...(summary ? { summary } : {}),
+          };
+        }
+      }
+
+      // Localize the FROM screen through a resource-id Jaccard fallback (retained
+      // as a safety net; with H_id it should hit exactly). Screen-hash targets
       // plan exactly.
       const stablePlan = params.target.selector
         ? planToSelectorStable(graph, currentHash, liveResourceIds, params.target.selector)
@@ -336,18 +389,18 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       // only advances when the observed hash matched it).
       let stepFrom = currentHash;
       const nav = await runNavigation(currentHash, planned.steps, {
-        execute: async (action, step) => {
+        execute: async (action, step: PlanStep) => {
           const fromIndex = store.getNode(stepFrom)?.index;
-          await executeCanonicalAction(server, size, action, fromIndex);
-          // Re-read the landed screen for both its hash and its resource-id
-          // multiset, so a drifted-but-equivalent arrival still verifies (below).
+          await executeCanonicalAction(server, size, action, fromIndex, step.selector);
+          // Re-read the landed screen for its H_id and resource-id multiset.
           const after = await server.getState({ includeScreenshot: false });
           stepFrom = step.to;
-          return { afterHash: after.hash ?? "", afterResourceIds: resourceIdsOf(after.tree) };
+          return { afterHash: idOf(after), afterResourceIds: resourceIdsOf(after.tree) };
         },
-        // Tolerant arrival check: exact hash OR a resource-id Jaccard match
-        // against the recorded target node (C.4 — exact-hash-only verification
-        // failed whenever the sub-screen hash drifted, even on a correct tap).
+        // Arrival is verified by H_id equality (phase D §3): H_id is stable across
+        // scroll/focus, so a correct tap lands on the target identity even when the
+        // structural `H` differs — that IS the tolerant match. The resource-id
+        // Jaccard stays as a secondary safety net.
         matches: (step, outcome) => {
           if (outcome.afterHash && outcome.afterHash === step.to) return true;
           const node = store.getNode(step.to);

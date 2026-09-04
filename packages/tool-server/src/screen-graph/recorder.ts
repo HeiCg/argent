@@ -6,12 +6,14 @@
  * path supplies `fetchScreen`; tests supply a stub.
  */
 import type { ScreenGraphStore } from "./store";
-import type { CanonicalAction, ScreenNode } from "./types";
+import type { CanonicalAction, EdgeSelector, ScreenNode } from "./types";
 
 /** The screen payload used to insert an unknown target node. */
 export interface FetchedScreen {
   compact: string;
   stateHash: string;
+  /** Structural hash `H` observed for this identity (phase D §1, diagnostic). */
+  structuralHash?: string;
   /** Device AX version clock the screen was captured at (Phase B leftover B1). */
   version?: number;
   index: ScreenNode["index"];
@@ -25,8 +27,11 @@ export interface FetchedScreen {
 export interface ObserveContext {
   store: ScreenGraphStore;
   action: CanonicalAction;
+  /** `hash` is the node IDENTITY (`H_id`, phase D §1). */
   before: { hash: string };
-  after: { hash: string; stateHash: string };
+  after: { hash: string; stateHash: string; structuralHash?: string };
+  /** The acted element's selector, recorded on the edge (phase D §2). */
+  selector?: EdgeSelector;
   /** The action landed on `after` (default true). */
   success?: boolean;
   /** A `secretsUsed` outcome preceded this observation (redact the node). */
@@ -41,7 +46,10 @@ export interface ObserveContext {
  */
 export async function recordObservation(ctx: ObserveContext): Promise<void> {
   const { store, action, before, after } = ctx;
-  store.observe(before.hash, action, after.hash, { success: ctx.success ?? true });
+  store.observe(before.hash, action, after.hash, {
+    success: ctx.success ?? true,
+    ...(ctx.selector ? { selector: ctx.selector } : {}),
+  });
 
   if (ctx.secret) {
     // A secret was on screen — mark the target redacted whether or not it's new.
@@ -50,7 +58,13 @@ export async function recordObservation(ctx: ObserveContext): Promise<void> {
   }
 
   if (store.hasNode(after.hash)) {
-    store.recordVisit(after.hash);
+    // Bump the visit once; when a fresh structural hash is known, refresh it in
+    // the same upsert (upsertNode on an existing node bumps visits like recordVisit).
+    if (after.structuralHash !== undefined) {
+      store.upsertNode({ hash: after.hash, structuralHash: after.structuralHash });
+    } else {
+      store.recordVisit(after.hash);
+    }
     return;
   }
 
@@ -58,6 +72,7 @@ export async function recordObservation(ctx: ObserveContext): Promise<void> {
     const screen = await ctx.fetchScreen();
     store.upsertNode({
       hash: after.hash,
+      ...(after.structuralHash !== undefined ? { structuralHash: after.structuralHash } : screen.structuralHash !== undefined ? { structuralHash: screen.structuralHash } : {}),
       compact: screen.compact,
       stateHash: screen.stateHash,
       ...(screen.version !== undefined ? { version: screen.version } : {}),

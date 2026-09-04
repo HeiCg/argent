@@ -447,13 +447,17 @@ async function locateNorm(reg: Reg, config: BenchConfigId, sel: BenchSelector): 
 // `src/screen-graph/bench/describe-locate.ts` (a pure, unit-tested module — the
 // bench script self-executes on import so the parser cannot live here).
 
-/** Current screen structural hash via the open server (empty string on B1). */
+/**
+ * Current screen IDENTITY hash `H_id` via the open server (empty on B1). The
+ * graph keys nodes by H_id (phase D §1), so known/revisited bookkeeping and the
+ * per-step `hash` field use it, not the scroll-sensitive structural `H`.
+ */
 async function currentHash(reg: Reg, config: BenchConfigId): Promise<string> {
   if (!usesOpenServer(config)) return "";
   try {
     const server = await openServer(reg);
     const s = await server.getState({ includeScreenshot: false });
-    return s.hash ?? "";
+    return s.idHash ?? s.hash ?? "";
   } catch {
     return "";
   }

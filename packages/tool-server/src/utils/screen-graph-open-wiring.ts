@@ -30,6 +30,8 @@ import {
   selectorKeyForId,
   selectorKeyForText,
   type ActionInvocation,
+  type CanonicalAction,
+  type EdgeSelector,
   type FetchedScreen,
   type ScreenNode,
 } from "../screen-graph";
@@ -188,7 +190,7 @@ export async function recordOpenServerObservation(
   size: { width: number; height: number },
   invocation: ActionInvocation,
   outcome: OpenServerActionOutcome,
-  opts: { secret?: boolean } = {}
+  opts: { secret?: boolean; actedSelector?: EdgeSelector } = {}
 ): Promise<void> {
   if (!isFlagEnabled(SCREEN_GRAPH_FLAG)) return;
   try {
@@ -196,13 +198,27 @@ export async function recordOpenServerObservation(
     const pkg = info.currentPackage || "unknown";
     const versionCode = await resolveVersionCode(device.id, pkg);
     const store = await getStore(device.id, pkg, versionCode);
-    const action = canonicalAction(invocation, size);
+    // The graph keys nodes by H_id (phase D §1); H stays as a diagnostic field.
+    const beforeId = outcome.before.idHash ?? outcome.before.hash;
+    const afterId = outcome.after.idHash ?? outcome.after.hash;
+    // The edge carries the acted element's selector (phase D §2): fold it into the
+    // canonical action's target so planning/replay resolve by id/text, and record
+    // the full selector on the edge for the content-description fallback.
+    const sel = opts.actedSelector;
+    const action: CanonicalAction = canonicalAction(invocation, size);
+    if (sel && (action.kind === "tap" || action.kind === "longPress") && !action.target) {
+      const id = sel.resourceId?.trim();
+      const text = sel.text?.trim();
+      if (id) action.target = { id };
+      else if (text) action.target = { text };
+    }
     await recordObservation({
       store,
       action,
-      before: { hash: outcome.before.hash },
-      after: { hash: outcome.after.hash, stateHash: outcome.after.stateHash },
+      before: { hash: beforeId },
+      after: { hash: afterId, stateHash: outcome.after.stateHash, structuralHash: outcome.after.hash },
       success: true,
+      ...(sel ? { selector: sel } : {}),
       ...(opts.secret ? { secret: true } : {}),
       fetchScreen: () => fetchScreen(server),
     });
