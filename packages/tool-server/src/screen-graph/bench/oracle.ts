@@ -134,16 +134,28 @@ export interface AccountableRun {
   oracleError?: boolean;
   /** the task threw before producing a usable record (backend down, etc.). */
   taskError?: boolean;
+  /**
+   * The failure was PRE-ACTION shared infrastructure — a backend/emulator fault
+   * that struck before this config performed any device-mutating action, so it
+   * would have hit every config identically. ONLY such a run is excluded from the
+   * denominator (phase D §0.1, review C4-H1). The harness sets this narrowly; it
+   * is never set by a locate/action/oracle failure that FOLLOWS the config's own
+   * navigation (that is the config's own failure, counted against it).
+   */
+  infraPreAction?: boolean;
 }
 
 /**
- * A run is EXCLUDED from the success denominator when any plumbing/infra reason
- * prevented an honest oracle judgement (ticket §2 + review MEDIUM-7/8): a failed
- * locate, a failed action, an oracle read error, or a task-level throw. Such a
- * run is never counted as a success even if a stale `success:true` rides along.
+ * A run is EXCLUDED from the success denominator ONLY when a pre-action shared
+ * infrastructure fault prevented the config from ever acting (phase D §0.1 /
+ * review C4-H1). A locate/action/oracle failure that follows the config's OWN
+ * navigation is NOT excluded — it is the config's own failure and counts against
+ * it, so the denominator is 100 for every config and cannot be chosen by the
+ * outcome (the C.3→C.4 defect that moved from B1 to O5). The reason breakdown
+ * (locate/action/oracle/task) is still reported, but only as failure REASONS.
  */
 export function isExcludedRun(r: AccountableRun): boolean {
-  return Boolean(r.locateFailed || r.actionFailed || r.oracleError || r.taskError);
+  return Boolean(r.infraPreAction);
 }
 
 export interface SuccessAccount {
@@ -164,9 +176,12 @@ export interface SuccessAccount {
 }
 
 /**
- * Success rate over the runs that actually reached the oracle: every plumbing/
- * infra failure is counted separately and removed from the denominator (ticket
- * §2, review MEDIUM-7/8). An all-excluded config scores 0 over 0 scored runs.
+ * Success rate with exclusions-as-failures (phase D §0.1): the denominator is the
+ * FULL run count for every config, minus only pre-action shared-infra runs
+ * (`infraPreAction`, normally none). A locate/action/oracle failure that follows
+ * the config's own navigation is a FAILURE, not an exclusion, so a config cannot
+ * shrink its own denominator by failing. The reason breakdown (locate/action/
+ * oracle/task) is still tallied for the report, as failure reasons.
  */
 export function accountSuccess(records: AccountableRun[]): SuccessAccount {
   const total = records.length;
@@ -176,7 +191,12 @@ export function accountSuccess(records: AccountableRun[]): SuccessAccount {
   const taskError = records.filter((r) => r.taskError).length;
   const excluded = records.filter(isExcludedRun).length;
   const scored = total - excluded;
-  const ok = records.filter((r) => !isExcludedRun(r) && r.success).length;
+  // A run counts as OK only when it succeeded AND carries no failure reason — a
+  // swallowed locate/action/oracle/task failure must never ride a stale
+  // `success:true` into the numerator (review MEDIUM-8, kept under §0.1).
+  const hasFailureReason = (r: AccountableRun): boolean =>
+    Boolean(r.locateFailed || r.actionFailed || r.oracleError || r.taskError);
+  const ok = records.filter((r) => !isExcludedRun(r) && r.success && !hasFailureReason(r)).length;
   return {
     total,
     scored,

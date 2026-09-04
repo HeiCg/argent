@@ -735,11 +735,14 @@ async function runAction(
       nav.error = String(e);
       realDebug(`[bench-sg] navigate-to threw for ${JSON.stringify(target)}: ${String(e)}; falling back`);
     }
-    // Fallback: re-observe when the route already moved the screen (partial exec
-    // or a mis-land), then re-locate LIVE so the tap uses the current screen, not
-    // a stale coordinate. A no-route (completedSteps 0) never tapped, so the source
-    // screen is intact and a re-locate still finds the tap selector there.
-    if ((nav.completedSteps > 0 || nav.misland)) {
+    // Fallback: re-observe when the route already EXECUTED a plan step, then
+    // re-locate LIVE so the tap uses the current screen, not a stale coordinate.
+    // Gate on `totalSteps > 0` (the plan ran at least its first action) — NOT on
+    // `completedSteps > 0`: `runNavigation` returns `completedSteps:0` for a step
+    // that diverged AFTER tapping (navigate.ts does not increment on divergence),
+    // so `completedSteps:0` does NOT mean "never tapped" (review C4-H4). A true
+    // no-route has `totalSteps:0` (no plan), leaving the source screen intact.
+    if (nav.totalSteps > 0) {
       await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
       await reg.invokeTool("describe", { udid: SERIAL }).catch(() => undefined);
     }
@@ -1241,9 +1244,34 @@ interface ConfigAgg {
   navFallbacks: number;
   /** of the fallbacks, those where navigate reported reached but mis-landed. */
   navMisland: number;
-  /** of the fallbacks, those where navigate found no route / diverged. */
+  /** of the fallbacks, those that DIVERGED after tapping (a plan ran, `totalSteps>0`). */
+  navDiverged: number;
+  /** of the fallbacks, those with NO route at all (`totalSteps === 0`). */
   navNoRoute: number;
   skipped?: string;
+}
+
+/**
+ * Honest logical round-trip count for a step (phase D §0.7). For an O5
+ * known-target tap that used navigate-to, this counts the RPCs the harness truly
+ * issued — the recorded `rttCount` (1) omits the navigate + the fallback locate,
+ * so the raw field undercounts O5 (review C4-M4). For every other step it equals
+ * the recorded action + observation count.
+ */
+function effectiveRttCount(s: StepRecord): number {
+  if (s.actionKind === "launch") return 0;
+  const nav = s.nav;
+  if (s.knownTarget && s.actionKind === "tap" && nav?.attempted) {
+    let c = 1; // navigate-to
+    if (nav.reached) c += 1; // queryPresent arrival verify
+    if (s.navFallback) {
+      if ((nav.totalSteps ?? 0) > 0) c += 1; // re-observe describe (route already moved the screen)
+      c += 1; // re-locate query
+      c += 1; // fallback tap
+    }
+    return c; // the observation on these steps is graph-lookup (0)
+  }
+  return 1 + (s.obs === "none" || s.obs === "graph-lookup" ? 0 : 1);
 }
 
 function aggregate(
@@ -1266,33 +1294,45 @@ function aggregate(
   let navRouted = 0;
   let navFallbacks = 0;
   let navMisland = 0;
+  let navDiverged = 0;
   let navNoRoute = 0;
+
+  // Nav counters over ALL records and ALL attempts (phase D §0.2) — BEFORE any
+  // exclusion skip, so a known-target tap that FAILED (and would once have been
+  // dropped from the denominator) is still counted. Fallbacks split three ways:
+  // mis-landed (reached the wrong screen), diverged-after-tap (a plan ran,
+  // `totalSteps>0`, but stopped before arrival), and no-route (`totalSteps===0`).
+  for (const r of records) {
+    for (const s of r.steps) {
+      if (!(s.knownTarget && s.actionKind === "tap")) continue;
+      knownTargetSteps += 1;
+      if (s.nav?.attempted) navAttempted += 1;
+      if (s.strategy === "navigate") navRouted += 1;
+      if (s.navFallback) {
+        navFallbacks += 1;
+        if (s.nav?.misland) navMisland += 1;
+        else if ((s.nav?.totalSteps ?? 0) > 0) navDiverged += 1;
+        else navNoRoute += 1;
+      }
+    }
+  }
+
   for (const r of records) {
     plumbingMs += r.plumbingMs ?? 0;
-    // Excluded runs (locate/action/oracle/task failures) never produced an honest
-    // observation/oracle — keep their steps and wall time out of the metrics.
+    // Only pre-action shared-infra runs are excluded (phase D §0.1); every other
+    // run — including a config's own failed navigation — keeps its steps and wall
+    // time in the distributions, so O5's per-step tokens/RTT are over ALL its
+    // steps (155-ish), not just the runs its routing did not destroy (§0.7).
     if (isExcludedRun(r)) continue;
     walls.push(r.wallMs);
     for (const s of r.steps) {
-      // O5 navigate-to structure, counted from the STRUCTURED records (C.4 work
-      // item B), not console text. A known-target tap either routed (strategy
-      // "navigate") or fell back to locate+tap.
-      if (s.knownTarget && s.actionKind === "tap") {
-        knownTargetSteps += 1;
-        if (s.nav?.attempted) navAttempted += 1;
-        if (s.strategy === "navigate") navRouted += 1;
-        if (s.navFallback) {
-          navFallbacks += 1;
-          if (s.nav?.misland) navMisland += 1;
-          else navNoRoute += 1;
-        }
-      }
       if (s.actionKind === "launch") continue;
+      const eff = effectiveRttCount(s);
       stepTk.push(s.tokensTiktoken);
       stepC4.push(s.tokensCharsDiv4);
       stepRtt.push(s.rttMs);
-      rttCount.push(s.rttCount);
-      if (s.sameScreen) rttCountSS.push(s.rttCount);
+      rttCount.push(eff);
+      if (s.sameScreen) rttCountSS.push(eff);
       // A step reaching a screen already in the graph is warm; a novel screen is
       // cold. In O3 (cold store) most steps are cold; in O4/O5 (preloaded) warm.
       if (s.knownScreen) warmTk.push(s.tokensTiktoken);
@@ -1328,6 +1368,7 @@ function aggregate(
     navRouted,
     navFallbacks,
     navMisland,
+    navDiverged,
     navNoRoute,
   };
 }
@@ -1351,6 +1392,100 @@ function wilson95(ok: number, n: number): { p: number; lo: number; hi: number } 
   const half = (z * Math.sqrt((phat * (1 - phat)) / n + z2 / (4 * n * n))) / denom;
   const clamp = (x: number): number => Math.max(0, Math.min(1, x));
   return { p: phat * 100, lo: clamp(centre - half) * 100, hi: clamp(centre + half) * 100 };
+}
+
+/**
+ * Task-cluster bootstrap 95% interval (phase D §0.3, review C4-H5). The 5 reps of
+ * a task are CORRELATED, so the effective N is the 20 tasks, not 100 runs — a
+ * naive Wilson at n=100 is up to ~2× too narrow where failures cluster (O5's 13
+ * are 3 whole tasks). We resample the TASKS with replacement (`B` draws), recompute
+ * the config's success rate over the resampled tasks' reps, and take the 2.5/97.5
+ * percentiles. Deterministic (fixed seed) so the report regenerates identically.
+ */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const BOOTSTRAP_B = 10_000;
+const BOOTSTRAP_SEED = 0x5eed_c0de;
+
+/** Per (config, task) → success bits over reps, keyed for the bootstrap. */
+function successByTask(records: TaskRecord[], config: BenchConfigId): Map<string, number[]> {
+  const m = new Map<string, number[]>();
+  for (const r of records) {
+    if (r.config !== config) continue;
+    const arr = m.get(r.task) ?? [];
+    const failReason = r.locateFailed || r.actionFailed || r.oracleError || r.taskError;
+    arr.push(r.success && !isExcludedRun(r) && !failReason ? 1 : 0);
+    m.set(r.task, arr);
+  }
+  return m;
+}
+
+function rateOverTasks(byTask: Map<string, number[]>, tasks: string[]): number {
+  let num = 0;
+  let den = 0;
+  for (const t of tasks) {
+    const v = byTask.get(t);
+    if (!v) continue;
+    for (const b of v) {
+      num += b;
+      den += 1;
+    }
+  }
+  return den ? num / den : NaN;
+}
+
+interface Interval {
+  p: number;
+  lo: number;
+  hi: number;
+}
+
+/** Cluster-bootstrap 95% CI (percentages) for one config's success rate. */
+function clusterBootstrap95(records: TaskRecord[], config: BenchConfigId): Interval {
+  const byTask = successByTask(records, config);
+  const tasks = [...byTask.keys()];
+  if (tasks.length === 0) return { p: NaN, lo: NaN, hi: NaN };
+  const point = rateOverTasks(byTask, tasks) * 100;
+  const rng = mulberry32(BOOTSTRAP_SEED);
+  const boots: number[] = [];
+  for (let b = 0; b < BOOTSTRAP_B; b++) {
+    const sample: string[] = [];
+    for (let i = 0; i < tasks.length; i++) sample.push(tasks[Math.floor(rng() * tasks.length)]!);
+    boots.push(rateOverTasks(byTask, sample) * 100);
+  }
+  boots.sort((x, y) => x - y);
+  return { p: point, lo: boots[Math.floor(0.025 * BOOTSTRAP_B)]!, hi: boots[Math.ceil(0.975 * BOOTSTRAP_B) - 1]! };
+}
+
+/** Paired cluster-bootstrap 95% CI (pp) for `config − baseline` success. */
+function pairedClusterBootstrap95(
+  records: TaskRecord[],
+  config: BenchConfigId,
+  baseline: BenchConfigId
+): Interval {
+  const byA = successByTask(records, config);
+  const byB = successByTask(records, baseline);
+  const tasks = [...new Set([...byA.keys(), ...byB.keys()])];
+  if (tasks.length === 0) return { p: NaN, lo: NaN, hi: NaN };
+  const point = (rateOverTasks(byA, tasks) - rateOverTasks(byB, tasks)) * 100;
+  const rng = mulberry32(BOOTSTRAP_SEED);
+  const boots: number[] = [];
+  for (let b = 0; b < BOOTSTRAP_B; b++) {
+    const sample: string[] = [];
+    for (let i = 0; i < tasks.length; i++) sample.push(tasks[Math.floor(rng() * tasks.length)]!);
+    boots.push((rateOverTasks(byA, sample) - rateOverTasks(byB, sample)) * 100);
+  }
+  boots.sort((x, y) => x - y);
+  return { p: point, lo: boots[Math.floor(0.025 * BOOTSTRAP_B)]!, hi: boots[Math.ceil(0.975 * BOOTSTRAP_B) - 1]! };
 }
 
 /** O5-pure vs O5-mixed split (C.4 work item B). */
@@ -1381,7 +1516,7 @@ function o5Split(records: TaskRecord[]): O5Split {
       for (const s of r.steps) {
         if (s.actionKind === "launch") continue;
         pureTok.push(s.tokensTiktoken);
-        pureRtt.push(s.rttCount);
+        pureRtt.push(effectiveRttCount(s));
       }
     }
   }
@@ -1445,35 +1580,41 @@ function buildReport(
   L.push("## Per-step observation tokens (o200k_base) — p50 / p95");
   L.push("");
   L.push(
-    "`success` = ok / scored (with a 95% Wilson interval, C.4 work item F), where scored " +
-      "EXCLUDES every plumbing/infra failure (locate / action / oracle / task — ticket §2, " +
-      "review MEDIUM-7/8). `excluded` shows the count and reason breakdown " +
-      "`L`ocate/`A`ction/`O`racle/`T`ask. `navFb` is the STRUCTURED O5 navigate-to fallback " +
-      "count (known-target taps that fell back to locate+tap); `fallbacks` is the console " +
-      "describe/tree-fallback count — for B1 any means the proprietary path was NOT exercised " +
-      "and its metrics are INVALID (review HIGH-5). `plumb ms` is off-metric plumbing time " +
-      "(B1 oracle instrumentation switch). B1 locates LIVE from its own describe every step " +
-      "(C.4 work item A — no precompute)."
+    "`success` = ok / total — EXCLUSIONS-AS-FAILURES (phase D §0.1): the denominator is the " +
+      "full run count for every config, so a config cannot shrink its own denominator by " +
+      "failing (review C4-H1). The PRIMARY interval is the task-cluster bootstrap (n=20 tasks, " +
+      "the effective N — the 5 reps of a task are correlated, review C4-H5); the naive Wilson " +
+      "(n=100) is kept as a SECONDARY column and reads too narrow where failures cluster. " +
+      "`fail (L/A/O/T)` breaks the failures down by reason (locate/action/oracle/task) — these " +
+      "are reasons, NOT exclusions. `navFb` is the STRUCTURED O5 navigate-to fallback count " +
+      "(known-target taps that fell back to locate+tap, over ALL attempts). `fallbacks` is the " +
+      "console describe/tree-fallback count — for B1 any means the proprietary path was NOT " +
+      "exercised and its metrics are INVALID (review HIGH-5). RTT count/step is the HONEST count " +
+      "(§0.7): an O5 known-target tap counts its navigate-to + the fallback locate + tap, not 1. " +
+      "B1 locates LIVE from its own describe every step (no precompute)."
   );
   L.push("");
   L.push(
-    "| Config | n steps | tok p50 | tok p95 | chars/4 p50 | RTT p50 (ms) | RTT count/step p50 | success | 95% Wilson | scored | excluded (L/A/O/T) | navFb | fallbacks | plumb ms |"
+    "| Config | n steps | tok p50 | tok p95 | chars/4 p50 | RTT p50 (ms) | RTT count/step p50 | success | cluster 95% (n=20) | Wilson (n=100) | fail (L/A/O/T) | navFb | fallbacks | plumb ms |"
   );
   L.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const c of REPORT_ORDER) {
     const a = by(c);
     if (!a) continue;
-    const exc = `${a.excluded} (${a.locateFailed}/${a.actionFailed}/${a.oracleError}/${a.taskError})`;
+    const failCount = a.total - a.ok - a.excluded;
+    const failCell = `${failCount} (${a.locateFailed}/${a.actionFailed}/${a.oracleError}/${a.taskError})`;
     const fbCell = c === "B1" && a.fallbacks > 0 ? `**${a.fallbacks}** ⚠` : String(a.fallbacks);
     const w = wilson95(a.ok, a.scored);
     const wCell = Number.isFinite(w.lo) ? `[${w.lo.toFixed(0)}, ${w.hi.toFixed(0)}]` : "—";
+    const cb = clusterBootstrap95(records, c);
+    const cbCell = Number.isFinite(cb.lo) ? `[${cb.lo.toFixed(0)}, ${cb.hi.toFixed(0)}]` : "—";
     const navFbCell = c === "O5" ? `${a.navFallbacks}/${a.knownTargetSteps}` : "—";
     L.push(
       `| ${c} | ${a.perStepTokensTiktoken.n} | ${fmt(a.perStepTokensTiktoken.p50)} | ${fmt(
         a.perStepTokensTiktoken.p95
       )} | ${fmt(a.perStepTokensCharsDiv4.p50)} | ${fmt(a.perStepRtt.p50)} | ${fmt(
         a.rttCountPerStep.p50
-      )} | ${(a.successRate * 100).toFixed(0)}% | ${wCell} | ${a.scored}/${a.total} | ${exc} | ${navFbCell} | ${fbCell} | ${a.plumbingMs} |`
+      )} | ${(a.successRate * 100).toFixed(0)}% (${a.ok}/${a.total}) | ${cbCell} | ${wCell} | ${failCell} | ${navFbCell} | ${fbCell} | ${a.plumbingMs} |`
     );
   }
   L.push("");
@@ -1485,12 +1626,13 @@ function buildReport(
     const cov = o5.knownTargetSteps > 0 ? `${o5.navRouted}/${o5.knownTargetSteps}` : "—/—";
     const pureW = wilson95(split.pure.ok, split.pure.scored);
     const mixedW = wilson95(split.mixed.ok, split.mixed.scored);
-    L.push("## O5 navigate-to structure (from structured records, C.4)");
+    L.push("## O5 navigate-to structure (from structured records, over ALL attempts)");
     L.push("");
     L.push(
       `- O5-pure coverage: **${cov}** known-target taps ROUTED via navigate-to ` +
-        `(attempted ${o5.navAttempted}); fallbacks ${o5.navFallbacks} ` +
-        `(no-route/divergence ${o5.navNoRoute}, reached-but-mis-landed ${o5.navMisland}).`
+        `(attempted ${o5.navAttempted}). Fallbacks ${o5.navFallbacks}/${o5.knownTargetSteps}: ` +
+        `mis-landed ${o5.navMisland}, diverged-after-tap ${o5.navDiverged}, ` +
+        `no-route ${o5.navNoRoute} (phase D §0.2, counted over ALL attempts before any exclusion).`
     );
     L.push(
       `- **O5-mixed** (all scored runs, the published O5): ${split.mixed.ok}/${split.mixed.scored} ` +
@@ -1549,75 +1691,52 @@ function buildReport(
     } |`
   );
   L.push("");
-  // H4 (review HIGH-6): compare each open config to a baseline over the (task,rep)
-  // pairs BOTH sides actually SCORED (neither excluded). No verdict when the
-  // intersection is empty. B1 with any describe fallback is an invalid baseline.
-  const scoredPairs = (c: BenchConfigId): Set<string> => {
-    const s = new Set<string>();
-    for (const r of records) {
-      if (r.config === c && !isExcludedRun(r)) s.add(`${r.task}#${r.rep}`);
-    }
-    return s;
-  };
-  const successAt = (c: BenchConfigId, key: string): boolean => {
-    const [task, repStr] = key.split("#");
-    const r = records.find((x) => x.config === c && x.task === task && x.rep === Number(repStr));
-    return Boolean(r && !isExcludedRun(r) && r.success);
-  };
+  // H4 (phase D §0.3): compare each open config to each baseline on the FULL
+  // 100-run denominator — NO shared-pair intersection (the C.4 intersection
+  // removed the same runs O5 destroyed from the baseline too, review C4-H2). The
+  // discriminator is the PAIRED task-cluster bootstrap of the success difference
+  // (effective N = 20 tasks); a config is INFERIOR only when its point estimate is
+  // more than the ~3.4–8.3 pp noise floor below the baseline (we use 5 pp) — the
+  // run-to-run noise cannot otherwise be told apart. Wilson stays as a footnote.
   const b1Invalid = Boolean(b1 && b1.fallbacks > 0);
-  // C.4 work item F: a config is judged vs the baseline over the SHARED scored
-  // pairs, and a verdict is only given when the 95% Wilson intervals are DISJOINT
-  // — INFERIOR when the config's whole interval is below the baseline's, superior
-  // when above; overlapping intervals are "indistinguishable at N" (which
-  // satisfies the non-inferiority hypothesis — inferiority cannot be shown).
+  const INFERIOR_MARGIN_PP = 5;
   const h4Row = (base: ConfigAgg | undefined, invalid: boolean): string => {
     if (!base) return "baseline absent";
     if (invalid) return "INVALID BASELINE (describe fallback → proprietary path not exercised)";
-    const basePairs = scoredPairs(base.config);
     const parts: string[] = [];
     let anyInferior = false;
     for (const a of aggs.filter((x) => x.config.startsWith("O"))) {
-      const inter = [...scoredPairs(a.config)].filter((k) => basePairs.has(k));
-      if (inter.length === 0) {
-        parts.push(`${a.config}: no shared scored pairs`);
-        continue;
-      }
-      const aSucc = inter.filter((k) => successAt(a.config, k)).length;
-      const bSucc = inter.filter((k) => successAt(base.config, k)).length;
-      const aw = wilson95(aSucc, inter.length);
-      const bw = wilson95(bSucc, inter.length);
-      let tag: string;
-      if (aw.hi < bw.lo) {
-        tag = "INFERIOR ✗";
-        anyInferior = true;
-      } else if (aw.lo > bw.hi) {
-        tag = "superior";
-      } else {
-        tag = "indistinguishable at N";
-      }
+      const d = pairedClusterBootstrap95(records, a.config, base.config);
+      const inferior = d.p <= -INFERIOR_MARGIN_PP;
+      if (inferior) anyInferior = true;
+      const tag = inferior ? "INFERIOR ✗" : "non-inferior";
       parts.push(
-        `${a.config} ${(aw.p || 0).toFixed(0)}% [${aw.lo.toFixed(0)},${aw.hi.toFixed(0)}] vs ` +
-          `${(bw.p || 0).toFixed(0)}% [${bw.lo.toFixed(0)},${bw.hi.toFixed(0)}] (n=${inter.length}) — ${tag}`
+        `${a.config} Δ ${d.p >= 0 ? "+" : ""}${d.p.toFixed(0)} pp [${d.lo.toFixed(0)}, ${d.hi.toFixed(0)}] — ${tag}`
       );
     }
     return `${anyInferior ? "FAIL (an O-config is inferior)" : "PASS (none inferior)"} — ${parts.join("; ")}`;
   };
-  const bWilsonCell = (a?: ConfigAgg): string =>
-    a ? `${(a.successRate * 100).toFixed(0)}% (${a.ok}/${a.scored}) ${(() => { const w = wilson95(a.ok, a.scored); return `[${w.lo.toFixed(0)}, ${w.hi.toFixed(0)}]`; })()}` : "—";
+  const baseCell = (a?: ConfigAgg): string => {
+    if (!a) return "—";
+    const cb = clusterBootstrap95(records, a.config);
+    const w = wilson95(a.ok, a.scored);
+    return `${(a.successRate * 100).toFixed(0)}% (${a.ok}/${a.total}) cluster [${cb.lo.toFixed(0)}, ${cb.hi.toFixed(0)}] · Wilson [${w.lo.toFixed(0)}, ${w.hi.toFixed(0)}]`;
+  };
   L.push(
-    "**H4 — success non-inferior to each baseline, ONE oracle for every config**, judged over " +
-      "the (task, rep) pairs BOTH sides scored with 95% Wilson intervals (C.4 work item F): a " +
-      "config FAILS only when its interval lies entirely BELOW the baseline's; overlapping " +
-      "intervals are indistinguishable at this N. B1 locates LIVE from its own describe (C.4 " +
-      "work item A) and is read via the instrumentation-switch oracle."
+    "**H4 — success non-inferior to each baseline, ONE oracle for every config**, on the FULL " +
+      "100-run denominator (exclusions-as-failures), with the PAIRED task-cluster bootstrap of " +
+      "`Δ = config − baseline` (phase D §0.3). A config is INFERIOR when its point estimate is " +
+      `more than ${INFERIOR_MARGIN_PP} pp (the noise floor) below the baseline. No shared-pair ` +
+      "intersection — the C.4 intersection removed the runs O5 destroyed from the baseline too " +
+      "(review C4-H2). B1 locates LIVE from its own describe (no precompute)."
   );
   L.push("");
-  L.push("| Baseline | Baseline success + 95% Wilson | Verdict (O1..O5, shared-pair intersection) |");
+  L.push("| Baseline | Baseline success (cluster / Wilson) | Verdict (O1..O5, paired cluster-bootstrap Δ) |");
   L.push("|---|---|---|");
   L.push(
-    `| B1 (argent proprietary) | ${bWilsonCell(b1)}${b1Invalid ? " ⚠INVALID" : ""} | ${h4Row(b1, b1Invalid)} |`
+    `| B1 (argent proprietary) | ${baseCell(b1)}${b1Invalid ? " ⚠INVALID" : ""} | ${h4Row(b1, b1Invalid)} |`
   );
-  L.push(`| B2 (open server, no graph) | ${bWilsonCell(b2)} | ${h4Row(b2, false)} |`);
+  L.push(`| B2 (open server, no graph) | ${baseCell(b2)} | ${h4Row(b2, false)} |`);
   L.push("");
   L.push("## H2 detail — RTT count/step, all steps vs same-screen only");
   L.push("");
@@ -1714,10 +1833,14 @@ function buildReport(
   L.push("");
 
   // Per-task success matrix (ticket §Output). Y=success, N=oracle unmet,
-  // L=locate-failed (aborted, excluded from denominator), .=config absent.
+  // L=locate-failed (aborted — counts as a FAILURE, phase D §0.1), .=config absent.
   L.push("## Per-task success matrix (per config)");
   L.push("");
-  L.push("Legend: `Y` oracle met · `N` oracle unmet · `L` locate-failed (aborted, not scored).");
+  L.push(
+    "Legend: `Y` oracle met · `N` oracle unmet · `L` locate-failed (aborted). " +
+      "`L` and `N` BOTH count as failures on the full denominator (phase D §0.1) — `L` merely " +
+      "records that the run aborted on a locate rather than reaching a met/unmet oracle."
+  );
   L.push("");
   const taskIds = [...new Set(records.map((r) => r.task))];
   const cell = (c: BenchConfigId, task: string): string => {
@@ -1853,7 +1976,45 @@ function buildReport(
 /* main                                                                        */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Offline report regeneration (phase D §0.8): rebuild the results doc from a prior
+ * run's JSON with the CURRENT (corrected) accounting — no device, no new run.
+ * `BENCH_REGEN=<bench-sg-*.json>` [+ `BENCH_REPORT=<out.md>`]. Rebuilds the
+ * aggregates from the stored per-run records so every corrected rule (exclusions-
+ * as-failures, nav counters over all attempts, honest RTT, paired cluster
+ * bootstrap, no H4 intersection) applies to the old data.
+ */
+function regenerateFromJson(regenPath: string): void {
+  const raw = JSON.parse(readFileSync(regenPath, "utf8")) as {
+    env?: Record<string, unknown>;
+    records: TaskRecord[];
+    skipped?: Record<string, string>;
+    aggregates?: Array<{ config: BenchConfigId; fallbacks?: number }>;
+  };
+  const records = raw.records;
+  const skipped = raw.skipped ?? {};
+  const fbByConfig = new Map<BenchConfigId, number>();
+  for (const a of raw.aggregates ?? []) fbByConfig.set(a.config, a.fallbacks ?? 0);
+  const aggs: ConfigAgg[] = [];
+  for (const c of REPORT_ORDER) {
+    const rs = records.filter((r) => r.config === c);
+    if (rs.length === 0) continue;
+    aggs.push(aggregate(c, rs, fbByConfig.get(c) ?? 0, 0));
+  }
+  const env = { ...(raw.env ?? {}), regeneratedFrom: regenPath.split("/").pop(), regeneratedAt: new Date().toISOString() };
+  const report = buildReport(aggs, env, skipped, records);
+  const outPath = process.env.BENCH_REPORT ?? join(OUT_DIR, "results-ci.md");
+  mkdirSync(OUT_DIR, { recursive: true });
+  writeFileSync(outPath, report);
+  process.stdout.write(`REGEN_FROM=${regenPath}\nREPORT_MD=${outPath}\n`);
+}
+
 async function main(): Promise<void> {
+  const regenPath = process.env.BENCH_REGEN;
+  if (regenPath) {
+    regenerateFromJson(regenPath);
+    return;
+  }
   validateTasks(ALL_TASKS);
   mkdirSync(OUT_DIR, { recursive: true });
   const started = new Date().toISOString();

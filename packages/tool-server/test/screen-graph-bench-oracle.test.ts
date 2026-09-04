@@ -106,23 +106,25 @@ describe("screen-graph bench oracle — matching rules (ticket C.1 §3)", () => 
   });
 });
 
-describe("screen-graph bench oracle — success/exclusion accounting (ticket C.1 §2, review MEDIUM-7/8)", () => {
-  it("excludes locate-failed runs from the success denominator", () => {
+describe("screen-graph bench oracle — exclusions-as-failures accounting (phase D §0.1, review C4-H1)", () => {
+  it("counts a locate-failed run as a FAILURE, not an exclusion (denominator stays full)", () => {
+    // The C.3→C.4 defect (review C4-H1): a locate that follows the config's own
+    // navigation is the config's failure, so it stays in the denominator.
     const a = accountSuccess([
       { success: true },
       { success: true },
       { success: false },
-      { success: false, locateFailed: true }, // aborted on locate → not scored
+      { success: false, locateFailed: true }, // agent/route failure → counts against it
     ]);
     expect(a.total).toBe(4);
-    expect(a.locateFailed).toBe(1);
-    expect(a.excluded).toBe(1);
-    expect(a.scored).toBe(3);
+    expect(a.locateFailed).toBe(1); // still reported as a failure REASON
+    expect(a.excluded).toBe(0);
+    expect(a.scored).toBe(4);
     expect(a.ok).toBe(2);
-    expect(a.successRate).toBe(Number((2 / 3).toFixed(3)));
+    expect(a.successRate).toBe(Number((2 / 4).toFixed(3)));
   });
 
-  it("excludes action-failed, oracle-error and task-error runs too", () => {
+  it("counts action-failed, oracle-error and task-error as failures too (reasons still tallied)", () => {
     const a = accountSuccess([
       { success: true },
       { success: false, actionFailed: true },
@@ -132,42 +134,44 @@ describe("screen-graph bench oracle — success/exclusion accounting (ticket C.1
     expect(a.actionFailed).toBe(1);
     expect(a.oracleError).toBe(1);
     expect(a.taskError).toBe(1);
-    expect(a.excluded).toBe(3);
-    expect(a.scored).toBe(1);
+    expect(a.excluded).toBe(0);
+    expect(a.scored).toBe(4);
     expect(a.ok).toBe(1);
-    expect(a.successRate).toBe(1);
+    expect(a.successRate).toBe(Number((1 / 4).toFixed(3)));
   });
 
-  it("an excluded run never counts as a success even if success is stale-true", () => {
-    // MEDIUM-8: a swallowed action failure must not become a false success.
+  it("a failed run never counts as a success even if success is stale-true", () => {
+    // A swallowed action failure must not become a false success.
     const a = accountSuccess([
       { success: true, actionFailed: true },
       { success: true, locateFailed: true },
       { success: true },
     ]);
-    expect(a.scored).toBe(1);
+    expect(a.scored).toBe(3);
     expect(a.ok).toBe(1);
+    expect(a.successRate).toBe(Number((1 / 3).toFixed(3)));
+  });
+
+  it("isExcludedRun excludes ONLY pre-action shared infra, never a config's own failure", () => {
+    expect(isExcludedRun({ success: true })).toBe(false);
+    expect(isExcludedRun({ success: true, locateFailed: true })).toBe(false);
+    expect(isExcludedRun({ success: true, actionFailed: true })).toBe(false);
+    expect(isExcludedRun({ success: true, oracleError: true })).toBe(false);
+    expect(isExcludedRun({ success: true, taskError: true })).toBe(false);
+    expect(isExcludedRun({ success: false, taskError: true, infraPreAction: true })).toBe(true);
+  });
+
+  it("a pre-action infra run is excluded from the denominator", () => {
+    const a = accountSuccess([
+      { success: true },
+      { success: false, taskError: true, infraPreAction: true }, // backend down before acting
+    ]);
+    expect(a.excluded).toBe(1);
+    expect(a.scored).toBe(1);
     expect(a.successRate).toBe(1);
   });
 
-  it("isExcludedRun flags every plumbing/infra reason", () => {
-    expect(isExcludedRun({ success: true })).toBe(false);
-    expect(isExcludedRun({ success: true, locateFailed: true })).toBe(true);
-    expect(isExcludedRun({ success: true, actionFailed: true })).toBe(true);
-    expect(isExcludedRun({ success: true, oracleError: true })).toBe(true);
-    expect(isExcludedRun({ success: true, taskError: true })).toBe(true);
-  });
-
-  it("all-excluded config scores 0 over 0 scored runs", () => {
-    const a = accountSuccess([
-      { success: false, locateFailed: true },
-      { success: false, oracleError: true },
-    ]);
-    expect(a.scored).toBe(0);
-    expect(a.successRate).toBe(0);
-  });
-
-  it("no exclusions → plain success rate", () => {
+  it("no failures → plain success rate", () => {
     const a = accountSuccess([{ success: true }, { success: false }, { success: true }]);
     expect(a.excluded).toBe(0);
     expect(a.successRate).toBe(Number((2 / 3).toFixed(3)));

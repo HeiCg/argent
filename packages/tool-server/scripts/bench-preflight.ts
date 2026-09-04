@@ -344,13 +344,39 @@ async function main(): Promise<number> {
       const r = navigates
         ? evaluateAssertion(launch.nodes, needle, { ignoreVisibility: true })
         : evaluateAssertion(launch.nodes, needle, { screen: launch.screen });
-      const verdict = navigates
-        ? r.matched
-          ? "BAD (needle in launch tree a navigating task leaves — false-pass risk, full-tree gate)"
-          : "ok (unique to destination, full-tree gate)"
-        : r.matched
+      let verdict: string;
+      if (!navigates) {
+        verdict = r.matched
           ? "ok (launch == destination; needle present)"
           : "MISSING (launch-only task but needle not on screen)";
+      } else if (r.matched) {
+        verdict = "BAD (needle in launch tree a navigating task leaves — false-pass risk, full-tree gate)";
+      } else {
+        // C-M2 (phase D §0.6): absence from launch is NOT enough — the needle must
+        // ALSO be PRESENT on the DESTINATION dump, or a needle on NEITHER screen
+        // would false-pass as "unique to destination". Navigate the task's steps
+        // and re-dump. A navigation/dump failure leaves the destination
+        // unverified (not a PROBLEM) rather than hard-failing the gate.
+        let destPresent: boolean | null = null;
+        try {
+          await launchAppPreflight(reg, task.app);
+          for (const step of task.steps) {
+            if (step.action.kind === "launch") continue;
+            await execCaptureStep(reg, step);
+          }
+          const dest = await dumpScreen(reg);
+          destPresent = evaluateAssertion(dest.nodes, needle, { screen: dest.screen }).matched;
+        } catch (e) {
+          destPresent = null;
+          process.stdout.write(`  [preflight] destination check for ${task.id} skipped: ${String(e)}\n`);
+        }
+        verdict =
+          destPresent === false
+            ? "MISSING (needle absent from BOTH launch and destination — false-pass risk)"
+            : destPresent === true
+              ? "ok (absent from launch, present on destination)"
+              : "ok (absent from launch; destination unreachable — presence NOT verified)";
+      }
       out.needleEval.push({
         task: task.id,
         app: task.app,

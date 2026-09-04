@@ -35,7 +35,7 @@ const FIXTURE = join(__dirname, "fixtures", "preflight-launch-screens.json");
 const present = existsSync(FIXTURE);
 
 describe.skipIf(!present)("screen-graph bench pre-flight — launch-screen needle guard (BLOCKER-1)", () => {
-  const fx = present ? (JSON.parse(readFileSync(FIXTURE, "utf8")) as Fixture) : ({ needleEval: [] } as Fixture);
+  const fx = present ? (JSON.parse(readFileSync(FIXTURE, "utf8")) as Fixture) : ({ serial: "", needleEval: [] } as Fixture);
 
   it("no navigating task's needle matches its launch screen (re-evaluated from the dump)", () => {
     const offenders: string[] = [];
