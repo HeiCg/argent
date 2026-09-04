@@ -79,6 +79,15 @@ const COLD = Number(process.env.BENCH_COLD ?? 3);
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 const PHYSICAL_DENY = "ZF524RZBHD";
 
+// Phase 3j: the transport experiment (serialize-once/compact A/B + adb-forward vs
+// redir vs padding) adds ~20 min per ON block, so it is OFF by default — routine
+// runs stay ~1 h and still show redir via the four-block idle describe + its
+// decomposition. Enabling it ALSO starts the on-device server in bench-debug mode
+// (read at spawn time by the blueprint) so its debug RPC params (_padTo,
+// _benchLegacyEncode) are honored; one knob controls both.
+const PHASE3J_EXPERIMENT = process.env.BENCH_PHASE3J_EXPERIMENT === "1";
+if (PHASE3J_EXPERIMENT) process.env.ARGENT_OPEN_SERVER_BENCH_DEBUG = "1";
+
 if (SERIAL === PHYSICAL_DENY) throw new Error(`refuse to target physical device ${PHYSICAL_DENY}`);
 if (!SERIAL.startsWith("emulator-")) {
   throw new Error(`BENCH_SERIAL must be an emulator- serial (got "${SERIAL}"); refusing.`);
@@ -1366,11 +1375,16 @@ async function runBlock(
       }
     }
     // Phase 3j: serialize-once + compact in-run A/B, and the transport experiment.
-    try {
-      phase3j = await runPhase3j(reg, N);
-      realDebug(formatPhase3j(phase3j));
-    } catch (e) {
-      realDebug(`[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`);
+    // Off by default (keeps routine runs ~1 h); enable with BENCH_PHASE3J_EXPERIMENT=1.
+    if (PHASE3J_EXPERIMENT) {
+      try {
+        phase3j = await runPhase3j(reg, N);
+        realDebug(formatPhase3j(phase3j));
+      } catch (e) {
+        realDebug(`[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } else {
+      realDebug("[bench] phase3j experiment OFF (set BENCH_PHASE3J_EXPERIMENT=1 to run it)");
     }
   }
 

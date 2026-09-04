@@ -22,7 +22,10 @@ import java.io.ByteArrayOutputStream
 class StateHandler(
     private val uiDevice: UiDevice,
     private val uiAutomation: UiAutomation,
-    private val instrumentation: Instrumentation
+    private val instrumentation: Instrumentation,
+    // Phase 3j: honor the bench-only `_benchLegacyEncode` toggle ONLY when the server
+    // was started with `-e benchDebug true`. Off in production.
+    private val benchDebug: Boolean = false
 ) {
 
     private val context get() = instrumentation.context
@@ -79,8 +82,10 @@ class StateHandler(
         // Phase 3j before/after toggle: force the OLD double-encode (serialize the
         // tree once to time encodeMs, discard it, then let successResponse
         // re-serialize the whole tree) so the bench can measure legacy vs
-        // serialize-once IN THE SAME RUN. Default false = the single-pass path.
-        val legacyEncode = params.optBoolean("_benchLegacyEncode", false)
+        // serialize-once IN THE SAME RUN. Bench-only: honored only under
+        // `benchDebug` (server started with `-e benchDebug true`). Default false =
+        // the single-pass path (always, in production).
+        val legacyEncode = benchDebug && params.optBoolean("_benchLegacyEncode", false)
 
         // 0. Order any preceding touch's UP ahead of the capture. Fast-inject path
         //    (flush=true) drains the whole input queue synchronously; the default
