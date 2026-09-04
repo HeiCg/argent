@@ -1,6 +1,11 @@
 import * as net from "node:net";
+import { performance } from "node:perf_hooks";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
-import { attachNdjsonReader, reportDroppedFrameToStderr } from "./ndjson-socket";
+import {
+  attachNdjsonReader,
+  reportDroppedFrameToStderr,
+  type NdjsonFrameStats,
+} from "./ndjson-socket";
 
 /**
  * Newline-delimited JSON-RPC 2.0 client for `@argent/android-device-server`.
@@ -27,9 +32,30 @@ interface JsonRpcResponse {
 }
 
 interface Pending {
-  resolve: (result: unknown) => void;
+  resolve: (result: unknown, stats: NdjsonFrameStats) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+/** A request's result plus the wire stats of the reply that carried it. */
+export interface RequestWithStats<T> {
+  result: T;
+  /** UTF-8 byte length of the raw NDJSON reply line (on-the-wire size). */
+  wireBytes: number;
+  /** Host `JSON.parse` cost for that reply, in ms. */
+  parseMs: number;
+  /**
+   * Host-clock request timeline (phase 3i), all in ms:
+   * - `hostSentToFirstByteMs`: request-line-flushed → first response byte (TTFB:
+   *   request leg + server pre-write work incl. capture + first-byte response leg).
+   * - `hostFirstToLastByteMs`: first → last response byte (the receive/streaming
+   *   span of the reply — on loopback this tracks the server's write duration).
+   * - `hostRoundTripMs`: request-line-flushed → last response byte (the whole RPC
+   *   wall time as the host sees it, excluding host parse).
+   */
+  hostSentToFirstByteMs: number;
+  hostFirstToLastByteMs: number;
+  hostRoundTripMs: number;
 }
 
 interface AndroidOpenServerClientOptions {
@@ -70,9 +96,26 @@ export class AndroidOpenServerClient {
 
   /** Invoke a JSON-RPC method; resolves with `result`, rejects on RPC error. */
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    const run = (): Promise<T> => this.sendOne<T>(method, params);
-    const result = this.chain.then(run, run) as Promise<T>;
-    // Keep the chain alive regardless of individual outcomes.
+    return this.enqueue(() => this.sendOne<T>(method, params)).then((r) => r.result);
+  }
+
+  /**
+   * Like {@link request}, but also resolves the reply's wire stats (`wireBytes`,
+   * `parseMs`). Requests are serialised on one connection, so for a describe that
+   * issues exactly one RPC these stats belong unambiguously to that reply. Used by
+   * the open describe path to attribute the idle-describe host residual to
+   * transport size vs. host parse (phase 3i).
+   */
+  requestWithStats<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>
+  ): Promise<RequestWithStats<T>> {
+    return this.enqueue(() => this.sendOne<T>(method, params));
+  }
+
+  /** Serialise `run` onto the single-in-flight chain, keeping it alive on any outcome. */
+  private enqueue<R>(run: () => Promise<R>): Promise<R> {
+    const result = this.chain.then(run, run) as Promise<R>;
     this.chain = result.then(
       () => undefined,
       () => undefined
@@ -96,7 +139,10 @@ export class AndroidOpenServerClient {
     }
   }
 
-  private async sendOne<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+  private async sendOne<T>(
+    method: string,
+    params?: Record<string, unknown>
+  ): Promise<RequestWithStats<T>> {
     if (this.closed) {
       throw new FailureError("open-device-server client closed", {
         error_code: FAILURE_CODES.OPEN_DEVICE_SERVER_RPC_CLIENT_CLOSED,
@@ -109,7 +155,10 @@ export class AndroidOpenServerClient {
     const id = this.nextId++;
     const payload = JSON.stringify({ jsonrpc: "2.0", method, params: params ?? {}, id });
 
-    return new Promise<T>((resolve, reject) => {
+    return new Promise<RequestWithStats<T>>((resolve, reject) => {
+      // t1: request line fully written to the socket. Defaulted to pre-write in
+      // case the write callback is delayed; overwritten with the flush time below.
+      let sentAt = performance.now();
       const timer = setTimeout(() => {
         this.pending.delete(id);
         // A wedged request means the connection is suspect: destroy it so the
@@ -128,7 +177,15 @@ export class AndroidOpenServerClient {
       }, this.timeoutMs);
 
       this.pending.set(id, {
-        resolve: (v) => resolve(v as T),
+        resolve: (v, stats) =>
+          resolve({
+            result: v as T,
+            wireBytes: stats.bytes,
+            parseMs: stats.parseMs,
+            hostSentToFirstByteMs: stats.firstByteAt - sentAt,
+            hostFirstToLastByteMs: stats.lastByteAt - stats.firstByteAt,
+            hostRoundTripMs: stats.lastByteAt - sentAt,
+          }),
         reject,
         timer,
       });
@@ -141,6 +198,8 @@ export class AndroidOpenServerClient {
             this.pending.delete(id);
           }
           reject(err);
+        } else {
+          sentAt = performance.now();
         }
       });
     });
@@ -174,7 +233,7 @@ export class AndroidOpenServerClient {
         );
         attachNdjsonReader(socket, {
           onDropped: reportDroppedFrameToStderr("open-device-server"),
-          onMessage: (raw) => this.dispatch(raw as JsonRpcResponse),
+          onMessage: (raw, stats) => this.dispatch(raw as JsonRpcResponse, stats),
         });
         this.socket = socket;
         this.connecting = null;
@@ -185,7 +244,7 @@ export class AndroidOpenServerClient {
     return this.connecting;
   }
 
-  private dispatch(res: JsonRpcResponse): void {
+  private dispatch(res: JsonRpcResponse, stats: NdjsonFrameStats): void {
     const id = typeof res.id === "number" ? res.id : undefined;
     if (id === undefined) return;
     const p = this.pending.get(id);
@@ -206,7 +265,7 @@ export class AndroidOpenServerClient {
         )
       );
     } else {
-      p.resolve(res.result);
+      p.resolve(res.result, stats);
     }
   }
 

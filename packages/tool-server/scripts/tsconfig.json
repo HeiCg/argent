@@ -1,0 +1,20 @@
+{
+  // Typecheck the tool-server bench scripts (phase 3i). These `.ts` files run under
+  // `tsx` (extensionless relative imports, `import.meta`, workspace package
+  // `exports`), so they need bundler resolution + the `node` custom condition — the
+  // package build's NodeNext config would reject their import style. They live
+  // outside every other tsconfig (`src/**` only), so without this they were never
+  // typechecked. Wired into CI via the `typecheck:bench-scripts` npm script.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "customConditions": ["node"],
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "include": ["bench-describe-host.ts", "bench-open-vs-proprietary.ts"]
+}

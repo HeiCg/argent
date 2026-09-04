@@ -101,6 +101,23 @@ export interface DescribeTreeData {
   // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs).
   // Metadata only — never rendered; a bench reads it to locate the residual.
   timings?: DescribeStageTimings;
+  // Host/transport split of the open-device-server describe (phase 3i), the piece
+  // that lives OUTSIDE the on-device `timings`: `wireBytes` is the raw NDJSON reply
+  // size on the wire (the full nested tree), `hostParseMs` the host `JSON.parse`
+  // cost, `hostRenderMs` the host tree-lowering + trim (`openServerNestedToDescribeNode`).
+  // The `hostSentToFirstByteMs` / `hostFirstToLastByteMs` / `hostRoundTripMs` triple
+  // is the host-clock RPC timeline (TTFB, receive/streaming span, whole round-trip).
+  // Metadata only — never rendered; a bench reads them to attribute the idle
+  // describe residual to transport vs. host CPU. Set solely by the Android open path.
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostRenderMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
+  // Which host↔device transport carried the open-path reply (phase 3j):
+  // "adb-forward" (default) or "redir". Metadata only.
+  transport?: "adb-forward" | "redir";
 }
 
 export interface DescribeStageTimings {
@@ -114,6 +131,14 @@ export interface DescribeStageTimings {
   // `windows.firstOrNull { it.isActive }?.root` (the fast, mid-transition-safe
   // path), "activeWindow" = `rootInActiveWindow` fallback. Absent on older servers.
   rootSource?: "windows" | "activeWindow";
+  // Server-side request timeline of the PREVIOUS same-method request (phase 3i),
+  // piggybacked because a response cannot time its own write: `prevServerHandleMs`
+  // = handler entry → response ready, `prevServerWriteMs` = response write + flush
+  // (t4 − t3), `prevServerTotalMs` = handler entry → flush done (t4 − t2). Absent
+  // on older servers.
+  prevServerHandleMs?: number;
+  prevServerWriteMs?: number;
+  prevServerTotalMs?: number;
 }
 
 export interface DescribeResult {
@@ -127,6 +152,15 @@ export interface DescribeResult {
   captureMs?: number;
   // Per-stage capture split (open-device-server only, phase 3g).
   timings?: DescribeStageTimings;
+  // Host/transport split (open-device-server only, phase 3i): reply wire size,
+  // host JSON.parse cost, host tree-lowering cost, and the host-clock timeline.
+  // See DescribeTreeData.
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostRenderMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {

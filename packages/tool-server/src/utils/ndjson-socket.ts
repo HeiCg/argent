@@ -1,4 +1,5 @@
 import type * as net from "node:net";
+import { performance } from "node:perf_hooks";
 
 /**
  * Frame a newline-delimited JSON socket on the `\n` byte and nothing else.
@@ -15,8 +16,24 @@ import type * as net from "node:net";
  * vanishing: a silent drop is what turned a framing defect into a
  * fifteen-second mystery.
  */
+/**
+ * Per-frame wire stats handed to `onMessage` alongside the parsed message:
+ * `bytes` is the UTF-8 byte length of the raw NDJSON line (the on-the-wire size
+ * of this reply, before `JSON.parse` drops it), `parseMs` the `JSON.parse` cost.
+ * `firstByteAt`/`lastByteAt` are `performance.now()` timestamps for the socket
+ * `data` event that began this frame's accumulation and the one that completed it
+ * (its `\n`), so a caller can split time-to-first-byte from the receive/streaming
+ * span of a large reply (phase 3i). Other consumers ignore the second argument.
+ */
+export interface NdjsonFrameStats {
+  bytes: number;
+  parseMs: number;
+  firstByteAt: number;
+  lastByteAt: number;
+}
+
 interface NdjsonReaderHandlers {
-  onMessage: (msg: unknown) => void;
+  onMessage: (msg: unknown, stats: NdjsonFrameStats) => void;
   onDropped: (info: { bytes: number; preview: string }) => void;
 }
 
@@ -38,26 +55,38 @@ export function reportDroppedFrameToStderr(tag: string): NdjsonReaderHandlers["o
 export function attachNdjsonReader(socket: net.Socket, handlers: NdjsonReaderHandlers): void {
   socket.setEncoding("utf8");
   let buf = "";
+  // `performance.now()` of the socket `data` event that first contributed bytes to
+  // the frame now accumulating in `buf`; null between frames. Lets a frame report
+  // its time-to-first-byte separately from its receive span (phase 3i).
+  let frameStartAt: number | null = null;
 
-  const deliver = (raw: string): void => {
+  const deliver = (raw: string, firstByteAt: number, lastByteAt: number): void => {
     if (raw.length === 0 || raw === "\r") return;
+    const bytes = Buffer.byteLength(raw, "utf8");
     let msg: unknown;
+    const t0 = performance.now();
     try {
       msg = JSON.parse(raw);
     } catch {
-      handlers.onDropped({ bytes: Buffer.byteLength(raw, "utf8"), preview: preview(raw) });
+      handlers.onDropped({ bytes, preview: preview(raw) });
       return;
     }
-    handlers.onMessage(msg);
+    const parseMs = performance.now() - t0;
+    handlers.onMessage(msg, { bytes, parseMs, firstByteAt, lastByteAt });
   };
 
   socket.on("data", (chunk: string | Buffer) => {
+    const now = performance.now();
     buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    if (frameStartAt === null && buf.length > 0) frameStartAt = now;
     let nl: number;
     while ((nl = buf.indexOf("\n")) !== -1) {
       const raw = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
-      deliver(raw);
+      deliver(raw, frameStartAt ?? now, now);
+      // Any bytes past the newline began arriving in THIS event; a clean buffer
+      // means the next frame's first byte is still to come.
+      frameStartAt = buf.length > 0 ? now : null;
     }
   });
 
@@ -66,6 +95,10 @@ export function attachNdjsonReader(socket: net.Socket, handlers: NdjsonReaderHan
   socket.on("end", () => {
     const rest = buf;
     buf = "";
-    if (rest.length > 0) deliver(rest);
+    if (rest.length > 0) {
+      const now = performance.now();
+      deliver(rest, frameStartAt ?? now, now);
+    }
+    frameStartAt = null;
   });
 }

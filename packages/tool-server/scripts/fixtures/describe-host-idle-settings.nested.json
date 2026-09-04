@@ -1,0 +1,1597 @@
+{
+  "description": "Representative idle Android Settings root as the FULL nested tree the open-device-server emits over `getState({nested:true})` (phase 3i host micro-bench). Synthetic but realistically shaped: a status-bar system window (dropped by the v2 trim), a toolbar with a search field, and a scrollable RecyclerView of settings rows (each a clickable LinearLayout > icon + title/summary), with off-screen rows the host scroll-clip prunes. Renders to ~667 o200k tokens (device idle Settings is 657). NOT a device capture; the CI bench provides the authoritative device numbers.",
+  "screen": {
+    "width": 1080,
+    "height": 2400
+  },
+  "tree": [
+    {
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.android.systemui",
+      "bounds": {
+        "x1": 0,
+        "y1": 0,
+        "x2": 1080,
+        "y2": 80
+      },
+      "children": [
+        {
+          "className": "android.widget.TextView",
+          "packageName": "com.android.systemui",
+          "resourceId": "com.android.systemui:id/clock",
+          "text": "12:34",
+          "bounds": {
+            "x1": 20,
+            "y1": 10,
+            "x2": 160,
+            "y2": 70
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "className": "android.widget.FrameLayout",
+      "packageName": "com.android.settings",
+      "bounds": {
+        "x1": 0,
+        "y1": 0,
+        "x2": 1080,
+        "y2": 2400
+      },
+      "children": [
+        {
+          "className": "androidx.appcompat.widget.Toolbar",
+          "packageName": "com.android.settings",
+          "bounds": {
+            "x1": 0,
+            "y1": 100,
+            "x2": 1080,
+            "y2": 260
+          },
+          "children": [
+            {
+              "className": "android.widget.EditText",
+              "packageName": "com.android.settings",
+              "contentDesc": "Search settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 60,
+                "y1": 150,
+                "x2": 1020,
+                "y2": 230
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "className": "androidx.recyclerview.widget.RecyclerView",
+          "packageName": "com.android.settings",
+          "scrollable": true,
+          "bounds": {
+            "x1": 0,
+            "y1": 270,
+            "x2": 1080,
+            "y2": 2400
+          },
+          "children": [
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 300,
+                "x2": 1080,
+                "y2": 490
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 340,
+                    "x2": 110,
+                    "y2": 410
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 320,
+                    "x2": 1040,
+                    "y2": 470
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Network & internet",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 330,
+                        "x2": 1040,
+                        "y2": 390
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Wi‑Fi, mobile, data usage, and hotspot",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 392,
+                        "x2": 1040,
+                        "y2": 466
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 490,
+                "x2": 1080,
+                "y2": 680
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 530,
+                    "x2": 110,
+                    "y2": 600
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 510,
+                    "x2": 1040,
+                    "y2": 660
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Connected devices",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 520,
+                        "x2": 1040,
+                        "y2": 580
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Bluetooth, pairing",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 582,
+                        "x2": 1040,
+                        "y2": 656
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 680,
+                "x2": 1080,
+                "y2": 870
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 720,
+                    "x2": 110,
+                    "y2": 790
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 700,
+                    "x2": 1040,
+                    "y2": 850
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Apps",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 710,
+                        "x2": 1040,
+                        "y2": 770
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Assistant, recent apps, default apps",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 772,
+                        "x2": 1040,
+                        "y2": 846
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 870,
+                "x2": 1080,
+                "y2": 1060
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 910,
+                    "x2": 110,
+                    "y2": 980
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 890,
+                    "x2": 1040,
+                    "y2": 1040
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Notifications",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 900,
+                        "x2": 1040,
+                        "y2": 960
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Notification history, conversations",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 962,
+                        "x2": 1040,
+                        "y2": 1036
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 1060,
+                "x2": 1080,
+                "y2": 1250
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 1100,
+                    "x2": 110,
+                    "y2": 1170
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 1080,
+                    "x2": 1040,
+                    "y2": 1230
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Battery",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1090,
+                        "x2": 1040,
+                        "y2": 1150
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "72% - about 6 hr left",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1152,
+                        "x2": 1040,
+                        "y2": 1226
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 1250,
+                "x2": 1080,
+                "y2": 1440
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 1290,
+                    "x2": 110,
+                    "y2": 1360
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 1270,
+                    "x2": 1040,
+                    "y2": 1420
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Storage",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1280,
+                        "x2": 1040,
+                        "y2": 1340
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "38% used - 79.44 GB free",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1342,
+                        "x2": 1040,
+                        "y2": 1416
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 1440,
+                "x2": 1080,
+                "y2": 1630
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 1480,
+                    "x2": 110,
+                    "y2": 1550
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 1460,
+                    "x2": 1040,
+                    "y2": 1610
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Sound & vibration",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1470,
+                        "x2": 1040,
+                        "y2": 1530
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Volume, haptics, Do Not Disturb",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1532,
+                        "x2": 1040,
+                        "y2": 1606
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 1630,
+                "x2": 1080,
+                "y2": 1820
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 1670,
+                    "x2": 110,
+                    "y2": 1740
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 1650,
+                    "x2": 1040,
+                    "y2": 1800
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Display",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1660,
+                        "x2": 1040,
+                        "y2": 1720
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Dark theme, font size, brightness",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1722,
+                        "x2": 1040,
+                        "y2": 1796
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 1820,
+                "x2": 1080,
+                "y2": 2010
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 1860,
+                    "x2": 110,
+                    "y2": 1930
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 1840,
+                    "x2": 1040,
+                    "y2": 1990
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Wallpaper & style",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1850,
+                        "x2": 1040,
+                        "y2": 1910
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Colors, themed icons, app grid",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 1912,
+                        "x2": 1040,
+                        "y2": 1986
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 2010,
+                "x2": 1080,
+                "y2": 2200
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 2050,
+                    "x2": 110,
+                    "y2": 2120
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 2030,
+                    "x2": 1040,
+                    "y2": 2180
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Accessibility",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2040,
+                        "x2": 1040,
+                        "y2": 2100
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Screen readers, display, interaction controls",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2102,
+                        "x2": 1040,
+                        "y2": 2176
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 2200,
+                "x2": 1080,
+                "y2": 2390
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 2240,
+                    "x2": 110,
+                    "y2": 2310
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 2220,
+                    "x2": 1040,
+                    "y2": 2370
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Security & privacy",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2230,
+                        "x2": 1040,
+                        "y2": 2290
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "App security, device lock, permissions",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2292,
+                        "x2": 1040,
+                        "y2": 2366
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 2390,
+                "x2": 1080,
+                "y2": 2580
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 2430,
+                    "x2": 110,
+                    "y2": 2500
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 2410,
+                    "x2": 1040,
+                    "y2": 2560
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Location",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2420,
+                        "x2": 1040,
+                        "y2": 2480
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "On - 3 apps have access to location",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2482,
+                        "x2": 1040,
+                        "y2": 2556
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 2580,
+                "x2": 1080,
+                "y2": 2770
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 2620,
+                    "x2": 110,
+                    "y2": 2690
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 2600,
+                    "x2": 1040,
+                    "y2": 2750
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Safety & emergency",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2610,
+                        "x2": 1040,
+                        "y2": 2670
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Emergency SOS, medical info",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2672,
+                        "x2": 1040,
+                        "y2": 2746
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 2770,
+                "x2": 1080,
+                "y2": 2960
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 2810,
+                    "x2": 110,
+                    "y2": 2880
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 2790,
+                    "x2": 1040,
+                    "y2": 2940
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Passwords & accounts",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2800,
+                        "x2": 1040,
+                        "y2": 2860
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Saved passwords, autofill",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2862,
+                        "x2": 1040,
+                        "y2": 2936
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 2960,
+                "x2": 1080,
+                "y2": 3150
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 3000,
+                    "x2": 110,
+                    "y2": 3070
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 2980,
+                    "x2": 1040,
+                    "y2": 3130
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Digital Wellbeing",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 2990,
+                        "x2": 1040,
+                        "y2": 3050
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Screen time, app timers, bedtime mode",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3052,
+                        "x2": 1040,
+                        "y2": 3126
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 3150,
+                "x2": 1080,
+                "y2": 3340
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 3190,
+                    "x2": 110,
+                    "y2": 3260
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 3170,
+                    "x2": 1040,
+                    "y2": 3320
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Google",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3180,
+                        "x2": 1040,
+                        "y2": 3240
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Services & preferences",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3242,
+                        "x2": 1040,
+                        "y2": 3316
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 3340,
+                "x2": 1080,
+                "y2": 3530
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 3380,
+                    "x2": 110,
+                    "y2": 3450
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 3360,
+                    "x2": 1040,
+                    "y2": 3510
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "System",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3370,
+                        "x2": 1040,
+                        "y2": 3430
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Languages, gestures, time, backup",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3432,
+                        "x2": 1040,
+                        "y2": 3506
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 3530,
+                "x2": 1080,
+                "y2": 3720
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 3570,
+                    "x2": 110,
+                    "y2": 3640
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 3550,
+                    "x2": 1040,
+                    "y2": 3700
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "About phone",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3560,
+                        "x2": 1040,
+                        "y2": 3620
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Pixel 7",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3622,
+                        "x2": 1040,
+                        "y2": 3696
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 3720,
+                "x2": 1080,
+                "y2": 3910
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 3760,
+                    "x2": 110,
+                    "y2": 3830
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 3740,
+                    "x2": 1040,
+                    "y2": 3890
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Network & internet",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3750,
+                        "x2": 1040,
+                        "y2": 3810
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Wi‑Fi, mobile, data usage, and hotspot",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3812,
+                        "x2": 1040,
+                        "y2": 3886
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 3910,
+                "x2": 1080,
+                "y2": 4100
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 3950,
+                    "x2": 110,
+                    "y2": 4020
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 3930,
+                    "x2": 1040,
+                    "y2": 4080
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Connected devices",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 3940,
+                        "x2": 1040,
+                        "y2": 4000
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Bluetooth, pairing",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4002,
+                        "x2": 1040,
+                        "y2": 4076
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 4100,
+                "x2": 1080,
+                "y2": 4290
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 4140,
+                    "x2": 110,
+                    "y2": 4210
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 4120,
+                    "x2": 1040,
+                    "y2": 4270
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Apps",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4130,
+                        "x2": 1040,
+                        "y2": 4190
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Assistant, recent apps, default apps",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4192,
+                        "x2": 1040,
+                        "y2": 4266
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 4290,
+                "x2": 1080,
+                "y2": 4480
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 4330,
+                    "x2": 110,
+                    "y2": 4400
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 4310,
+                    "x2": 1040,
+                    "y2": 4460
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Notifications",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4320,
+                        "x2": 1040,
+                        "y2": 4380
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "Notification history, conversations",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4382,
+                        "x2": 1040,
+                        "y2": 4456
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 4480,
+                "x2": 1080,
+                "y2": 4670
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 4520,
+                    "x2": 110,
+                    "y2": 4590
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 4500,
+                    "x2": 1040,
+                    "y2": 4650
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Battery",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4510,
+                        "x2": 1040,
+                        "y2": 4570
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "72% - about 6 hr left",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4572,
+                        "x2": 1040,
+                        "y2": 4646
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "className": "android.widget.LinearLayout",
+              "packageName": "com.android.settings",
+              "clickable": true,
+              "focusable": true,
+              "bounds": {
+                "x1": 0,
+                "y1": 4670,
+                "x2": 1080,
+                "y2": 4860
+              },
+              "children": [
+                {
+                  "className": "android.widget.ImageView",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 40,
+                    "y1": 4710,
+                    "x2": 110,
+                    "y2": 4780
+                  },
+                  "children": []
+                },
+                {
+                  "className": "android.widget.LinearLayout",
+                  "packageName": "com.android.settings",
+                  "bounds": {
+                    "x1": 150,
+                    "y1": 4690,
+                    "x2": 1040,
+                    "y2": 4840
+                  },
+                  "children": [
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/title",
+                      "text": "Storage",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4700,
+                        "x2": 1040,
+                        "y2": 4760
+                      },
+                      "children": []
+                    },
+                    {
+                      "className": "android.widget.TextView",
+                      "packageName": "com.android.settings",
+                      "resourceId": "android:id/summary",
+                      "text": "38% used - 79.44 GB free",
+                      "bounds": {
+                        "x1": 150,
+                        "y1": 4762,
+                        "x2": 1040,
+                        "y2": 4836
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

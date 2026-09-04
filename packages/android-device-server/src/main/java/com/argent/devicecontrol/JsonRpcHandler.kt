@@ -55,7 +55,45 @@ class JsonRpcHandler(
     private val waitHandler = WaitHandler(uiDevice)
     private val openAppHandler = OpenAppHandler(instrumentation)
 
+    /**
+     * The method of the last request [handle] parsed, or null if parsing failed.
+     * [TCPServer] reads it after writing the response to key [reportServerTiming]
+     * by method — a response cannot carry the cost of writing itself (phase 3i).
+     */
+    var lastHandledMethod: String? = null
+        private set
+
+    /**
+     * The `_padTo` of the last request [handle] parsed (0 if absent). Phase 3j
+     * transport diagnostic: [TCPServer] pads the response line with trailing spaces
+     * to the next multiple of this many UTF-8 bytes before the newline, to test
+     * whether a full-MSS-aligned reply escapes the ~40 ms delayed-ACK stall on the
+     * last partial segment. Trailing whitespace after the JSON object is ignored by
+     * the host `JSON.parse`, so it never changes the parsed reply.
+     */
+    var lastPadTo: Int = 0
+        private set
+
+    private data class ServerTiming(val handleMs: Double, val writeMs: Double, val totalMs: Double)
+
+    // Per-method server-side timeline of the PREVIOUS request of that method,
+    // injected into the next same-method response's `timings`. Single connection
+    // thread, so no synchronisation is needed.
+    private val prevServerTiming = HashMap<String, ServerTiming>()
+
+    /**
+     * Record the just-written request's server-side timeline (phase 3i), keyed by
+     * method: `handleMs` = handler entry → response ready (t3 − t2), `writeMs` =
+     * response write + flush (t4 − t3), `totalMs` = entry → flush (t4 − t2).
+     * Surfaced on the NEXT same-method response.
+     */
+    fun reportServerTiming(method: String, handleMs: Double, writeMs: Double, totalMs: Double) {
+        prevServerTiming[method] = ServerTiming(handleMs, writeMs, totalMs)
+    }
+
     fun handle(line: String): String {
+        lastHandledMethod = null
+        lastPadTo = 0
         val json: JSONObject
         val method: String
         try {
@@ -64,9 +102,11 @@ class JsonRpcHandler(
         } catch (e: Exception) {
             return JsonRpc.errorResponse(null, -32700, "Parse error")
         }
+        lastHandledMethod = method
 
         val id = json.opt("id")
         val params = json.optJSONObject("params") ?: JSONObject()
+        lastPadTo = params.optInt("_padTo", 0)
 
         Log.d(TAG, "method=$method id=$id")
 
@@ -95,7 +135,31 @@ class JsonRpcHandler(
                 }
                 else -> return JsonRpc.errorResponse(id, -32601, "Method not found: $method")
             }
-            JsonRpc.successResponse(id, result)
+            // Phase 3i: fold the PREVIOUS same-method request's server-side timeline
+            // into this response's `timings` (a response cannot time its own write).
+            if (result is JSONObject) {
+                val t = result.optJSONObject("timings")
+                if (t != null) {
+                    prevServerTiming[method]?.let { prev ->
+                        t.put("prevServerHandleMs", prev.handleMs)
+                        t.put("prevServerWriteMs", prev.writeMs)
+                        t.put("prevServerTotalMs", prev.totalMs)
+                    }
+                }
+            }
+            val body = JsonRpc.successResponse(id, result)
+            // Serialize-once splice (phase 3j): getState's default path put a
+            // placeholder where the tree goes and exposed the raw pre-serialized tree
+            // on the handler. Splice it in verbatim so the tree is encoded exactly
+            // once. No-op on the legacy path (lastTreeJson == null) and every other
+            // method — the placeholder is absent, and replaceFirst leaves the string
+            // untouched when the token is not found.
+            val raw = stateHandler.lastTreeJson
+            if (method == "getState" && raw != null) {
+                JsonRpc.spliceRawMember(body, StateHandler.TREE_TOKEN, raw)
+            } else {
+                body
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing $method", e)
             JsonRpc.errorResponse(id, -32603, e.message ?: "Internal error")

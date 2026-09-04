@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { Registry, ToolDependency } from "@argent/registry";
 import type { DescribeTreeData } from "../../contract";
@@ -104,7 +105,11 @@ export async function describeAndroid(
         // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
         // keep their own (default) timeout — this is describe-only.
         const waitTimeoutMs = settleToWaitTimeoutMs(settle);
-        const state = await server.getNestedState({ waitTimeoutMs });
+        // Phase 3j: compact:true drops the trim-discarded nodes on the device, so the
+        // wire payload is smaller yet lowers to the byte-identical DescribeNode (the
+        // golden is the contract). It is the blueprint default too; passed explicitly
+        // here so the describe path's intent is legible.
+        const state = await server.getNestedState({ waitTimeoutMs, compact: true });
         if (state.tree.length === 0) {
           throw new FailureError("open-device-server returned an empty accessibility tree", {
             error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
@@ -121,17 +126,29 @@ export async function describeAndroid(
         // server's info geometry is rotation-aware (read straight from the
         // Display) and matches getBoundsInScreen's pixel space, so no rotation
         // correction.
+        // Time the host tree-lowering + v2 trim (phase 3i): the JSON.parse cost is
+        // already captured on the wire as `hostParseMs`; this is the CPU spent
+        // turning the parsed nested tree into the rendered DescribeNode.
+        const renderT0 = performance.now();
         const node = openServerNestedToDescribeNode(
           state.tree,
           state.info.screenWidth,
           state.info.screenHeight
         );
+        const hostRenderMs = performance.now() - renderT0;
         return {
           node,
           truncated: nestedTreeTruncated(state.tree),
           waitedMs: state.waitedMs,
           captureMs: state.captureMs,
           timings: state.timings,
+          wireBytes: state.wireBytes,
+          hostParseMs: state.hostParseMs,
+          hostRenderMs,
+          hostSentToFirstByteMs: state.hostSentToFirstByteMs,
+          hostFirstToLastByteMs: state.hostFirstToLastByteMs,
+          hostRoundTripMs: state.hostRoundTripMs,
+          transport: state.transport,
         };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
@@ -147,6 +164,17 @@ export async function describeAndroid(
         waitedMs: result.waitedMs,
         captureMs: result.captureMs,
         ...(result.timings ? { timings: result.timings } : {}),
+        ...(result.wireBytes !== undefined ? { wireBytes: result.wireBytes } : {}),
+        ...(result.hostParseMs !== undefined ? { hostParseMs: result.hostParseMs } : {}),
+        ...(result.hostRenderMs !== undefined ? { hostRenderMs: result.hostRenderMs } : {}),
+        ...(result.hostSentToFirstByteMs !== undefined
+          ? { hostSentToFirstByteMs: result.hostSentToFirstByteMs }
+          : {}),
+        ...(result.hostFirstToLastByteMs !== undefined
+          ? { hostFirstToLastByteMs: result.hostFirstToLastByteMs }
+          : {}),
+        ...(result.hostRoundTripMs !== undefined ? { hostRoundTripMs: result.hostRoundTripMs } : {}),
+        ...(result.transport !== undefined ? { transport: result.transport } : {}),
       };
     } catch (serverErr) {
       console.debug(

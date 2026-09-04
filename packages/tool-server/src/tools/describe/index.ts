@@ -16,7 +16,7 @@ import { describeVega, vegaRequires } from "./platforms/vega";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { resolveDevice } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
-import { isAndroidTv } from "../../utils/adb";
+import { isAndroidTvCached } from "../../utils/adb";
 import { formatDescribeTree } from "./format-tree";
 
 // Renders the adapter-internal `tree` to text and drops it, so the caller (LLM)
@@ -32,6 +32,13 @@ function withDescription(data: DescribeTreeData): DescribeResult {
   if (data.waitedMs !== undefined) out.waitedMs = data.waitedMs;
   if (data.captureMs !== undefined) out.captureMs = data.captureMs;
   if (data.timings !== undefined) out.timings = data.timings;
+  // Host/transport split (phase 3i): wire size, host parse, host render, timeline.
+  if (data.wireBytes !== undefined) out.wireBytes = data.wireBytes;
+  if (data.hostParseMs !== undefined) out.hostParseMs = data.hostParseMs;
+  if (data.hostRenderMs !== undefined) out.hostRenderMs = data.hostRenderMs;
+  if (data.hostSentToFirstByteMs !== undefined) out.hostSentToFirstByteMs = data.hostSentToFirstByteMs;
+  if (data.hostFirstToLastByteMs !== undefined) out.hostFirstToLastByteMs = data.hostFirstToLastByteMs;
+  if (data.hostRoundTripMs !== undefined) out.hostRoundTripMs = data.hostRoundTripMs;
   return out;
 }
 
@@ -131,9 +138,11 @@ function makeDescribeExecute(
     android: {
       requires: androidRequires,
       handler: async (_services, params, device) =>
-        // Resolve the form factor once and thread the known `isTv: false`
+        // Resolve the form factor cache-first (phase 3i): a warm serial spawns zero
+        // `adb` here, where `isAndroidTv` used to run `adb devices` + getprop on
+        // every describe, inside the timed window. Thread the known `isTv: false`
         // through so describeAndroid doesn't re-probe.
-        (await isAndroidTv(device.id))
+        (await isAndroidTvCached(device.id))
           ? describeTv(registry, device)
           : withDescription(
               await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)

@@ -1,10 +1,25 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import { parseUiAutomatorDump } from "../src/tools/describe/platforms/android/uiautomator-parser";
 import {
+  compactNestedRoots,
   openServerNestedToDescribeNode,
   type OpenServerNestedElement,
 } from "../src/tools/describe/platforms/android/open-server-tree";
 import { formatDescribeTree } from "../src/tools/describe/format-tree";
+
+function countNested(roots: OpenServerNestedElement[]): number {
+  let n = 0;
+  const walk = (a: OpenServerNestedElement[]): void => {
+    for (const e of a) {
+      n++;
+      if (e.children) walk(e.children);
+    }
+  };
+  walk(roots);
+  return n;
+}
 
 const W = 1080;
 const H = 2400;
@@ -146,6 +161,62 @@ describe("F14: XML dump vs open-server nested tree — identical v2 trim", () =>
     // IME key (F11 — the array/window order is preserved through the trim).
     expect(text.indexOf('"OK"')).toBeLessThan(text.indexOf('"Cancel"'));
     expect(text.indexOf('"Cancel"')).toBeLessThan(text.indexOf('"a"'));
+  });
+});
+
+describe("phase 3j: compact payload lowers to the byte-identical DescribeNode", () => {
+  // The contract for the on-device `compact:true` capture: the server drops the
+  // nodes/fields the host v2 trim discards anyway, and the SAME host lowering must
+  // produce the identical DescribeNode from the compacted payload as from the full
+  // one. `compactNestedRoots` is the host mirror of that server-side drop; the
+  // on-device serializer applies the identical rules.
+  const REAL_FIXTURE = (() => {
+    const path = join(
+      __dirname,
+      "..",
+      "scripts",
+      "fixtures",
+      "describe-host-idle-settings.nested.json"
+    );
+    return JSON.parse(readFileSync(path, "utf8")) as {
+      screen: { width: number; height: number };
+      tree: OpenServerNestedElement[];
+    };
+  })();
+
+  const cases: Array<{ name: string; roots: OpenServerNestedElement[]; w: number; h: number }> = [
+    { name: "plain screen", roots: SCREEN_NESTED, w: W, h: H },
+    { name: "dialog + IME multi-window", roots: DIALOG_IME_NESTED, w: W, h: H },
+    {
+      name: "committed idle-Settings capture",
+      roots: REAL_FIXTURE.tree,
+      w: REAL_FIXTURE.screen.width,
+      h: REAL_FIXTURE.screen.height,
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: compact vs non-compact produce identical DescribeNode trees`, () => {
+      const full = openServerNestedToDescribeNode(c.roots, c.w, c.h);
+      const compacted = openServerNestedToDescribeNode(compactNestedRoots(c.roots), c.w, c.h);
+      expect(compacted).toEqual(full);
+      // And the rendered text is byte-identical too (the token/label contract).
+      expect(formatDescribeTree(compacted, { source: "open-device-server" })).toEqual(
+        formatDescribeTree(full, { source: "open-device-server" })
+      );
+    });
+  }
+
+  it("actually drops nodes on scaffold-heavy trees (the compaction is not a no-op)", () => {
+    const before = countNested(REAL_FIXTURE.tree);
+    const after = countNested(compactNestedRoots(REAL_FIXTURE.tree));
+    expect(after).toBeLessThan(before);
+  });
+
+  it("is idempotent (compacting a compacted tree changes nothing)", () => {
+    const once = compactNestedRoots(REAL_FIXTURE.tree);
+    const twice = compactNestedRoots(once);
+    expect(twice).toEqual(once);
   });
 });
 

@@ -48,8 +48,20 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
+import { resolveDevice } from "../src/utils/device-info";
+import { isAndroidTv, isAndroidTvCached } from "../src/utils/adb";
+import { openDeviceServerRef, type OpenDeviceServerApi } from "../src/blueprints/android-open-server";
+import { AndroidOpenServerClient } from "../src/utils/android-open-server-client";
+import {
+  emulatorConsolePort,
+  readConsoleAuthToken,
+  freeHostPort,
+  redirAdd,
+  redirDel,
+} from "../src/utils/open-server-transport";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
@@ -519,8 +531,40 @@ type DescribeStages = {
   rootsMs: StageStat;
   serializeMs: StageStat;
   encodeMs: StageStat;
+  // Host-side split (phase 3i): the cost OUTSIDE the on-device `timings`.
+  // `hostParseMs` is the host JSON.parse of the reply, `hostRenderMs` the host
+  // tree-lowering + v2 trim. The host-clock timeline decomposes the round-trip:
+  // `hostTtfbMs` = request-flushed → first response byte (request leg + server
+  // pre-write incl. capture), `hostRecvMs` = first → last byte (receive/streaming
+  // span; on loopback ≈ the server write duration), `hostRttMs` = the whole thing.
+  hostParseMs: StageStat;
+  hostRenderMs: StageStat;
+  hostTtfbMs: StageStat;
+  hostRecvMs: StageStat;
+  hostRttMs: StageStat;
+  // Server-side write timeline piggybacked from the previous same-method reply
+  // (phase 3i). Clean when the describe loop is back-to-back (prev getState is the
+  // previous describe's getState); representative-only under the after-tap loop.
+  prevServerWriteMs: StageStat;
+  prevServerHandleMs: StageStat;
+  prevServerTotalMs: StageStat;
 };
-const STAGE_KEYS = ["idleMs", "rootMs", "windowsMs", "rootsMs", "serializeMs", "encodeMs"] as const;
+const STAGE_KEYS = [
+  "idleMs",
+  "rootMs",
+  "windowsMs",
+  "rootsMs",
+  "serializeMs",
+  "encodeMs",
+  "hostParseMs",
+  "hostRenderMs",
+  "hostTtfbMs",
+  "hostRecvMs",
+  "hostRttMs",
+  "prevServerWriteMs",
+  "prevServerHandleMs",
+  "prevServerTotalMs",
+] as const;
 type StageKey = (typeof STAGE_KEYS)[number];
 
 function stageStat(xs: number[]): StageStat {
@@ -529,11 +573,8 @@ function stageStat(xs: number[]): StageStat {
   return { p50: sm.p50, p95: sm.p95, n: xs.length };
 }
 
-async function describeSplit(
-  reg: Reg,
-  n: number,
-  setup?: () => Promise<void>
-): Promise<{
+// Named so BlockResult and runBlock share one shape.
+type DescribeSplit = {
   waitedP50: number | null;
   captureP50: number | null;
   n: number;
@@ -542,73 +583,578 @@ async function describeSplit(
   // a concrete stage (rootInActiveWindow vs windows enumeration vs each w.root vs
   // serialize vs encode) rather than guessed from logcat.
   stages: DescribeStages;
-}> {
-  const waited: number[] = [];
-  const captured: number[] = [];
-  const stageSamples: Record<StageKey, number[]> = {
-    idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+  // Reply wire size (phase 3i), the full nested tree over `adb forward`. Bytes, not
+  // ms, so it rides beside `stages` rather than in the ms table.
+  wireBytes: StageStat;
+};
+
+// The describe result metadata the phase 3g/3i instrumentation attaches.
+type DescribeMeta = {
+  waitedMs?: number;
+  captureMs?: number;
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostRenderMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
+  timings?: {
+    idleMs?: number;
+    rootMs?: number;
+    windowsMs?: number;
+    rootsMs?: number[];
+    serializeMs?: number;
+    encodeMs?: number;
+    prevServerHandleMs?: number;
+    prevServerWriteMs?: number;
+    prevServerTotalMs?: number;
   };
+};
+
+// Accumulator so the timed idle loop and the after-tap loop collect identically.
+interface SplitAcc {
+  waited: number[];
+  captured: number[];
+  wireBytesSamples: number[];
+  stageSamples: Record<StageKey, number[]>;
+}
+function newSplitAcc(): SplitAcc {
+  return {
+    waited: [],
+    captured: [],
+    wireBytesSamples: [],
+    stageSamples: {
+      idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+      hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
+      prevServerWriteMs: [], prevServerHandleMs: [], prevServerTotalMs: [],
+    },
+  };
+}
+function collectSplit(acc: SplitAcc, d: DescribeMeta): void {
+  const s = acc.stageSamples;
+  if (typeof d.waitedMs === "number") acc.waited.push(d.waitedMs);
+  if (typeof d.captureMs === "number") acc.captured.push(d.captureMs);
+  if (typeof d.wireBytes === "number") acc.wireBytesSamples.push(d.wireBytes);
+  if (typeof d.hostParseMs === "number") s.hostParseMs.push(d.hostParseMs);
+  if (typeof d.hostRenderMs === "number") s.hostRenderMs.push(d.hostRenderMs);
+  if (typeof d.hostSentToFirstByteMs === "number") s.hostTtfbMs.push(d.hostSentToFirstByteMs);
+  if (typeof d.hostFirstToLastByteMs === "number") s.hostRecvMs.push(d.hostFirstToLastByteMs);
+  if (typeof d.hostRoundTripMs === "number") s.hostRttMs.push(d.hostRoundTripMs);
+  const t = d.timings;
+  if (t) {
+    if (typeof t.idleMs === "number") s.idleMs.push(t.idleMs);
+    if (typeof t.rootMs === "number") s.rootMs.push(t.rootMs);
+    if (typeof t.windowsMs === "number") s.windowsMs.push(t.windowsMs);
+    // rootsMs is one entry per kept window; sum to the per-call total.
+    if (Array.isArray(t.rootsMs)) s.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
+    if (typeof t.serializeMs === "number") s.serializeMs.push(t.serializeMs);
+    if (typeof t.encodeMs === "number") s.encodeMs.push(t.encodeMs);
+    if (typeof t.prevServerWriteMs === "number") s.prevServerWriteMs.push(t.prevServerWriteMs);
+    if (typeof t.prevServerHandleMs === "number") s.prevServerHandleMs.push(t.prevServerHandleMs);
+    if (typeof t.prevServerTotalMs === "number") s.prevServerTotalMs.push(t.prevServerTotalMs);
+  }
+}
+function finalizeSplit(acc: SplitAcc): DescribeSplit {
+  const p50 = (xs: number[]): number | null => (xs.length ? summarize(xs).p50 : null);
+  const s = acc.stageSamples;
+  const stages: DescribeStages = {
+    idleMs: stageStat(s.idleMs),
+    rootMs: stageStat(s.rootMs),
+    windowsMs: stageStat(s.windowsMs),
+    rootsMs: stageStat(s.rootsMs),
+    serializeMs: stageStat(s.serializeMs),
+    encodeMs: stageStat(s.encodeMs),
+    hostParseMs: stageStat(s.hostParseMs),
+    hostRenderMs: stageStat(s.hostRenderMs),
+    hostTtfbMs: stageStat(s.hostTtfbMs),
+    hostRecvMs: stageStat(s.hostRecvMs),
+    hostRttMs: stageStat(s.hostRttMs),
+    prevServerWriteMs: stageStat(s.prevServerWriteMs),
+    prevServerHandleMs: stageStat(s.prevServerHandleMs),
+    prevServerTotalMs: stageStat(s.prevServerTotalMs),
+  };
+  return {
+    waitedP50: p50(acc.waited),
+    captureP50: p50(acc.captured),
+    n: Math.max(acc.waited.length, acc.stageSamples.hostRttMs.length),
+    stages,
+    wireBytes: stageStat(acc.wireBytesSamples),
+  };
+}
+
+async function describeSplit(
+  reg: Reg,
+  n: number,
+  setup?: () => Promise<void>
+): Promise<DescribeSplit> {
+  const acc = newSplitAcc();
   for (let i = 0; i < n; i++) {
     if (setup) await setup().catch(() => undefined);
     try {
-      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as {
-        waitedMs?: number;
-        captureMs?: number;
-        timings?: {
-          idleMs?: number;
-          rootMs?: number;
-          windowsMs?: number;
-          rootsMs?: number[];
-          serializeMs?: number;
-          encodeMs?: number;
-        };
-      };
-      if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
-      if (typeof d.captureMs === "number") captured.push(d.captureMs);
-      const t = d.timings;
-      if (t) {
-        if (typeof t.idleMs === "number") stageSamples.idleMs.push(t.idleMs);
-        if (typeof t.rootMs === "number") stageSamples.rootMs.push(t.rootMs);
-        if (typeof t.windowsMs === "number") stageSamples.windowsMs.push(t.windowsMs);
-        // rootsMs is one entry per kept window; sum to the per-call total so the
-        // stage reads as "time spent in w.root binder calls this capture".
-        if (Array.isArray(t.rootsMs)) {
-          stageSamples.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
-        }
-        if (typeof t.serializeMs === "number") stageSamples.serializeMs.push(t.serializeMs);
-        if (typeof t.encodeMs === "number") stageSamples.encodeMs.push(t.encodeMs);
-      }
+      collectSplit(acc, (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta);
     } catch {
       /* skip */
     }
   }
-  const p50 = (xs: number[]): number | null =>
-    xs.length ? summarize(xs).p50 : null;
-  const stages: DescribeStages = {
-    idleMs: stageStat(stageSamples.idleMs),
-    rootMs: stageStat(stageSamples.rootMs),
-    windowsMs: stageStat(stageSamples.windowsMs),
-    rootsMs: stageStat(stageSamples.rootsMs),
-    serializeMs: stageStat(stageSamples.serializeMs),
-    encodeMs: stageStat(stageSamples.encodeMs),
+  return finalizeSplit(acc);
+}
+
+/**
+ * Timed idle-describe loop (phase 3i correction): times N BACK-TO-BACK describes
+ * on the already-at-root screen AND collects each one's stage timings + host/server
+ * timeline, so the verb-latency p50/p95 and the full decomposition come from the
+ * SAME N iterations (the old split sampled a separate Math.min(N,10) loop with an
+ * untimed ensureSettings between calls — not subtractable). Back-to-back also makes
+ * the piggybacked prevServer* clean: the previous getState is the previous
+ * describe's getState.
+ */
+async function describeIdleLatencyWithStages(
+  reg: Reg,
+  label: string,
+  n: number
+): Promise<{ verb: VerbResult; split: DescribeSplit }> {
+  for (let i = 0; i < WARMUP; i++) {
+    await reg.invokeTool("describe", { udid: SERIAL }).catch(() => undefined);
+  }
+  const mark = debugLines.length;
+  const acc = newSplitAcc();
+  const lat: number[] = [];
+  let errors = 0;
+  for (let i = 0; i < n; i++) {
+    const t0 = Date.now();
+    try {
+      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta;
+      lat.push(Date.now() - t0);
+      collectSplit(acc, d);
+    } catch {
+      errors++;
+    }
+  }
+  const fb = fallbackCountSince(mark);
+  return {
+    verb: {
+      verb: label,
+      latency: summarize(lat),
+      errors,
+      fallbacks: fb.count,
+      fallbackSamples: fb.samples,
+      extra: undefined,
+    },
+    split: finalizeSplit(acc),
   };
-  return { waitedP50: p50(waited), captureP50: p50(captured), n: waited.length, stages };
 }
 
 /** Render an idle-vs-after-tap per-stage p50/p95 table for the bench log. */
 function formatStageTable(
   label: string,
-  idle: { stages: DescribeStages },
-  afterTap: { stages: DescribeStages }
+  idle: { stages: DescribeStages; wireBytes: StageStat },
+  afterTap: { stages: DescribeStages; wireBytes: StageStat }
 ): string {
   const cell = (s: StageStat) =>
     s.p50 === null ? "   -   " : `${String(s.p50).padStart(3)}/${String(s.p95 ?? "?").padStart(3)}`;
   const lines: string[] = [];
   lines.push(`[bench] ${label} describe stage p50/p95 (ms)  idle | after-tap`);
   for (const k of STAGE_KEYS) {
-    lines.push(`[bench]   ${k.padEnd(11)} ${cell(idle.stages[k])} | ${cell(afterTap.stages[k])}`);
+    lines.push(`[bench]   ${k.padEnd(12)} ${cell(idle.stages[k])} | ${cell(afterTap.stages[k])}`);
+  }
+  // Wire payload (phase 3i): bytes, not ms — the full nested tree over adb forward.
+  const bcell = (s: StageStat) =>
+    s.p50 === null ? "   -   " : `${String(s.p50).padStart(6)}/${String(s.p95 ?? "?").padStart(6)}`;
+  lines.push(`[bench]   ${"wireBytes".padEnd(12)} ${bcell(idle.wireBytes)} | ${bcell(afterTap.wireBytes)}`);
+  return lines.join("\n");
+}
+
+/**
+ * Raw RPC round-trip floor (phase 3i): time N `ping` calls to the open server over
+ * `adb forward`. `ping` carries no `getState` work, so its p50 is the transport +
+ * dispatch floor — ~1 ms confirms the socket itself is cheap (TCP_NODELAY set both
+ * ends) and the idle describe residual is payload/serialize, not the round-trip.
+ * Sub-ms precision via performance.now(). Returns nulls if the open server can't be
+ * resolved (e.g. an OFF block).
+ */
+async function measurePing(
+  reg: Reg,
+  n: number
+): Promise<{ p50: number | null; p95: number | null; n: number }> {
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    for (let i = 0; i < 3; i++) await server.ping().catch(() => undefined); // warmup
+    const lat: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      try {
+        await server.ping();
+        lat.push(performance.now() - t0);
+      } catch {
+        /* skip */
+      }
+    }
+    if (lat.length === 0) return { p50: null, p95: null, n: 0 };
+    const s = summarize(lat);
+    return { p50: s.p50, p95: s.p95, n: lat.length };
+  } catch {
+    return { p50: null, p95: null, n: 0 };
+  }
+}
+
+// Reply fields the phase 3i host + server instrumentation attaches to getState /
+// getNestedState. All optional — absent on an older server APK.
+interface RpcTimedReply {
+  wireBytes?: number;
+  hostParseMs?: number;
+  hostSentToFirstByteMs?: number;
+  hostFirstToLastByteMs?: number;
+  hostRoundTripMs?: number;
+  waitedMs?: number;
+  captureMs?: number;
+  timings?: {
+    encodeMs?: number;
+    serializeMs?: number;
+    prevServerHandleMs?: number;
+    prevServerWriteMs?: number;
+    prevServerTotalMs?: number;
+  };
+}
+
+// Full end-to-end decomposition of one RPC, measured BACK-TO-BACK (no other RPC
+// between calls) so the piggybacked prevServer* fields belong to the previous call
+// of the SAME method — the clean version of what describeSplit collects amid setup
+// (phase 3i). Bytes for wireBytes; ms for the rest.
+interface RpcBreakdown {
+  label: string;
+  n: number;
+  wireBytes: StageStat;
+  hostTtfbMs: StageStat;
+  hostRecvMs: StageStat;
+  hostRttMs: StageStat;
+  hostParseMs: StageStat;
+  serverWaitedMs: StageStat;
+  serverCaptureMs: StageStat;
+  serverEncodeMs: StageStat;
+  serverWriteMs: StageStat; // prevServerWriteMs (t4 - t3)
+  serverHandleMs: StageStat; // prevServerHandleMs (t3 - t2)
+  serverTotalMs: StageStat; // prevServerTotalMs (t4 - t2)
+}
+
+async function measureRpcBreakdown(
+  reg: Reg,
+  label: string,
+  n: number,
+  call: (server: OpenDeviceServerApi) => Promise<RpcTimedReply>
+): Promise<RpcBreakdown | null> {
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    // Warmup also primes the server's prevServer* piggyback for the first sample.
+    for (let i = 0; i < 3; i++) await call(server).catch(() => undefined);
+    const s = {
+      wire: [] as number[], ttfb: [] as number[], recv: [] as number[], rtt: [] as number[],
+      parse: [] as number[], waited: [] as number[], capture: [] as number[], encode: [] as number[],
+      write: [] as number[], handle: [] as number[], total: [] as number[],
+    };
+    const push = (arr: number[], v?: number) => {
+      if (typeof v === "number" && Number.isFinite(v)) arr.push(v);
+    };
+    for (let i = 0; i < n; i++) {
+      try {
+        const r = await call(server);
+        push(s.wire, r.wireBytes);
+        push(s.ttfb, r.hostSentToFirstByteMs);
+        push(s.recv, r.hostFirstToLastByteMs);
+        push(s.rtt, r.hostRoundTripMs);
+        push(s.parse, r.hostParseMs);
+        push(s.waited, r.waitedMs);
+        push(s.capture, r.captureMs);
+        push(s.encode, r.timings?.encodeMs);
+        push(s.write, r.timings?.prevServerWriteMs);
+        push(s.handle, r.timings?.prevServerHandleMs);
+        push(s.total, r.timings?.prevServerTotalMs);
+      } catch {
+        /* skip */
+      }
+    }
+    return {
+      label,
+      n: s.rtt.length,
+      wireBytes: stageStat(s.wire),
+      hostTtfbMs: stageStat(s.ttfb),
+      hostRecvMs: stageStat(s.recv),
+      hostRttMs: stageStat(s.rtt),
+      hostParseMs: stageStat(s.parse),
+      serverWaitedMs: stageStat(s.waited),
+      serverCaptureMs: stageStat(s.capture),
+      serverEncodeMs: stageStat(s.encode),
+      serverWriteMs: stageStat(s.write),
+      serverHandleMs: stageStat(s.handle),
+      serverTotalMs: stageStat(s.total),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Measure the per-describe adb-spawn cost the form-factor check used to pay
+ * (phase 3i correction #1). `isAndroidTv` re-runs `adb devices` + `getprop
+ * ro.boot.qemu.avd_name` on EVERY call (the memo caches only the pm-features
+ * verdict), so `describe` paid three adb process spawns inside its timed window,
+ * OFF and ON alike. `isAndroidTvCached` returns the memoized kind with zero
+ * spawns. before = the old cost, after ≈ 0 = the new cost. Runs on both configs
+ * (adb is available in both).
+ */
+async function measureAdbFormFactorCost(
+  n: number
+): Promise<{ beforeP50: number | null; beforeP95: number | null; afterP50: number | null; n: number }> {
+  try {
+    const before: number[] = [];
+    const after: number[] = [];
+    for (let i = 0; i < 3; i++) await isAndroidTv(SERIAL).catch(() => undefined); // warm the memo
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      await isAndroidTv(SERIAL).catch(() => undefined); // still spawns adb devices + getprop
+      before.push(performance.now() - t0);
+      const t1 = performance.now();
+      await isAndroidTvCached(SERIAL).catch(() => undefined); // cache-only, zero spawns
+      after.push(performance.now() - t1);
+    }
+    if (before.length === 0) return { beforeP50: null, beforeP95: null, afterP50: null, n: 0 };
+    const b = summarize(before);
+    const a = summarize(after);
+    return { beforeP50: b.p50, beforeP95: b.p95, afterP50: a.p50, n: before.length };
+  } catch {
+    return { beforeP50: null, beforeP95: null, afterP50: null, n: 0 };
+  }
+}
+
+/** Render one RpcBreakdown as a p50/p95 stage table for the bench log. */
+function formatRpcBreakdown(b: RpcBreakdown): string {
+  const cell = (st: StageStat) =>
+    st.p50 === null ? "   -   " : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
+  const rows: Array<[string, StageStat]> = [
+    ["wireBytes", b.wireBytes],
+    ["hostTtfbMs", b.hostTtfbMs],
+    ["hostRecvMs", b.hostRecvMs],
+    ["hostRttMs", b.hostRttMs],
+    ["hostParseMs", b.hostParseMs],
+    ["server waitedMs", b.serverWaitedMs],
+    ["server captureMs", b.serverCaptureMs],
+    ["server encodeMs", b.serverEncodeMs],
+    ["server writeMs(t4-t3)", b.serverWriteMs],
+    ["server handleMs(t3-t2)", b.serverHandleMs],
+    ["server totalMs(t4-t2)", b.serverTotalMs],
+  ];
+  const lines: string[] = [];
+  lines.push(`[bench] RPC breakdown ${b.label} (N=${b.n}) p50/p95`);
+  for (const [k, st] of rows) lines.push(`[bench]   ${k.padEnd(22)} ${cell(st)}`);
+  return lines.join("\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* phase 3j: serialize-once + compact A/B, and the transport experiment         */
+/* -------------------------------------------------------------------------- */
+
+// One transport arm's host-observed cost (phase 3j item 3): the RPC round-trip,
+// the first→last-byte receive span (where the ~40 ms delayed-ACK gap lives), and
+// the wire size, all p50/p95 over N getNestedState calls.
+interface TransportArm {
+  label: string;
+  available: boolean;
+  note: string;
+  rtt: StageStat;
+  recv: StageStat;
+  wire: StageStat;
+}
+
+interface TransportExperiment {
+  paddingTarget: number;
+  arms: TransportArm[];
+}
+
+interface Phase3jResults {
+  // Item 1 (serialize-once) in-run A/B: same method, same run, back-to-back N.
+  encodeLegacy: RpcBreakdown | null; // _benchLegacyEncode:true (before)
+  encodeOnce: RpcBreakdown | null; // serialize-once (after)
+  // Item 2 (compact payload) in-run A/B.
+  compactOff: RpcBreakdown | null; // compact:false (before)
+  compactOn: RpcBreakdown | null; // compact:true (after)
+  // Item 3 (transport) experiment: adb-forward vs +padding vs redir.
+  transport: TransportExperiment;
+}
+
+/** N getNestedState round-trips over an EXPLICIT `client`, returning host stats. */
+async function measureClientTransport(
+  client: AndroidOpenServerClient,
+  n: number,
+  extraParams: Record<string, unknown> = {}
+): Promise<{ rtt: StageStat; recv: StageStat; wire: StageStat }> {
+  for (let i = 0; i < 3; i++) await client.request("ping").catch(() => undefined);
+  const rtt: number[] = [];
+  const recv: number[] = [];
+  const wire: number[] = [];
+  for (let i = 0; i < n; i++) {
+    try {
+      const r = await client.requestWithStats("getState", {
+        nested: true,
+        includeScreenshot: false,
+        compact: true,
+        maxElements: 3000,
+        waitTimeoutMs: 0,
+        ...extraParams,
+      });
+      rtt.push(r.hostRoundTripMs);
+      recv.push(r.hostFirstToLastByteMs);
+      wire.push(r.wireBytes);
+    } catch {
+      /* skip */
+    }
+  }
+  return { rtt: stageStat(rtt), recv: stageStat(recv), wire: stageStat(wire) };
+}
+
+/**
+ * The phase 3j transport experiment (item 3), all in ONE run, N each: (a) the
+ * `adb forward` baseline, (b) the emulator-console `redir` path, (c) the padding
+ * diagnostic (`_padTo` a full MSS multiple so the reply has no final partial
+ * segment). Each arm uses its OWN explicit client so the measurement is
+ * independent of whichever transport the blueprint selected as the session default
+ * — (a)/(c) dial the adb-forwarded loopback port directly, (b) dials a fresh
+ * console `redir` mapping. Comparing the recv gap across the three isolates the
+ * ~40 ms host-recv cost's cause.
+ */
+async function measureTransportExperiment(reg: Reg, n: number): Promise<TransportExperiment> {
+  const PAD = 1448;
+  const arms: TransportArm[] = [];
+  const empty = (): StageStat => stageStat([]);
+  const naArm = (label: string, note: string): TransportArm => ({
+    label,
+    available: false,
+    note,
+    rtt: empty(),
+    recv: empty(),
+    wire: empty(),
+  });
+
+  let ports: { localPort: number; devicePort: number; allPort?: number } | null = null;
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    ports = server.getTransportPorts();
+  } catch (e) {
+    arms.push(naArm("adb-forward", `could not resolve open server: ${e instanceof Error ? e.message : String(e)}`));
+    return { paddingTarget: PAD, arms };
+  }
+
+  // (a) baseline + (c) padding — explicit client on the adb-forwarded loopback port.
+  {
+    const client = new AndroidOpenServerClient("127.0.0.1", ports.localPort);
+    try {
+      const a = await measureClientTransport(client, n);
+      arms.push({ label: "adb-forward", available: true, note: "baseline (adb server on the last hop)", ...a });
+      const c = await measureClientTransport(client, n, { _padTo: PAD });
+      arms.push({ label: `adb-forward +pad${PAD}`, available: true, note: "diagnostic: reply padded to a full-MSS multiple (never shipped)", ...c });
+    } catch (e) {
+      arms.push(naArm("adb-forward", `probe failed: ${e instanceof Error ? e.message : String(e)}`));
+    } finally {
+      client.close();
+    }
+  }
+
+  // (b) redir — a fresh console mapping to the guest 0.0.0.0 listener, bypassing
+  // adbd + the adb server. Best-effort; any miss records the reason.
+  {
+    const consolePort = emulatorConsolePort(SERIAL);
+    const token = readConsoleAuthToken();
+    if (ports.allPort === undefined) {
+      arms.push(naArm("redir (emulator console)", "server has no 0.0.0.0 listener (not an emulator bind); redir cannot reach loopback-only"));
+    } else if (consolePort === null) {
+      arms.push(naArm("redir (emulator console)", `serial ${SERIAL} is not emulator-NNNN`));
+    } else if (token === null) {
+      arms.push(naArm("redir (emulator console)", "no emulator console auth token"));
+    } else {
+      let hostPort: number | undefined;
+      let client: AndroidOpenServerClient | null = null;
+      try {
+        hostPort = await freeHostPort();
+        await redirAdd(consolePort, hostPort, ports.allPort, token);
+        client = new AndroidOpenServerClient("127.0.0.1", hostPort);
+        const s = await measureClientTransport(client, n);
+        arms.push({ label: "redir (emulator console)", available: true, note: `redir tcp:${hostPort} -> guest 0.0.0.0:${ports.allPort} (bypasses adb server)`, ...s });
+      } catch (e) {
+        arms.push(naArm("redir (emulator console)", `probe failed: ${e instanceof Error ? e.message : String(e)}`));
+      } finally {
+        if (client) client.close();
+        if (hostPort !== undefined) await redirDel(consolePort, hostPort, token).catch(() => undefined);
+      }
+    }
+  }
+
+  return { paddingTarget: PAD, arms };
+}
+
+/** Render the phase 3j serialize-once + compact A/B and transport table for the log. */
+function formatPhase3j(p: Phase3jResults): string {
+  const lines: string[] = [];
+  const cell = (st: StageStat): string =>
+    st.p50 === null ? "   -   " : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
+  const ab = (title: string, before: RpcBreakdown | null, after: RpcBreakdown | null, keys: Array<[string, (b: RpcBreakdown) => StageStat]>): void => {
+    lines.push(`[bench] ${title} (before | after) p50/p95`);
+    for (const [k, sel] of keys) {
+      const b = before ? cell(sel(before)) : "   -   ";
+      const a = after ? cell(sel(after)) : "   -   ";
+      lines.push(`[bench]   ${k.padEnd(22)} ${b} | ${a}`);
+    }
+  };
+  ab("3j item1 serialize-once", p.encodeLegacy, p.encodeOnce, [
+    ["server handleMs(t3-t2)", (b) => b.serverHandleMs],
+    ["server encodeMs", (b) => b.serverEncodeMs],
+    ["server writeMs(t4-t3)", (b) => b.serverWriteMs],
+    ["server totalMs(t4-t2)", (b) => b.serverTotalMs],
+    ["wireBytes", (b) => b.wireBytes],
+    ["hostRttMs", (b) => b.hostRttMs],
+  ]);
+  ab("3j item2 compact", p.compactOff, p.compactOn, [
+    ["wireBytes", (b) => b.wireBytes],
+    ["server encodeMs", (b) => b.serverEncodeMs],
+    ["server handleMs(t3-t2)", (b) => b.serverHandleMs],
+    ["hostParseMs", (b) => b.hostParseMs],
+    ["hostRecvMs", (b) => b.hostRecvMs],
+    ["hostRttMs", (b) => b.hostRttMs],
+  ]);
+  lines.push(`[bench] 3j item3 transport experiment (pad target ${p.transport.paddingTarget}B) p50/p95`);
+  lines.push(`[bench]   ${"arm".padEnd(22)} ${"rttMs".padStart(13)} ${"recvMs".padStart(13)} ${"wireB".padStart(13)}  note`);
+  for (const a of p.transport.arms) {
+    lines.push(
+      `[bench]   ${a.label.padEnd(22)} ${cell(a.rtt)} ${cell(a.recv)} ${cell(a.wire)}  ${a.available ? "" : "N/A: "}${a.note}`
+    );
   }
   return lines.join("\n");
+}
+
+/**
+ * Run the phase 3j in-run A/Bs (serialize-once, compact) and the transport
+ * experiment on the idle Settings root, ON only. Each A/B is back-to-back N so the
+ * server's piggybacked prevServer* timings are clean.
+ */
+async function runPhase3j(reg: Reg, n: number): Promise<Phase3jResults> {
+  await ensureSettings(reg);
+  const encodeLegacy = await measureRpcBreakdown(reg, "3j serialize legacy (before)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true, _benchLegacyEncode: true }) as Promise<RpcTimedReply>
+  );
+  const encodeOnce = await measureRpcBreakdown(reg, "3j serialize-once (after)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  );
+  const compactOff = await measureRpcBreakdown(reg, "3j compact off (before)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: false }) as Promise<RpcTimedReply>
+  );
+  const compactOn = await measureRpcBreakdown(reg, "3j compact on (after)", n, (s) =>
+    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  );
+  const transport = await measureTransportExperiment(reg, n);
+  return { encodeLegacy, encodeOnce, compactOff, compactOn, transport };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -751,9 +1297,30 @@ interface BlockResult {
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
   // right after a tap into a content-heavy sub-screen. null on the proprietary
-  // path (no split surfaced).
-  describeSplitIdle: { waitedP50: number | null; captureP50: number | null; n: number; stages: DescribeStages };
-  describeSplitAfterTap: { waitedP50: number | null; captureP50: number | null; n: number; stages: DescribeStages };
+  // path (no split surfaced). Carries the phase 3i host split + wire bytes.
+  describeSplitIdle: DescribeSplit;
+  describeSplitAfterTap: DescribeSplit;
+  // Raw RPC round-trip floor (phase 3i): `getState`-free `ping` p50/p95 over
+  // `adb forward`. ~1 ms confirms the transport itself is cheap and the idle
+  // describe residual is payload/serialize, not the socket. null on OFF blocks
+  // (no open server) or if the ping probe could not run.
+  pingP50: number | null;
+  pingP95: number | null;
+  pingN: number;
+  // Back-to-back end-to-end RPC decompositions (phase 3i): getNestedState (the
+  // describe path, ~31 KB text) and getState+screenshot (JPEG-heavy), so the 5-point
+  // timeline shows whether the residual is per-byte or per-request. Empty on OFF.
+  rpcBreakdowns: RpcBreakdown[];
+  // Phase 3j: serialize-once + compact in-run A/B and the transport experiment
+  // (adb-forward vs redir vs padding). ON only; undefined on OFF blocks.
+  phase3j?: Phase3jResults;
+  // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1):
+  // before = old `isAndroidTv` (adb devices + getprop every call), after ≈ 0 =
+  // `isAndroidTvCached`. Both configs.
+  adbFormFactorBeforeP50: number | null;
+  adbFormFactorBeforeP95: number | null;
+  adbFormFactorAfterP50: number | null;
+  adbFormFactorN: number;
   // Post-navigating-tap staleness (P3d): "destination already visible" rate for
   // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
   // ON settle:true in an ON block. Empty when no nav target could be derived.
@@ -861,10 +1428,13 @@ async function runBlock(
   const lastSource = clean.source;
   const parsed = parseDescribe(lastDesc);
 
-  // describe latency (measured separately; screen already at root)
-  const describeRes = await timeCalls("describe", async () => {
-    await reg.invokeTool("describe", { udid: SERIAL });
-  });
+  // describe latency AND its decomposition from the SAME N back-to-back idle
+  // describes (phase 3i correction): the verb p50/p95 and the stage + host/server
+  // timeline table are now one sample, not a latency loop minus a separate
+  // Math.min(N,10) split loop with untimed setup between calls.
+  const idle = await describeIdleLatencyWithStages(reg, "describe", N);
+  const describeRes = idle.verb;
+  const describeSplitIdle = idle.split;
   const describeSample = {
     source: lastSource,
     bytes: Buffer.byteLength(lastDesc, "utf8"),
@@ -881,12 +1451,88 @@ async function runBlock(
   }
   verbs.push(describeRes);
 
-  // waitedMs/captureMs split for describe on the idle Settings root (open path
-  // only; screen is already at root here). Measured before the tap loops perturb
-  // the screen.
-  const describeSplitIdle = await describeSplit(reg, Math.min(N, 10), async () => {
+  // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
+  // this is an ON-only probe; OFF blocks report nulls.
+  const ping =
+    config === "ON"
+      ? await measurePing(reg, N)
+      : { p50: null, p95: null, n: 0 };
+
+  // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1),
+  // measured on both configs.
+  const adbFF = await measureAdbFormFactorCost(Math.min(N, 12));
+  realDebug(
+    `[bench] ${config} adb form-factor cost before/after p50=${
+      adbFF.beforeP50 === null ? "-" : adbFF.beforeP50.toFixed(2)
+    }/${adbFF.afterP50 === null ? "-" : adbFF.afterP50.toFixed(2)} ms (before p95=${
+      adbFF.beforeP95 === null ? "-" : adbFF.beforeP95.toFixed(2)
+    }, n=${adbFF.n})`
+  );
+
+  // Back-to-back RPC decompositions (phase 3i), ON only, on the idle Settings root.
+  // getNestedState = the describe path (big nested text, no screenshot);
+  // getState+screenshot = a JPEG-heavy payload. Comparing the 5-point timeline of
+  // the two (and vs ping) shows whether the residual scales per-byte or is a fixed
+  // per-request cost. Back-to-back so the piggybacked prevServer* is clean.
+  const rpcBreakdowns: RpcBreakdown[] = [];
+  let phase3j: Phase3jResults | undefined;
+  if (config === "ON") {
     await ensureSettings(reg);
-  });
+    const nested = await measureRpcBreakdown(reg, "getNestedState (describe path)", N, (s) =>
+      s.getNestedState({ waitTimeoutMs: 0 }) as Promise<RpcTimedReply>
+    );
+    if (nested) {
+      rpcBreakdowns.push(nested);
+      realDebug(formatRpcBreakdown(nested));
+    }
+    const withShot = await measureRpcBreakdown(reg, "getState +screenshot", N, (s) =>
+      s.getState({ waitTimeoutMs: 0, includeScreenshot: true }) as Promise<RpcTimedReply>
+    );
+    if (withShot) {
+      rpcBreakdowns.push(withShot);
+      realDebug(formatRpcBreakdown(withShot));
+    }
+    // Capture ONE real nested reply into the artifact (phase 3i #7), in the exact
+    // HostBenchFixture shape, so the next phase can commit a real fixture in place
+    // of the synthetic one. ON-uiautomation only (the plain describe path).
+    if (!fastInject) {
+      try {
+        const device = resolveDevice(SERIAL);
+        const ref = openDeviceServerRef(device);
+        const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+        const state = (await server.getNestedState({ waitTimeoutMs: 0 })) as {
+          tree: unknown;
+          info: { screenWidth: number; screenHeight: number };
+          wireBytes?: number;
+        };
+        const capturePath = join(OUT_DIR, "real-nested-reply.json");
+        writeFileSync(
+          capturePath,
+          JSON.stringify(
+            {
+              description:
+                "Real idle-Settings nested reply captured by the CI latency bench (phase 3i). " +
+                "Drop-in HostBenchFixture for bench-describe-host — replaces the synthetic fixture.",
+              screen: { width: state.info.screenWidth, height: state.info.screenHeight },
+              tree: state.tree,
+            },
+            null,
+            2
+          ) + "\n"
+        );
+        realDebug(`[bench] captured real nested reply -> ${capturePath} (wireBytes=${state.wireBytes ?? "?"})`);
+      } catch (e) {
+        realDebug(`[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    // Phase 3j: serialize-once + compact in-run A/B, and the transport experiment.
+    try {
+      phase3j = await runPhase3j(reg, N);
+      realDebug(formatPhase3j(phase3j));
+    } catch (e) {
+      realDebug(`[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   // screenshot — NOT a latency verb (F6). The two backends return different-sized
   // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
@@ -996,6 +1642,13 @@ async function runBlock(
   // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
   // baseline (proprietary path leaves these null) and ON to read the open path.
   realDebug(formatStageTable(config, describeSplitIdle, describeSplitAfterTap));
+  if (config === "ON") {
+    realDebug(
+      `[bench] ${config} ping p50/p95=${ping.p50 === null ? "-" : ping.p50.toFixed(2)}/${
+        ping.p95 === null ? "-" : ping.p95.toFixed(2)
+      } ms (n=${ping.n})`
+    );
+  }
 
   await ensureSettings(reg);
 
@@ -1201,6 +1854,15 @@ async function runBlock(
     originLostTotal,
     describeSplitIdle,
     describeSplitAfterTap,
+    pingP50: ping.p50,
+    pingP95: ping.p95,
+    pingN: ping.n,
+    rpcBreakdowns,
+    ...(phase3j ? { phase3j } : {}),
+    adbFormFactorBeforeP50: adbFF.beforeP50,
+    adbFormFactorBeforeP95: adbFF.beforeP95,
+    adbFormFactorAfterP50: adbFF.afterP50,
+    adbFormFactorN: adbFF.n,
     destinationVisible,
     notes,
   };
