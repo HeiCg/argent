@@ -34,7 +34,11 @@ class JsonRpcHandler(
     uiDevice: UiDevice,
     uiAutomation: UiAutomation,
     instrumentation: Instrumentation,
-    private val onShutdown: () -> Unit
+    private val onShutdown: () -> Unit,
+    // Phase 3j: bench-only debug params (`_padTo`, `_benchLegacyEncode`) are honored
+    // ONLY when the server was started with `-e benchDebug true`. Off in production,
+    // so a crafted request can never reach the padding / legacy-encode paths.
+    private val benchDebug: Boolean = false
 ) {
     private companion object {
         const val TAG = "JsonRpcHandler"
@@ -51,7 +55,7 @@ class JsonRpcHandler(
     private val screenshotHandler = ScreenshotHandler(uiAutomation)
     private val hierarchyHandler = HierarchyHandler(uiDevice, uiAutomation)
     private val infoHandler = InfoHandler(instrumentation, uiAutomation)
-    private val stateHandler = StateHandler(uiDevice, uiAutomation, instrumentation)
+    private val stateHandler = StateHandler(uiDevice, uiAutomation, instrumentation, benchDebug)
     private val waitHandler = WaitHandler(uiDevice)
     private val openAppHandler = OpenAppHandler(instrumentation)
 
@@ -106,7 +110,9 @@ class JsonRpcHandler(
 
         val id = json.opt("id")
         val params = json.optJSONObject("params") ?: JSONObject()
-        lastPadTo = params.optInt("_padTo", 0)
+        // `_padTo` (transport padding diagnostic) is a bench-only debug param —
+        // honored only when the server was started with `-e benchDebug true`.
+        lastPadTo = if (benchDebug) params.optInt("_padTo", 0) else 0
 
         Log.d(TAG, "method=$method id=$id")
 
