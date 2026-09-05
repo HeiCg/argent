@@ -58,6 +58,7 @@ import { resolveDevice } from "../src/utils/device-info";
 import {
   getSkippedNoIdHash,
   resetSkippedNoIdHash,
+  takeRecordMs,
 } from "../src/utils/screen-graph-open-wiring";
 import {
   ALL_TASKS,
@@ -217,6 +218,44 @@ function uninstallOpenServer(): void {
 
 function graphDir(): string {
   return join(argentHomeDir(), "screen-graph");
+}
+
+/**
+ * Phase D.2 M2: shape of the persisted Settings graph — node/edge counts and
+ * out-degree. `buildSummary` lists up to 6 outgoing edges, so the warm summary
+ * (and thus H3's ratio) tracks out-degree; report it beside H3. Best-effort.
+ */
+function settingsGraphShape(): {
+  nodes: number;
+  edges: number;
+  maxOutDegree: number;
+  meanOutDegree: number;
+} | undefined {
+  try {
+    const dir = join(graphDir(), "com.android.settings");
+    if (!existsSync(dir)) return undefined;
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    let nodes = 0;
+    let edges = 0;
+    const outDeg = new Map<string, number>();
+    for (const f of files) {
+      const doc = JSON.parse(readFileSync(join(dir, f), "utf8")) as {
+        nodes?: Record<string, unknown>;
+        edges?: Array<{ from?: string }>;
+      };
+      nodes += Object.keys(doc.nodes ?? {}).length;
+      for (const e of doc.edges ?? []) {
+        edges += 1;
+        if (e.from) outDeg.set(e.from, (outDeg.get(e.from) ?? 0) + 1);
+      }
+    }
+    const degs = [...outDeg.values()];
+    const maxOutDegree = degs.length ? Math.max(...degs) : 0;
+    const meanOutDegree = nodes > 0 ? Number((edges / nodes).toFixed(2)) : 0;
+    return { nodes, edges, maxOutDegree, meanOutDegree };
+  } catch {
+    return undefined;
+  }
 }
 function clearGraph(): void {
   const dir = graphDir();
@@ -578,6 +617,19 @@ interface StepRecord {
   actionFailed: boolean;
   /** this step is INTENDED to keep the same screen (H2 same-screen subset). */
   sameScreen: boolean;
+  /**
+   * Phase D.2 L4: wall time the graph RECORDING spent on this step (settled
+   * getState + getInfo + versionCode + store write), for open configs. Off the
+   * agent's timed tool cost but inside the wall clock, so the ~1 s gap vs B1 is
+   * attributed. 0 for B1 (no open-server recording) and non-open steps.
+   */
+  recordMs: number;
+  /**
+   * Phase D.2 HIGH-2: measured device RPCs for a routed known-target tap — the
+   * navigate-to RPCs plus the bench's arrival verify (queryPresent + idle). Only
+   * set on O5 known-target taps that routed; undefined otherwise.
+   */
+  measuredRpc?: number;
 }
 
 interface TaskRecord {
@@ -599,6 +651,9 @@ interface TaskRecord {
   oracleError: boolean;
   /** the task threw before producing a usable record (backend down; review HIGH-4). */
   taskError: boolean;
+  /** Phase D.2 L2: set only by `erroredTaskRecord` — a pre-action shared-infra
+   *  fault; the sole case `isExcludedRun` excludes. Normally none. */
+  infraPreAction?: boolean;
   assertionObs: ObservationKind;
   assertionTokensTiktoken: number;
   assertionTokensCharsDiv4: number;
@@ -647,6 +702,8 @@ interface NavRecord {
    * divergence or a no-route.
    */
   divergeReason?: string;
+  /** Measured device RPCs navigate-to issued for this tap (phase D.2 HIGH-2). */
+  rpcCount?: number;
 }
 
 interface ActionResult {
@@ -714,6 +771,7 @@ async function runAction(
         fromVia?: string;
         fromScore?: number;
         divergeReason?: string;
+        rpcCount?: number;
       };
       nav.reached = Boolean(r?.reached);
       nav.completedSteps = r?.completedSteps ?? 0;
@@ -722,6 +780,7 @@ async function runAction(
       if (r?.fromVia) nav.fromVia = r.fromVia;
       if (typeof r?.fromScore === "number") nav.fromScore = r.fromScore;
       if (r?.divergeReason) nav.divergeReason = r.divergeReason;
+      if (typeof r?.rpcCount === "number") nav.rpcCount = r.rpcCount;
       if (nav.reached) {
         await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
         // Verify the route landed where the needle lives; the graph verifies by
@@ -1098,6 +1157,16 @@ async function runTask(
     const rttCount =
       (isLaunch ? 0 : 1) + (kind === "none" || kind === "graph-lookup" ? 0 : 1);
 
+    // Phase D.2 L4: sample the recording wall time accrued for this step (settled
+    // getState + store write inside the tap RPC), off the timed tool cost.
+    const recordMs = takeRecordMs();
+    // Phase D.2 HIGH-2: measured RPCs for a routed known-target tap — navigate-to's
+    // own RPCs + the bench's arrival verify (await-screen-idle + queryPresent).
+    const measuredRpc =
+      action.strategy === "navigate" && typeof action.nav?.rpcCount === "number"
+        ? action.nav.rpcCount + 2
+        : undefined;
+
     steps.push({
       stepIndex: i,
       actionKind: step.action.kind,
@@ -1122,6 +1191,8 @@ async function runTask(
       locateFailed: action.locateFailed,
       actionFailed: action.actionFailed,
       sameScreen: step.sameScreen === true,
+      recordMs,
+      ...(measuredRpc !== undefined ? { measuredRpc } : {}),
     });
 
     // A failed locate (ticket §2) or a thrown action (review MEDIUM-8) aborts the
@@ -1202,6 +1273,11 @@ function erroredTaskRecord(config: BenchConfigId, task: BenchTask, rep: number):
     actionFailed: false,
     oracleError: false,
     taskError: true,
+    // Phase D.2 L2: a task that threw before producing ANY record is a pre-action
+    // shared-infra fault (backend/emulator down before this config acted) — it
+    // would strike every config identically, so it is the ONE case `infraPreAction`
+    // marks and `isExcludedRun` excludes. This is the setter the field describes.
+    infraPreAction: true,
     assertionObs: "none",
     assertionTokensTiktoken: 0,
     assertionTokensCharsDiv4: 0,
@@ -1238,6 +1314,11 @@ interface ConfigAgg {
   perStepTokensTiktoken: ReturnType<typeof summarize>;
   perStepTokensCharsDiv4: ReturnType<typeof summarize>;
   perStepRtt: ReturnType<typeof summarize>;
+  /** Phase D.2 HIGH-2/L4: measured action wall time, recording wall time, and
+   *  measured RPCs on routed known-target taps. */
+  actionRttMs: ReturnType<typeof summarize>;
+  recordMs: ReturnType<typeof summarize>;
+  measuredRpc: ReturnType<typeof summarize>;
   rttCountPerStep: ReturnType<typeof summarize>;
   /** RTT count/step over SAME-SCREEN steps only (H2 subset; review addendum). */
   rttCountSameScreen: ReturnType<typeof summarize>;
@@ -1315,6 +1396,10 @@ function aggregate(
   const coldTk: number[] = [];
   const warmTk: number[] = [];
   const walls: number[] = [];
+  // Phase D.2 HIGH-2 / L4: measured wall + RPC accounting.
+  const actionRtt: number[] = [];
+  const recordMsArr: number[] = [];
+  const measuredRpc: number[] = [];
   let plumbingMs = extraPlumbingMs;
   let knownTargetSteps = 0;
   let navAttempted = 0;
@@ -1381,6 +1466,9 @@ function aggregate(
       stepRtt.push(s.rttMs);
       rttCount.push(eff);
       if (s.sameScreen) rttCountSS.push(eff);
+      if (typeof s.actionRttMs === "number") actionRtt.push(s.actionRttMs);
+      if (typeof s.recordMs === "number") recordMsArr.push(s.recordMs);
+      if (typeof s.measuredRpc === "number") measuredRpc.push(s.measuredRpc);
       // A step reaching a screen already in the graph is warm; a novel screen is
       // cold. In O3 (cold store) most steps are cold; in O4/O5 (preloaded) warm.
       if (s.knownScreen) warmTk.push(s.tokensTiktoken);
@@ -1404,6 +1492,9 @@ function aggregate(
     perStepTokensTiktoken: summarize(stepTk),
     perStepTokensCharsDiv4: summarize(stepC4),
     perStepRtt: summarize(stepRtt),
+    actionRttMs: summarize(actionRtt),
+    recordMs: summarize(recordMsArr),
+    measuredRpc: summarize(measuredRpc),
     rttCountPerStep: summarize(rttCount),
     rttCountSameScreen: summarize(rttCountSS),
     coldTokensTiktoken: summarize(coldTk),
@@ -1706,9 +1797,17 @@ function buildReport(
       `- **O5-pure** (runs whose every known-target tap routed): ${split.pure.ok}/${split.pure.scored}` +
         (split.pure.scored > 0
           ? ` = ${(pureW.p || 0).toFixed(0)}% [${pureW.lo.toFixed(0)}, ${pureW.hi.toFixed(0)}]; ` +
-            `tokens/step p50 ${fmt(split.pure.tokens.p50)} (n=${split.pure.tokens.n}); ` +
-            `RTT-count/step p50 ${fmt(split.pure.rtt.p50)}.`
+            `tokens/step p50 ${fmt(split.pure.tokens.p50)} (n=${split.pure.tokens.n}).`
           : " — no run routed every known-target tap (see coverage above)."));
+    // Phase D.2 HIGH-2: MEASURED RPCs for a routed known-target tap (navigate-to's
+    // real getState/query/tap/getState + the bench's arrival verify), replacing
+    // the modelled "2". Half of O5's 100 runs have no known-target tap, so this is
+    // reported over the routed taps only (phase D.2 M4).
+    L.push(
+      `- **O5 measured RPCs per routed tap p50: ${fmt(o5.measuredRpc.p50)}** ` +
+        `(n=${o5.measuredRpc.n} routed taps; navigate-to RPCs + await-idle + queryPresent), ` +
+        `replacing the modelled "2". O5 action wall p50 ${fmt(o5.actionRttMs.p50)} ms (all steps).`
+    );
     L.push("");
   }
 
@@ -2234,6 +2333,13 @@ async function main(): Promise<void> {
   // Phase D.1 Fix B: persist the count of records dropped for a missing H_id so
   // the doc regenerated from JSON can quote it (the live counter is 0 on regen).
   env.skippedNoIdHash = getSkippedNoIdHash();
+  // Phase D.2 M1: persist the bootstrap resample count so the doc reads it from
+  // the JSON instead of hand-typing it.
+  env.bootstrapB = BOOTSTRAP_B;
+  // Phase D.2 M2: persist the settings graph shape (out-degree) so H3 can be read
+  // alongside it — the warm summary lists ≤6 outgoing edges, so the token ratio
+  // tracks graph density.
+  env.settingsGraph = settingsGraphShape();
 
   const raw = {
     env,

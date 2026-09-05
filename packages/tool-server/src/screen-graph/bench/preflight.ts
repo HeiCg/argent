@@ -42,7 +42,10 @@ export interface PreflightVerdict {
  */
 export function isProblemVerdict(verdict: string): boolean {
   const v = (verdict ?? "").trimStart();
-  return v.startsWith("BAD") || v.startsWith("MISSING");
+  // Phase D.2 L1: an UNVERIFIED navigating task (destination unreachable in
+  // pre-flight, so needle presence could not be confirmed) is a gate PROBLEM —
+  // it is no longer silently reported as "ok".
+  return v.startsWith("BAD") || v.startsWith("MISSING") || v.startsWith("UNVERIFIED");
 }
 
 /**

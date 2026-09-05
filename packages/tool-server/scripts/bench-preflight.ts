@@ -386,7 +386,7 @@ async function verifyDestinationPresence(
   launch: ScreenDump
 ): Promise<boolean | null> {
   const launchSet = screenTextSet(launch);
-  const ATTEMPTS = 3;
+  const ATTEMPTS = 6;
   let reachedDistinct = 0;
   let unreachedOrThrew = 0;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
@@ -480,7 +480,7 @@ async function main(): Promise<number> {
             ? "MISSING (needle absent from BOTH launch and destination — false-pass risk)"
             : destPresent === true
               ? "ok (absent from launch, present on destination)"
-              : "ok (absent from launch; destination unreachable — presence NOT verified)";
+              : "UNVERIFIED (absent from launch; destination unreachable — presence NOT verified after retries)";
       }
       out.needleEval.push({
         task: task.id,
@@ -531,7 +531,7 @@ async function main(): Promise<number> {
   );
   for (const e of out.needleEval) {
     process.stdout.write(
-      `${e.verdict.startsWith("BAD") || e.verdict.startsWith("MISSING") ? "‼ " : "  "}` +
+      `${e.verdict.startsWith("BAD") || e.verdict.startsWith("MISSING") || e.verdict.startsWith("UNVERIFIED") ? "‼ " : "  "}` +
         `${e.task} [${e.app}] needle="${e.needle}" navigates=${e.navigates} matchesLaunch=${e.matchesLaunch} :: ${e.verdict}` +
         (e.matchesLaunch ? ` (match="${e.launchMatchText}")` : "") +
         "\n"
@@ -542,7 +542,7 @@ async function main(): Promise<number> {
   process.stdout.write(
     `\nPROBLEM needles: ${problemCount} — ${
       out.needleEval
-        .filter((e) => e.verdict.startsWith("BAD") || e.verdict.startsWith("MISSING"))
+        .filter((e) => e.verdict.startsWith("BAD") || e.verdict.startsWith("MISSING") || e.verdict.startsWith("UNVERIFIED"))
         .map((b) => b.task)
         .join(", ") || "none"
     }\n`

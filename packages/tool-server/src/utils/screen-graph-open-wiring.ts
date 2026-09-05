@@ -39,6 +39,14 @@ import {
 const SCREEN_GRAPH_FLAG = "screen-graph";
 
 /**
+ * Phase D.2 HIGH-1: how long the recording's settled `getState` waits for the UI
+ * to go idle before it reads the after-identity. `getState` returns as soon as it
+ * is idle, so this is an upper bound only; it keeps a mid-transition fingerprint
+ * from minting a transient node.
+ */
+const RECORD_SETTLE_TIMEOUT_MS = 2500;
+
+/**
  * Phase D.1: the graph RECORDS whenever the `screen-graph` flag is on OR the
  * bench turns on record-only mode (`ARGENT_SG_RECORD=1`). Record-only lets the
  * open baselines (B2/O1/O2) contribute selector edges over the same task list
@@ -63,6 +71,19 @@ export function bumpSkippedNoIdHash(): void {
 }
 export function getSkippedNoIdHash(): number {
   return skippedNoIdHash;
+}
+
+/**
+ * Phase D.2 L4: wall time spent RECORDING (the settled getState + getInfo +
+ * versionCode + store write), accumulated since the last sample. Recording runs
+ * inside the awaited tap but is off the agent's timed tool cost; the bench reads
+ * this per step so the ~1 s open-config gap vs B1 is attributed, not hidden.
+ */
+let pendingRecordMs = 0;
+export function takeRecordMs(): number {
+  const v = pendingRecordMs;
+  pendingRecordMs = 0;
+  return v;
 }
 export function resetSkippedNoIdHash(): void {
   skippedNoIdHash = 0;
@@ -194,25 +215,10 @@ export function buildScreenPayload(
   };
 }
 
-/** Read the current screen and render it for insertion as a new graph node. */
-async function fetchScreen(server: OpenDeviceServerApi): Promise<FetchedScreen> {
-  const [state, info] = await Promise.all([
-    server.getState({ includeScreenshot: false }),
-    server.getInfo(),
-  ]);
-  return buildScreenPayload(
-    state.tree,
-    state.info.screenWidth,
-    state.info.screenHeight,
-    info.currentActivity,
-    state.stateHash ?? "",
-    state.version
-  );
-}
-
 /**
- * Fold one open-path action outcome into the screen graph. No-op unless the
- * `screen-graph` flag is on. Never throws.
+ * Fold one open-path action outcome into the screen graph. No-op unless recording
+ * is enabled. Never throws. The after-node is read from a SETTLED `getState`
+ * (phase D.2 HIGH-1), not the tap outcome's mid-transition fingerprint.
  */
 export async function recordOpenServerObservation(
   device: DeviceInfo,
@@ -223,20 +229,47 @@ export async function recordOpenServerObservation(
   opts: { secret?: boolean; actedSelector?: EdgeSelector } = {}
 ): Promise<void> {
   if (!screenGraphRecordingEnabled()) return;
+  const recordStart = Date.now();
   try {
     // Phase D.1 Fix B: key nodes/edges by H_id ONLY. A missing idHash used to
     // fall back to the structural hash, creating duplicate nodes that made a
     // navTarget resolve to two screens ("ambiguous target"). Skip and count.
     const beforeId = outcome.before.idHash;
-    const afterId = outcome.after.idHash;
-    if (!beforeId || !afterId) {
+    if (!beforeId) {
       bumpSkippedNoIdHash();
       return;
     }
+    // Phase D.2 HIGH-1: take the AFTER identity from a SETTLED read, not from the
+    // tap outcome's short-quiet fingerprint. `getState` waits for idle
+    // (`waitTimeoutMs`), so its idHash is the destination's stable identity; the
+    // outcome's `after` can be captured mid-transition and mint a transient node
+    // (run 33958064084 minted a second "Network & internet: Internet" node that
+    // two different taps landed on). The node's content is built from the SAME
+    // settled read, so key and content are consistent.
+    const settled = await server.getState({ includeScreenshot: false, waitTimeoutMs: RECORD_SETTLE_TIMEOUT_MS });
+    const afterId = settled.idHash;
+    if (!afterId) {
+      bumpSkippedNoIdHash();
+      return;
+    }
+    // Record the edge only when the identity actually changed, OR the action
+    // reported no change at all (a legitimate same-screen self-edge). A settled
+    // after-id equal to `before` while the outcome DID report a change is a
+    // transition-timing artifact — do not mint an edge from it (HIGH-1).
+    const outcomeReportedChange = outcome.before.stateHash !== outcome.after.stateHash;
+    if (afterId === beforeId && outcomeReportedChange) return;
     const info = await server.getInfo();
     const pkg = info.currentPackage || "unknown";
     const versionCode = await resolveVersionCode(device.id, pkg);
     const store = await getStore(device.id, pkg, versionCode);
+    const settledPayload = buildScreenPayload(
+      settled.tree,
+      settled.info.screenWidth,
+      settled.info.screenHeight,
+      info.currentActivity,
+      settled.stateHash ?? "",
+      settled.version
+    );
     // The edge carries the acted element's selector (phase D §2): fold the UNIQUE
     // key chosen at record time (`sel.via`, Fix A) into the canonical action's
     // target so planning/replay resolve by that key, and record the full selector
@@ -262,16 +295,20 @@ export async function recordOpenServerObservation(
       store,
       action,
       before: { hash: beforeId },
-      after: { hash: afterId, stateHash: outcome.after.stateHash, structuralHash: outcome.after.hash },
+      after: { hash: afterId, stateHash: settled.stateHash ?? "", structuralHash: settled.hash },
       success: true,
       ...(sel ? { selector: sel } : {}),
       ...(opts.secret ? { secret: true } : {}),
-      fetchScreen: () => fetchScreen(server),
+      // Reuse the settled read for the node body — no second getState, and the
+      // node's identity, structural hash and content all come from one snapshot.
+      fetchScreen: async () => settledPayload,
     });
   } catch (err) {
     console.debug(
       `[screen-graph] observation skipped: ${err instanceof Error ? err.message : String(err)}`
     );
+  } finally {
+    pendingRecordMs += Date.now() - recordStart;
   }
 }
 

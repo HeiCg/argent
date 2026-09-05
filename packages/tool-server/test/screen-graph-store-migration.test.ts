@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveTapPoint } from "../src/tools/navigate-to";
+import { ScreenGraphStore } from "../src/screen-graph/store";
 import {
   parseSelectorKey,
   type CanonicalAction,
@@ -24,6 +25,8 @@ import {
   type EdgeSelector,
   type ScreenNode,
 } from "../src/screen-graph/types";
+
+const NOW = 1_700_000_000_000;
 
 interface StoreDoc {
   nodes: Record<string, ScreenNode>;
@@ -194,5 +197,54 @@ describe("phase D.1 Fix A — every root→sub edge resolves to ONE row on the c
         expect(r.diverge).toBe(true);
       }
     }
+  });
+});
+
+describe("phase D.2 HIGH-1 — store duplicate-screen invariant", () => {
+  function freshStore(): ScreenGraphStore {
+    return new ScreenGraphStore({ packageName: "com.test", versionCode: "1", now: () => NOW, debounceMs: 1_000_000 });
+  }
+
+  it("duplicateScreens() flags two nodes with identical compact + resourceIds + stateHash", () => {
+    const s = freshStore();
+    // Two different H_id keys for one screen — the transient-node bug.
+    s.upsertNode({ hash: "idA", compact: "NET-INTERNET", stateHash: "t1", resourceIds: ["title", "recycler_view"] });
+    s.upsertNode({ hash: "idB", compact: "NET-INTERNET", stateHash: "t1", resourceIds: ["title", "recycler_view"] });
+    s.upsertNode({ hash: "idC", compact: "SOUND", stateHash: "t2", resourceIds: ["title", "seekbar"] });
+    const dups = s.duplicateScreens();
+    s.dispose();
+    expect(dups.length).toBe(1);
+    expect(new Set(dups[0])).toEqual(new Set(["idA", "idB"]));
+  });
+
+  it("a store of distinct screens has NO duplicates", () => {
+    const s = freshStore();
+    s.upsertNode({ hash: "idA", compact: "NET", stateHash: "t1", resourceIds: ["a"] });
+    s.upsertNode({ hash: "idB", compact: "SOUND", stateHash: "t2", resourceIds: ["b"] });
+    const dups = s.duplicateScreens();
+    s.dispose();
+    expect(dups).toEqual([]);
+  });
+
+  it("the run 33958064084 store VIOLATES the invariant (the transient-node bug D.2 fixes)", () => {
+    // Regression evidence: the D.1 run minted a second "Network & internet:
+    // Internet" node (byte-identical content, different H_id) from a premature
+    // after-fingerprint. The settled-read fix (HIGH-1) prevents it; this asserts
+    // the invariant would have caught it on that store.
+    const raw = JSON.parse(
+      readFileSync(join(FIX, "screen-graph-run-33958064084-settings.json"), "utf8")
+    ) as StoreDoc;
+    const groups = new Map<string, string[]>();
+    for (const [hash, n] of Object.entries(raw.nodes)) {
+      const compact = n.compact ?? "";
+      const stateHash = n.stateHash ?? "";
+      if (compact === "" && stateHash === "") continue;
+      const key = `${compact} ${(n.resourceIds ?? []).join(",")} ${stateHash}`;
+      (groups.get(key) ?? groups.set(key, []).get(key)!).push(hash);
+    }
+    const dups = [...groups.values()].filter((g) => g.length > 1);
+    expect(dups.length).toBe(1);
+    const labels = dups[0]!.map((h) => raw.nodes[h]!.label);
+    expect(labels.every((l) => l === "Network & internet: Internet")).toBe(true);
   });
 });

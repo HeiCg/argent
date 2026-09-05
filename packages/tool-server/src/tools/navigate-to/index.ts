@@ -41,6 +41,33 @@ import type { OpenServerElement } from "../describe/platforms/android/open-serve
 
 export const NAVIGATE_TO_TOOL_ID = "navigate-to";
 
+/** Device-facing methods counted as one RPC each (phase D.2 HIGH-2). */
+const RPC_METHODS = new Set<string>([
+  "getInfo",
+  "getState",
+  "getNestedState",
+  "query",
+  "diff",
+  "awaitChange",
+  "waitForIdle",
+  "screenshot",
+  "getScreenSize",
+  "getAccessibilityTree",
+  "getNestedAccessibilityTree",
+  "tap",
+  "tapWithOutcome",
+  "longPress",
+  "longPressWithOutcome",
+  "swipe",
+  "swipeWithOutcome",
+  "gesture",
+  "gestureWithOutcome",
+  "key",
+  "keyWithOutcome",
+  "typeText",
+  "typeTextWithOutcome",
+]);
+
 const selectorSchema = z
   .object({
     id: z.string().optional(),
@@ -93,6 +120,12 @@ export interface NavigateToResult {
    * on live tree` (matched 0). Absent when divergence was a plain hash mismatch.
    */
   divergeReason?: string;
+  /**
+   * Measured count of device RPCs this navigate-to issued (phase D.2 HIGH-2):
+   * the initial getState + getInfo, plus per planned step a query (resolveTapPoint)
+   * + a tap + a getState. Replaces the modelled "1 navigate + 1 verify".
+   */
+  rpcCount?: number;
 }
 
 /** Resource-id multiset of a live open-server tree (C.4 stable localization). */
@@ -374,7 +407,25 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
 
     const ref = openDeviceServerRef(device);
     return openDeviceServerMutex.withDeviceLock(device.id, async () => {
-      const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+      const rawServer = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+      // Phase D.2 HIGH-2: count the REAL device RPCs this route issues (getState /
+      // query / tap / getState …) so the published cost is measured, not the
+      // hand-written "1 navigate + 1 verify = 2". A proxy increments on every
+      // device-facing method call.
+      let rpcCount = 0;
+      const server = new Proxy(rawServer, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (typeof value !== "function") return value;
+          if (RPC_METHODS.has(prop as string)) {
+            return (...args: unknown[]) => {
+              rpcCount += 1;
+              return (value as (...a: unknown[]) => unknown).apply(target, args);
+            };
+          }
+          return (value as (...a: unknown[]) => unknown).bind(target);
+        },
+      }) as OpenDeviceServerApi;
       const { store } = await resolveStoreForCurrentApp(device.id, server);
       const state = await server.getState({ includeScreenshot: false });
       // The graph keys nodes by H_id (phase D §1): localize, plan and verify on
@@ -403,6 +454,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
             totalSteps: 0,
             error: `ambiguous target: ${holders.length} screens index this selector`,
             fromVia: currentHash && graph.nodes[currentHash] ? "exact" : "none",
+            rpcCount,
             ...(summary ? { summary } : {}),
           };
         }
@@ -430,6 +482,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
           error: "no known path from the current screen to the target",
           fromVia,
           ...(fromScore !== undefined ? { fromScore } : {}),
+          rpcCount,
           ...(summary ? { summary } : {}),
         };
       }
@@ -476,6 +529,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         ...(fromScore !== undefined ? { fromScore } : {}),
         ...(nav.divergence ? { divergence: nav.divergence } : {}),
         ...(divergeReason ? { divergeReason } : {}),
+        rpcCount,
         ...(summary ? { summary } : {}),
       };
     });

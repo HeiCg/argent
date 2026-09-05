@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   structuralHash,
   stateHash,
+  identityHash,
   flagsOf,
   isScrollingContainer,
   FLAG_CLICKABLE,
@@ -119,6 +120,12 @@ describe("structuralHash / stateHash", () => {
     // If this changes, the on-device Kotlin ScreenHash must change identically.
     expect(structuralHash(tree, W, H)).toBe("f713f2ce9fe1e246");
     expect(stateHash(tree, W, H)).toBe("ee2ad35508d70f42");
+    // Phase D.2 M3: H_id golden. The host `identityHash` and the device Kotlin
+    // `ScreenHash.identity` are edited in lockstep; if this value changes the
+    // Kotlin twin must change identically (there is no device unit test yet, so
+    // this golden is the drift guard). H_id = package + identity-titles + the
+    // non-scroll resource-id multiset (here: `toggle`), no bounds/flags/text.
+    expect(identityHash(tree, "com.test")).toBe("fff5abf0bfc32617");
   });
 });
 
