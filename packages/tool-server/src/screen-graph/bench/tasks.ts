@@ -140,17 +140,24 @@ export const SETTINGS_TASKS: BenchTask[] = [
   {
     id: "settings-network-internet",
     app: "settings",
-    description: "Two-level nav: Network & internet then Internet",
+    description: "Two-level nav: Settings → Network & internet → Internet",
     steps: [
       { action: { kind: "launch" } },
-      { action: { kind: "tap", selector: t("Network & internet") }, knownTarget: true },
-      { action: { kind: "tap", selector: t("Internet") }, knownTarget: true },
+      // Step 1 → the Network & internet screen; route identity "Calls & SMS"
+      // (on that screen, not the root, not Internet).
+      { action: { kind: "tap", selector: t("Network & internet") }, knownTarget: true, navTarget: t("Calls & SMS") },
+      // Step 2 → the Internet (Wi‑Fi) screen. Phase D.3 (D2-H3): `t("Internet")`
+      // now resolves the EXACT "Internet" row, not the "Network & internet"
+      // toolbar title, so this genuinely enters the Internet screen. Per-step
+      // navTarget "Network preferences" is an Internet-screen identity (captured
+      // run 33970221242), distinct from the oracle.
+      { action: { kind: "tap", selector: t("Internet") }, knownTarget: true, navTarget: t("Network preferences") },
     ],
-    // "SIMs" is destination-unique vs the root (existing pre-flight ok). navTarget
-    // (C.4) is a distinct identity, "Internet" (top row of Network & internet),
-    // routing O5 to that screen without being handed the oracle string.
-    assertion: t("SIMs"),
-    navTarget: t("Internet"),
+    // Phase D.3 (D2-H3): the oracle needle now lives ONLY on the Internet screen
+    // ("Add network", the Wi‑Fi picker's add-row; captured run 33970221242),
+    // absent from both the root and the Network & internet screen — so the second
+    // tap must actually reach Internet for the task to pass.
+    assertion: t("Add network"),
   },
   {
     id: "settings-battery-then-back",
