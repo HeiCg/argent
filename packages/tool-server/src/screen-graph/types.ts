@@ -64,6 +64,15 @@ export interface EdgeSelector {
   className?: string;
   indexInParent?: number;
   boundsBucket?: { x: number; y: number };
+  /**
+   * Which key was UNIQUE on the source tree at record time (phase D.1, Fix A),
+   * so replay resolves with the same precedence and never taps a non-unique
+   * resource-id (e.g. every Settings list row shares `android:id/title`):
+   * `id` (resource-id unique among visible nodes), `text` (visible text / cd
+   * unique), or `position` (neither unique — fall back to indexInParent +
+   * boundsBucket under the parent). Absent on pre-D.1 edges.
+   */
+  via?: "id" | "text" | "position";
 }
 
 /** A screen: an identity fingerprint with its cached rendering and index. */

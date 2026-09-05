@@ -18,7 +18,7 @@ import {
   setCachedScreenSize,
   __resetOpenServerScreenSizeCache,
 } from "./open-server-screen-cache";
-import { recordOpenServerObservation } from "./screen-graph-open-wiring";
+import { recordOpenServerObservation, screenGraphRecordingEnabled } from "./screen-graph-open-wiring";
 import type { EdgeSelector } from "../screen-graph";
 import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
 
@@ -27,7 +27,6 @@ import type { OpenServerElement } from "../tools/describe/platforms/android/open
 const TAP_HOLD_MS = 50;
 const MULTI_TAP_GAP_MS = 100;
 
-const SCREEN_GRAPH_FLAG = "screen-graph";
 /** 1/16 grid for the edge selector's bounds bucket (mirrors canonical.ts GRID). */
 const EDGE_BUCKET_GRID = 16;
 
@@ -67,6 +66,27 @@ function tappedSelectorFromTree(
   if (text) sel.text = text;
   const cd = best.contentDesc?.trim();
   if (cd) sel.contentDescription = cd;
+  // Phase D.1 Fix A: choose the key that is UNIQUE on the source tree so replay
+  // never resolves a shared resource-id (every Settings list row is
+  // `android:id/title`; tapping the first match lands on the wrong sibling and
+  // diverges). Count matches over the visible tree and record the chosen `via`;
+  // replay honours it and refuses when the live query is not size 1.
+  const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
+  const idLc = norm(id);
+  const textLc = norm(text);
+  const cdLc = norm(cd);
+  let idCount = 0;
+  let textCount = 0;
+  let cdCount = 0;
+  for (const el of tree) {
+    if (id && norm(el.resourceId) === idLc) idCount++;
+    if (text && norm(el.text) === textLc) textCount++;
+    if (cd && norm(el.contentDesc) === cdLc) cdCount++;
+  }
+  if (id && idCount === 1) sel.via = "id";
+  else if (text && textCount === 1) sel.via = "text";
+  else if (cd && cdCount === 1) sel.via = "text";
+  else sel.via = "position";
   return sel;
 }
 
@@ -242,7 +262,7 @@ export function openServerTapWithOutcome(
     // extra read is an internal RPC (not a counted bench round-trip) and only runs
     // while the graph flag is on.
     let actedSelector: EdgeSelector | undefined;
-    if (isFlagEnabled(SCREEN_GRAPH_FLAG)) {
+    if (screenGraphRecordingEnabled()) {
       try {
         const before = await server.getState({ includeScreenshot: false });
         actedSelector = tappedSelectorFromTree(before.tree, x, y, size);

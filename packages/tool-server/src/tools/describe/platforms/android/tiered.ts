@@ -15,6 +15,7 @@ import { openDeviceServerRef, type OpenDeviceServerApi } from "../../../../bluep
 import { openDeviceServerMutex } from "../../../../utils/device-mutex";
 import {
   buildScreenPayload,
+  bumpSkippedNoIdHash,
   resolveStoreForCurrentApp,
 } from "../../../../utils/screen-graph-open-wiring";
 import {
@@ -49,11 +50,30 @@ export async function describeAndroidTiered(
       const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
       const { store } = await resolveStoreForCurrentApp(device.id, server);
       const state = await server.getState({ includeScreenshot: false });
-      const hash = state.hash ?? "";
+      // Phase D.1 Fix B: the graph is keyed by H_id, NOT the structural hash.
+      // Keying the describe tier by `state.hash` (structural) is what created the
+      // pollutant duplicate nodes that made a navTarget resolve to two screens.
+      const idHash = state.idHash ?? "";
+      const structuralHash = state.hash ?? "";
       const stateHash = state.stateHash ?? "";
       const info = await server.getInfo();
-
       const version = state.version;
+
+      // No identity hash → never key a node by the structural hash. Skip the
+      // graph, count it, and serve a fresh render (no cache) this once.
+      if (!idHash) {
+        bumpSkippedNoIdHash();
+        const payload = buildScreenPayload(
+          state.tree,
+          state.info.screenWidth,
+          state.info.screenHeight,
+          info.currentActivity,
+          stateHash,
+          version
+        );
+        return { description: payload.compact, source: "open-device-server" as const };
+      }
+
       const renderFresh = (): string => {
         const payload = buildScreenPayload(
           state.tree,
@@ -64,19 +84,21 @@ export async function describeAndroidTiered(
           version
         );
         store.upsertNode({
-          hash,
+          hash: idHash,
+          structuralHash,
           compact: payload.compact,
           stateHash: payload.stateHash,
           ...(payload.version !== undefined ? { version: payload.version } : {}),
           index: payload.index,
+          ...(payload.resourceIds !== undefined ? { resourceIds: payload.resourceIds } : {}),
           ...(payload.label !== undefined ? { label: payload.label } : {}),
         });
         return payload.compact;
       };
 
       if (tier === "summary") {
-        if (!store.hasNode(hash)) renderFresh();
-        const node = store.getNode(hash)!;
+        if (!store.hasNode(idHash)) renderFresh();
+        const node = store.getNode(idHash)!;
         // Phase B leftover B1: when this screen was last rendered at a known
         // version but its state has since moved, report how many fields changed.
         // The device diff is prev→current (one retained snapshot), so this is the
@@ -91,20 +113,20 @@ export async function describeAndroidTiered(
             /* diff unavailable — omit changedSince rather than guess */
           }
         }
-        const summary = buildSummary(node, store.outgoingEdges(hash), store.nodes, {
+        const summary = buildSummary(node, store.outgoingEdges(idHash), store.nodes, {
           ...(changedSince !== undefined ? { changedSince } : {}),
         });
         return { description: renderSummary(summary), source: "open-device-server" as const };
       }
 
       // tier === "compact"
-      const node = store.getNode(hash);
+      const node = store.getNode(idHash);
       if (!node) {
         return { description: renderFresh(), source: "open-device-server" as const };
       }
       const { text } = await resolveCompactTier(
         node,
-        { hash, stateHash },
+        { hash: idHash, stateHash },
         {
           // `node.version` is now stored (B1), so the "only text changed" path
           // could serve from a keyed device `diff(node.version)`. This tier

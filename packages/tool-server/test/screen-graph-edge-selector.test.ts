@@ -84,43 +84,88 @@ describe("phase D §1/§2 — recorder keys by H_id and records the selector + s
   });
 });
 
-describe("phase D §2/§3 — resolveTapPoint prefers the selector and diverges when unresolved", () => {
+describe("phase D §2/§3 + D.1 Fix A — resolveTapPoint resolves a UNIQUE live match, else diverges", () => {
   const size = { width: 1080, height: 2400 };
-  // Minimal OpenDeviceServerApi stub: only `query` is exercised.
-  function serverWith(present: Record<string, { x1: number; y1: number; x2: number; y2: number }>): any {
+  type TreeNode = { id?: string; text?: string; cd?: string; bounds: { x1: number; y1: number; x2: number; y2: number } };
+  // OpenDeviceServerApi stub backed by a live tree: `query` matches the
+  // case-insensitive CONTAINS matcher resolveTapPoint sends, exactly like the
+  // device server; resolveTapPoint then filters to a whole-field EXACT match.
+  function serverWithTree(nodes: TreeNode[]): any {
+    const val = (m: any): string => (typeof m === "object" && m ? m.contains ?? m.equals ?? "" : m ?? "");
     return {
-      query: async (sel: { id?: string; text?: string }) => {
-        const key = sel.id ? `id:${sel.id}` : `text:${sel.text}`;
-        const b = present[key];
-        return { nodes: b ? [{ bounds: b }] : [] };
+      query: async (sel: { id?: any; text?: any }, opts?: { limit?: number }) => {
+        const idm = val(sel.id).toLowerCase();
+        const tm = val(sel.text).toLowerCase();
+        const matched = nodes.filter((n) => {
+          if (sel.id) return (n.id ?? "").toLowerCase().includes(idm);
+          if (sel.text) return (n.text ?? "").toLowerCase().includes(tm) || (n.cd ?? "").toLowerCase().includes(tm);
+          return false;
+        });
+        return { nodes: matched.slice(0, opts?.limit ?? 20) };
       },
+      getState: async () => ({ idHash: "live", hash: "liveH" }),
     };
   }
 
-  it("resolves by resource-id first, tapping the LIVE centre", async () => {
-    const server = serverWith({ "id:title": { x1: 100, y1: 200, x2: 300, y2: 260 } });
+  it("resolves a unique resource-id, tapping the LIVE centre", async () => {
+    const server = serverWithTree([{ id: "title", text: "Network & internet", bounds: { x1: 100, y1: 200, x2: 300, y2: 260 } }]);
     const action: CanonicalAction = { kind: "tap", target: { id: "title" } };
     const r = await resolveTapPoint(server, size, action, undefined, rowSel);
     expect(r).toEqual({ cx: 200, cy: 230 });
   });
 
+  it("Fix A: an AMBIGUOUS resource-id (many rows share `title`) is skipped for the unique text", async () => {
+    // Two rows share android:id/title; only the text distinguishes them.
+    const server = serverWithTree([
+      { id: "title", text: "Network & internet", bounds: { x1: 0, y1: 100, x2: 500, y2: 160 } },
+      { id: "title", text: "Apps", bounds: { x1: 0, y1: 200, x2: 500, y2: 260 } },
+    ]);
+    // via="text" was chosen unique at record time.
+    const sel: EdgeSelector = { resourceId: "title", text: "Apps", via: "text" };
+    const action: CanonicalAction = { kind: "tap", target: { text: "Apps" } };
+    const r = await resolveTapPoint(server, size, action, undefined, sel);
+    expect(r).toEqual({ cx: 250, cy: 230 }); // the Apps row, NOT the first title
+  });
+
+  it("Fix A: without `via`, an ambiguous id falls through to the unique text", async () => {
+    const server = serverWithTree([
+      { id: "title", text: "Network & internet", bounds: { x1: 0, y1: 100, x2: 500, y2: 160 } },
+      { id: "title", text: "Apps", bounds: { x1: 0, y1: 200, x2: 500, y2: 260 } },
+    ]);
+    const sel: EdgeSelector = { resourceId: "title", text: "Apps" }; // no via (pre-D.1 edge)
+    const action: CanonicalAction = { kind: "tap", target: { id: "title" } };
+    const r = await resolveTapPoint(server, size, action, undefined, sel);
+    expect(r).toEqual({ cx: 250, cy: 230 });
+  });
+
   it("falls through resource-id → text → contentDescription", async () => {
-    const server = serverWith({ "text:Back": { x1: 0, y1: 0, x2: 100, y2: 100 } });
+    const server = serverWithTree([{ cd: "Back", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 } }]);
     const sel: EdgeSelector = { resourceId: "gone", contentDescription: "Back" };
     const action: CanonicalAction = { kind: "tap", target: { id: "gone" } };
     const r = await resolveTapPoint(server, size, action, undefined, sel);
     expect(r).toEqual({ cx: 50, cy: 50 });
   });
 
-  it("DIVERGES when a selector was recorded but nothing resolves (edge not taken)", async () => {
-    const server = serverWith({}); // nothing present
+  it("DIVERGES 'ambiguous' when the only recorded key matches >1 live node", async () => {
+    const server = serverWithTree([
+      { id: "title", text: "Network & internet", bounds: { x1: 0, y1: 100, x2: 500, y2: 160 } },
+      { id: "title", text: "Apps", bounds: { x1: 0, y1: 200, x2: 500, y2: 260 } },
+    ]);
+    const sel: EdgeSelector = { resourceId: "title" }; // no distinguishing text
+    const action: CanonicalAction = { kind: "tap", target: { id: "title" } };
+    const r = await resolveTapPoint(server, size, action, undefined, sel);
+    expect(r).toEqual({ diverge: true, reason: "selector ambiguous on live tree" });
+  });
+
+  it("DIVERGES 'unresolved' when a selector was recorded but nothing matches", async () => {
+    const server = serverWithTree([]); // nothing present
     const action: CanonicalAction = { kind: "tap", target: { text: "Network & internet" } };
     const r = await resolveTapPoint(server, size, action, undefined, rowSel);
-    expect(r).toEqual({ diverge: true });
+    expect(r).toEqual({ diverge: true, reason: "selector unresolved on live tree" });
   });
 
   it("uses the bucket centre only when the edge carries NO selector", async () => {
-    const server = serverWith({});
+    const server = serverWithTree([]);
     const action: CanonicalAction = { kind: "tap", bucket: { x: 8, y: 8 } };
     const r = await resolveTapPoint(server, size, action);
     // bucket 8/16 of each dim, centre of the cell

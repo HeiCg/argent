@@ -38,6 +38,36 @@ import {
 
 const SCREEN_GRAPH_FLAG = "screen-graph";
 
+/**
+ * Phase D.1: the graph RECORDS whenever the `screen-graph` flag is on OR the
+ * bench turns on record-only mode (`ARGENT_SG_RECORD=1`). Record-only lets the
+ * open baselines (B2/O1/O2) contribute selector edges over the same task list
+ * WITHOUT changing their observation policy (the describe tiers and the bench's
+ * per-step observations stay gated on the real flag, which stays off for them).
+ * Recording is graph maintenance, off the agent's timed cost.
+ */
+export function screenGraphRecordingEnabled(): boolean {
+  return isFlagEnabled(SCREEN_GRAPH_FLAG) || process.env.ARGENT_SG_RECORD === "1";
+}
+
+/**
+ * Phase D.1 Fix B: count records dropped because the device did not return an
+ * identity hash (`H_id`). The graph keys nodes by `H_id` ONLY — a structural-hash
+ * fallback key was what created the pollutant duplicate nodes (77a189ce /
+ * 2bf46d4f / 299378e0) that made navTargets resolve to two screens. The bench
+ * reads this at run end.
+ */
+let skippedNoIdHash = 0;
+export function bumpSkippedNoIdHash(): void {
+  skippedNoIdHash += 1;
+}
+export function getSkippedNoIdHash(): number {
+  return skippedNoIdHash;
+}
+export function resetSkippedNoIdHash(): void {
+  skippedNoIdHash = 0;
+}
+
 /** cache: `${serial}|${pkg}` → resolved versionCode (best-effort). */
 const versionCodeCache = new Map<string, string>();
 /** cache: `${serial}|${pkg}|${versionCode}` → loaded store. */
@@ -192,25 +222,41 @@ export async function recordOpenServerObservation(
   outcome: OpenServerActionOutcome,
   opts: { secret?: boolean; actedSelector?: EdgeSelector } = {}
 ): Promise<void> {
-  if (!isFlagEnabled(SCREEN_GRAPH_FLAG)) return;
+  if (!screenGraphRecordingEnabled()) return;
   try {
+    // Phase D.1 Fix B: key nodes/edges by H_id ONLY. A missing idHash used to
+    // fall back to the structural hash, creating duplicate nodes that made a
+    // navTarget resolve to two screens ("ambiguous target"). Skip and count.
+    const beforeId = outcome.before.idHash;
+    const afterId = outcome.after.idHash;
+    if (!beforeId || !afterId) {
+      bumpSkippedNoIdHash();
+      return;
+    }
     const info = await server.getInfo();
     const pkg = info.currentPackage || "unknown";
     const versionCode = await resolveVersionCode(device.id, pkg);
     const store = await getStore(device.id, pkg, versionCode);
-    // The graph keys nodes by H_id (phase D §1); H stays as a diagnostic field.
-    const beforeId = outcome.before.idHash ?? outcome.before.hash;
-    const afterId = outcome.after.idHash ?? outcome.after.hash;
-    // The edge carries the acted element's selector (phase D §2): fold it into the
-    // canonical action's target so planning/replay resolve by id/text, and record
-    // the full selector on the edge for the content-description fallback.
+    // The edge carries the acted element's selector (phase D §2): fold the UNIQUE
+    // key chosen at record time (`sel.via`, Fix A) into the canonical action's
+    // target so planning/replay resolve by that key, and record the full selector
+    // (with `via`) on the edge for the ordered live re-resolution.
     const sel = opts.actedSelector;
     const action: CanonicalAction = canonicalAction(invocation, size);
-    if (sel && (action.kind === "tap" || action.kind === "longPress") && !action.target) {
+    if (sel && (action.kind === "tap" || action.kind === "longPress")) {
       const id = sel.resourceId?.trim();
       const text = sel.text?.trim();
-      if (id) action.target = { id };
-      else if (text) action.target = { text };
+      const cd = sel.contentDescription?.trim();
+      if (sel.via === "id" && id) action.target = { id };
+      else if (sel.via === "text" && (text || cd)) action.target = { text: (text || cd)! };
+      else if (sel.via === "position") {
+        /* neither id nor text was unique — leave target undefined so the edge
+           replays by indexInParent + boundsBucket under the parent (bucket path). */
+      } else if (!action.target) {
+        // Pre-D.1 selector without `via`: legacy precedence (id, then text).
+        if (id) action.target = { id };
+        else if (text) action.target = { text };
+      }
     }
     await recordObservation({
       store,

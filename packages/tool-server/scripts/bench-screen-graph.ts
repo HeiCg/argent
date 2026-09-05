@@ -56,6 +56,10 @@ import type {
 } from "../src/blueprints/android-open-server";
 import { resolveDevice } from "../src/utils/device-info";
 import {
+  getSkippedNoIdHash,
+  resetSkippedNoIdHash,
+} from "../src/utils/screen-graph-open-wiring";
+import {
   ALL_TASKS,
   validateTasks,
 } from "../src/screen-graph/bench/tasks";
@@ -636,6 +640,13 @@ interface NavRecord {
   fromScore?: number;
   /** `navigate-to` reported reached but the routing target was not live-present. */
   misland?: boolean;
+  /**
+   * Why a planned step diverged during replay (phase D.1 Fix A): `selector
+   * ambiguous on live tree` (a recorded key matched >1 live node) or `selector
+   * unresolved on live tree` (matched 0). Absent for a plain hash-mismatch
+   * divergence or a no-route.
+   */
+  divergeReason?: string;
 }
 
 interface ActionResult {
@@ -702,6 +713,7 @@ async function runAction(
         error?: string;
         fromVia?: string;
         fromScore?: number;
+        divergeReason?: string;
       };
       nav.reached = Boolean(r?.reached);
       nav.completedSteps = r?.completedSteps ?? 0;
@@ -709,6 +721,7 @@ async function runAction(
       if (r?.error) nav.error = r.error;
       if (r?.fromVia) nav.fromVia = r.fromVia;
       if (typeof r?.fromScore === "number") nav.fromScore = r.fromScore;
+      if (r?.divergeReason) nav.divergeReason = r.divergeReason;
       if (nav.reached) {
         await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
         // Verify the route landed where the needle lives; the graph verifies by
@@ -1252,6 +1265,16 @@ interface ConfigAgg {
   navDiverged: number;
   /** of the fallbacks, those with NO route at all (`totalSteps === 0`). */
   navNoRoute: number;
+  /** no-route split (phase D.1): destination selector indexed by >1 node. */
+  navNoRouteAmbiguous: number;
+  /** no-route split (phase D.1): no edge reached a node indexing the target. */
+  navNoRouteNoPath: number;
+  /** diverged split (phase D.1): replay found >1 live node for the acted selector. */
+  navDivergedSelectorAmbiguous: number;
+  /** diverged split (phase D.1): replay found 0 live nodes for the acted selector. */
+  navDivergedSelectorUnresolved: number;
+  /** diverged split (phase D.1): the landed H_id simply mismatched the plan. */
+  navDivergedHashMismatch: number;
   skipped?: string;
 }
 
@@ -1300,6 +1323,17 @@ function aggregate(
   let navMisland = 0;
   let navDiverged = 0;
   let navNoRoute = 0;
+  // Phase D.1: split the fallback causes. No-route: the plan step never ran —
+  // either the destination selector was indexed by >1 node ("ambiguous target",
+  // Fix B should drive this to 0) or no edge reached it ("no known path").
+  // Diverged: a plan ran but replay could not uniquely re-resolve the acted
+  // element ("selector ambiguous/unresolved on live tree", Fix A) or the landed
+  // H_id simply mismatched.
+  let navNoRouteAmbiguous = 0;
+  let navNoRouteNoPath = 0;
+  let navDivergedSelectorAmbiguous = 0;
+  let navDivergedSelectorUnresolved = 0;
+  let navDivergedHashMismatch = 0;
 
   // Nav counters over ALL records and ALL attempts (phase D §0.2) — BEFORE any
   // exclusion skip, so a known-target tap that FAILED (and would once have been
@@ -1315,8 +1349,18 @@ function aggregate(
       if (s.navFallback) {
         navFallbacks += 1;
         if (s.nav?.misland) navMisland += 1;
-        else if ((s.nav?.totalSteps ?? 0) > 0) navDiverged += 1;
-        else navNoRoute += 1;
+        else if ((s.nav?.totalSteps ?? 0) > 0) {
+          navDiverged += 1;
+          const dr = s.nav?.divergeReason ?? "";
+          if (dr.includes("ambiguous")) navDivergedSelectorAmbiguous += 1;
+          else if (dr.includes("unresolved")) navDivergedSelectorUnresolved += 1;
+          else navDivergedHashMismatch += 1;
+        } else {
+          navNoRoute += 1;
+          const er = s.nav?.error ?? "";
+          if (er.includes("ambiguous target")) navNoRouteAmbiguous += 1;
+          else navNoRouteNoPath += 1;
+        }
       }
     }
   }
@@ -1374,6 +1418,11 @@ function aggregate(
     navMisland,
     navDiverged,
     navNoRoute,
+    navNoRouteAmbiguous,
+    navNoRouteNoPath,
+    navDivergedSelectorAmbiguous,
+    navDivergedSelectorUnresolved,
+    navDivergedHashMismatch,
   };
 }
 
@@ -1637,6 +1686,17 @@ function buildReport(
         `(attempted ${o5.navAttempted}). Fallbacks ${o5.navFallbacks}/${o5.knownTargetSteps}: ` +
         `mis-landed ${o5.navMisland}, diverged-after-tap ${o5.navDiverged}, ` +
         `no-route ${o5.navNoRoute} (phase D §0.2, counted over ALL attempts before any exclusion).`
+    );
+    L.push(
+      `- No-route split (phase D.1): ambiguous-target ${o5.navNoRouteAmbiguous}, ` +
+        `no-known-path ${o5.navNoRouteNoPath}. Diverged split: selector-ambiguous-on-live-tree ` +
+        `${o5.navDivergedSelectorAmbiguous}, selector-unresolved-on-live-tree ` +
+        `${o5.navDivergedSelectorUnresolved}, hash-mismatch ${o5.navDivergedHashMismatch}.`
+    );
+    L.push(
+      `- Records skipped for a missing H_id (phase D.1 Fix B, recordSkippedNoIdHash): ` +
+        `${typeof env.skippedNoIdHash === "number" ? env.skippedNoIdHash : getSkippedNoIdHash()} ` +
+        `(a structural-hash node was never created).`
     );
     L.push(
       `- **O5-mixed** (all scored runs, the published O5): ${split.mixed.ok}/${split.mixed.scored} ` +
@@ -2054,6 +2114,20 @@ async function main(): Promise<void> {
     await prepareChromeOnce();
   }
 
+  // Phase D.1: start the matrix from an EMPTY graph store (so no store persisted
+  // by a previous run leaks pre-D.1 edges into routing) and RECORD selector edges
+  // for every config that acts on the open server (B2/O1/O2 included) via
+  // record-only mode. By the time O5 runs LAST, its store holds selector edges
+  // over the whole task list. Recording is graph MAINTENANCE, off the agent's
+  // timed observation cost, and never changes a config's observation policy (the
+  // describe tiers stay gated on the `screen-graph` flag, which is off for
+  // B1/B2/O1/O2). B1 has no open server in its loop, so it contributes no
+  // recordings — the six open configs traverse the identical tasks, so O5's store
+  // is fully covered without it.
+  clearGraph();
+  resetSkippedNoIdHash();
+  process.env.ARGENT_SG_RECORD = "1";
+
   // O3 must run before O4/O5 so the warm store is populated; iterate CONFIGS as
   // given (default order already B1,B2,O1..O5).
   for (const config of CONFIGS) {
@@ -2073,13 +2147,14 @@ async function main(): Promise<void> {
     applyFlags(config);
     await teardownBackend();
 
-    // Cold vs warm store handling.
-    if (config === "O3") clearGraph(); // cold: empty store
-    // O4/O5 keep whatever O3 persisted.
+    // Phase D.1: the store is cleared ONCE before the loop and accumulates across
+    // configs (all-config recording), so O3 no longer clears it. O3 stays the
+    // COLD baseline via the `knownScreen = config !== "O3"` guard in runTask (it
+    // never consults the graph and pays a full describe every step, so a
+    // pre-populated store does not change its cold token cost).
     if (usesGraph(config) && config !== "O3") {
-      // Warm: ensure a store exists (O3 populated it). If O3 was skipped, warm
-      // has nothing to reuse — note it, still run (behaves ~cold).
-      if (!existsSync(graphDir())) skipped[`${config}-note`] = "no warm store (O3 not run first)";
+      // Warm: a store should exist by now (earlier configs populated it).
+      if (!existsSync(graphDir())) skipped[`${config}-note`] = "no warm store (earlier configs recorded none)";
     }
 
     const reg = createRegistry();
@@ -2155,6 +2230,10 @@ async function main(): Promise<void> {
   // Parity gate: every config drove the identical gesture timeline (holdMs /
   // durationMs), so cross-config comparisons are like-for-like — throws otherwise.
   assertIdenticalGestureParams(blockParams);
+
+  // Phase D.1 Fix B: persist the count of records dropped for a missing H_id so
+  // the doc regenerated from JSON can quote it (the live counter is 0 on regen).
+  env.skippedNoIdHash = getSkippedNoIdHash();
 
   const raw = {
     env,

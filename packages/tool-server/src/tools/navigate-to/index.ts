@@ -86,6 +86,13 @@ export interface NavigateToResult {
   fromVia?: "exact" | "jaccard" | "none";
   /** Resource-id Jaccard score when `fromVia === "jaccard"`. */
   fromScore?: number;
+  /**
+   * Why a step diverged during replay when the acted element could not be
+   * uniquely re-resolved on the live tree (phase D.1 Fix A): `selector ambiguous
+   * on live tree` (a recorded key matched >1 live node) or `selector unresolved
+   * on live tree` (matched 0). Absent when divergence was a plain hash mismatch.
+   */
+  divergeReason?: string;
 }
 
 /** Resource-id multiset of a live open-server tree (C.4 stable localization). */
@@ -142,7 +149,7 @@ export function indexEntryForBucket(
 }
 
 /** A resolved tap point, or a signal to diverge (the stored element is gone). */
-type TapResolution = { cx: number; cy: number } | { diverge: true };
+type TapResolution = { cx: number; cy: number } | { diverge: true; reason?: string };
 
 /** The resulting screen's IDENTITY hash `H_id` (phase D §1), else the raw hash. */
 function idOf(state: { idHash?: string; hash?: string }): string {
@@ -155,7 +162,8 @@ async function executeCanonicalAction(
   size: { width: number; height: number },
   action: CanonicalAction,
   fromIndex?: ScreenNode["index"],
-  selector?: EdgeSelector
+  selector?: EdgeSelector,
+  onDiverge?: (reason?: string) => void
 ): Promise<string> {
   switch (action.kind) {
     case "tap":
@@ -164,7 +172,9 @@ async function executeCanonicalAction(
       if ("diverge" in point) {
         // The acted element could not be re-resolved on the live screen: don't tap
         // blindly (phase D §2 — "an edge whose selector cannot be resolved is not
-        // taken"). Report the current H_id so runNavigation records a divergence.
+        // taken"). Surface the reason and report the current H_id so runNavigation
+        // records a divergence.
+        onDiverge?.(point.reason);
         return idOf(await server.getState({ includeScreenshot: false }));
       }
       const { cx, cy } = point;
@@ -216,24 +226,65 @@ export async function resolveTapPoint(
     cx: Math.round((n.bounds.x1 + n.bounds.x2) / 2),
     cy: Math.round((n.bounds.y1 + n.bounds.y2) / 2),
   });
-  // Ordered candidate selectors: resource-id (most specific), then text, then
-  // content-description. `action.target` (folded from the selector at record
-  // time) is included so a plan step without an explicit `selector` still routes.
-  const candidates: OpenServerSelector[] = [];
+  // Ordered candidate keys. Phase D.1 Fix A: honour the key that was UNIQUE at
+  // record time (`selector.via`) FIRST, then the remaining keys as fallback.
+  // `action.target` (folded from `via` at record time) is included so a plan step
+  // without an explicit `selector` still routes.
+  type Cand = { field: "id" | "text"; value: string };
+  const candidates: Cand[] = [];
+  const seen = new Set<string>();
+  const push = (c: Cand | undefined): void => {
+    if (!c || !c.value) return;
+    const key = `${c.field}:${c.value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(c);
+  };
   const rid = selector?.resourceId ?? action.target?.id;
   const txt = selector?.text ?? action.target?.text;
   const cd = selector?.contentDescription;
-  if (rid) candidates.push({ id: rid });
-  if (txt) candidates.push({ text: txt });
-  if (cd) candidates.push({ text: cd });
+  const idC: Cand | undefined = rid ? { field: "id", value: rid } : undefined;
+  const txtC: Cand | undefined = txt ? { field: "text", value: txt } : undefined;
+  const cdC: Cand | undefined = cd ? { field: "text", value: cd } : undefined;
+  if (selector?.via === "id") push(idC);
+  else if (selector?.via === "text") {
+    push(txtC);
+    push(cdC);
+  }
+  // Remaining fallbacks in the default precedence (id → text → cd).
+  push(idC);
+  push(txtC);
+  push(cdC);
   if (candidates.length > 0) {
+    // Phase D.1 Fix A: require a UNIQUE live match. A resource-id shared by many
+    // rows (every Settings list row is `android:id/title`) must NOT resolve to
+    // `nodes[0]` — that lands on the wrong sibling and diverges. Query with a
+    // (device-supported) case-insensitive CONTAINS matcher, then filter the
+    // returned nodes to an EXACT (whole-field, case-insensitive) match — the same
+    // uniqueness the recorder used — and tap only when exactly ONE remains.
+    // Refuse (diverge) when a key matched >1 or 0, rather than tap blindly.
+    const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
+    let sawAmbiguous = false;
     for (const c of candidates) {
-      const q = await server.query(c, { limit: 1 });
-      const node = q.nodes[0];
-      if (node) return centreOf(node);
+      const want = norm(c.value);
+      const sel: OpenServerSelector =
+        c.field === "id"
+          ? { id: { contains: c.value, caseInsensitive: true } }
+          : { text: { contains: c.value, caseInsensitive: true } };
+      const q = await server.query(sel, { limit: 20 });
+      const exact = q.nodes.filter((n) =>
+        c.field === "id"
+          ? norm(n.id) === want
+          : norm(n.text) === want || norm(n.cd) === want
+      );
+      if (exact.length === 1) return centreOf(exact[0]!);
+      if (exact.length > 1) sawAmbiguous = true;
     }
-    // A selector was recorded but nothing matched live — the edge is not taken.
-    return { diverge: true };
+    // A selector was recorded but no key uniquely resolved — the edge is not taken.
+    return {
+      diverge: true,
+      reason: sawAmbiguous ? "selector ambiguous on live tree" : "selector unresolved on live tree",
+    };
   }
   if (action.bucket) {
     // Phase B leftover B1: a bucketed tap has no id/text. If the FROM node's
@@ -388,10 +439,13 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       // later step starts on the previous step's planned target (runNavigation
       // only advances when the observed hash matched it).
       let stepFrom = currentHash;
+      let divergeReason: string | undefined;
       const nav = await runNavigation(currentHash, planned.steps, {
         execute: async (action, step: PlanStep) => {
           const fromIndex = store.getNode(stepFrom)?.index;
-          await executeCanonicalAction(server, size, action, fromIndex, step.selector);
+          await executeCanonicalAction(server, size, action, fromIndex, step.selector, (reason) => {
+            if (reason) divergeReason = reason;
+          });
           // Re-read the landed screen for its H_id and resource-id multiset.
           const after = await server.getState({ includeScreenshot: false });
           stepFrom = step.to;
@@ -421,6 +475,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         fromVia,
         ...(fromScore !== undefined ? { fromScore } : {}),
         ...(nav.divergence ? { divergence: nav.divergence } : {}),
+        ...(divergeReason ? { divergeReason } : {}),
         ...(summary ? { summary } : {}),
       };
     });
