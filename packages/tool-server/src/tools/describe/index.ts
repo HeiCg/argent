@@ -39,6 +39,10 @@ function withDescription(data: DescribeTreeData): DescribeResult {
   if (data.hostSentToFirstByteMs !== undefined) out.hostSentToFirstByteMs = data.hostSentToFirstByteMs;
   if (data.hostFirstToLastByteMs !== undefined) out.hostFirstToLastByteMs = data.hostFirstToLastByteMs;
   if (data.hostRoundTripMs !== undefined) out.hostRoundTripMs = data.hostRoundTripMs;
+  // Phase 3j item 3d (fix h): the host↔device transport ("adb-forward" | "redir")
+  // must ride the describe result too, or the bench records "transport metadata
+  // absent" for every ON block even when the open path set it (run-2 regression).
+  if (data.transport !== undefined) out.transport = data.transport;
   return out;
 }
 

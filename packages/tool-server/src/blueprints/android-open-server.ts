@@ -598,11 +598,30 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       try {
         const hostPort = await freeHostPort();
         await redirAdd(consolePort, hostPort, spawned.allPort, consoleToken);
-        redirClient = new AndroidOpenServerClient("127.0.0.1", hostPort);
-        await redirClient.request("ping"); // redir proves out only when the server answers
-        redirOk = true;
+        // Record the mapping BEFORE the ping (finding 9): if the ping throws, the
+        // catch's cleanup must see a defined redirHostPort or the guest-facing redir
+        // mapping leaks for the emulator's lifetime (a host port forwarding into the
+        // unauthenticated device-control server).
         redirHostPort = hostPort;
         redirConsolePort = consolePort;
+        redirClient = new AndroidOpenServerClient("127.0.0.1", hostPort);
+        // redir proves out only when the server answers. The guest's 0.0.0.0 listener
+        // can need a moment after boot before slirp routes to it, so a single ping can
+        // spuriously fail and force an adb-forward fallback (observed on CI). Retry a
+        // few times before giving up so redir is selected when it is genuinely usable.
+        let pinged = false;
+        let lastPingErr: unknown;
+        for (let attempt = 0; attempt < 3 && !pinged; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 400));
+          try {
+            await redirClient.request("ping");
+            pinged = true;
+          } catch (pingErr) {
+            lastPingErr = pingErr;
+          }
+        }
+        if (!pinged) throw lastPingErr instanceof Error ? lastPingErr : new Error(String(lastPingErr));
+        redirOk = true;
       } catch (e) {
         redirOk = false;
         if (redirClient) redirClient.close();
@@ -612,6 +631,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           await redirDel(consolePort, redirHostPort, consoleToken).catch(() => undefined);
           redirHostPort = undefined;
         }
+        redirConsolePort = undefined;
         // eslint-disable-next-line no-console
         console.debug(
           `[open-device-server] redir setup failed, using adb forward: ${
@@ -713,10 +733,12 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }>("getState", {
           nested: true,
           includeScreenshot: false,
-          // Phase 3j: compact by default (describe + await-* both run the host v2
-          // trim, so the smaller wire payload is byte-identical). Explicit
-          // `compact:false` opts out for a raw capture / the bench's before arm.
-          compact: stateOpts.compact ?? true,
+          // Phase 3j: compact is OFF by default. The on-device compaction hoists
+          // scaffold wrappers, which is not output-preserving (scroll-clip / system-
+          // chrome / password counterexamples), so the describe path ships the full
+          // tree and runs the proven host v2 trim. `compact:true` remains an explicit
+          // opt-in for the bench A/B until the device compaction is output-preserving.
+          compact: stateOpts.compact ?? false,
           maxElements: stateOpts.maxElements ?? 3000,
           waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
           ...(stateOpts.flush ? { flush: true } : {}),

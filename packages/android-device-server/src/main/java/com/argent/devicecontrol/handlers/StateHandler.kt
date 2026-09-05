@@ -38,21 +38,20 @@ class StateHandler(
         // underscore-bearing so it cannot collide with base64 screenshot data,
         // package names, or numbers elsewhere in the envelope.
         const val TREE_TOKEN = "__ARGENT_RAW_TREE_9f83c1__"
+
+        // Transient member carrying the raw pre-serialized tree JSON on the serialize-
+        // once path (phase 3j). [execute] attaches it to the result it RETURNS, and
+        // [JsonRpcHandler] removes it (so it never ships) and splices it over the
+        // [TREE_TOKEN] placeholder. Per-REQUEST state (finding 14): the previous
+        // instance field `lastTreeJson` was shared across the cached thread pool, so
+        // two concurrent getState calls on separate connections could splice the wrong
+        // tree — or ship the literal token — since one execute() overwrote the other's
+        // field between execute and the splice. Carrying it on the per-call result
+        // object removes the shared field entirely.
+        const val RAW_TREE_MEMBER = "__argentRawTreeJson__"
     }
 
-    /**
-     * Raw, pre-serialized tree JSON for the last [execute] on the serialize-once
-     * path, or null on the legacy path / before the first call. [JsonRpcHandler]
-     * reads it immediately after `execute` to splice it into the response. Requests
-     * run serially on one connection thread, so no synchronisation is needed.
-     */
-    var lastTreeJson: String? = null
-        private set
-
     fun execute(params: JSONObject): JSONObject {
-        // Cleared each call so a stale value from a previous getState can never be
-        // spliced if this one takes the legacy path or throws.
-        lastTreeJson = null
         val quality = params.optInt("quality", 80)
         val scale = params.optDouble("scale", 1.0).toFloat()
         val maxElements = params.optInt("maxElements", 50)
@@ -187,12 +186,14 @@ class StateHandler(
         // throwaway-then-re-encode so the bench can A/B both in one run.
         val encStart = System.currentTimeMillis()
         val treeValue: Any
+        // Per-REQUEST raw tree (finding 14): carried on the returned object, never a
+        // shared field. null on the legacy path (successResponse re-serializes it).
+        var rawTreeJson: String? = null
         if (legacyEncode) {
             hierarchy.toString() // throwaway pass (measured, discarded — old behavior)
-            lastTreeJson = null // no splice: successResponse re-serializes `hierarchy`
             treeValue = hierarchy
         } else {
-            lastTreeJson = hierarchy.toString() // the single serialization pass
+            rawTreeJson = hierarchy.toString() // the single serialization pass
             treeValue = TREE_TOKEN // placeholder; JsonRpcHandler splices the tree in
         }
         val encodeMs = System.currentTimeMillis() - encStart
@@ -216,6 +217,9 @@ class StateHandler(
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
             put("timings", timings)
+            // Serialize-once splice payload (phase 3j), per-request: JsonRpcHandler
+            // removes this member (so it never ships) and splices it over TREE_TOKEN.
+            if (rawTreeJson != null) put(RAW_TREE_MEMBER, rawTreeJson)
         }
     }
 
