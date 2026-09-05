@@ -26,7 +26,7 @@ import {
   type OpenDeviceServerApi,
   type OpenServerInfo,
 } from "../../src/blueprints/android-open-server";
-import type { OpenServerElement } from "../../src/tools/describe/platforms/android/open-server-tree";
+import type { OpenServerElement, OpenServerNestedElement } from "../../src/tools/describe/platforms/android/open-server-tree";
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
 import { PNG } from "pngjs";
@@ -84,18 +84,18 @@ async function labelHash(a: OpenDeviceServerApi): Promise<string | undefined> {
 }
 
 /** Flatten a NESTED window tree (roots carry a `children` array) into all labels. */
-function flattenNestedLabels(nodes: Element[], out: string[] = []): string[] {
+function flattenNestedLabels(nodes: OpenServerNestedElement[], out: string[] = []): string[] {
   for (const n of nodes) {
-    const l = label(n);
+    const l = (n.contentDesc ?? "").trim() || (n.text ?? "").trim();
     if (l.length) out.push(l);
-    if (Array.isArray(n.children)) flattenNestedLabels(n.children as Element[], out);
+    if (Array.isArray(n.children)) flattenNestedLabels(n.children, out);
   }
   return out;
 }
 
 /** Sorted label set of a `getNestedState` reply — the same oracle as labelHash but
  * from the nested-describe path, so a quick read on that path can be fingerprinted. */
-function nestedLabelHash(state: { tree: Element[] }): string | undefined {
+function nestedLabelHash(state: { tree: OpenServerNestedElement[] }): string | undefined {
   const set = new Set(flattenNestedLabels(state.tree));
   return set.size ? [...set].sort().join("\n") : undefined;
 }
