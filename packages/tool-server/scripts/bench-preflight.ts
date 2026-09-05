@@ -210,8 +210,25 @@ async function execCaptureStep(reg: Reg, step: BenchStep): Promise<void> {
     case "launch":
       return; // handled by the caller
     case "tap": {
-      const q = await server.query(toOpenSelector(a.selector), { limit: 1 });
-      const node = q.nodes[0];
+      // Locate more robustly than "first substring hit": a selector like
+      // `contains "Display"` also matches unrelated subtitles ("Display,
+      // interaction, audio"), and after a `swipe` the wanted row may sit above
+      // the fold. Pull a few candidates and prefer, in order: an exact
+      // (case-folded) text match, then any candidate whose centre is on-screen,
+      // then the first hit. This mirrors the stronger locates (B1/O1) that reach
+      // the Display screen reliably where the naive limit-1 tap is flaky.
+      const q = await server.query(toOpenSelector(a.selector), { limit: 5 });
+      const want = (a.selector.text ?? "").trim().toLowerCase();
+      const onScreen = (n: (typeof q.nodes)[number]): boolean => {
+        const cy = (n.bounds.y1 + n.bounds.y2) / 2;
+        const cx = (n.bounds.x1 + n.bounds.x2) / 2;
+        return cy >= 0 && cy <= H && cx >= 0 && cx <= W;
+      };
+      const node =
+        (want && q.nodes.find((n) => (n.text ?? "").trim().toLowerCase() === want && onScreen(n))) ||
+        (want && q.nodes.find((n) => (n.text ?? "").trim().toLowerCase() === want)) ||
+        q.nodes.find(onScreen) ||
+        q.nodes[0];
       if (!node) {
         process.stdout.write(`  [capture] locate MISS ${JSON.stringify(a.selector)}\n`);
         return;
@@ -310,6 +327,99 @@ async function captureTask(reg: Reg, task: BenchTask): Promise<CaptureEntry> {
 
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* C-M2 destination-presence check (phase D §0.6)                             */
+/* -------------------------------------------------------------------------- */
+
+/** Case-folded, whitespace-collapsed set of a dump's text + content-descriptions. */
+function screenTextSet(dump: ScreenDump): Set<string> {
+  const s = new Set<string>();
+  for (const n of dump.nodes) {
+    const t = (n.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+    const c = (n.cd ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (t) s.add(t);
+    if (c) s.add(`cd:${c}`);
+  }
+  return s;
+}
+
+/** Jaccard similarity of two text sets (1 = identical screen, 0 = disjoint). */
+function textSetSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 1 : inter / union;
+}
+
+/** Needle presence with the SAME semantics as the matrix oracle (visible +
+ * one settle + re-query when the first read is unmet). */
+async function needlePresentLikeMatrix(reg: Reg, needle: string): Promise<boolean> {
+  let dest = await dumpScreen(reg);
+  if (evaluateAssertion(dest.nodes, needle, { screen: dest.screen }).matched) return true;
+  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
+  await sleep(300);
+  dest = await dumpScreen(reg);
+  return evaluateAssertion(dest.nodes, needle, { screen: dest.screen }).matched;
+}
+
+/**
+ * Verify a navigating task's needle is PRESENT on its destination (C-M2). The
+ * naive one-shot check hard-fails on the documented Display-screen flakiness:
+ * the plain query+tap navigation lands short on the non-deterministic fling
+ * (the C.4 matrix shows scattered misses on exactly this path for B2/O2/O5),
+ * so a single missed tap leaves the destination = launch root and the correct
+ * needle reads absent. This retries the navigation until a screen DISTINCT from
+ * the launch is reached, then checks presence with matrix-consistent oracle
+ * semantics. It only reports absence (a real false-pass risk) when a distinct
+ * destination WAS reached yet the needle was absent on every reaching attempt.
+ *
+ * Returns:
+ *   true  — needle present on the destination (ok)
+ *   false — a distinct destination was reached but the needle was absent (PROBLEM)
+ *   null  — the destination was never reached / an exception occurred (unverified)
+ */
+async function verifyDestinationPresence(
+  reg: Reg,
+  task: BenchTask,
+  needle: string,
+  launch: ScreenDump
+): Promise<boolean | null> {
+  const launchSet = screenTextSet(launch);
+  const ATTEMPTS = 3;
+  let reachedButAbsent = false;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      await launchAppPreflight(reg, task.app);
+      for (const step of task.steps) {
+        if (step.action.kind === "launch") continue;
+        await execCaptureStep(reg, step);
+      }
+      // Presence first: if the needle is there, we are done regardless of how we
+      // classify "reached".
+      if (await needlePresentLikeMatrix(reg, needle)) return true;
+      // Not present — did we actually leave the launch screen? A high text-set
+      // similarity means the navigation did not take (flaky fling / missed tap):
+      // that is NOT evidence the needle is missing, so keep retrying.
+      const destSet = screenTextSet(await dumpScreen(reg));
+      const reached = textSetSimilarity(launchSet, destSet) < 0.8;
+      if (reached) {
+        reachedButAbsent = true;
+        process.stdout.write(
+          `  [preflight] ${task.id}: reached destination but needle "${needle}" absent (attempt ${attempt}/${ATTEMPTS})\n`
+        );
+      } else {
+        process.stdout.write(
+          `  [preflight] ${task.id}: navigation did not leave the launch screen (attempt ${attempt}/${ATTEMPTS}); retrying\n`
+        );
+      }
+    } catch (e) {
+      process.stdout.write(`  [preflight] destination check for ${task.id} attempt ${attempt} threw: ${String(e)}\n`);
+    }
+  }
+  return reachedButAbsent ? false : null;
+}
+
 async function main(): Promise<number> {
   setFlag("open-device-server", true, "project");
   const reg = createRegistry();
@@ -354,22 +464,12 @@ async function main(): Promise<number> {
       } else {
         // C-M2 (phase D §0.6): absence from launch is NOT enough — the needle must
         // ALSO be PRESENT on the DESTINATION dump, or a needle on NEITHER screen
-        // would false-pass as "unique to destination". Navigate the task's steps
-        // and re-dump. A navigation/dump failure leaves the destination
-        // unverified (not a PROBLEM) rather than hard-failing the gate.
-        let destPresent: boolean | null = null;
-        try {
-          await launchAppPreflight(reg, task.app);
-          for (const step of task.steps) {
-            if (step.action.kind === "launch") continue;
-            await execCaptureStep(reg, step);
-          }
-          const dest = await dumpScreen(reg);
-          destPresent = evaluateAssertion(dest.nodes, needle, { screen: dest.screen }).matched;
-        } catch (e) {
-          destPresent = null;
-          process.stdout.write(`  [preflight] destination check for ${task.id} skipped: ${String(e)}\n`);
-        }
+        // would false-pass as "unique to destination". The check retries the
+        // navigation (the Display fling is non-deterministic) and only reports a
+        // PROBLEM when a distinct destination WAS reached yet the needle was
+        // absent every time; a navigation that never leaves the launch screen
+        // leaves the destination unverified (not a PROBLEM).
+        const destPresent = await verifyDestinationPresence(reg, task, needle, launch);
         verdict =
           destPresent === false
             ? "MISSING (needle absent from BOTH launch and destination — false-pass risk)"
