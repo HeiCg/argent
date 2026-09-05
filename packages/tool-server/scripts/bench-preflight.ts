@@ -210,25 +210,8 @@ async function execCaptureStep(reg: Reg, step: BenchStep): Promise<void> {
     case "launch":
       return; // handled by the caller
     case "tap": {
-      // Locate more robustly than "first substring hit": a selector like
-      // `contains "Display"` also matches unrelated subtitles ("Display,
-      // interaction, audio"), and after a `swipe` the wanted row may sit above
-      // the fold. Pull a few candidates and prefer, in order: an exact
-      // (case-folded) text match, then any candidate whose centre is on-screen,
-      // then the first hit. This mirrors the stronger locates (B1/O1) that reach
-      // the Display screen reliably where the naive limit-1 tap is flaky.
-      const q = await server.query(toOpenSelector(a.selector), { limit: 5 });
-      const want = (a.selector.text ?? "").trim().toLowerCase();
-      const onScreen = (n: (typeof q.nodes)[number]): boolean => {
-        const cy = (n.bounds.y1 + n.bounds.y2) / 2;
-        const cx = (n.bounds.x1 + n.bounds.x2) / 2;
-        return cy >= 0 && cy <= H && cx >= 0 && cx <= W;
-      };
-      const node =
-        (want && q.nodes.find((n) => (n.text ?? "").trim().toLowerCase() === want && onScreen(n))) ||
-        (want && q.nodes.find((n) => (n.text ?? "").trim().toLowerCase() === want)) ||
-        q.nodes.find(onScreen) ||
-        q.nodes[0];
+      const q = await server.query(toOpenSelector(a.selector), { limit: 1 });
+      const node = q.nodes[0];
       if (!node) {
         process.stdout.write(`  [capture] locate MISS ${JSON.stringify(a.selector)}\n`);
         return;
@@ -352,15 +335,21 @@ function textSetSimilarity(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 1 : inter / union;
 }
 
-/** Needle presence with the SAME semantics as the matrix oracle (visible +
- * one settle + re-query when the first read is unmet). */
-async function needlePresentLikeMatrix(reg: Reg, needle: string): Promise<boolean> {
+/** Needle presence on the destination over the FULL tree (visible OR below the
+ * fold), symmetric with the launch ABSENCE check (both `ignoreVisibility`). The
+ * gate's job is "is this needle unique to the destination" — present SOMEWHERE on
+ * it, absent from launch — not "visible at first paint" (that is task
+ * reliability, handled by reps, and it can only make a task read N, never a false
+ * Y). "Brightness level" sits below the fold on the Display screen, so a
+ * visible-only check misses it even when Display was reached. One settle +
+ * re-query, as the matrix does, to ride out a mid-transition read. */
+async function needlePresentFullTree(reg: Reg, needle: string): Promise<boolean> {
   let dest = await dumpScreen(reg);
-  if (evaluateAssertion(dest.nodes, needle, { screen: dest.screen }).matched) return true;
+  if (evaluateAssertion(dest.nodes, needle, { ignoreVisibility: true }).matched) return true;
   await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
   await sleep(300);
   dest = await dumpScreen(reg);
-  return evaluateAssertion(dest.nodes, needle, { screen: dest.screen }).matched;
+  return evaluateAssertion(dest.nodes, needle, { ignoreVisibility: true }).matched;
 }
 
 /**
@@ -374,10 +363,21 @@ async function needlePresentLikeMatrix(reg: Reg, needle: string): Promise<boolea
  * semantics. It only reports absence (a real false-pass risk) when a distinct
  * destination WAS reached yet the needle was absent on every reaching attempt.
  *
+ * A needle absent from the launch tree carries NO false-pass risk on a missed
+ * tap (a missed tap ends on the launch screen, where the needle is absent → the
+ * matrix scores N, not a false Y); the launch-absence check already guards that
+ * deterministically. So this secondary check only hard-fails (MISSING) on
+ * POSITIVE evidence of a typo needle: EVERY attempt reliably reached a screen
+ * distinct from the launch, yet the needle was absent from all of them. A flaky
+ * navigation that ever fails to leave the launch screen cannot distinguish
+ * "absent from destination" from "never reached", so it is left unverified.
+ *
  * Returns:
- *   true  — needle present on the destination (ok)
- *   false — a distinct destination was reached but the needle was absent (PROBLEM)
- *   null  — the destination was never reached / an exception occurred (unverified)
+ *   true  — needle present on the destination full tree (ok)
+ *   false — every attempt reached a distinct destination but the needle was
+ *           absent from all of them (PROBLEM — likely a needle on neither screen)
+ *   null  — at least one attempt never left the launch screen / threw
+ *           (flaky navigation — destination presence NOT verified, not a PROBLEM)
  */
 async function verifyDestinationPresence(
   reg: Reg,
@@ -387,7 +387,8 @@ async function verifyDestinationPresence(
 ): Promise<boolean | null> {
   const launchSet = screenTextSet(launch);
   const ATTEMPTS = 3;
-  let reachedButAbsent = false;
+  let reachedDistinct = 0;
+  let unreachedOrThrew = 0;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     try {
       await launchAppPreflight(reg, task.app);
@@ -395,29 +396,33 @@ async function verifyDestinationPresence(
         if (step.action.kind === "launch") continue;
         await execCaptureStep(reg, step);
       }
-      // Presence first: if the needle is there, we are done regardless of how we
-      // classify "reached".
-      if (await needlePresentLikeMatrix(reg, needle)) return true;
+      // Presence first (full tree): if the needle is anywhere on the destination
+      // we are done, regardless of how we classify "reached".
+      if (await needlePresentFullTree(reg, needle)) return true;
       // Not present — did we actually leave the launch screen? A high text-set
       // similarity means the navigation did not take (flaky fling / missed tap):
-      // that is NOT evidence the needle is missing, so keep retrying.
+      // that is NOT evidence the needle is missing, so it cannot count toward a
+      // MISSING verdict.
       const destSet = screenTextSet(await dumpScreen(reg));
-      const reached = textSetSimilarity(launchSet, destSet) < 0.8;
-      if (reached) {
-        reachedButAbsent = true;
+      if (textSetSimilarity(launchSet, destSet) < 0.8) {
+        reachedDistinct++;
         process.stdout.write(
-          `  [preflight] ${task.id}: reached destination but needle "${needle}" absent (attempt ${attempt}/${ATTEMPTS})\n`
+          `  [preflight] ${task.id}: reached a distinct destination but needle "${needle}" absent from its full tree (attempt ${attempt}/${ATTEMPTS})\n`
         );
       } else {
+        unreachedOrThrew++;
         process.stdout.write(
           `  [preflight] ${task.id}: navigation did not leave the launch screen (attempt ${attempt}/${ATTEMPTS}); retrying\n`
         );
       }
     } catch (e) {
+      unreachedOrThrew++;
       process.stdout.write(`  [preflight] destination check for ${task.id} attempt ${attempt} threw: ${String(e)}\n`);
     }
   }
-  return reachedButAbsent ? false : null;
+  // MISSING only when navigation was RELIABLE (every attempt reached a distinct
+  // destination) yet the needle was never present — the typo-needle signal.
+  return unreachedOrThrew === 0 && reachedDistinct === ATTEMPTS ? false : null;
 }
 
 async function main(): Promise<number> {
