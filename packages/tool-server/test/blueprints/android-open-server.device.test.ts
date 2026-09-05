@@ -1144,34 +1144,62 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       );
       return { moved, offscreen: false };
     };
-    const fling = await measure(0);
-    const held = await measure(250);
+    // MEDIAN OF 3 trials per arm (run-5 review: a single fling/held pair is too noisy
+    // on x86_64 KVM — run 5 read fling 521 vs held 547, backwards. Never best-of-N;
+    // the median of 3 is the honest central value). Assert on the medians, print all
+    // six distances.
+    const med3 = (xs: number[]): number => {
+      const s = xs.slice().sort((a, b) => a - b);
+      return s.length % 2 ? s[(s.length - 1) / 2]! : (s[s.length / 2 - 1]! + s[s.length / 2]!) / 2;
+    };
+    const measureArm = async (
+      holdEndMs: number,
+      arm: string
+    ): Promise<{ median: number; offscreenMajority: boolean; onscreen: number }> => {
+      const trials: Array<{ moved: number; offscreen: boolean }> = [];
+      for (let t = 0; t < 3; t++) trials.push(await measure(holdEndMs));
+      const onscreen = trials.filter((x) => !x.offscreen).map((x) => x.moved);
+      const offscreenCount = trials.filter((x) => x.offscreen).length;
+      // eslint-disable-next-line no-console
+      console.log(
+        `  [fi-swipe ${arm}] 3 trials: ${trials.map((x) => (x.offscreen ? "offscreen" : Math.round(x.moved))).join(", ")}px`
+      );
+      return {
+        median: onscreen.length ? med3(onscreen) : NaN,
+        offscreenMajority: offscreenCount >= 2,
+        onscreen: onscreen.length,
+      };
+    };
+    const fling = await measureArm(0, "fling");
+    const held = await measureArm(250, "momentum-free");
     // The flinging swipe keeps scrolling after lift, so the anchor travels further
     // than under the momentum-free swipe that decelerates to ~0 before the lift.
-    if (!fling.offscreen && !held.offscreen) {
-      expect(fling.moved).toBeGreaterThan(0);
-      expect(held.moved).toBeGreaterThan(0);
-      expect(held.moved).toBeLessThan(fling.moved);
+    if (!fling.offscreenMajority && !held.offscreenMajority) {
+      expect(fling.median).toBeGreaterThan(0);
+      expect(held.median).toBeGreaterThan(0);
+      expect(held.median).toBeLessThan(fling.median);
       record(
         "3f-swipe momentum",
         "PASS",
-        `default(fling) moved ${fling.moved}px > momentum-free ${held.moved}px (anchor displacement)`
+        `median default(fling) ${Math.round(fling.median)}px > median momentum-free ${Math.round(held.median)}px (3 trials/arm, anchor displacement)`
       );
-    } else if (fling.offscreen && !held.offscreen) {
+    } else if (fling.offscreenMajority && !held.offscreenMajority) {
       // Fling pushed the anchor off-screen (further than the visible span, unmeasured)
-      // while momentum-free kept it on-screen — fling scrolled further, no invented px.
-      expect(held.moved).toBeGreaterThan(0);
+      // in a majority of trials while momentum-free kept it on-screen — fling scrolled
+      // further, no invented px.
+      expect(held.median).toBeGreaterThan(0);
       record(
         "3f-swipe momentum",
         "PASS",
-        `default(fling) scrolled anchor OFF-screen (unmeasured, > on-screen span) > momentum-free ${held.moved}px on-screen`
+        `default(fling) scrolled anchor OFF-screen in a majority of 3 trials (> on-screen span) > momentum-free median ${Math.round(held.median)}px`
       );
     } else {
       throw new Error(
-        `fi-swipe comparison unmeasured: fling offscreen=${fling.offscreen}, momentum-free offscreen=${held.offscreen} — cannot assert momentum-free < fling`
+        `fi-swipe comparison unmeasured: fling offscreenMajority=${fling.offscreenMajority}, ` +
+          `momentum-free offscreenMajority=${held.offscreenMajority} — cannot assert momentum-free < fling`
       );
     }
-  }, 120_000);
+  }, 240_000);
 
   it("fast-inject coexists with the Kotlin instrumentation channel", async () => {
     // scrcpy (shell-uid app_process) injects touch while the same instance's Kotlin
