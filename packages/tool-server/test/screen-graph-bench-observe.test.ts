@@ -101,4 +101,29 @@ describe("parseDescribeLocate — B1 live describe+tap locate (C.4 work item A)"
       found: false,
     });
   });
+
+  // Phase D.3 (D2-H3): an EXACT quoted label beats a contains-hit that comes first.
+  const netInternet = [
+    '  AXStaticText "Network & internet" id="collapsing_toolbar"  (0.000, 0.030, 1.000, 0.100)',
+    '  AXButton "Internet" "AndroidWifi" id="title" [clickable]  (0.000, 0.200, 1.000, 0.070)',
+    '  AXButton "Calls & SMS" id="title" [clickable]  (0.000, 0.280, 1.000, 0.070)',
+  ].join("\n");
+
+  it("D2-H3: t('Internet') takes the exact 'Internet' row, NOT the 'Network & internet' toolbar", () => {
+    const loc = parseDescribeLocate(netInternet, { text: "Internet" });
+    expect(loc.found).toBe(true);
+    expect(loc.yNorm).toBeCloseTo(0.235, 3); // 0.200 + 0.070/2 — the Internet row
+  });
+
+  it("finds a row that carries a subtitle value (exact label match)", () => {
+    const display = '  AXButton "Display" "Dark theme, font size, brightness" id="title" [clickable]  (0.000, 0.400, 1.000, 0.070)';
+    const loc = parseDescribeLocate(display, { text: "Display" });
+    expect(loc.found).toBe(true);
+    expect(loc.yNorm).toBeCloseTo(0.435, 3);
+  });
+
+  it("falls back to the topmost contains-hit when nothing matches exactly", () => {
+    // No exact "wi-fi" label; the contains-hit is the subtitle row.
+    expect(parseDescribeLocate(describe_, { text: "hotspot" }).found).toBe(true);
+  });
 });

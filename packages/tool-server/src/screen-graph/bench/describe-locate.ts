@@ -60,25 +60,22 @@ export function parseDescribeLocate(describeText: string, sel: BenchSelector): L
       id: (idM?.[1] ?? "").toLowerCase(),
     });
   }
-  const pick = (cands: DescribeLine[]): LocatedNorm | null => {
-    if (cands.length === 1) return { xNorm: cands[0]!.xNorm, yNorm: cands[0]!.yNorm, found: true };
-    return null; // 0 → miss here; >1 → ambiguous, do not fall to nodes[0]
-  };
-  // Exact id, then exact quoted label, then unique contains.
+  const at = (l: DescribeLine): LocatedNorm => ({ xNorm: l.xNorm, yNorm: l.yNorm, found: true });
+  // Phase D.3 (D2-H3): PREFER a whole-field EXACT quoted label / exact id — so
+  // `t("Internet")` takes the exact "Internet" row, never the "Network & internet"
+  // toolbar title a plain contains-scan hits first. Fall back to the topmost
+  // CONTAINS match only when nothing matched exactly (the pre-D.3 behaviour, kept
+  // so B1's proprietary describe rendering — where a row may not surface as a
+  // clean quoted label — still locates rather than refusing).
   if (wantId) {
-    const exact = lines.filter((l) => l.id === wantId);
-    const r = pick(exact);
-    if (r) return r;
-    if (exact.length > 1) return { xNorm: 0.5, yNorm: 0.5, found: false };
+    const exact = lines.find((l) => l.id === wantId);
+    if (exact) return at(exact);
   }
   if (wantText) {
-    const exact = lines.filter((l) => l.quoted.includes(wantText));
-    let r = pick(exact);
-    if (r) return r;
-    if (exact.length > 1) return { xNorm: 0.5, yNorm: 0.5, found: false };
-    const contains = lines.filter((l) => l.head.includes(wantText));
-    r = pick(contains);
-    if (r) return r;
+    const exactLabel = lines.find((l) => l.quoted.includes(wantText));
+    if (exactLabel) return at(exactLabel);
+    const contains = lines.find((l) => l.head.includes(wantText));
+    if (contains) return at(contains);
   }
   return { xNorm: 0.5, yNorm: 0.5, found: false };
 }
