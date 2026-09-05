@@ -107,18 +107,43 @@ const result = {
 };
 const outPath = path.join(OUT, `fling-ab-${Date.now()}.json`);
 fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
-console.log("\n=== FLING A/B (scrcpy vs uiautomation median scroll; reliable cells) ===");
+const iqrStr = (m) => (m && m.iqr ? `[${m.iqr[0]},${m.iqr[1]}]` : "[-]");
+console.log("\n=== FLING A/B (scrcpy vs uiautomation median scroll + IQR, n per cell; reliable cells) ===");
 for (const g of grid) {
   console.log(
-    `d=${g.durationMs}ms dist=${g.distance}: uia ${g.uiautomation && g.uiautomation.median} ` +
-    `scrcpy ${g.scrcpy && g.scrcpy.median} → ratio ${g.scrcpyOverUia}` +
-    (g.off ? ` (off ${g.off.median})` : "") + (g.reliable ? "  [reliable]" : "  [saturated]")
+    `d=${g.durationMs}ms dist=${g.distance}: ` +
+    `uia ${g.uiautomation && g.uiautomation.median} iqr${iqrStr(g.uiautomation)} ` +
+    `scrcpy ${g.scrcpy && g.scrcpy.median} iqr${iqrStr(g.scrcpy)} ` +
+    `→ ratio ${g.scrcpyOverUia}` +
+    (g.off ? ` (off ${g.off.median})` : "") +
+    ` n=${(g.scrcpy && g.scrcpy.n) || "?"}` +
+    (g.reliable ? "  [reliable]" : "  [saturated]")
   );
 }
-console.log(`\n=== FLING PARITY GATE (per-cell ±${TOL} on informative cells, BLOCKING) ===`);
+// Clamped / excluded cells (run-5 review: list them, don't silently drop). A cell is
+// excluded from the gate when it is not reliable (a median saturated at 0 or 1, or
+// n<10) — the ratio carries no fling signal there.
+const excluded = grid.filter((g) => !informative.includes(g));
+if (excluded.length) {
+  console.log("\n=== EXCLUDED cells (clamped/saturated/underpowered — not gated) ===");
+  for (const g of excluded) {
+    const why =
+      !g.reliable ? "not reliable (median saturated 0/1 or n<10)" :
+      clamped(g.uiautomation) || clamped(g.scrcpy) ? "clamped at scroll floor/ceiling" :
+      "no finite ratio";
+    console.log(
+      `  d=${g.durationMs}ms dist=${g.distance}: uia ${g.uiautomation && g.uiautomation.median} ` +
+      `scrcpy ${g.scrcpy && g.scrcpy.median} — ${why}`
+    );
+  }
+}
+console.log(`\n=== FLING PARITY GATE (per-cell MEDIAN ratio ±${TOL} on informative cells, BLOCKING) ===`);
 for (const c of perCell) {
+  const g = grid.find((x) => x.durationMs === c.durationMs && x.distance === c.distance);
   console.log(
     `  d=${c.durationMs}ms dist=${c.distance}: ratio ${c.ratio} dev ${c.deviation} ` +
+    `(uia ${g && g.uiautomation && g.uiautomation.median} iqr${iqrStr(g && g.uiautomation)}, ` +
+    `scrcpy ${g && g.scrcpy && g.scrcpy.median} iqr${iqrStr(g && g.scrcpy)}) ` +
     (c.withinTol ? "OK" : c.explained ? `OUT but EXPLAINED (${c.explained})` : "OUT — UNEXPLAINED")
   );
 }
