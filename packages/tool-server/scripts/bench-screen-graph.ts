@@ -1170,7 +1170,24 @@ async function runTask(
     let b1Obs: ObsResult | null = null;
     if (b1DescribeTap) {
       b1Obs = await runObservation(reg, config, "describe", {});
-      located = parseDescribeLocate(b1Obs.text, (step.action as { selector: BenchSelector }).selector);
+      const tapSel = (step.action as { selector: BenchSelector }).selector;
+      located = parseDescribeLocate(b1Obs.text, tapSel);
+      // Phase D.4 (ticket §2): when B1's SYMMETRIC resolver cannot uniquely locate
+      // a target, quote its proprietary describe rendering of the rows that mention
+      // the selector — so B1's outcome is explained by the RENDERING, not the
+      // resolver. Dumped once per (task, selector, rep 0) into the teed matrix log.
+      if (!located.found && rep === 0) {
+        const needle = (tapSel.text ?? tapSel.id ?? "").toLowerCase();
+        const rows = b1Obs.text
+          .split("\n")
+          .filter((l) => needle && l.toLowerCase().includes(needle))
+          .map((l) => l.trim())
+          .slice(0, 6);
+        realDebug(
+          `[bench-sg][D4] B1 locate ${located.ambiguous ? "AMBIGUOUS" : "MISS"} for ${JSON.stringify(tapSel)} ` +
+            `on ${task.id} step ${i}; describe rows containing "${needle}": ${rows.join(" || ") || "(none)"}`
+        );
+      }
     } else if (isTap && usesOpenServer(config)) {
       located = await locateNorm(reg, config, (step.action as { selector: BenchSelector }).selector);
     }

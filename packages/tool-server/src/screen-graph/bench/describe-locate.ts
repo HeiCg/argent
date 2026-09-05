@@ -1,45 +1,39 @@
 /**
- * Screen-graph Phase C.4 — locate a tap target LIVE from a proprietary `describe`
- * payload (work item A, B1's own describe+tap loop).
+ * Screen-graph — locate a tap target LIVE from a `describe` payload (B1's own
+ * describe+tap loop). `describe` renders one line per node ending in a normalized
+ * frame `(x, y, w, h)` (see `tools/describe/format-tree.ts`); the tap point is the
+ * frame centre.
  *
- * `describe` renders one line per node ending in a normalized frame
- * `(x, y, w, h)` (see `tools/describe/format-tree.ts`); the tap point is the frame
- * centre. We match the FIRST line whose annotations (role + "label" + value + id)
- * CONTAIN the selector, case-insensitively — the same "topmost match" an open
- * `query({limit:1})` returns. A miss yields `found:false`, which the caller turns
- * into a `locateFailed` exclusion, never a centre tap. Pure and device-free so the
- * unit test drives it directly (the bench script self-executes on import).
+ * Phase D.4: B1 and the open configs now share ONE resolution policy. This parses
+ * each describe line into a `QueryNodeLite` (label→text, value→cd, id, frame→
+ * bounds) and runs the SAME `pickUniqueNode` the open path uses on its query
+ * nodes: whole-field EXACT id → EXACT text → EXACT contentDescription → a CONTAINS
+ * match ONLY when exactly one candidate matches; an ambiguous set is refused
+ * (`found:false`, `ambiguous:true`), never tapped as `nodes[0]`. The only
+ * difference between B1 and the open configs is the RENDERING fed in, not the
+ * resolver — so B1's outcome on a task reflects its describe rendering, not a
+ * relaxed policy. Pure and device-free.
  */
 import type { BenchSelector } from "./types";
+import { pickUniqueNode, type QueryNodeLite } from "./locate";
 
 export interface LocatedNorm {
   xNorm: number;
   yNorm: number;
   found: boolean;
+  /** >1 candidate matched and none uniquely — the tap is NOT issued (symmetric with open). */
+  ambiguous?: boolean;
 }
 
 /** The frame is the LAST parenthesised 4-tuple on the line. */
 const FRAME_RE = /\(([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)\)\s*$/;
 
-interface DescribeLine {
-  xNorm: number;
-  yNorm: number;
-  /** Quoted strings on the line (label, value); the label is normally the first. */
-  quoted: string[];
-  head: string; // lowercased annotations before the frame
-  id: string; // lowercased id="…"
-}
-
 /**
- * Phase D.3 (D2-H3): resolve the tap target from the describe payload with the
- * SAME precedence as the open path — whole-field EXACT quoted label / exact id
- * first, then a CONTAINS match ONLY when exactly one line matches. Never taps the
- * first contains-hit (`t("Internet")` must not tap "Network & internet").
+ * Parse a describe payload into `QueryNodeLite` candidates (one per framed line),
+ * in normalized coordinates. Exposed for the symmetric-resolver unit test.
  */
-export function parseDescribeLocate(describeText: string, sel: BenchSelector): LocatedNorm {
-  const wantText = sel.text?.trim().toLowerCase();
-  const wantId = sel.id?.trim().toLowerCase();
-  const lines: DescribeLine[] = [];
+export function describeLinesToNodes(describeText: string): QueryNodeLite[] {
+  const nodes: QueryNodeLite[] = [];
   for (const raw of describeText.split("\n")) {
     const line = raw.trimEnd();
     const frameM = FRAME_RE.exec(line);
@@ -50,32 +44,26 @@ export function parseDescribeLocate(describeText: string, sel: BenchSelector): L
     const h = Number(frameM[4]);
     if (![x, y, w, h].every(Number.isFinite)) continue;
     const headRaw = line.slice(0, frameM.index);
-    const quoted = [...headRaw.matchAll(/"([^"]*)"/g)].map((m) => m[1]!.trim().toLowerCase());
+    const quoted = [...headRaw.matchAll(/"([^"]*)"/g)].map((m) => m[1]!.trim());
     const idM = /id="([^"]*)"/i.exec(line);
-    lines.push({
-      xNorm: x + w / 2,
-      yNorm: y + h / 2,
-      quoted,
-      head: headRaw.toLowerCase(),
-      id: (idM?.[1] ?? "").toLowerCase(),
-    });
+    // label = first quoted string (the node's text); value = second (cd-like).
+    const node: QueryNodeLite = {
+      bounds: { x1: x, y1: y, x2: x + w, y2: y + h },
+    };
+    if (idM?.[1]) node.id = idM[1];
+    if (quoted[0] !== undefined) node.text = quoted[0];
+    if (quoted[1] !== undefined) node.cd = quoted[1];
+    nodes.push(node);
   }
-  const at = (l: DescribeLine): LocatedNorm => ({ xNorm: l.xNorm, yNorm: l.yNorm, found: true });
-  // Phase D.3 (D2-H3): PREFER a whole-field EXACT quoted label / exact id — so
-  // `t("Internet")` takes the exact "Internet" row, never the "Network & internet"
-  // toolbar title a plain contains-scan hits first. Fall back to the topmost
-  // CONTAINS match only when nothing matched exactly (the pre-D.3 behaviour, kept
-  // so B1's proprietary describe rendering — where a row may not surface as a
-  // clean quoted label — still locates rather than refusing).
-  if (wantId) {
-    const exact = lines.find((l) => l.id === wantId);
-    if (exact) return at(exact);
+  return nodes;
+}
+
+export function parseDescribeLocate(describeText: string, sel: BenchSelector): LocatedNorm {
+  const nodes = describeLinesToNodes(describeText);
+  const picked = pickUniqueNode(nodes, sel);
+  if (picked.node) {
+    const b = picked.node.bounds;
+    return { xNorm: (b.x1 + b.x2) / 2, yNorm: (b.y1 + b.y2) / 2, found: true };
   }
-  if (wantText) {
-    const exactLabel = lines.find((l) => l.quoted.includes(wantText));
-    if (exactLabel) return at(exactLabel);
-    const contains = lines.find((l) => l.head.includes(wantText));
-    if (contains) return at(contains);
-  }
-  return { xNorm: 0.5, yNorm: 0.5, found: false };
+  return { xNorm: 0.5, yNorm: 0.5, found: false, ...(picked.ambiguous ? { ambiguous: true } : {}) };
 }

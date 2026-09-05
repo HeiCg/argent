@@ -25,14 +25,13 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "tap", selector: t("Network & internet") }, knownTarget: true },
     ],
     // Destination-unique (C.3): "Calls & SMS" is on the Network & internet
-    // sub-screen and NOT on the Settings root (capture run 33767073864). The old
-    // "Internet" matched the root's "Network & internet" — a missed tap would
-    // false-pass. C.4: navTarget is now a SCREEN IDENTITY distinct from the
-    // oracle — "Internet" is the top row of the Network & internet screen (indexed
-    // there, absent as an exact-text key on the root) so O5 routes root→sub-screen
-    // without being handed the oracle string.
+    // sub-screen and NOT on the Settings root (capture run 33767073864).
+    // Phase D.4: navTarget is "Airplane mode" — present ONLY on the Network &
+    // internet screen (capture run 33970221242), so it is NOT ambiguous. The old
+    // "Internet" became ambiguous once settings-network-internet made a distinct
+    // Internet node (also toolbar-indexed "Internet"), which lost O5 the route.
     assertion: t("Calls & SMS"),
-    navTarget: t("Internet"),
+    navTarget: t("Airplane mode"),
   },
   {
     id: "settings-connected",
