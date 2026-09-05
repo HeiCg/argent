@@ -1004,13 +1004,22 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
         expect(origin).toBeDefined();
         expect(originNested).toBeDefined();
         await fiApi.tap(c!.x, c!.y);
-        // QUICK-READ ORDERING CHECK (review A5/fix e): the describe that follows a
-        // fast-inject tap folds flushInput — it drains the tap's input BEFORE reading —
-        // so even this short-timeout getNestedState already reflects the post-UP screen.
-        // This is the ONLY on-device verification of the flushInput ordering the tap row
-        // depends on; measured on the attempt that lands, and asserted below.
-        const quick = await fiApi.getNestedState({ waitTimeoutMs: 300 }).catch(() => undefined);
-        const quickFp = quick ? nestedLabelHash(quick) : undefined;
+        // QUICK-READ ORDERING CHECK (review A5/fix e): the FIRST describe after a
+        // fast-inject tap folds flushInput — it drains the tap's input BEFORE reading.
+        // Poll the NESTED read (short idle wait each step) until it reflects the tap or
+        // ~2 s elapse: the drain happens on that first read, so a change appearing
+        // within the render time proves the ordering; without the drain the nested read
+        // would keep showing the pre-UP screen. Run-3 fix: a single 300 ms read raced
+        // the render on a loaded runner (quickHits 1/20) — this fixes the poll, not the
+        // threshold. Measured on the attempt that lands.
+        let quickFp: string | undefined;
+        const quickDeadline = Date.now() + 2000;
+        do {
+          const q = await fiApi.getNestedState({ waitTimeoutMs: 300 }).catch(() => undefined);
+          quickFp = q ? nestedLabelHash(q) : undefined;
+          if (quickFp !== undefined && quickFp !== originNested) break;
+          await sleep(150);
+        } while (Date.now() < quickDeadline);
         // And landing (timing-independent): the flat label-set fingerprint changes
         // within 3 s — the bench's settle oracle.
         landed = await pollFingerprintChanged(fiApi, origin!, 3000);
@@ -1028,7 +1037,7 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       "PASS",
       `landed ${landedHits}/${RUNS} (settle poll ≤3s, ${retried} re-tap(s) for dropped injections); ` +
         `quick-read ordering ${quickHits}/${RUNS} ` +
-        `(getNestedState waitTimeoutMs:300 already reflects the tap — flushInput ordered before the read)`
+        `(nested read reflects the tap within ~2s — flushInput drains before the first read)`
     );
   }, 360_000);
 

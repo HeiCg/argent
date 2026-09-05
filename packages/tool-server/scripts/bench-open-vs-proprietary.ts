@@ -79,15 +79,6 @@ const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
 const N = Number(process.env.BENCH_N ?? 20);
 const WARMUP = Number(process.env.BENCH_WARMUP ?? 3);
 const COLD = Number(process.env.BENCH_COLD ?? 3);
-// Bounded UNTIMED re-tap for the effect check. A hosted x86_64 KVM emulator drops a
-// small fraction of coordinate injections (~1/20; the on-device test sees the same
-// 19–20/20). A dropped injection is transient device flakiness, not a backend that
-// cannot tap — so a no-effect tap is re-established at the root and re-tapped, up to
-// this many attempts, all OUTSIDE the timed window. effectZero (fatal on ON) stays
-// reserved for a tap that NEVER lands after every attempt — a genuinely broken
-// backend. The timed latency is always the FIRST attempt only, so the row is
-// unchanged. Set BENCH_EFFECT_TAP_ATTEMPTS=1 to disable retries (raw first-try rate).
-const EFFECT_TAP_ATTEMPTS = Math.max(1, Number(process.env.BENCH_EFFECT_TAP_ATTEMPTS ?? 3));
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 const PHYSICAL_DENY = "ZF524RZBHD";
 
@@ -506,35 +497,34 @@ interface TapEffectResult extends VerbResult {
   effectChecked: number;
   effectZero: number;
   originLost: number;
-  // Iterations whose FIRST tap produced no effect and were re-tapped (untimed) at
-  // least once before the effect was confirmed or all attempts were exhausted. High
-  // values mean the emulator dropped injections often, not that the backend failed.
-  retriedIterations: number;
+  // FIRST-attempt no-effect count = effectZero (an alias printed alongside it so the
+  // scoreboard makes explicit that the verdict is the first attempt only and nothing
+  // was retried away). A dropped injection on this runner is the backend's real
+  // behaviour and stays fatal on ON — it is NOT masked by a retry.
+  firstTapNoEffect: number;
 }
 
 /**
- * Timing-independent effect-checked tap measurement (phase 3h). Per iteration:
- * establish a clean origin, TIME exactly `tapRpc` (the tap RPC, or tap RPC +
- * describe RPC for tap+describe), then OUTSIDE the timed window poll the screen
- * fingerprint until it differs from the origin or 3 s elapse — `effectZero` counts
- * only taps that NEVER changed the screen. Restore the origin with BACK (poll until
- * it is back), hard-resetting via `ensureOrigin` and counting `originLost` if BACK
- * did not restore it, so the next iteration never taps from a wrong screen.
+ * Timing-independent, FIRST-ATTEMPT effect-checked tap measurement (phase 3h; run-3
+ * review). Per iteration: force-stop + relaunch a PRISTINE root (`ensureOrigin`),
+ * TIME exactly `tapRpc` (the tap RPC, or tap RPC + describe RPC for tap+describe),
+ * then OUTSIDE the timed window poll the fingerprint (fresh read each step) until it
+ * differs from the origin or 3 s elapse. `effectZero` = `firstTapNoEffect` counts the
+ * FIRST tap missing — it is NEVER retried away (a dropped injection is the backend's
+ * real behaviour on this runner and stays fatal on ON). `restoreBack` is unused here
+ * now (the per-iteration relaunch restores state); it is kept in the signature for the
+ * oracle self-test, which shares these primitives.
  */
 async function timeTapEffect(
   label: string,
   tapRpc: (i: number) => Promise<void>,
   fingerprint: () => Promise<string | undefined>,
   ensureOrigin: () => Promise<void>,
-  restoreBack: () => Promise<void>
+  _restoreBack: () => Promise<void>
 ): Promise<TapEffectResult> {
   // Canonical ROOT fingerprint: after a full reset, the first defined fingerprint is
-  // the root the navigating tap moves AWAY from. Remembered so that a screen which
-  // has drifted off the root (a tap that navigated but whose effect the poll missed,
-  // leaving the screen on a sub-page) is detected and reset at the TOP of the next
-  // iteration — otherwise a single miss cascades into every later iteration tapping
-  // the wrong screen (the run-2 ON-scrcpy 22/60 / OFF 17–19/40 failure). This mirrors
-  // the on-device test's per-iteration `fiHome`, which lands ~20/20.
+  // the root the navigating tap moves AWAY from. Each iteration relaunches to it, so a
+  // miss can never cascade — this mirrors the on-device test's per-iteration `fiHome`.
   let rootFp: string | undefined;
   for (let a = 0; a < 4 && rootFp === undefined; a++) {
     await ensureOrigin().catch(() => undefined);
@@ -552,12 +542,19 @@ async function timeTapEffect(
   let effectChecked = 0;
   let effectZero = 0;
   let originLost = 0;
-  let retriedIterations = 0;
   for (let i = 0; i < N; i++) {
-    // Start every iteration from a VERIFIED root. A drifted fingerprint (≠ rootFp)
-    // means a prior tap left the screen off the root; reset before tapping so the
-    // miss cannot cascade.
+    // Start every iteration from a FRESHLY RELAUNCHED, pristine root (force-stop +
+    // relaunch — the same thing the device test's fiHome does). Run-3 showed that
+    // tapping a BACK-restored homepage (same resumed-activity as root, so a
+    // fingerprint check passes, but not pristine at the derived coordinate) misses
+    // 38-75% for the coordinate-injection backends while UiAutomation — which
+    // re-resolves the element — misses 0%. That was a restore artifact, not the
+    // backend's real first-attempt rate. Relaunching per iteration makes the first
+    // tap always hit a pristine layout, so effectZero is the HONEST first-attempt
+    // miss rate on a clean root. No BACK, no re-tap: the next iteration relaunches.
+    await ensureOrigin().catch(() => undefined);
     let origin = await fingerprint().catch(() => undefined);
+    // Verify we actually reached the canonical root (team-lead req 4); one retry.
     if (origin === undefined || (rootFp !== undefined && origin !== rootFp)) {
       await ensureOrigin().catch(() => undefined);
       origin = await fingerprint().catch(() => undefined);
@@ -575,41 +572,16 @@ async function timeTapEffect(
     } catch (e) {
       errors++;
       if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
-      await ensureOrigin().catch(() => undefined);
       continue;
     }
-    // UNTIMED: did the screen EVER change within 3 s? (poll, not a single read)
-    let changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
-    // UNTIMED bounded re-tap: absorb a dropped injection (transient emulator
-    // flakiness) by re-establishing the root and re-tapping. Never touches the timed
-    // latency above. effectZero is only counted when NO attempt lands — a backend
-    // that genuinely cannot tap still fails the ON gate.
-    let attempt = 1;
-    while (!changed && attempt < EFFECT_TAP_ATTEMPTS) {
-      await ensureOrigin().catch(() => undefined);
-      const reOrigin = await fingerprint().catch(() => undefined);
-      if (reOrigin === undefined) break;
-      try {
-        await tapRpc(i);
-      } catch {
-        break;
-      }
-      changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== reOrigin, 3000, 150);
-      attempt++;
-    }
-    if (attempt > 1) retriedIterations++;
+    // UNTIMED: did the FIRST tap change the screen within 3 s? (poll, FRESH read each
+    // step). This is the verdict — no re-tap. A dropped injection on this runner is
+    // the backend's real behaviour and must stay visible, so a first-attempt miss is
+    // counted as effectZero (fatal on ON), never retried away.
+    const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
     effectChecked++;
     if (!changed) effectZero++;
-    // UNTIMED: restore the origin (the canonical root) for the next iteration.
-    if (changed) {
-      await restoreBack().catch(() => undefined);
-      // The root renders fast after BACK; if it is not back in ~2 s, hard-reset.
-      const restored = await pollUntil(fingerprint, (f) => f !== undefined && f === rootFp, 2000, 150);
-      if (!restored) {
-        originLost++;
-        await ensureOrigin().catch(() => undefined);
-      }
-    }
+    // No restore needed: the next iteration force-stops and relaunches a pristine root.
   }
   const fb = fallbackCountSince(mark);
   return {
@@ -622,8 +594,40 @@ async function timeTapEffect(
     effectChecked,
     effectZero,
     originLost,
-    retriedIterations,
+    firstTapNoEffect: effectZero,
   };
+}
+
+/**
+ * Per-block oracle SELF-TEST (review run-2: prove the effect oracle is ARMED before
+ * the timed loop). Navigate through the backend under test to the known target, poll
+ * the fingerprint for a change ≤3 s, BACK, poll until restored — retrying the whole
+ * cycle up to 3 times (this is VALIDATION, not measurement, so a dropped injection
+ * may be retried here without touching any verdict). Returns true iff at least one
+ * cycle navigated, was DETECTED by the oracle, and restored. A false result means the
+ * oracle or the backend cannot complete a single known navigation on this block, so
+ * its effect rows are untrustworthy — a verdict DISTINCT from "tap did not land" (a
+ * first-attempt miss during the timed loop) and from a degraded await arm.
+ */
+async function oracleSelfTest(
+  tapRpc: (i: number) => Promise<void>,
+  fingerprint: () => Promise<string | undefined>,
+  ensureOrigin: () => Promise<void>,
+  restoreBack: () => Promise<void>
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ensureOrigin().catch(() => undefined);
+    const origin = await fingerprint().catch(() => undefined);
+    if (origin === undefined) continue;
+    await tapRpc(0).catch(() => undefined);
+    const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== origin, 3000, 150);
+    if (!changed) continue;
+    await restoreBack().catch(() => undefined);
+    const restored = await pollUntil(fingerprint, (f) => f !== undefined && f === origin, 3000, 150);
+    if (restored) return true;
+    await ensureOrigin().catch(() => undefined);
+  }
+  return false;
 }
 
 // Sample the describe result's server-measured idle-gate (waitedMs) vs. capture
@@ -1596,10 +1600,17 @@ interface BlockResult {
   // taps were actually evaluated.
   effectCheckedTotal: number;
   originLostTotal: number;
-  // Iterations whose first tap missed and were re-tapped (untimed) before the effect
-  // was confirmed — a measure of the emulator's injection-drop rate, NOT a backend
-  // failure. effectZeroTotal counts only taps that never landed after every retry.
-  retriedTapIterationsTotal: number;
+  // FIRST-attempt no-effect taps across the effect-checked tap verbs = effectZeroTotal
+  // (an explicit alias making clear the verdict is first-attempt only, nothing
+  // retried). A positive count on an ON block is fatal — it is the honest
+  // "N first attempts did not land" result for this backend on this runner.
+  firstTapNoEffectTotal: number;
+  // Oracle self-test verdict (run-2 review): did the backend complete ONE
+  // detected+restored navigation before the timed loop? false ⇒ the block's effect
+  // rows are untrustworthy; the merge fails it with a DISTINCT "oracle self-test
+  // failed" reason (never conflated with a first-attempt miss or a degraded arm).
+  // true also when no effect check ran (no derivable target — reported separately).
+  oracleSelfTestPassed: boolean;
   // Phase 3j item 3d (fix h): the host↔device transport this block's open path used
   // — "redir" on the CI emulator once the redir client pings, else "adb-forward";
   // "n/a (proprietary)" on the OFF blocks (no open server). Printed per block.
@@ -1856,6 +1867,23 @@ async function runBlock(
   const gestureTapRpc = async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
   };
+  // Oracle self-test (run-2 review): before the timed loop, prove this backend can
+  // complete ONE detected+restored navigation to the target. A failure here is a
+  // distinct verdict ("oracle self-test failed") — the block is invalid, NOT the same
+  // as first-attempt taps missing during the measured loop. Skipped when no target
+  // was derivable (canEffect false — already surfaced as no effect check).
+  let oracleSelfTestPassed = true;
+  if (canEffect) {
+    oracleSelfTestPassed = await oracleSelfTest(gestureTapRpc, fingerprint, ensureOrigin, restoreBack);
+    notes.push(
+      oracleSelfTestPassed
+        ? `oracle self-test: PASSED (navigate→detect→restore for ${nav ? nav.target : "?"})`
+        : `ORACLE SELF-TEST FAILED: backend could not complete one detected+restored navigation to ` +
+            `${nav ? nav.target : "?"} — this block's effect rows are untrustworthy (distinct from a ` +
+            `first-attempt miss)`
+    );
+    await ensureSettings(reg);
+  }
   verbs.push(
     canEffect
       ? await timeTapEffect("gesture-tap", gestureTapRpc, fingerprint, ensureOrigin, restoreBack)
@@ -2096,14 +2124,11 @@ async function runBlock(
   const effectZeroTotal = verbs.reduce((s, v) => s + (v.effectZero ?? 0), 0);
   const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
   const originLostTotal = verbs.reduce((s, v) => s + (v.originLost ?? 0), 0);
-  const retriedTapIterationsTotal = verbs.reduce(
-    (s, v) => s + ((v as Partial<TapEffectResult>).retriedIterations ?? 0),
-    0
-  );
+  const firstTapNoEffectTotal = effectZeroTotal; // first-attempt only; no retry masks it
   notes.push(
-    `effect-check: ${effectZeroTotal} no-effect tap iteration(s) of ${effectCheckedTotal} checked ` +
-      `(originLost=${originLostTotal}, retried=${retriedTapIterationsTotal}/${effectCheckedTotal} of up to ` +
-      `${EFFECT_TAP_ATTEMPTS} attempts, target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
+    `effect-check: firstTapNoEffect=${firstTapNoEffectTotal}/${effectCheckedTotal} ` +
+      `(first-attempt only, no re-tap; originLost=${originLostTotal}, ` +
+      `target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
   );
   // flushInput asymmetry (fix c, review A2): only the scrcpy branch defers the input
   // drain to the next read; the UiAutomation/proprietary tap RPC drains inline. So
@@ -2163,7 +2188,8 @@ async function runBlock(
     effectZeroTotal,
     effectCheckedTotal,
     originLostTotal,
-    retriedTapIterationsTotal,
+    firstTapNoEffectTotal,
+    oracleSelfTestPassed,
     describeSplitIdle,
     describeSplitAfterTap,
     pingP50: ping.p50,
@@ -2248,8 +2274,9 @@ async function main(): Promise<void> {
     const fbTotal = (r.verbs || []).reduce((s, v) => s + (v.fallbacks || 0), 0);
     realDebug(
       `[bench][${block}] fastInject=${fastInject} fastInjectFallbacks=${fbTotal} ` +
+        `oracleSelfTest=${r.oracleSelfTestPassed ? "pass" : "FAILED"} ` +
+        `firstTapNoEffect=${r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
         `effectZero=${r.effectZeroTotal}/${r.effectCheckedTotal} originLost=${r.originLostTotal} ` +
-        `retried=${r.retriedTapIterationsTotal}/${r.effectCheckedTotal} ` +
         `tapFrames=${r.injectedTapTimeline.frameCount}(move=${r.injectedTapTimeline.hasMoveFrame})`
     );
     realDebug(
