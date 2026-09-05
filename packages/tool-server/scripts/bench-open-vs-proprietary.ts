@@ -584,9 +584,10 @@ async function timeTapEffect(
     const originFp = origin;
     // 3. TIMED window: the coordinate tap [+describe] through the backend under test.
     const t0 = Date.now();
+    let dt: number;
     try {
       await timedTapAt(loc.x, loc.y, i);
-      lat.push(Date.now() - t0);
+      dt = Date.now() - t0;
     } catch (e) {
       errors++;
       if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
@@ -596,7 +597,11 @@ async function timeTapEffect(
     // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
     const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
     effectChecked++;
-    if (!changed) effectZero++;
+    // The miss iteration's latency is EXCLUDED from the tap percentiles (team-lead
+    // run-6 decision): a tap that produced no effect is not a representative timing.
+    // Its count is firstTapNoEffect (printed); it is never retried away.
+    if (changed) lat.push(dt);
+    else effectZero++;
     // 5. Restore for the next iteration: BACK; if not back on the root, hard-reset.
     if (changed) {
       await restoreBack().catch(() => undefined);
