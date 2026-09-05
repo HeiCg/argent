@@ -47,20 +47,32 @@ const TOL = 0.15;
 // informative cell that is out of tolerance and NOT explained fails the job — the
 // aggregate-median form (which averaged the drift away) is retired.
 //
-// EXPLAINED_CELLS: cells with a documented, pre-existing reason to sit outside ±0.15.
-// Keyed `${durationMs}|${distance}`. Two cells were named in the review (run
-// 33812265077): 250ms/0.5 (ratio 1.577) and 400ms/0.5 (0.614). Their cause is the
-// backend fling-threshold difference on a mid-distance swipe, NOT a regression — the
-// swipe timeline is unchanged this phase (review A10 confirmed the injected shapes).
-// They are listed here so they are documented, not silently averaged away; any OTHER
-// informative cell out of tolerance still fails the gate (catches new drift).
+// EXPLAINED_CELLS: cells with a documented, pre-existing reason to sit outside ±0.15,
+// now VALUE-BOUNDED (review F4). Keyed `${durationMs}|${distance}` -> {reason, min, max}:
+// the exemption applies ONLY while the scrcpy/uia ratio stays inside [min,max]. A ratio
+// that leaves the band (a NEW regression in these cells) fails the gate. The bands span
+// the observed reproducible long-duration scrcpy under-scroll: 250/0.5 read 1.577 (run
+// 33812265077) and 1.514 (run 7); 400/0.5 read 0.614 (that run) and 0.710 (run 7).
 const EXPLAINED_CELLS = {
-  "250|0.5": "backend fling-threshold difference at mid-distance/short-duration; pre-existing, swipe timeline unchanged (review A10)",
-  "400|0.5": "backend fling-threshold difference at mid-distance; pre-existing, swipe timeline unchanged (review A10)",
+  "250|0.5": { reason: "mid-distance fling-threshold difference; pre-existing, timeline unchanged (review A10)", min: 1.3, max: 1.8 },
+  "400|0.5": { reason: "long-duration scrcpy under-scroll (~35-42% vs proprietary, reproducible runs 5+7)", min: 0.55, max: 0.8 },
 };
+// Scroll metric floor: the anchor-displacement metric bottoms out at ~0.175. A cell
+// where BOTH arms sit at that floor carries NO fling signal — its ratio is 1.000 by
+// construction — so it is NOT informative and must not count toward the gate/aggregate
+// (review F9).
+const SCROLL_FLOOR = 0.175;
+const FLOOR_EPS = 0.001;
+const atFloor = (c) => !!c && c.median <= SCROLL_FLOOR + FLOOR_EPS;
+const floorPinned = (g) => atFloor(g.uiautomation) && atFloor(g.scrcpy);
 const clamped = (c) => !c || !(c.median > 0 && c.median < 1);
 const informative = grid.filter(
-  (g) => g.reliable && Number.isFinite(g.scrcpyOverUia) && !clamped(g.uiautomation) && !clamped(g.scrcpy)
+  (g) =>
+    g.reliable &&
+    Number.isFinite(g.scrcpyOverUia) &&
+    !clamped(g.uiautomation) &&
+    !clamped(g.scrcpy) &&
+    !floorPinned(g)
 );
 const median = (xs) => {
   if (!xs.length) return NaN;
@@ -73,7 +85,12 @@ const perCell = informative.map((g) => {
   const k = `${g.durationMs}|${g.distance}`;
   const deviation = Number(Math.abs(g.scrcpyOverUia - 1).toFixed(3));
   const withinTol = Math.abs(g.scrcpyOverUia - 1) <= TOL;
-  const explained = !withinTol && k in EXPLAINED_CELLS ? EXPLAINED_CELLS[k] : null;
+  // The whitelist excuses a cell only while its ratio stays inside the documented band.
+  const wl = EXPLAINED_CELLS[k];
+  const explained =
+    !withinTol && wl && g.scrcpyOverUia >= wl.min && g.scrcpyOverUia <= wl.max
+      ? `${wl.reason} [band ${wl.min}-${wl.max}]`
+      : null;
   return {
     durationMs: g.durationMs, distance: g.distance, ratio: g.scrcpyOverUia,
     deviation, withinTol, explained, ok: withinTol || !!explained,
@@ -129,6 +146,7 @@ if (excluded.length) {
   for (const g of excluded) {
     const why =
       !g.reliable ? "not reliable (median saturated 0/1 or n<10)" :
+      floorPinned(g) ? `floor-pinned (both arms at the ${SCROLL_FLOOR} scroll floor — no fling signal)` :
       clamped(g.uiautomation) || clamped(g.scrcpy) ? "clamped at scroll floor/ceiling" :
       "no finite ratio";
     console.log(

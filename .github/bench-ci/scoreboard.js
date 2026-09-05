@@ -134,19 +134,31 @@ if (off1 && off2) {
   L.push("");
 }
 
-// ON-scrcpy beats ON-uiautomation and OFF on tap?
+// ON-scrcpy tap vs OFF/ON-uia — judged AT THE DRIFT FLOOR (review F3): a 1 ms gap on
+// a 0 ms OFF-1-to-OFF-2 floor is PARITY, not a win. gesture-tap is also NOT
+// like-for-like (scrcpy defers the input drain to the next read) — the headline
+// like-for-like tap row is tap+describe(settle:false).
 const onUia = blocks.find((b) => b.block === "ON-uiautomation");
 const onScr = blocks.find((b) => b.block === "ON-scrcpy");
+const off2b = blocks.find((b) => b.block === "OFF-2");
 const tapP50 = (b) => b && (b.verbs || []).find((x) => x.verb === "gesture-tap")?.latency.p50;
 if (onScr) {
-  const s = tapP50(onScr), u = tapP50(onUia), o = tapP50(off1);
-  L.push("### tap verdict (gesture-tap p50)");
+  const s = tapP50(onScr), u = tapP50(onUia), o = tapP50(off1), o2 = tapP50(off2b);
+  // Noise floor = the OFF-1 vs OFF-2 gesture-tap p50 drift (same backend, two blocks),
+  // with a 2 ms minimum. A difference within the floor is parity.
+  const floor = o != null && o2 != null ? Math.max(2, Math.abs(o - o2)) : 2;
+  const verdict = (a, b2) => {
+    if (a == null || b2 == null) return "n/a";
+    const d = a - b2;
+    if (Math.abs(d) <= floor) return `at parity (Δ${d}ms within ±${floor}ms drift floor)`;
+    return d < 0 ? `faster by ${-d}ms (clears floor)` : `slower by ${d}ms (clears floor)`;
+  };
+  L.push("### tap verdict (gesture-tap p50) — judged at the drift floor");
   L.push("");
-  L.push(`- ON-scrcpy: **${s ?? "-"}ms** · ON-uiautomation: ${u ?? "-"}ms · OFF-1: ${o ?? "-"}ms`);
-  const beatsUia = s != null && u != null ? (s < u ? "YES" : "NO") : "n/a";
-  const beatsOff = s != null && o != null ? (s < o ? "YES" : "NO") : "n/a (OFF absent)";
-  L.push(`- ON-scrcpy beats ON-uiautomation on tap: **${beatsUia}**`);
-  L.push(`- ON-scrcpy beats OFF on tap: **${beatsOff}**`);
+  L.push(`- ON-scrcpy: **${s ?? "-"}ms** · ON-uiautomation: ${u ?? "-"}ms · OFF-1: ${o ?? "-"}ms · OFF-2: ${o2 ?? "-"}ms (floor ±${floor}ms)`);
+  L.push(`- ON-scrcpy vs OFF on tap: **${verdict(s, o)}**`);
+  L.push(`- ON-scrcpy vs ON-uiautomation on tap: **${verdict(s, u)}**`);
+  L.push(`- NOTE: gesture-tap is NOT like-for-like (scrcpy defers the input drain); the headline like-for-like tap row is tap+describe(settle:false).`);
   L.push("");
 }
 
