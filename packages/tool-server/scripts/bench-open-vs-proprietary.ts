@@ -79,6 +79,15 @@ const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
 const N = Number(process.env.BENCH_N ?? 20);
 const WARMUP = Number(process.env.BENCH_WARMUP ?? 3);
 const COLD = Number(process.env.BENCH_COLD ?? 3);
+// Bounded UNTIMED re-tap for the effect check. A hosted x86_64 KVM emulator drops a
+// small fraction of coordinate injections (~1/20; the on-device test sees the same
+// 19–20/20). A dropped injection is transient device flakiness, not a backend that
+// cannot tap — so a no-effect tap is re-established at the root and re-tapped, up to
+// this many attempts, all OUTSIDE the timed window. effectZero (fatal on ON) stays
+// reserved for a tap that NEVER lands after every attempt — a genuinely broken
+// backend. The timed latency is always the FIRST attempt only, so the row is
+// unchanged. Set BENCH_EFFECT_TAP_ATTEMPTS=1 to disable retries (raw first-try rate).
+const EFFECT_TAP_ATTEMPTS = Math.max(1, Number(process.env.BENCH_EFFECT_TAP_ATTEMPTS ?? 3));
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 const PHYSICAL_DENY = "ZF524RZBHD";
 
@@ -315,6 +324,41 @@ async function relaunchSettings(reg: Reg): Promise<void> {
   await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
 }
 
+// Settle onto a rendered, IDLE Settings homepage before the await-* verbs measure.
+// The proprietary await-screen-idle caps on EVERY iteration (min≈4019 ms) when the
+// block starts on a still-rendering or wrong screen, and await-ui-element then never
+// finds its selector — the degraded-arm gate fires (run-2 OFF-2). Reset, WAIT
+// (backend-independently, via the resumed activity) until Settings is resumed, let
+// the backend confirm a canonical root row rendered, and retry the whole reset a few
+// times. Returns the confirming describe's lines so the caller can pick an
+// await-ui-element selector that is definitely on screen (never the "Settings"
+// default that was absent in run-2). Empty array only if no clean root was reached.
+async function ensureSettledSettingsRoot(reg: Reg): Promise<string[]> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ensureSettings(reg);
+    // Backend-independent: wait until Settings is actually the resumed activity, so
+    // a launcher→Settings transition can't leave the await-* verbs on the launcher.
+    await pollUntil(
+      resumedActivityFingerprint,
+      (f) => f !== undefined && /com\.android\.settings/.test(f),
+      4000,
+      150
+    );
+    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    try {
+      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+      const crashed = /keeps stopping|aerr_|isn't responding/i.test(d.description);
+      const rooted = /network|battery|display|storage|connected|apps|sound|notif/i.test(d.description);
+      if (rooted && !crashed) return d.description.split("\n");
+    } catch {
+      /* retry */
+    }
+    dismissSystemDialogs();
+    await sleep(600);
+  }
+  return [];
+}
+
 // A describe validated to be the real Settings root: not a crash dialog, and
 // carrying at least one canonical root row. Retries the screen reset a few times
 // so a transient ADT crash can't poison the byte/element/fidelity numbers.
@@ -462,6 +506,10 @@ interface TapEffectResult extends VerbResult {
   effectChecked: number;
   effectZero: number;
   originLost: number;
+  // Iterations whose FIRST tap produced no effect and were re-tapped (untimed) at
+  // least once before the effect was confirmed or all attempts were exhausted. High
+  // values mean the emulator dropped injections often, not that the backend failed.
+  retriedIterations: number;
 }
 
 /**
@@ -480,6 +528,18 @@ async function timeTapEffect(
   ensureOrigin: () => Promise<void>,
   restoreBack: () => Promise<void>
 ): Promise<TapEffectResult> {
+  // Canonical ROOT fingerprint: after a full reset, the first defined fingerprint is
+  // the root the navigating tap moves AWAY from. Remembered so that a screen which
+  // has drifted off the root (a tap that navigated but whose effect the poll missed,
+  // leaving the screen on a sub-page) is detected and reset at the TOP of the next
+  // iteration — otherwise a single miss cascades into every later iteration tapping
+  // the wrong screen (the run-2 ON-scrcpy 22/60 / OFF 17–19/40 failure). This mirrors
+  // the on-device test's per-iteration `fiHome`, which lands ~20/20.
+  let rootFp: string | undefined;
+  for (let a = 0; a < 4 && rootFp === undefined; a++) {
+    await ensureOrigin().catch(() => undefined);
+    rootFp = await fingerprint().catch(() => undefined);
+  }
   for (let i = 0; i < WARMUP; i++) {
     await ensureOrigin().catch(() => undefined);
     await tapRpc(i).catch(() => undefined);
@@ -492,9 +552,13 @@ async function timeTapEffect(
   let effectChecked = 0;
   let effectZero = 0;
   let originLost = 0;
+  let retriedIterations = 0;
   for (let i = 0; i < N; i++) {
+    // Start every iteration from a VERIFIED root. A drifted fingerprint (≠ rootFp)
+    // means a prior tap left the screen off the root; reset before tapping so the
+    // miss cannot cascade.
     let origin = await fingerprint().catch(() => undefined);
-    if (origin === undefined) {
+    if (origin === undefined || (rootFp !== undefined && origin !== rootFp)) {
       await ensureOrigin().catch(() => undefined);
       origin = await fingerprint().catch(() => undefined);
     }
@@ -503,7 +567,7 @@ async function timeTapEffect(
       continue;
     }
     const originFp = origin;
-    // TIMED window: exactly the tap RPC(s).
+    // TIMED window: exactly the tap RPC(s) — the FIRST attempt only.
     const t0 = Date.now();
     try {
       await tapRpc(i);
@@ -515,14 +579,32 @@ async function timeTapEffect(
       continue;
     }
     // UNTIMED: did the screen EVER change within 3 s? (poll, not a single read)
-    const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
+    let changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
+    // UNTIMED bounded re-tap: absorb a dropped injection (transient emulator
+    // flakiness) by re-establishing the root and re-tapping. Never touches the timed
+    // latency above. effectZero is only counted when NO attempt lands — a backend
+    // that genuinely cannot tap still fails the ON gate.
+    let attempt = 1;
+    while (!changed && attempt < EFFECT_TAP_ATTEMPTS) {
+      await ensureOrigin().catch(() => undefined);
+      const reOrigin = await fingerprint().catch(() => undefined);
+      if (reOrigin === undefined) break;
+      try {
+        await tapRpc(i);
+      } catch {
+        break;
+      }
+      changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== reOrigin, 3000, 150);
+      attempt++;
+    }
+    if (attempt > 1) retriedIterations++;
     effectChecked++;
     if (!changed) effectZero++;
-    // UNTIMED: restore the origin for the next iteration.
+    // UNTIMED: restore the origin (the canonical root) for the next iteration.
     if (changed) {
       await restoreBack().catch(() => undefined);
-      // Origin renders fast after BACK; if it is not back in ~2 s, hard-reset.
-      const restored = await pollUntil(fingerprint, (f) => f === originFp, 2000, 150);
+      // The root renders fast after BACK; if it is not back in ~2 s, hard-reset.
+      const restored = await pollUntil(fingerprint, (f) => f !== undefined && f === rootFp, 2000, 150);
       if (!restored) {
         originLost++;
         await ensureOrigin().catch(() => undefined);
@@ -540,6 +622,7 @@ async function timeTapEffect(
     effectChecked,
     effectZero,
     originLost,
+    retriedIterations,
   };
 }
 
@@ -1513,6 +1596,10 @@ interface BlockResult {
   // taps were actually evaluated.
   effectCheckedTotal: number;
   originLostTotal: number;
+  // Iterations whose first tap missed and were re-tapped (untimed) before the effect
+  // was confirmed — a measure of the emulator's injection-drop rate, NOT a backend
+  // failure. effectZeroTotal counts only taps that never landed after every retry.
+  retriedTapIterationsTotal: number;
   // Phase 3j item 3d (fix h): the host↔device transport this block's open path used
   // — "redir" on the CI emulator once the redir client pings, else "adb-forward";
   // "n/a (proprietary)" on the OFF blocks (no open server). Printed per block.
@@ -1583,6 +1670,16 @@ async function runBlock(
   // stay loopback + adb-forward (redir is gated to emulators on-device).
   const lastTransport =
     config === "ON" ? (clean.transport ?? "adb-forward (metadata absent)") : "n/a (proprietary)";
+  // Redir preconditions (fix h diagnostic): when an ON emulator block reports
+  // adb-forward, this line says WHY redir was not selected — the console token file
+  // must exist and the on-device 0.0.0.0 listener must answer the redir ping. Printed
+  // so a fallback is a visible log line, not a silent downgrade.
+  if (config === "ON") {
+    realDebug(
+      `[bench] ${block} redir-preconditions: emulatorSerial=${/^emulator-\d+$/.test(SERIAL)} ` +
+        `consoleTokenFile=${readConsoleAuthToken() !== null} transport=${lastTransport}`
+    );
+  }
 
   // describe latency AND its decomposition from the SAME N back-to-back idle
   // describes (phase 3i correction): the verb p50/p95 and the stage + host/server
@@ -1874,7 +1971,11 @@ async function runBlock(
     )
   );
 
-  await ensureSettings(reg);
+  // Settle onto a rendered, IDLE Settings root so await-screen-idle measures an
+  // ALREADY-idle screen (run-2 OFF-2 degraded here: it capped 20/20 because the block
+  // started on a still-rendering screen). The 20 back-to-back await-* calls below do
+  // not change the screen, so one robust settle holds for the whole await section.
+  const settledLines = await ensureSettledSettingsRoot(reg);
 
   // await-screen-idle (already idle -> resolve time)
   verbs.push(
@@ -1883,15 +1984,22 @@ async function runBlock(
     })
   );
 
-  // await-ui-element: pick a present label from the current describe
+  // await-ui-element: select a label the settled root DEFINITELY renders (a present
+  // NAV_CANDIDATE), so `exists` resolves at once instead of capping on the "Settings"
+  // default that was absent from OFF-2's screen in run-2. Fall back to any short
+  // present label, then to "Settings".
+  const labelOfLine = (l: string): string | undefined =>
+    l.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/)?.[1];
   let selText = "Settings";
-  try {
-    const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
-    const m = d.description.split("\n").map((l) => l.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/)?.[1]);
-    const cand = m.find((x): x is string => !!x && x.length > 2 && x.length < 30);
+  const presentLabels = settledLines.map(labelOfLine);
+  const navPresent = NAV_CANDIDATES.find((cand) =>
+    presentLabels.some((x) => !!x && x.startsWith(cand))
+  );
+  if (navPresent) {
+    selText = navPresent;
+  } else {
+    const cand = presentLabels.find((x): x is string => !!x && x.length > 2 && x.length < 30);
     if (cand) selText = cand;
-  } catch {
-    /* keep default */
   }
   verbs.push(
     await timeCalls(
@@ -1988,9 +2096,14 @@ async function runBlock(
   const effectZeroTotal = verbs.reduce((s, v) => s + (v.effectZero ?? 0), 0);
   const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
   const originLostTotal = verbs.reduce((s, v) => s + (v.originLost ?? 0), 0);
+  const retriedTapIterationsTotal = verbs.reduce(
+    (s, v) => s + ((v as Partial<TapEffectResult>).retriedIterations ?? 0),
+    0
+  );
   notes.push(
     `effect-check: ${effectZeroTotal} no-effect tap iteration(s) of ${effectCheckedTotal} checked ` +
-      `(originLost=${originLostTotal}, target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
+      `(originLost=${originLostTotal}, retried=${retriedTapIterationsTotal}/${effectCheckedTotal} of up to ` +
+      `${EFFECT_TAP_ATTEMPTS} attempts, target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
   );
   // flushInput asymmetry (fix c, review A2): only the scrcpy branch defers the input
   // drain to the next read; the UiAutomation/proprietary tap RPC drains inline. So
@@ -2050,6 +2163,7 @@ async function runBlock(
     effectZeroTotal,
     effectCheckedTotal,
     originLostTotal,
+    retriedTapIterationsTotal,
     describeSplitIdle,
     describeSplitAfterTap,
     pingP50: ping.p50,
@@ -2135,6 +2249,7 @@ async function main(): Promise<void> {
     realDebug(
       `[bench][${block}] fastInject=${fastInject} fastInjectFallbacks=${fbTotal} ` +
         `effectZero=${r.effectZeroTotal}/${r.effectCheckedTotal} originLost=${r.originLostTotal} ` +
+        `retried=${r.retriedTapIterationsTotal}/${r.effectCheckedTotal} ` +
         `tapFrames=${r.injectedTapTimeline.frameCount}(move=${r.injectedTapTimeline.hasMoveFrame})`
     );
     realDebug(

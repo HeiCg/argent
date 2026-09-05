@@ -60,30 +60,23 @@ class JsonRpcHandler(
     private val openAppHandler = OpenAppHandler(instrumentation)
 
     /**
-     * The method of the last request [handle] parsed, or null if parsing failed.
-     * [TCPServer] reads it after writing the response to key [reportServerTiming]
-     * by method — a response cannot carry the cost of writing itself (phase 3i).
+     * The per-request result of [handle]: the response `line` to write, the parsed
+     * `method` (null if parsing failed) that [TCPServer] keys [reportServerTiming] by,
+     * and `padTo` — the phase 3j transport diagnostic's padding target (0 if absent /
+     * not benchDebug). All three are RETURNED per call rather than stashed on shared
+     * fields, so concurrent connections on the cached thread pool cannot read each
+     * other's method / padTo (finding 14). Trailing padding whitespace after the JSON
+     * object is ignored by the host `JSON.parse`, so it never changes the parsed reply.
      */
-    var lastHandledMethod: String? = null
-        private set
-
-    /**
-     * The `_padTo` of the last request [handle] parsed (0 if absent). Phase 3j
-     * transport diagnostic: [TCPServer] pads the response line with trailing spaces
-     * to the next multiple of this many UTF-8 bytes before the newline, to test
-     * whether a full-MSS-aligned reply escapes the ~40 ms delayed-ACK stall on the
-     * last partial segment. Trailing whitespace after the JSON object is ignored by
-     * the host `JSON.parse`, so it never changes the parsed reply.
-     */
-    var lastPadTo: Int = 0
-        private set
+    data class HandleResult(val line: String, val method: String?, val padTo: Int)
 
     private data class ServerTiming(val handleMs: Double, val writeMs: Double, val totalMs: Double)
 
-    // Per-method server-side timeline of the PREVIOUS request of that method,
-    // injected into the next same-method response's `timings`. Single connection
-    // thread, so no synchronisation is needed.
-    private val prevServerTiming = HashMap<String, ServerTiming>()
+    // Per-method server-side timeline of the PREVIOUS request of that method, injected
+    // into the next same-method response's `timings`. Shared by design (it carries
+    // cross-request timing), so it is a thread-safe map: multiple connection threads
+    // may report concurrently (finding 14).
+    private val prevServerTiming = java.util.concurrent.ConcurrentHashMap<String, ServerTiming>()
 
     /**
      * Record the just-written request's server-side timeline (phase 3i), keyed by
@@ -95,28 +88,26 @@ class JsonRpcHandler(
         prevServerTiming[method] = ServerTiming(handleMs, writeMs, totalMs)
     }
 
-    fun handle(line: String): String {
-        lastHandledMethod = null
-        lastPadTo = 0
+    fun handle(line: String): HandleResult {
         val json: JSONObject
         val method: String
         try {
             json = JSONObject(line)
             method = json.getString("method")
         } catch (e: Exception) {
-            return JsonRpc.errorResponse(null, -32700, "Parse error")
+            return HandleResult(JsonRpc.errorResponse(null, -32700, "Parse error"), null, 0)
         }
-        lastHandledMethod = method
 
         val id = json.opt("id")
         val params = json.optJSONObject("params") ?: JSONObject()
         // `_padTo` (transport padding diagnostic) is a bench-only debug param —
-        // honored only when the server was started with `-e benchDebug true`.
-        lastPadTo = if (benchDebug) params.optInt("_padTo", 0) else 0
+        // honored only when the server was started with `-e benchDebug true`. Local
+        // to this call (finding 14) — TCPServer reads it off the returned HandleResult.
+        val padTo = if (benchDebug) params.optInt("_padTo", 0) else 0
 
         Log.d(TAG, "method=$method id=$id")
 
-        return try {
+        val bodyLine = try {
             val result: Any = when (method) {
                 "tap" -> tapHandler.execute(params)
                 "longPress" -> longPressHandler.execute(params)
@@ -139,7 +130,22 @@ class JsonRpcHandler(
                     onShutdown()
                     JSONObject().apply { put("status", "ok") }
                 }
-                else -> return JsonRpc.errorResponse(id, -32601, "Method not found: $method")
+                else -> return HandleResult(
+                    JsonRpc.errorResponse(id, -32601, "Method not found: $method"),
+                    method,
+                    padTo
+                )
+            }
+            // Serialize-once splice payload (phase 3j), carried per-request on the
+            // getState result object (finding 14): pull it off and REMOVE it so it
+            // never ships, then splice it over the TREE_TOKEN placeholder below.
+            var rawTree: String? = null
+            if (result is JSONObject) {
+                val r = result.opt(StateHandler.RAW_TREE_MEMBER)
+                if (r is String) {
+                    rawTree = r
+                    result.remove(StateHandler.RAW_TREE_MEMBER)
+                }
             }
             // Phase 3i: fold the PREVIOUS same-method request's server-side timeline
             // into this response's `timings` (a response cannot time its own write).
@@ -155,14 +161,13 @@ class JsonRpcHandler(
             }
             val body = JsonRpc.successResponse(id, result)
             // Serialize-once splice (phase 3j): getState's default path put a
-            // placeholder where the tree goes and exposed the raw pre-serialized tree
-            // on the handler. Splice it in verbatim so the tree is encoded exactly
-            // once. No-op on the legacy path (lastTreeJson == null) and every other
-            // method — the placeholder is absent, and replaceFirst leaves the string
-            // untouched when the token is not found.
-            val raw = stateHandler.lastTreeJson
-            if (method == "getState" && raw != null) {
-                JsonRpc.spliceRawMember(body, StateHandler.TREE_TOKEN, raw)
+            // placeholder where the tree goes and carried the raw pre-serialized tree
+            // on the result. Splice it in verbatim so the tree is encoded exactly once.
+            // No-op on the legacy path (rawTree == null) and every other method — the
+            // placeholder is absent, and replaceFirst leaves the string untouched when
+            // the token is not found.
+            if (method == "getState" && rawTree != null) {
+                JsonRpc.spliceRawMember(body, StateHandler.TREE_TOKEN, rawTree)
             } else {
                 body
             }
@@ -170,6 +175,7 @@ class JsonRpcHandler(
             Log.e(TAG, "Error executing $method", e)
             JsonRpc.errorResponse(id, -32603, e.message ?: "Internal error")
         }
+        return HandleResult(bodyLine, method, padTo)
     }
 
     private fun executeBatch(params: JSONObject): JSONObject {
@@ -189,7 +195,10 @@ class JsonRpcHandler(
                 put("id", 0)
             }
 
-            val responseStr = handle(request.toString())
+            // Recurse through the full handle() so each batched getState's tree is
+            // spliced into its own sub-response (per-request; the raw-tree member is
+            // removed there, never shipped). `.line` is that sub-response's JSON.
+            val responseStr = handle(request.toString()).line
             try {
                 val responseJson = JSONObject(responseStr)
                 if (responseJson.has("result")) {

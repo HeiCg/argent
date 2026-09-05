@@ -161,6 +161,9 @@ export interface DescribeResult {
   hostSentToFirstByteMs?: number;
   hostFirstToLastByteMs?: number;
   hostRoundTripMs?: number;
+  // Which host↔device transport carried the open-path reply (phase 3j item 3d):
+  // "adb-forward" or "redir". Undefined on the proprietary / dump paths.
+  transport?: "adb-forward" | "redir";
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {

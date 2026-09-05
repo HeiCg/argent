@@ -111,20 +111,21 @@ class TCPServer(
                 // this single-connection thread. The write+flush span (t4 − t3) is
                 // the 31 KB reply cost; reported back for the NEXT same-method reply.
                 val t2 = System.nanoTime()
-                val response = handler.handle(trimmed)
+                val handled = handler.handle(trimmed)
+                val response = handled.line
                 val t3 = System.nanoTime()
                 // Phase 3j transport diagnostic: pad the reply to the next multiple
                 // of `_padTo` UTF-8 bytes (counting the trailing `\n`) with trailing
                 // spaces, so the wire reply has no final partial TCP segment. If that
                 // removes the ~40 ms host-recv gap, the gap is the delayed-ACK stall
                 // on the last partial segment. Off (padTo=0) unless the request asked.
-                val padTo = handler.lastPadTo
+                val padTo = handled.padTo
                 val toWrite = if (padTo > 0) padToMultiple(response, padTo) else response
                 writer.write(toWrite)
                 writer.write("\n")
                 writer.flush()
                 val t4 = System.nanoTime()
-                handler.lastHandledMethod?.let { m ->
+                handled.method?.let { m ->
                     handler.reportServerTiming(
                         m,
                         (t3 - t2) / 1_000_000.0,

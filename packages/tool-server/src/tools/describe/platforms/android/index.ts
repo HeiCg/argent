@@ -105,11 +105,15 @@ export async function describeAndroid(
         // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
         // keep their own (default) timeout — this is describe-only.
         const waitTimeoutMs = settleToWaitTimeoutMs(settle);
-        // Phase 3j: compact:true drops the trim-discarded nodes on the device, so the
-        // wire payload is smaller yet lowers to the byte-identical DescribeNode (the
-        // golden is the contract). It is the blueprint default too; passed explicitly
-        // here so the describe path's intent is legible.
-        const state = await server.getNestedState({ waitTimeoutMs, compact: true });
+        // Phase 3j: compact:true would drop the trim-discarded nodes ON THE DEVICE for
+        // a smaller wire payload — BUT the on-device compaction hoists scaffold
+        // wrappers, which is NOT output-preserving (it defeats a scrollable parent's
+        // child-clip, lets a system-chrome subtree escape, and can drop a borrowed
+        // `[password]` label — reviewed counterexamples). Until the device compaction
+        // is made output-preserving (hollow nodes + goldens), the describe path ships
+        // the FULL tree and runs the proven host v2 trim, which is byte-identical to
+        // the dump path. compact stays available for the bench A/B via explicit opt-in.
+        const state = await server.getNestedState({ waitTimeoutMs, compact: false });
         if (state.tree.length === 0) {
           throw new FailureError("open-device-server returned an empty accessibility tree", {
             error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
