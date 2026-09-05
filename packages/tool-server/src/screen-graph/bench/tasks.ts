@@ -364,6 +364,17 @@ export function validateTasks(tasks: BenchTask[] = ALL_TASKS): void {
     }
     const selEq = (a?: { id?: string; text?: string }, b?: { id?: string; text?: string }): boolean =>
       Boolean(a && b && (a.id ?? "") === (b.id ?? "") && (a.text ?? "") === (b.text ?? ""));
+    // Phase D.3: a per-step navTarget is a screen identity, never the oracle needle.
+    for (const step of task.steps) {
+      if (step.navTarget) {
+        if (!selectorOk(step.navTarget)) {
+          throw new Error(`task ${task.id} step navTarget names neither id nor text`);
+        }
+        if (selEq(step.navTarget, task.assertion)) {
+          throw new Error(`task ${task.id} step navTarget must not equal the assertion needle`);
+        }
+      }
+    }
     if (task.navTarget) {
       if (!selectorOk(task.navTarget)) {
         throw new Error(`task ${task.id} navTarget names neither id nor text`);

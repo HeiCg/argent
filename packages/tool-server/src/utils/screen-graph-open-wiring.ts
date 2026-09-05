@@ -252,12 +252,17 @@ export async function recordOpenServerObservation(
       bumpSkippedNoIdHash();
       return;
     }
-    // Record the edge only when the identity actually changed, OR the action
-    // reported no change at all (a legitimate same-screen self-edge). A settled
-    // after-id equal to `before` while the outcome DID report a change is a
-    // transition-timing artifact — do not mint an edge from it (HIGH-1).
+    // Do not mint a self-edge (after == before) from a tap that was supposed to
+    // move. Two cases: (HIGH-1) the outcome reported a change but the settled id
+    // equals before — a transition-timing artifact; and (D.2 M2) a
+    // selector-carrying tap that genuinely failed to navigate — recording it
+    // root→root competes with the real edge and gives one (from, selector) two
+    // destinations. Both are dropped; a same-screen action WITHOUT a selector
+    // (e.g. a toggle) still records a legitimate self-edge.
     const outcomeReportedChange = outcome.before.stateHash !== outcome.after.stateHash;
-    if (afterId === beforeId && outcomeReportedChange) return;
+    const isSelectorTap =
+      (invocation.kind === "tap" || invocation.kind === "longPress") && !!opts.actedSelector;
+    if (afterId === beforeId && (outcomeReportedChange || isSelectorTap)) return;
     const info = await server.getInfo();
     const pkg = info.currentPackage || "unknown";
     const versionCode = await resolveVersionCode(device.id, pkg);

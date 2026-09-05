@@ -49,6 +49,7 @@ import { ALL_TASKS } from "../src/screen-graph/bench/tasks";
 import type { BenchApp, BenchSelector, BenchStep, BenchTask } from "../src/screen-graph/bench/types";
 import { evaluateAssertion, type OracleNode } from "../src/screen-graph/bench/oracle";
 import { preflightVerdict, type NeedleEvalRow } from "../src/screen-graph/bench/preflight";
+import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/locate";
 
 const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
 const PHYSICAL_DENY = "ZF524RZBHD";
@@ -210,14 +211,18 @@ async function execCaptureStep(reg: Reg, step: BenchStep): Promise<void> {
     case "launch":
       return; // handled by the caller
     case "tap": {
-      const q = await server.query(toOpenSelector(a.selector), { limit: 1 });
-      const node = q.nodes[0];
-      if (!node) {
-        process.stdout.write(`  [capture] locate MISS ${JSON.stringify(a.selector)}\n`);
+      // Phase D.3 D2-H3: resolve EXACT-first and never tap `nodes[0]` of an
+      // ambiguous set, matching the matrix's `locateNorm`.
+      const q = await server.query(toOpenSelector(a.selector), { limit: 20 });
+      const picked = pickUniqueNode(q.nodes as QueryNodeLite[], a.selector);
+      if (!picked.node) {
+        process.stdout.write(
+          `  [capture] locate ${picked.ambiguous ? "AMBIGUOUS" : "MISS"} ${JSON.stringify(a.selector)}\n`
+        );
         return;
       }
-      const cx = Math.round((node.bounds.x1 + node.bounds.x2) / 2);
-      const cy = Math.round((node.bounds.y1 + node.bounds.y2) / 2);
+      const cx = Math.round((picked.node.bounds.x1 + picked.node.bounds.x2) / 2);
+      const cy = Math.round((picked.node.bounds.y1 + picked.node.bounds.y2) / 2);
       await server.tapWithOutcome(cx, cy).catch(() => undefined);
       break;
     }
@@ -430,6 +435,12 @@ async function verifyDestinationPresence(
       process.stdout.write(`  [preflight] destination check for ${task.id} attempt ${attempt} threw: ${String(e)}\n`);
     }
   }
+  // Phase D.3 (D2-L4): print reachedDistinct/attempts so the gate summary shows
+  // reliability, not just the verdict — a 1-in-10 reachable destination reads
+  // differently from a 10-in-10 one.
+  process.stdout.write(
+    `  [preflight] ${task.id}: reachedDistinct ${reachedDistinct}/${ATTEMPTS} (unreached/threw ${unreachedOrThrew})\n`
+  );
   // MISSING only when navigation was RELIABLE (every attempt reached a distinct
   // destination) yet the needle was never present — the typo-needle signal.
   return unreachedOrThrew === 0 && reachedDistinct === ATTEMPTS ? false : null;

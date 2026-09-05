@@ -75,6 +75,8 @@ import {
 } from "../src/screen-graph/bench/policy";
 import { observationQuery } from "../src/screen-graph/bench/observe";
 import { parseDescribeLocate } from "../src/screen-graph/bench/describe-locate";
+import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/locate";
+import { ScreenGraphStore } from "../src/screen-graph/store";
 import {
   countBoth,
   range,
@@ -86,6 +88,7 @@ import {
   accountSuccess,
   evaluateAssertion,
   isExcludedRun,
+  isPreActionInfraError,
   type AssertionMatch,
   type OracleNode,
 } from "../src/screen-graph/bench/oracle";
@@ -218,6 +221,37 @@ function uninstallOpenServer(): void {
 
 function graphDir(): string {
   return join(argentHomeDir(), "screen-graph");
+}
+
+/**
+ * Phase D.3 (M2/M3): check the duplicate-screen and edge-destination invariants
+ * on every persisted package store. Returns one line per violation (empty when
+ * clean). Run after the matrix; a non-empty result fails the CI job.
+ */
+function checkStoreInvariants(): string[] {
+  const dir = graphDir();
+  const out: string[] = [];
+  if (!existsSync(dir)) return out;
+  for (const pkg of readdirSync(dir, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    const pkgDir = join(dir, pkg.name);
+    for (const f of readdirSync(pkgDir)) {
+      if (!f.endsWith(".json")) continue;
+      const versionCode = f.replace(/\.json$/, "");
+      try {
+        const store = ScreenGraphStore.loadSync({ packageName: pkg.name, versionCode });
+        for (const g of store.duplicateScreens()) {
+          out.push(`${pkg.name}/${versionCode}: duplicate screen — ${g.length} nodes share compact+resourceIds+stateHash: ${g.join(", ")}`);
+        }
+        for (const e of store.duplicateEdgeTargets()) {
+          out.push(`${pkg.name}/${versionCode}: edge "${e.key}" has ${e.tos.length} destinations: ${e.tos.join(", ")}`);
+        }
+      } catch (err) {
+        out.push(`${pkg.name}/${versionCode}: store unreadable (${String(err)})`);
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -451,6 +485,8 @@ interface Located {
   xNorm: number;
   yNorm: number;
   found: boolean;
+  /** Phase D.3: >1 node matched and none uniquely — the tap is NOT issued. */
+  ambiguous?: boolean;
 }
 
 /**
@@ -472,13 +508,20 @@ async function locateNorm(reg: Reg, config: BenchConfigId, sel: BenchSelector): 
   }
   try {
     const server = await openServer(reg);
-    const q = await server.query(toOpenSelector(sel), { limit: 5 });
-    if (q.nodes.length > 0) {
-      const b = q.nodes[0]!.bounds;
+    // Query CONTAINS (device-supported) with a wide limit, then resolve a UNIQUE
+    // node exactly (phase D.3 D2-H3) — never tap `nodes[0]` of an ambiguous set.
+    const q = await server.query(toOpenSelector(sel), { limit: 20 });
+    const picked = pickUniqueNode(q.nodes as QueryNodeLite[], sel);
+    if (picked.node) {
+      const b = picked.node.bounds;
       const info = await server.getInfo();
       const w = info.screenWidth || 1080;
       const h = info.screenHeight || 2400;
       return { xNorm: (b.x1 + b.x2) / 2 / w, yNorm: (b.y1 + b.y2) / 2 / h, found: true };
+    }
+    if (picked.ambiguous) {
+      realDebug(`[bench-sg] locate AMBIGUOUS for ${JSON.stringify(sel)} (${q.nodes.length} candidates); not tapping`);
+      return { xNorm: 0.5, yNorm: 0.5, found: false, ambiguous: true };
     }
     return { xNorm: 0.5, yNorm: 0.5, found: false };
   } catch {
@@ -704,6 +747,13 @@ interface NavRecord {
   divergeReason?: string;
   /** Measured device RPCs navigate-to issued for this tap (phase D.2 HIGH-2). */
   rpcCount?: number;
+  /**
+   * Phase D.3 (review D2-H1/H2): the route reached the target with `totalSteps==0`
+   * — already on the destination, so NO tap was issued by the route. Not a routed
+   * tap; the step's real tap is then performed by locate+tap and this is counted
+   * as a `zeroStepRoute`, never as `routed`.
+   */
+  zeroStep?: boolean;
 }
 
 interface ActionResult {
@@ -756,6 +806,7 @@ async function runAction(
   // PARTIAL route (completedSteps > 0, the screen already moved) we RE-OBSERVE
   // and RE-LOCATE before the fallback tap — never tap a stale coordinate.
   let nav: NavRecord | undefined;
+  let zeroStepRoute = false;
   if (useNavigate && a.kind === "tap") {
     const target = navSel ?? a.selector;
     nav = { attempted: true, reached: false, completedSteps: 0, totalSteps: 0 };
@@ -786,7 +837,12 @@ async function runAction(
         // Verify the route landed where the needle lives; the graph verifies by
         // hash only. `navSel` is a destination identity distinct from the oracle.
         const present = await queryPresent(reg, target);
-        if (present) {
+        // Phase D.3 (D2-H1/H2): a route only COUNTS as routed when it actually
+        // moved (totalSteps > 0). `totalSteps == 0` means "already on the target"
+        // — no tap was issued and the arrival check is vacuous — so it is a
+        // ZERO-STEP route, not a routed tap; fall through to perform the step's
+        // real tap and count it separately.
+        if (present && nav.totalSteps > 0) {
           return {
             rttMs: Date.now() - t0,
             usedNavigate: true,
@@ -797,10 +853,18 @@ async function runAction(
             actionFailed: false,
           };
         }
-        nav.misland = true;
-        realDebug(
-          `[bench-sg] navigate-to reached but ${JSON.stringify(target)} not live-present; re-observe + fallback`
-        );
+        if (present && nav.totalSteps === 0) {
+          nav.zeroStep = true;
+          zeroStepRoute = true;
+          realDebug(
+            `[bench-sg] navigate-to ${JSON.stringify(target)} was a ZERO-STEP route (already on target); tapping the real selector`
+          );
+        } else {
+          nav.misland = true;
+          realDebug(
+            `[bench-sg] navigate-to reached but ${JSON.stringify(target)} not live-present; re-observe + fallback`
+          );
+        }
       } else {
         realDebug(
           `[bench-sg] navigate-to no-route/divergence for ${JSON.stringify(target)} ` +
@@ -822,6 +886,9 @@ async function runAction(
       await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
       await reg.invokeTool("describe", { udid: SERIAL }).catch(() => undefined);
     }
+    // A zero-step route is NOT a routing failure — its `navFallback` stays false;
+    // only a real no-route/divergence/misland fallback sets it true (D2-H1/H2).
+    const fb = !zeroStepRoute;
     located = await locateNorm(reg, config, a.selector);
     if (!located.found) {
       return {
@@ -829,14 +896,14 @@ async function runAction(
         usedNavigate: false,
         strategy: "locate-tap",
         nav,
-        navFallback: true,
+        navFallback: fb,
         locateFailed: true,
         actionFailed: false,
       };
     }
     const tapRes = await tapAt(reg, located);
     if (tapRes.failed) {
-      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "locate-tap", nav, navFallback: true, locateFailed: false, actionFailed: true };
+      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "locate-tap", nav, navFallback: fb, locateFailed: false, actionFailed: true };
     }
     return {
       rttMs: Date.now() - t0,
@@ -844,7 +911,7 @@ async function runAction(
       usedNavigate: false,
       strategy: "locate-tap",
       nav,
-      navFallback: true,
+      navFallback: fb,
       locateFailed: false,
       actionFailed: false,
     };
@@ -1108,11 +1175,10 @@ async function runTask(
       located = await locateNorm(reg, config, (step.action as { selector: BenchSelector }).selector);
     }
 
-    // O5 routes to the task's DESTINATION identity (navTarget), never the tap
-    // selector (on the current screen → 0 steps). Falls back to the tap selector
-    // when a task has no navTarget.
+    // O5 routes to the DESTINATION identity, per-STEP first (phase D.3 D2-H1) then
+    // the task default, never the tap selector (on the current screen → 0 steps).
     const navSel: BenchSelector | null =
-      task.navTarget ?? (isTap ? (step.action as { selector: BenchSelector }).selector : null);
+      step.navTarget ?? task.navTarget ?? (isTap ? (step.action as { selector: BenchSelector }).selector : null);
 
     const tBefore = await traversals(reg, config);
     const action: ActionResult = isLaunch
@@ -1261,7 +1327,11 @@ async function runTask(
 }
 
 /** A minimal record for a task-run that THREW before producing data (HIGH-4). */
-function erroredTaskRecord(config: BenchConfigId, task: BenchTask, rep: number): TaskRecord {
+function erroredTaskRecord(config: BenchConfigId, task: BenchTask, rep: number, err?: unknown): TaskRecord {
+  // Phase D.3 (D2-M6): exclude the run as pre-action infra ONLY when the throw is
+  // a device/adb/open-server connectivity fault; any other exception is the
+  // config's own failure and counts against it (no outcome-shaped exclusion).
+  const infraPreAction = isPreActionInfraError(String((err as { message?: string })?.message ?? err ?? ""));
   return {
     config,
     task: task.id,
@@ -1273,11 +1343,8 @@ function erroredTaskRecord(config: BenchConfigId, task: BenchTask, rep: number):
     actionFailed: false,
     oracleError: false,
     taskError: true,
-    // Phase D.2 L2: a task that threw before producing ANY record is a pre-action
-    // shared-infra fault (backend/emulator down before this config acted) — it
-    // would strike every config identically, so it is the ONE case `infraPreAction`
-    // marks and `isExcludedRun` excludes. This is the setter the field describes.
-    infraPreAction: true,
+    // Phase D.3 (D2-M6): only a pre-action infra throw is excluded; see above.
+    infraPreAction,
     assertionObs: "none",
     assertionTokensTiktoken: 0,
     assertionTokensCharsDiv4: 0,
@@ -1356,6 +1423,8 @@ interface ConfigAgg {
   navDivergedSelectorUnresolved: number;
   /** diverged split (phase D.1): the landed H_id simply mismatched the plan. */
   navDivergedHashMismatch: number;
+  /** phase D.3 (D2-H1): reached with totalSteps==0 (no tap issued) — not routed. */
+  navZeroStep: number;
   skipped?: string;
 }
 
@@ -1419,6 +1488,9 @@ function aggregate(
   let navDivergedSelectorAmbiguous = 0;
   let navDivergedSelectorUnresolved = 0;
   let navDivergedHashMismatch = 0;
+  // Phase D.3 (D2-H1): routes that reached with totalSteps==0 (already on target,
+  // no tap issued) — counted separately, never as `navRouted`.
+  let navZeroStep = 0;
 
   // Nav counters over ALL records and ALL attempts (phase D §0.2) — BEFORE any
   // exclusion skip, so a known-target tap that FAILED (and would once have been
@@ -1430,7 +1502,8 @@ function aggregate(
       if (!(s.knownTarget && s.actionKind === "tap")) continue;
       knownTargetSteps += 1;
       if (s.nav?.attempted) navAttempted += 1;
-      if (s.strategy === "navigate") navRouted += 1;
+      if (s.strategy === "navigate") navRouted += 1; // one-step+ routes only (D2-H1)
+      if (s.nav?.zeroStep) navZeroStep += 1; // already-on-target no-op, not routed
       if (s.navFallback) {
         navFallbacks += 1;
         if (s.nav?.misland) navMisland += 1;
@@ -1514,6 +1587,7 @@ function aggregate(
     navDivergedSelectorAmbiguous,
     navDivergedSelectorUnresolved,
     navDivergedHashMismatch,
+    navZeroStep,
   };
 }
 
@@ -1773,10 +1847,11 @@ function buildReport(
     L.push("## O5 navigate-to structure (from structured records, over ALL attempts)");
     L.push("");
     L.push(
-      `- O5-pure coverage: **${cov}** known-target taps ROUTED via navigate-to ` +
-        `(attempted ${o5.navAttempted}). Fallbacks ${o5.navFallbacks}/${o5.knownTargetSteps}: ` +
-        `mis-landed ${o5.navMisland}, diverged-after-tap ${o5.navDiverged}, ` +
-        `no-route ${o5.navNoRoute} (phase D §0.2, counted over ALL attempts before any exclusion).`
+      `- O5 known-target taps (${o5.knownTargetSteps} attempted, phase D.3 split): ` +
+        `**one-step routed ${o5.navRouted}**, zero-step no-op routes ${o5.navZeroStep} ` +
+        `(already on target — NOT counted as routed, D2-H1), fallbacks ${o5.navFallbacks} ` +
+        `(mis-landed ${o5.navMisland}, diverged ${o5.navDiverged}, no-route ${o5.navNoRoute}). ` +
+        `Coverage ${cov} one-step routes.`
     );
     L.push(
       `- No-route split (phase D.1): ambiguous-target ${o5.navNoRouteAmbiguous}, ` +
@@ -1804,9 +1879,11 @@ function buildReport(
     // the modelled "2". Half of O5's 100 runs have no known-target tap, so this is
     // reported over the routed taps only (phase D.2 M4).
     L.push(
-      `- **O5 measured RPCs per routed tap p50: ${fmt(o5.measuredRpc.p50)}** ` +
-        `(n=${o5.measuredRpc.n} routed taps; navigate-to RPCs + await-idle + queryPresent), ` +
-        `replacing the modelled "2". O5 action wall p50 ${fmt(o5.actionRttMs.p50)} ms (all steps).`
+      `- **O5 measured RPCs per one-step routed tap: min ${fmt(o5.measuredRpc.min)} / p50 ` +
+        `${fmt(o5.measuredRpc.p50)} / max ${fmt(o5.measuredRpc.max)}** (n=${o5.measuredRpc.n}). ` +
+        `navigate-to's own RPCs are proxy-MEASURED; the bench's await-screen-idle + ` +
+        `queryPresent add 2 round-trips (each ≥1 device RPC), so this is a LOWER BOUND (D2-L1). ` +
+        `Replaces the D.2 modelled "2". O5 action wall p50 ${fmt(o5.actionRttMs.p50)} ms (all steps).`
     );
     L.push("");
   }
@@ -2284,7 +2361,7 @@ async function main(): Promise<void> {
             allRecords.push(rec);
             consecutiveErrors = 0;
           } else {
-            const errored = erroredTaskRecord(config, task, rep);
+            const errored = erroredTaskRecord(config, task, rep, err);
             records.push(errored);
             allRecords.push(errored);
             consecutiveErrors++;
@@ -2365,6 +2442,21 @@ async function main(): Promise<void> {
     }
   } catch (e) {
     realDebug(`[bench-sg] graph-store copy skipped: ${String(e)}`);
+  }
+
+  // Phase D.3 (M2/M3): enforce the store invariants on the PRODUCED store and
+  // FAIL the job on a violation — no duplicate screens (same compact+resourceIds+
+  // stateHash under two H_id) and no (from H_id, action) with >1 destination. A
+  // future run that mints a duplicate node or a competing edge goes red instead
+  // of silently green.
+  const storeViolations = checkStoreInvariants();
+  if (storeViolations.length > 0) {
+    process.stderr.write(
+      `\n[bench-sg] STORE INVARIANT FAILURE (phase D.3):\n  ${storeViolations.join("\n  ")}\n`
+    );
+    process.exitCode = 1;
+  } else {
+    process.stdout.write("[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges\n");
   }
 
   // Partial-run reuse: splice a prior full pass's aggregates + records for every

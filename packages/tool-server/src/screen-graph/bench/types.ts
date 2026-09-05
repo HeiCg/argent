@@ -45,6 +45,15 @@ export interface BenchStep {
    */
   knownTarget?: boolean;
   /**
+   * Phase D.3 (review D2-H1): the O5 `navigate-to` destination for THIS step's
+   * known-target tap, a screen identity distinct from the oracle needle. Overrides
+   * the task-level `navTarget` so a multi-step task routes each step to its OWN
+   * destination (the task-level one applied to every step, so a second tap routed
+   * to the screen it was already on — a zero-step no-op). Falls back to the task
+   * `navTarget` when unset.
+   */
+  navTarget?: BenchSelector;
+  /**
    * This step is INTENDED to keep the SAME screen (no structural navigation).
    * The H2 hypothesis (outcome removes ≥1 RTT/step) is measured over these
    * steps only — the navigation steps change the screen every time, leaving

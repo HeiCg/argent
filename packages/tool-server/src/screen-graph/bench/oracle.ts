@@ -158,6 +158,20 @@ export function isExcludedRun(r: AccountableRun): boolean {
   return Boolean(r.infraPreAction);
 }
 
+/**
+ * Phase D.3 (review D2-M6): a thrown task error counts as a PRE-ACTION shared-infra
+ * fault (and is therefore excluded from the denominator) ONLY when it is a
+ * device/adb/open-server connectivity failure — not any exception out of the task.
+ * Marking every throw `infraPreAction` reopened the outcome-shaped exclusion path
+ * the C.4 REJECT closed. Match connectivity/reachability signatures conservatively;
+ * anything else is the config's own failure and counts against it.
+ */
+const INFRA_ERROR_RE =
+  /econnrefused|econnreset|ehostunreach|ehostdown|enetunreach|etimedout|socket hang ?up|and server (?:is )?not ready|not ready yet|unreachable|device (?:offline|not found|unauthorized)|no devices\/emulators|adb(?:\.exe)?:? |failed to connect|connection refused|open device server (?:not|un)|server did not become ready/i;
+export function isPreActionInfraError(message: string): boolean {
+  return INFRA_ERROR_RE.test(message ?? "");
+}
+
 export interface SuccessAccount {
   /** all task-runs for the config. */
   total: number;

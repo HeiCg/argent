@@ -248,3 +248,31 @@ describe("phase D.2 HIGH-1 — store duplicate-screen invariant", () => {
     expect(labels.every((l) => l === "Network & internet: Internet")).toBe(true);
   });
 });
+
+describe("phase D.3 (D2-M2) — edge-destination invariant", () => {
+  function freshStore(): ScreenGraphStore {
+    return new ScreenGraphStore({ packageName: "com.test", versionCode: "1", now: () => NOW, debounceMs: 1_000_000 });
+  }
+
+  it("duplicateEdgeTargets() flags one (from, action) with two destinations", () => {
+    const s = freshStore();
+    const action = { kind: "tap" as const, target: { text: "Apps" } };
+    s.observe("root", action, "apps", { success: true }); // real edge
+    s.observe("root", action, "root", { success: true }); // competing self-edge (bug)
+    s.observe("root", { kind: "tap" as const, target: { text: "Battery" } }, "battery", { success: true });
+    const dups = s.duplicateEdgeTargets();
+    s.dispose();
+    expect(dups.length).toBe(1);
+    expect(new Set(dups[0]!.tos)).toEqual(new Set(["apps", "root"]));
+  });
+
+  it("a store where every (from, action) has one destination is clean", () => {
+    const s = freshStore();
+    s.observe("root", { kind: "tap" as const, target: { text: "Apps" } }, "apps", {});
+    s.observe("root", { kind: "tap" as const, target: { text: "Battery" } }, "battery", {});
+    s.observe("apps", { kind: "tap" as const, target: { text: "All apps" } }, "allApps", {});
+    const dups = s.duplicateEdgeTargets();
+    s.dispose();
+    expect(dups).toEqual([]);
+  });
+});
