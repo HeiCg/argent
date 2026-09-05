@@ -332,6 +332,8 @@ const ADB_FORWARD_PORT_MARKER = /^(\d+)\s*$/;
 // Phase 3j: spawn the on-device server with a second 0.0.0.0 listener so the redir
 // transport experiment can reach it. Gated by env — off in normal operation, since
 // binding device control on a routable interface is not something to ship on.
+// (On an emulator the server now self-detects and binds anyway; this env is only a
+// debug override for non-emulator forcing.)
 const BIND_ALL = process.env.ARGENT_OPEN_SERVER_BIND_ALL === "1";
 
 interface SpawnedServer {
@@ -369,6 +371,10 @@ async function spawnServer(serial: string): Promise<SpawnedServer> {
       // Phase 3j: `-e bindAll true` makes the server also bind a 0.0.0.0 listener
       // for the redir transport experiment (announced as `allPort=`). Gated by env.
       ...(BIND_ALL ? ["-e", "bindAll", "true"] : []),
+      // Phase 3j: `-e benchDebug true` lets the server honor the bench-only debug
+      // RPC params (`_padTo`, `_benchLegacyEncode`). Read at spawn time so the bench
+      // can set it programmatically before the first spawn; off in production.
+      ...(process.env.ARGENT_OPEN_SERVER_BENCH_DEBUG === "1" ? ["-e", "benchDebug", "true"] : []),
       manifest.instrumentationRunner,
     ],
     { stdio: ["ignore", "pipe", "pipe"] }

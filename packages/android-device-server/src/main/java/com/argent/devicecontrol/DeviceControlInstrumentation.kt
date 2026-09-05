@@ -68,7 +68,13 @@ class DeviceControlInstrumentation : Instrumentation() {
             Log.w(TAG, "Could not set UiAutomation service flags", e)
         }
 
-        val handler = JsonRpcHandler(uiDevice, uiAutomation, this) { requestShutdown() }
+        // Phase 3j: bench-only debug params (`_padTo`, `_benchLegacyEncode`) are
+        // honored only when the server is started with `-e benchDebug true`. Off in
+        // production regardless of what a request sends.
+        val benchDebug = startArgs?.getString("benchDebug") == "true"
+        if (benchDebug) Log.w(TAG, "benchDebug is ON — bench debug RPC params are honored this session")
+
+        val handler = JsonRpcHandler(uiDevice, uiAutomation, this, { requestShutdown() }, benchDebug)
         // Port 0 → the OS picks a free port; we read the bound value below.
         val tcp = TCPServer(0, handler)
         tcp.start()
@@ -98,7 +104,7 @@ class DeviceControlInstrumentation : Instrumentation() {
         val bindAll = bindDecision.bindAll
         if (bindAll) {
             try {
-                val allHandler = JsonRpcHandler(uiDevice, uiAutomation, this) { requestShutdown() }
+                val allHandler = JsonRpcHandler(uiDevice, uiAutomation, this, { requestShutdown() }, benchDebug)
                 val tcpAll = TCPServer(0, allHandler, "0.0.0.0")
                 tcpAll.start()
                 allServer = tcpAll
