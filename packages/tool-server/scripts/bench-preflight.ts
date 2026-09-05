@@ -443,6 +443,18 @@ async function main(): Promise<number> {
     settingsRoot?: ScreenDump;
     exampleCom?: ScreenDump;
     needleEval: Array<NeedleEvalRow & { app: string; needle: string; navigates: boolean; matchesLaunch: boolean; launchMatchText: string }>;
+    // Phase D.2 M3: one full NESTED tree WITH the device H_id (+ H/H_text),
+    // captured so a Kotlin ScreenHash.identity test and a host/device cross-check
+    // can run OFFLINE against a real captured tree (committed as a fixture in the
+    // next iteration; until then the doc reads "device H_id stability: unverified").
+    identityFixture?: {
+      packageName: string;
+      idHash: string;
+      structuralHash: string;
+      stateHash: string;
+      screen: { width: number; height: number };
+      tree: unknown;
+    };
   } = { serial: SERIAL, needleEval: [] };
 
   const captures: CaptureEntry[] = [];
@@ -451,6 +463,28 @@ async function main(): Promise<number> {
     // ---- Settings root ------------------------------------------------------
     await launchAppPreflight(reg, "settings");
     out.settingsRoot = await dumpScreen(reg);
+
+    // Phase D.2 M3: capture the Settings root as a NESTED tree with its device
+    // H_id (one getNestedState round-trip returns tree + idHash + H + H_text), so
+    // the host `identityHash` twin can be cross-checked against the device value
+    // offline. Best-effort — a miss just omits the fixture.
+    try {
+      const server = await openServer(reg);
+      const ns = await server.getNestedState({});
+      out.identityFixture = {
+        packageName: SETTINGS,
+        idHash: ns.idHash ?? "",
+        structuralHash: ns.hash ?? "",
+        stateHash: ns.stateHash ?? "",
+        screen: { width: ns.info.screenWidth || 1080, height: ns.info.screenHeight || 2400 },
+        tree: ns.tree,
+      };
+      process.stdout.write(
+        `  [preflight] identity fixture: idHash=${out.identityFixture.idHash} nodes(top)=${ns.tree.length}\n`
+      );
+    } catch (e) {
+      process.stdout.write(`  [preflight] identity capture skipped: ${String(e)}\n`);
+    }
 
     // ---- example.com (first-run dismissed) ----------------------------------
     await launchAppPreflight(reg, "chrome");
