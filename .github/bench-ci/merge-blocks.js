@@ -67,17 +67,37 @@ if (tls.length) {
 const effectLine = present
   .map((n) => {
     const b = files[n].block;
-    return `${n}: effectZero=${b.effectZeroTotal || 0}/${b.effectCheckedTotal || 0} originLost=${b.originLostTotal || 0}`;
+    const first = b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0;
+    const self = b.oracleSelfTestPassed === false ? " oracleSelfTest=FAILED" : "";
+    return `${n}: firstTapNoEffect=${first}/${b.effectCheckedTotal || 0} originLost=${b.originLostTotal || 0}${self}`;
   })
   .join(" | ");
-console.log("tap effect-check per block — " + effectLine);
+console.log("tap effect-check per block (first-attempt verdict) — " + effectLine);
+
+// Oracle self-test gate (run-2 review): a block whose backend could not complete a
+// single detected+restored navigation before the timed loop has UNTRUSTWORTHY effect
+// rows — a DISTINCT verdict from "a tap did not land" and from "degraded arm". Fatal
+// on any block (ON or OFF) that ran the check.
+const oracleFailed = present.filter((n) => files[n].block.oracleSelfTestPassed === false);
+if (oracleFailed.length) {
+  throw new Error(
+    `oracle self-test failed on block(s): ${oracleFailed.join(", ")} — the backend could not ` +
+      `complete one detected+restored navigation, so the effect rows are untrustworthy (NOT the ` +
+      `same as a first-attempt miss). Full per-block: ${effectLine}`
+  );
+}
+
+// First-attempt effect gate. effectZeroTotal IS the first-attempt no-effect count
+// (no re-tap masks it — run-2 review). A dropped injection on this runner is the
+// backend's real behaviour and stays fatal on ON: the honest result is "N/60 first
+// attempts did not land", not a green scored on retries.
 const onEffectBad = present
   .filter((n) => n.startsWith("ON") && (files[n].block.effectZeroTotal || 0) > 0)
   .map((n) => `${n}=${files[n].block.effectZeroTotal}`);
 if (onEffectBad.length) {
   throw new Error(
-    `no-effect tap iterations on an ON block: ${onEffectBad.join(", ")} — the tap did not land. ` +
-      `Full per-block: ${effectLine}`
+    `first-attempt no-effect taps on an ON block: ${onEffectBad.join(", ")} — the FIRST tap did ` +
+      `not land (not retried away). Full per-block: ${effectLine}`
   );
 }
 
@@ -110,6 +130,25 @@ if (degraded.length) {
   throw new Error(
     `DEGRADED ARM on block(s): ${degraded.join(" | ")} — the block was on the wrong ` +
       `screen for part of the run; its rows are not a valid baseline. Rerun.`
+  );
+}
+
+// Redir transport gate (phase 3j item 3d / run-3 review). On this hosted x86_64
+// emulator the open path MUST use the emulator-console `redir` transport (run 3
+// proved it selects: both ON blocks recorded transport=redir). An ON block that
+// fell back to adb-forward is not the transport we ship for emulators — fail so a
+// silent fallback (leaked console token, unbound 0.0.0.0 listener, redir ping
+// failure) can never be scored as a clean emulator run. Physical devices would be
+// loopback+adb-forward, but CI is always an emulator serial.
+const redirBad = present
+  .filter((n) => n.startsWith("ON"))
+  .filter((n) => (files[n].block.transport || "") !== "redir")
+  .map((n) => `${n}=${files[n].block.transport || "(none)"}`);
+if (redirBad.length) {
+  throw new Error(
+    `ON emulator block(s) did NOT use the redir transport: ${redirBad.join(", ")} — expected ` +
+      `transport=redir (run 3 proved redir selects on this runner). A fall back to adb-forward ` +
+      `means the console token / 0.0.0.0 listener / redir ping regressed; not a clean emulator run.`
   );
 }
 
@@ -171,10 +210,18 @@ const result = {
   effectByBlock: Object.fromEntries(
     blocks.map((b) => [
       b.block,
-      { effectZero: b.effectZeroTotal || 0, effectChecked: b.effectCheckedTotal || 0, originLost: b.originLostTotal || 0 },
+      {
+        effectZero: b.effectZeroTotal || 0,
+        firstTapNoEffect: b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0,
+        effectChecked: b.effectCheckedTotal || 0,
+        originLost: b.originLostTotal || 0,
+        oracleSelfTestPassed: b.oracleSelfTestPassed !== false,
+        transport: b.transport || null,
+      },
     ])
   ),
   effectZeroByBlock: Object.fromEntries(blocks.map((b) => [b.block, b.effectZeroTotal || 0])),
+  transportByBlock: Object.fromEntries(blocks.map((b) => [b.block, b.transport || null])),
   fidelity,
   finishedAt: new Date().toISOString(),
 };
