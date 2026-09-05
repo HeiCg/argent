@@ -343,8 +343,11 @@ jobs:
           node .github/bench-ci/merge-blocks.js
 
       # ---- (3) fling A/B (Kotlin vs scrcpy) when ON-scrcpy is in blocks ----
+      # `!cancelled()` so a FAILED merge (e.g. the landing-rate gate) does NOT skip the
+      # fling A/B — it must run and produce fling data regardless of the merge outcome
+      # (team-lead run-6 decision). The job still fails if the merge failed.
       - name: Fling A/B (uiautomation vs scrcpy)
-        if: ${{ contains(github.event.inputs.blocks, 'ON-scrcpy') }}
+        if: ${{ !cancelled() && contains(github.event.inputs.blocks, 'ON-scrcpy') }}
         env:
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin

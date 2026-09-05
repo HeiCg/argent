@@ -160,33 +160,43 @@ const eb = merged.effectByBlock || {};
 const ez = merged.effectZeroByBlock; // legacy fallback for the block-key list
 const effKeys = Object.keys(eb).length ? Object.keys(eb) : ez ? Object.keys(ez) : [];
 if (effKeys.length) {
-  L.push("### tap effect-check & timeline parity (phase 3h)");
+  L.push("### tap first-attempt landing & timeline parity (phase 3h)");
   L.push("");
-  L.push("| block | firstTapNoEffect / checked | oracle self-test | transport | tap frames | MOVE |");
-  L.push("| --- | --- | --- | --- | --- | --- |");
+  L.push("| block | firstTapLanding (landed/checked) | rate | oracle self-test | transport | tap frames | MOVE |");
+  L.push("| --- | --- | --- | --- | --- | --- | --- |");
   const tt = merged.tapTimelines || {};
+  const rate = (e) => {
+    const c = e.effectChecked || 0;
+    if (!c) return null;
+    const miss = e.firstTapNoEffect != null ? e.firstTapNoEffect : e.effectZero || 0;
+    return (c - miss) / c;
+  };
   for (const b of blocks) {
     const tl = tt[b.block];
     const e = eb[b.block] || { effectZero: ez ? ez[b.block] : undefined, effectChecked: undefined };
-    const first = e.firstTapNoEffect != null ? e.firstTapNoEffect : e.effectZero;
-    const cell =
-      e.effectChecked === undefined ? `${first ?? "-"}` : `${first ?? 0}/${e.effectChecked}`;
-    const self = e.effectChecked === undefined ? "-" : e.oracleSelfTestPassed === false ? "FAILED" : "pass";
+    const c = e.effectChecked;
+    const miss = e.firstTapNoEffect != null ? e.firstTapNoEffect : e.effectZero;
+    const cell = c === undefined ? "-" : `${c - (miss ?? 0)}/${c}`;
+    const r = rate(e);
+    const self = c === undefined ? "-" : e.oracleSelfTestPassed === false ? "FAILED" : "pass";
     L.push(
-      `| ${b.block} | ${cell} | ${self} | ${e.transport ?? "-"} | ${tl ? tl.frameCount : "-"} | ${tl ? (tl.hasMoveFrame ? "yes" : "no") : "-"} |`
+      `| ${b.block} | ${cell} | ${r === null ? "-" : (r * 100).toFixed(1) + "%"} | ${self} | ${e.transport ?? "-"} | ${tl ? tl.frameCount : "-"} | ${tl ? (tl.hasMoveFrame ? "yes" : "no") : "-"} |`
     );
   }
-  // A tap block must have ARMED the check (checked > 0), passed the oracle self-test,
-  // and had NO first-attempt no-effect tap (zero === 0). Blocks that ran no tap verb
-  // (checked 0, undefined) are neutral.
+  // Symmetric first-attempt LANDING-RATE gate (team-lead run-6 decision): every tap
+  // block must be armed (checked > 0), pass the oracle self-test, and land >= 95% of
+  // its first-attempt taps (catches a tap that never lands, not a 1-2% async drop).
   const tapBlocks = Object.values(eb).filter((e) => e && e.effectChecked !== undefined);
   const armed = tapBlocks.length > 0 && tapBlocks.every((e) => (e.effectChecked || 0) > 0);
-  const allZero = tapBlocks.every((e) => (e.effectZero || 0) === 0);
+  const landOk = tapBlocks.every((e) => {
+    const r = rate(e);
+    return r === null || r >= 0.95;
+  });
   const selfOk = tapBlocks.every((e) => e.oracleSelfTestPassed !== false);
-  const pass = armed && allZero && selfOk;
+  const pass = armed && landOk && selfOk;
   L.push("");
   L.push(
-    `- effect gate (every tap block armed, oracle self-test passed, first-attempt no-effect == 0): **${pass ? "PASS" : "FAIL"}**` +
+    `- first-attempt landing gate (every tap block armed, oracle self-test passed, landing rate >= 95%): **${pass ? "PASS" : "FAIL"}**` +
       (tapBlocks.length ? "" : " (no tap block reported effect counts)")
   );
   L.push("");

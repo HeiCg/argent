@@ -64,15 +64,20 @@ if (tls.length) {
 // landed (effectZeroTotal 0, from the timing-independent poll oracle). ON blocks are
 // FATAL; OFF (proprietary) is tolerated and only reported (its arm is best-effort on
 // Linux). originLost is reported for context.
+const firstMiss = (b) => (b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0);
+const landingRate = (b) => {
+  const c = b.effectCheckedTotal || 0;
+  return c > 0 ? (c - firstMiss(b)) / c : 1;
+};
 const effectLine = present
   .map((n) => {
     const b = files[n].block;
-    const first = b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0;
+    const c = b.effectCheckedTotal || 0;
     const self = b.oracleSelfTestPassed === false ? " oracleSelfTest=FAILED" : "";
-    return `${n}: firstTapNoEffect=${first}/${b.effectCheckedTotal || 0} originLost=${b.originLostTotal || 0}${self}`;
+    return `${n}: firstTapLanding=${c - firstMiss(b)}/${c} (${(landingRate(b) * 100).toFixed(1)}%) originLost=${b.originLostTotal || 0}${self}`;
   })
   .join(" | ");
-console.log("tap effect-check per block (first-attempt verdict) — " + effectLine);
+console.log("tap first-attempt landing per block — " + effectLine);
 
 // Oracle self-test gate (run-2 review): a block whose backend could not complete a
 // single detected+restored navigation before the timed loop has UNTRUSTWORTHY effect
@@ -87,17 +92,28 @@ if (oracleFailed.length) {
   );
 }
 
-// First-attempt effect gate. effectZeroTotal IS the first-attempt no-effect count
-// (no re-tap masks it — run-2 review). A dropped injection on this runner is the
-// backend's real behaviour and stays fatal on ON: the honest result is "N/60 first
-// attempts did not land", not a green scored on retries.
-const onEffectBad = present
-  .filter((n) => n.startsWith("ON") && (files[n].block.effectZeroTotal || 0) > 0)
-  .map((n) => `${n}=${files[n].block.effectZeroTotal}`);
-if (onEffectBad.length) {
+// First-attempt LANDING-RATE gate (team-lead run-6 decision), SYMMETRIC across every
+// block (OFF and ON, UiAutomation and scrcpy): a backend must land >= 95% of its
+// first-attempt taps on a freshly-located, settled coordinate — i.e. at most 3 misses
+// of 60, or 2 of 40. Its purpose is to catch a tap that NEVER lands, not the 1-2%
+// async injection drop that a hosted x86_64 KVM emulator produces (measured, printed
+// as firstTapLanding, and its latency excluded from the tap percentiles — never
+// retried away). oracleSelfTest already proved the backend CAN land + detect a tap.
+const landingBad = present
+  .filter((n) => {
+    const b = files[n].block;
+    const c = b.effectCheckedTotal || 0;
+    return c > 0 && firstMiss(b) > Math.floor(c * 0.05);
+  })
+  .map((n) => {
+    const b = files[n].block;
+    const c = b.effectCheckedTotal || 0;
+    return `${n}=${firstMiss(b)}/${c} (${(landingRate(b) * 100).toFixed(1)}%, threshold >${Math.floor(c * 0.05)} fails)`;
+  });
+if (landingBad.length) {
   throw new Error(
-    `first-attempt no-effect taps on an ON block: ${onEffectBad.join(", ")} — the FIRST tap did ` +
-      `not land (not retried away). Full per-block: ${effectLine}`
+    `first-attempt landing rate below 95% on block(s): ${landingBad.join(", ")} — the backend ` +
+      `failed to land too many first taps (not a 1-2% async drop). Full per-block: ${effectLine}`
   );
 }
 
@@ -208,17 +224,23 @@ const result = {
   // Phase 3h: parity + effect evidence carried into the scoreboard.
   tapTimelines: Object.fromEntries(tls.map(({ block, tl }) => [block, tl])),
   effectByBlock: Object.fromEntries(
-    blocks.map((b) => [
-      b.block,
-      {
-        effectZero: b.effectZeroTotal || 0,
-        firstTapNoEffect: b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0,
-        effectChecked: b.effectCheckedTotal || 0,
-        originLost: b.originLostTotal || 0,
-        oracleSelfTestPassed: b.oracleSelfTestPassed !== false,
-        transport: b.transport || null,
-      },
-    ])
+    blocks.map((b) => {
+      const c = b.effectCheckedTotal || 0;
+      const miss = b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0;
+      return [
+        b.block,
+        {
+          effectZero: b.effectZeroTotal || 0,
+          firstTapNoEffect: miss,
+          firstTapLanded: c - miss,
+          effectChecked: c,
+          firstTapLandingRate: c > 0 ? Number(((c - miss) / c).toFixed(4)) : null,
+          originLost: b.originLostTotal || 0,
+          oracleSelfTestPassed: b.oracleSelfTestPassed !== false,
+          transport: b.transport || null,
+        },
+      ];
+    })
   ),
   effectZeroByBlock: Object.fromEntries(blocks.map((b) => [b.block, b.effectZeroTotal || 0])),
   transportByBlock: Object.fromEntries(blocks.map((b) => [b.block, b.transport || null])),
