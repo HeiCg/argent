@@ -83,6 +83,23 @@ async function labelHash(a: OpenDeviceServerApi): Promise<string | undefined> {
   }
 }
 
+/** Flatten a NESTED window tree (roots carry a `children` array) into all labels. */
+function flattenNestedLabels(nodes: Element[], out: string[] = []): string[] {
+  for (const n of nodes) {
+    const l = label(n);
+    if (l.length) out.push(l);
+    if (Array.isArray(n.children)) flattenNestedLabels(n.children as Element[], out);
+  }
+  return out;
+}
+
+/** Sorted label set of a `getNestedState` reply — the same oracle as labelHash but
+ * from the nested-describe path, so a quick read on that path can be fingerprinted. */
+function nestedLabelHash(state: { tree: Element[] }): string | undefined {
+  const set = new Set(flattenNestedLabels(state.tree));
+  return set.size ? [...set].sort().join("\n") : undefined;
+}
+
 /**
  * Poll the label-set fingerprint until it differs from `origin` or `timeoutMs`
  * elapses — "did the tap EVER land within the window", not "was it rendered by a
@@ -103,12 +120,18 @@ async function pollFingerprintChanged(
   }
 }
 
-/** The focused-window line(s) from `dumpsys window` (mCurrentFocus / mFocusedApp) — logged evidence of what was foreground at tap time. */
+/**
+ * The `mCurrentFocus` line from `dumpsys window` — the WINDOW that actually receives
+ * touch input. Review A8/fix e: `mFocusedApp` is deliberately EXCLUDED because it
+ * flips to the destination activity before the window focus does (the early-flip
+ * state), so a check that accepted `mFocusedApp` could pass while the launcher still
+ * held the window — exactly the state this signal must exclude.
+ */
 async function foregroundFocus(dserial: string): Promise<string> {
   try {
     const out = await adbShell(
       dserial,
-      "dumpsys window 2>/dev/null | grep -m2 -E 'mCurrentFocus|mFocusedApp'"
+      "dumpsys window 2>/dev/null | grep -m1 mCurrentFocus"
     );
     return out.replace(/\s+/g, " ").trim();
   } catch {
@@ -343,7 +366,12 @@ suite("android open-device-server on-device", () => {
   }, 90_000);
 
   it("3d gesture-swipe — momentum:false scrolls less than default fling", async () => {
-    const measure = async (hold: boolean): Promise<number> => {
+    // Returns the anchor's on-screen displacement in px, or { offscreen:true } when
+    // the anchor scrolled OUT of the tree. Review A6/fix e: an off-screen anchor is
+    // UNMEASURED (we only know it moved further than the visible span) — it must NOT
+    // be substituted with a maximal displacement (beforeTop - screenHeight), which
+    // biased the fling arm toward passing.
+    const measure = async (hold: boolean): Promise<{ moved: number; offscreen: boolean }> => {
       const info = await freshSettings();
       const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
       // Anchor: labelled row nearest 60% of the screen height, so a plain drag
@@ -364,26 +392,48 @@ suite("android open-device-server on-device", () => {
       await api.waitForIdle(3000);
       const after = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
       const found = after.find((e) => label(e) === anchorLabel);
-      const afterTop = found ? found.bounds.y1 : beforeTop - info.screenHeight;
-      const moved = beforeTop - afterTop;
+      if (!found) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->offscreen moved=UNMEASURED(>on-screen span)`
+        );
+        return { moved: NaN, offscreen: true };
+      }
+      const moved = beforeTop - found.bounds.y1;
       // eslint-disable-next-line no-console
-      console.log(
-        `  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->${
-          found ? found.bounds.y1 : "offscreen"
-        } moved=${moved}`
-      );
-      return moved;
+      console.log(`  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->${found.bounds.y1} moved=${moved}`);
+      return { moved, offscreen: false };
     };
-    const movedDefault = await measure(false);
-    const movedHeld = await measure(true);
-    expect(movedDefault).toBeGreaterThan(0);
-    expect(movedHeld).toBeGreaterThan(0);
-    expect(movedHeld).toBeLessThan(movedDefault);
-    record(
-      "3d gesture-swipe",
-      "PASS",
-      `default fling moved ${movedDefault}px vs momentum:false ${movedHeld}px (held < default)`
-    );
+    const def = await measure(false);
+    const held = await measure(true);
+    if (!def.offscreen && !held.offscreen) {
+      // Both measured on-screen: compare exact displacement.
+      expect(def.moved).toBeGreaterThan(0);
+      expect(held.moved).toBeGreaterThan(0);
+      expect(held.moved).toBeLessThan(def.moved);
+      record(
+        "3d gesture-swipe",
+        "PASS",
+        `default fling moved ${def.moved}px vs momentum:false ${held.moved}px (held < default)`
+      );
+    } else if (def.offscreen && !held.offscreen) {
+      // Default fling pushed the anchor off-screen (further than the visible span, by
+      // an unmeasured amount) while momentum:false kept it on-screen — the fling
+      // clearly scrolled further, without inventing a displacement number.
+      expect(held.moved).toBeGreaterThan(0);
+      record(
+        "3d gesture-swipe",
+        "PASS",
+        `default fling scrolled the anchor OFF-screen (unmeasured, > on-screen span); ` +
+          `momentum:false moved ${held.moved}px on-screen — fling scrolled further`
+      );
+    } else {
+      // held off-screen (backwards) or both off-screen (unmeasured): cannot conclude
+      // momentum:false < fling — fail loudly rather than pass on a substituted number.
+      throw new Error(
+        `swipe comparison unmeasured: default offscreen=${def.offscreen}, momentum:false offscreen=${held.offscreen} — cannot assert held < fling`
+      );
+    }
   }, 120_000);
 
   it("3e long-press (gesture custom, ~800ms hold) — context menu appears", async () => {
@@ -493,13 +543,16 @@ suite("android open-device-server on-device", () => {
     const ratio = pngDiffRatio(before, after);
     // eslint-disable-next-line no-console
     console.log(`  pinch screenshot diff ratio = ${(ratio * 100).toFixed(2)}% (chrome ready=${ready})`);
-    if (ready) {
-      // Min-zoom -> zoomed-in reflows the whole viewport: expect a large change.
-      expect(ratio).toBeGreaterThan(0.02);
-    } else {
-      // eslint-disable-next-line no-console
-      console.log(`  [3f pinch] Chrome not zoomable (no page render); focus=${focus}`);
+    // Review A6/fix e: assert the readiness precondition — a pinch that verified
+    // nothing (Chrome never rendered a zoomable page) must FAIL, never record PASS
+    // conditionally. The gate clears the FRE and confirms a rendered page first.
+    if (!ready) {
+      throw new Error(
+        `3f pinch: Chrome did not render a zoomable page (focus=${focus}) — 2-pointer delivery could not be visually verified`
+      );
     }
+    // Min-zoom -> zoomed-in reflows the whole viewport: expect a large change.
+    expect(ratio).toBeGreaterThan(0.02);
 
     // Rotate: two fingers sweeping ~90° around a center. Same MotionInjector
     // 2-pointer path the pinch just proved delivers both pointers; Chrome pages
@@ -524,9 +577,7 @@ suite("android open-device-server on-device", () => {
     record(
       "3f gesture-pinch",
       "PASS",
-      ready
-        ? `pinch success; both pointers reached screen — Chrome zoom changed ${(ratio * 100).toFixed(1)}% of pixels`
-        : `pinch 2-pointer gesture delivered (success=${pinchRes.success}); visual zoom NOT confirmed — Chrome stuck on first-run (focus=${focus})`
+      `pinch success; both pointers reached screen — Chrome zoom changed ${(ratio * 100).toFixed(1)}% of pixels (ready gate asserted)`
     );
     record(
       "3f gesture-rotate",
@@ -706,10 +757,12 @@ suite("android open-device-server on-device", () => {
     // Each call must be idle-free: reading straight from the platform Display
     // cannot block on the fling settling. Before P3c, getScreenSize peeked
     // uiDevice.displayRotation, whose implicit waitForIdle stalled here for
-    // HUNDREDS of ms while the fling ran. The bound separates "idle-free" from that
-    // stall; 200 ms tolerates the contended x86/KVM CI runner's jitter while still
-    // catching a re-introduced idle gate (a fling settle is hundreds of ms to >1 s).
-    const GATE_MS = 200;
+    // HUNDREDS of ms while the fling ran. Review A7/fix e: restored to the original
+    // 50 ms bound — no observed run exceeded it (max 45 ms on the contended x86/KVM
+    // runner), and a fling settle is hundreds of ms to >1 s, so 50 ms still cleanly
+    // catches a re-introduced idle gate. The 4× loosening to 200 had no failure
+    // behind it and let a real regression hide under runner jitter.
+    const GATE_MS = 50;
     for (const dt of timings) expect(dt).toBeLessThan(GATE_MS);
     const worst = Math.max(...timings);
     record(
@@ -897,6 +950,7 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     expect(c).toBeDefined();
 
     let landedHits = 0;
+    let quickHits = 0;
     const RUNS = 20;
     for (let i = 0; i < RUNS; i++) {
       await fiHome(); // restore the origin (force-stop + relaunch Settings, focus-gated) each run
@@ -908,19 +962,35 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       // fiHome already waited for Settings to hold focus; assert it (the window
       // focus, not currentPackage) so a tap can only be counted from the real root.
       expect(focus).toMatch(/com\.android\.settings/);
+      // Two origins, each read by the SAME method it is later compared against: the
+      // flat accessibility tree for the ≤3 s settle poll, and the nested-describe
+      // path for the quick-read ordering check below.
       const origin = await labelHash(fiApi);
+      const originNested = nestedLabelHash(await fiApi.getNestedState({ waitTimeoutMs: 300 }));
       expect(origin).toBeDefined();
+      expect(originNested).toBeDefined();
       await fiApi.tap(c!.x, c!.y);
-      // A following describe folds flushInput; landing is judged by the label-set
-      // fingerprint changing within 3 s (timing-independent) — the bench's oracle.
-      await fiApi.getNestedState({ waitTimeoutMs: 300 }).catch(() => undefined);
+      // QUICK-READ ORDERING CHECK (review A5/fix e): the describe that follows a
+      // fast-inject tap folds flushInput — it drains the tap's input BEFORE reading —
+      // so even this short-timeout getNestedState already reflects the post-UP screen.
+      // This is the ONLY on-device verification of the flushInput ordering the tap row
+      // depends on; count it and assert it below.
+      const quick = await fiApi.getNestedState({ waitTimeoutMs: 300 }).catch(() => undefined);
+      const quickFp = quick ? nestedLabelHash(quick) : undefined;
+      if (quickFp !== undefined && quickFp !== originNested) quickHits++;
+      // And landing (timing-independent): the flat label-set fingerprint changes
+      // within 3 s — the bench's settle oracle.
       if (await pollFingerprintChanged(fiApi, origin!, 3000)) landedHits++;
     }
     expect(landedHits).toBe(RUNS);
+    // The quick nested read already reflected the navigation on every iteration —
+    // the flushInput drain is ordered before the read.
+    expect(quickHits).toBe(RUNS);
     record(
       "3f-tap→describe",
       "PASS",
-      `landed ${landedHits}/${RUNS} (label-set fingerprint, polled ≤3s, origin restored per run)`
+      `landed ${landedHits}/${RUNS} (settle poll ≤3s); quick-read ordering ${quickHits}/${RUNS} ` +
+        `(getNestedState waitTimeoutMs:300 already reflects the tap — flushInput ordered before the read)`
     );
   }, 360_000);
 
@@ -968,22 +1038,18 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     await sleep(1500);
     const after = Buffer.from((await fiApi.screenshot({ format: "png" })).data, "base64");
     const ratio = pngDiffRatio(before, after);
-    if (ready) {
-      // Chrome rendered a zoomable page → a genuine 2-pointer pinch must zoom it.
-      expect(ratio).toBeGreaterThanOrEqual(0.02);
-      record("3f-pinch zooms", "PASS", `scrcpy 2-pointer pinch; Chrome page zoomed ${(ratio * 100).toFixed(1)}% ≥ 2%`);
-    } else {
-      // Chrome could not present a zoomable page on this CI image (stuck on the
-      // first-run flow) — the visual zoom cannot be measured; 2-pointer delivery is
-      // still enforced above. Reported, not faked green.
-      // eslint-disable-next-line no-console
-      console.log(`  [fi-pinch] Chrome not zoomable (no page render); focus=${focus}`);
-      record(
-        "3f-pinch zooms",
-        "PASS",
-        `scrcpy 2-pointer gesture delivered (success=${res.success}); visual zoom NOT confirmed — Chrome stuck on first-run (focus=${focus}); screenshot Δ${(ratio * 100).toFixed(1)}%`
+    // Review A6/fix e: assert the readiness precondition — 2-pointer delivery is
+    // already enforced (res.success above), but a pinch that could not verify the
+    // zoom (Chrome never rendered a zoomable page) must FAIL, never record PASS with
+    // a caveat. The ready gate clears the FRE and confirms a rendered page first.
+    if (!ready) {
+      throw new Error(
+        `fast-inject pinch: Chrome did not render a zoomable page (focus=${focus}) — scrcpy 2-pointer zoom could not be visually verified`
       );
     }
+    // Chrome rendered a zoomable page → a genuine 2-pointer pinch must zoom it.
+    expect(ratio).toBeGreaterThanOrEqual(0.02);
+    record("3f-pinch zooms", "PASS", `scrcpy 2-pointer pinch; Chrome page zoomed ${(ratio * 100).toFixed(1)}% ≥ 2% (ready gate asserted)`);
   }, 120_000);
 
   it("fast-inject momentum-free swipe travels less than a default (flinging) swipe", async () => {
@@ -992,7 +1058,7 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     // scale 0.5 a pixel-diff saturates (~7%) for any full scroll, so it cannot
     // separate a fling from a momentum-free drag — that near-tie (7.03% vs 7.09%)
     // is exactly what failed this test before.
-    const measure = async (holdEndMs: number): Promise<number> => {
+    const measure = async (holdEndMs: number): Promise<{ moved: number; offscreen: boolean }> => {
       const before = await fiHome();
       const info = await fiApi.getInfo();
       // Anchor: labelled row nearest 60% of screen height (kept on-screen by a
@@ -1014,26 +1080,50 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       await fiApi.waitForIdle(3000);
       const after = (await fiApi.getAccessibilityTree({ maxElements: 200 })).tree;
       const found = after.find((e) => label(e) === anchorLabel);
-      const afterTop = found ? found.bounds.y1 : beforeTop - info.screenHeight;
-      const moved = beforeTop - afterTop;
+      if (!found) {
+        // Review A6/fix e: off-screen anchor is UNMEASURED (moved further than the
+        // visible span by an unknown amount) — do NOT substitute a maximal
+        // displacement, which biased the fling arm toward passing.
+        // eslint-disable-next-line no-console
+        console.log(
+          `  fi-swipe holdEndMs=${holdEndMs} anchor="${anchorLabel}" top ${beforeTop}->offscreen moved=UNMEASURED(>on-screen span)`
+        );
+        return { moved: NaN, offscreen: true };
+      }
+      const moved = beforeTop - found.bounds.y1;
       // eslint-disable-next-line no-console
       console.log(
-        `  fi-swipe holdEndMs=${holdEndMs} anchor="${anchorLabel}" top ${beforeTop}->${found ? found.bounds.y1 : "offscreen"} moved=${moved}`
+        `  fi-swipe holdEndMs=${holdEndMs} anchor="${anchorLabel}" top ${beforeTop}->${found.bounds.y1} moved=${moved}`
       );
-      return moved;
+      return { moved, offscreen: false };
     };
-    const movedFling = await measure(0);
-    const movedHeld = await measure(250);
+    const fling = await measure(0);
+    const held = await measure(250);
     // The flinging swipe keeps scrolling after lift, so the anchor travels further
     // than under the momentum-free swipe that decelerates to ~0 before the lift.
-    expect(movedFling).toBeGreaterThan(0);
-    expect(movedHeld).toBeGreaterThan(0);
-    expect(movedHeld).toBeLessThan(movedFling);
-    record(
-      "3f-swipe momentum",
-      "PASS",
-      `default(fling) moved ${movedFling}px > momentum-free ${movedHeld}px (anchor displacement)`
-    );
+    if (!fling.offscreen && !held.offscreen) {
+      expect(fling.moved).toBeGreaterThan(0);
+      expect(held.moved).toBeGreaterThan(0);
+      expect(held.moved).toBeLessThan(fling.moved);
+      record(
+        "3f-swipe momentum",
+        "PASS",
+        `default(fling) moved ${fling.moved}px > momentum-free ${held.moved}px (anchor displacement)`
+      );
+    } else if (fling.offscreen && !held.offscreen) {
+      // Fling pushed the anchor off-screen (further than the visible span, unmeasured)
+      // while momentum-free kept it on-screen — fling scrolled further, no invented px.
+      expect(held.moved).toBeGreaterThan(0);
+      record(
+        "3f-swipe momentum",
+        "PASS",
+        `default(fling) scrolled anchor OFF-screen (unmeasured, > on-screen span) > momentum-free ${held.moved}px on-screen`
+      );
+    } else {
+      throw new Error(
+        `fi-swipe comparison unmeasured: fling offscreen=${fling.offscreen}, momentum-free offscreen=${held.offscreen} — cannot assert momentum-free < fling`
+      );
+    }
   }, 120_000);
 
   it("fast-inject coexists with the Kotlin instrumentation channel", async () => {

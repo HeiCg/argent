@@ -311,14 +311,21 @@ async function relaunchSettings(reg: Reg): Promise<void> {
 // so a transient ADT crash can't poison the byte/element/fidelity numbers.
 async function cleanSettingsDescribe(
   reg: Reg
-): Promise<{ description: string; source: string }> {
-  let last = { description: "", source: "" };
+): Promise<{ description: string; source: string; transport?: string }> {
+  let last: { description: string; source: string; transport?: string } = {
+    description: "",
+    source: "",
+  };
   for (let attempt = 0; attempt < 4; attempt++) {
     await ensureSettings(reg);
     try {
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as {
         description: string;
         source: string;
+        // Phase 3j item 3d (fix h): which host↔device transport the open path used —
+        // "redir" on the CI emulator once the redir client pings, else "adb-forward";
+        // undefined on the proprietary (OFF) path.
+        transport?: string;
       };
       last = d;
       const crashed = /keeps stopping|aerr_|isn't responding/i.test(d.description);
@@ -363,6 +370,10 @@ interface VerbResult {
   errors: number;
   fallbacks: number;
   fallbackSamples: string[];
+  // Phase 3h review A9/d: the messages of the iterations counted in `errors`, so a
+  // discarded iteration (e.g. the ON-scrcpy 0/59 tap) is explicable from the JSON
+  // rather than swallowed by a bare catch. Capped to the first few.
+  errorSamples: string[];
   // Effect-check (phase 3h), only on the tap verbs measured by `timeTapEffect`:
   // `effectChecked` iterations had a clean origin and a completed tap; `effectZero`
   // of them showed NO screen change within the poll window (the tap never landed);
@@ -393,14 +404,16 @@ async function timeCalls(
   const mark = debugLines.length;
   const lat: number[] = [];
   let errors = 0;
+  const errorSamples: string[] = [];
   for (let i = 0; i < N; i++) {
     if (setup) await setup(i).catch(() => undefined);
     const t0 = Date.now();
     try {
       await fn(i);
       lat.push(Date.now() - t0);
-    } catch {
+    } catch (e) {
       errors++;
+      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   const fb = fallbackCountSince(mark);
@@ -408,6 +421,7 @@ async function timeCalls(
     verb: label,
     latency: summarize(lat),
     errors,
+    errorSamples,
     fallbacks: fb.count,
     fallbackSamples: fb.samples,
     extra: extra?.(),
@@ -465,6 +479,7 @@ async function timeTapEffect(
   const mark = debugLines.length;
   const lat: number[] = [];
   let errors = 0;
+  const errorSamples: string[] = [];
   let effectChecked = 0;
   let effectZero = 0;
   let originLost = 0;
@@ -484,8 +499,9 @@ async function timeTapEffect(
     try {
       await tapRpc(i);
       lat.push(Date.now() - t0);
-    } catch {
+    } catch (e) {
       errors++;
+      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
       await ensureOrigin().catch(() => undefined);
       continue;
     }
@@ -509,6 +525,7 @@ async function timeTapEffect(
     verb: label,
     latency: summarize(lat),
     errors,
+    errorSamples,
     fallbacks: fb.count,
     fallbackSamples: fb.samples,
     effectChecked,
@@ -720,14 +737,16 @@ async function describeIdleLatencyWithStages(
   const acc = newSplitAcc();
   const lat: number[] = [];
   let errors = 0;
+  const errorSamples: string[] = [];
   for (let i = 0; i < n; i++) {
     const t0 = Date.now();
     try {
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta;
       lat.push(Date.now() - t0);
       collectSplit(acc, d);
-    } catch {
+    } catch (e) {
       errors++;
+      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   const fb = fallbackCountSince(mark);
@@ -736,6 +755,7 @@ async function describeIdleLatencyWithStages(
       verb: label,
       latency: summarize(lat),
       errors,
+      errorSamples,
       fallbacks: fb.count,
       fallbackSamples: fb.samples,
       extra: undefined,
@@ -1194,60 +1214,176 @@ const NAV_CANDIDATES = [
   "System",
 ];
 
-// Derive a deterministic navigating tap target and the destination-only marker
-// set (labels on the fully-settled destination but NOT on the root), live from
-// the device under the CURRENT flag: a stale post-tap read (still the root)
-// shares none of these markers, a fresh read shares at least one. `settleForDerive`
-// picks the describe policy used to read the settled destination (true on ON so
+/* -------------------------------------------------------------------------- */
+/* backend-INDEPENDENT effect oracle (phase 3h review A1–A3, fix a)            */
+/* An untimed `adb shell uiautomator dump` snapshot, used for the nav-target   */
+/* derive and the effect fingerprint, so the OFF (proprietary) block arms the  */
+/* effect check with the SAME sensitivity as ON. The timed taps + describes    */
+/* still go through the backend under test; only the ORACLE is backend-free.   */
+/* -------------------------------------------------------------------------- */
+
+function xmlUnescape(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+// Screen size in pixels (from `adb shell wm size`), to normalize uiautomator-dump
+// bounds (pixels) to the 0..1 coordinates gesture-tap expects. null if unparseable.
+function screenSizePx(): { width: number; height: number } | null {
+  let out = "";
+  try {
+    out = adbShell("wm size", 8_000);
+  } catch {
+    return null;
+  }
+  const m = out.match(/Override size:\s*(\d+)x(\d+)/) ?? out.match(/Physical size:\s*(\d+)x(\d+)/);
+  if (!m) return null;
+  return { width: Number(m[1]), height: Number(m[2]) };
+}
+
+// Raw `adb shell uiautomator dump /dev/tty` XML, INDEPENDENT of the backend under
+// test. Returns the <hierarchy>…</hierarchy> slice, or "" if no tree was produced.
+function dumpUiTree(): string {
+  let out = "";
+  try {
+    out = adbShell("uiautomator dump /dev/tty 2>/dev/null", 12_000);
+  } catch {
+    return "";
+  }
+  const start = out.indexOf("<hierarchy");
+  const close = "</hierarchy>";
+  const end = out.lastIndexOf(close);
+  if (start === -1 || end === -1) return "";
+  return out.slice(start, end + close.length);
+}
+
+// Every non-empty text= / content-desc= value in a uiautomator dump (unescaped) —
+// the backend-independent label set for the effect fingerprint.
+function uiTreeLabelSet(xml: string): Set<string> {
+  const set = new Set<string>();
+  const re = /(?:text|content-desc)="((?:[^"\\]|\\.)*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const v = xmlUnescape(m[1] ?? "");
+    if (v.trim().length) set.add(v);
+  }
+  return set;
+}
+
+// First NAV_CANDIDATE present in the dump (by text or content-desc, prefix match in
+// candidate-priority order) with parseable bounds, as a normalized (0..1) tap
+// centre. null if none present or the screen size is unknown.
+function uiTreeNavTarget(
+  xml: string,
+  screen: { width: number; height: number }
+): { target: string; x: number; y: number } | null {
+  const nodes = xml.match(/<node\b[^>]*>/g) ?? [];
+  for (const cand of NAV_CANDIDATES) {
+    for (const node of nodes) {
+      const text = xmlUnescape(node.match(/\btext="((?:[^"\\]|\\.)*)"/)?.[1] ?? "");
+      const desc = xmlUnescape(node.match(/\bcontent-desc="((?:[^"\\]|\\.)*)"/)?.[1] ?? "");
+      if (!text.startsWith(cand) && !desc.startsWith(cand)) continue;
+      const b = node.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
+      if (!b) continue;
+      const l = Number(b[1]);
+      const t = Number(b[2]);
+      const r = Number(b[3]);
+      const bot = Number(b[4]);
+      if (r <= l || bot <= t) continue;
+      return { target: cand, x: (l + r) / 2 / screen.width, y: (t + bot) / 2 / screen.height };
+    }
+  }
+  return null;
+}
+
+// The effect fingerprint (phase 3h review A2/A3, fix a): the sorted label set of an
+// untimed uiautomator dump. Backend-independent, so OFF and ON have IDENTICAL
+// sensitivity — a navigating tap changes the set, a no-op tap leaves it identical.
+async function uiAutomatorLabelHash(): Promise<string | undefined> {
+  const xml = dumpUiTree();
+  if (!xml) return undefined;
+  const set = uiTreeLabelSet(xml);
+  if (set.size === 0) return undefined;
+  return [...set].sort().join("\n");
+}
+
+// Derive a deterministic navigating tap TARGET and the destination-only marker
+// set (labels on the fully-settled destination but NOT on the root). Phase 3h
+// review A1–A3 (fix a): the target is derived PRIMARILY from an untimed, backend-
+// INDEPENDENT `adb uiautomator dump` so the OFF (proprietary) block arms the effect
+// check just like ON — the describe-based pick remains only as a fallback for the
+// rare case the dump yields no tree. The MARKERS still come from the backend
+// describe, because the staleness probe deliberately measures the backend's own
+// rendering. The whole derive retries 3× with a full reset between attempts: a
+// single flaky read must NOT silently disarm the entire block. `settleForDerive`
+// picks the describe policy for the settled-destination marker read (true on ON so
 // the markers are complete; undefined on OFF where `settle` is a no-op).
 async function deriveNavTarget(
   reg: Reg,
   settleForDerive: boolean | undefined
 ): Promise<{ target: string; x: number; y: number; markers: string[] } | null> {
-  await ensureSettings(reg);
-  let root: { description: string };
-  try {
-    root = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
-  } catch {
-    return null;
-  }
-  const rootLabels = labelSetOf(root.description);
-  const lines = root.description.split("\n");
-  // The Settings root renders each row as a single concatenated label
-  // ("Network & internet / Mobile, Wi‑Fi, hotspot"), so match a candidate as the
-  // PREFIX of a row's label, not an exact quoted string.
   const lineLabel = (l: string): string | undefined =>
     l.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/)?.[1];
-  let picked: { target: string; x: number; y: number } | null = null;
-  for (const cand of NAV_CANDIDATES) {
-    const line = lines.find((l) => {
-      const label = lineLabel(l);
-      return !!label && label.startsWith(cand) && !!frameCenterOf(l);
-    });
-    if (line) {
-      const c = frameCenterOf(line)!;
-      picked = { target: cand, x: c.x, y: c.y };
-      break;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ensureSettings(reg);
+    // Root labels for the markers come from the backend describe (the staleness
+    // probe measures the backend); a failure here is retryable, not fatal.
+    let rootLabels: Set<string>;
+    let rootLines: string[];
+    try {
+      const root = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+      rootLabels = labelSetOf(root.description);
+      rootLines = root.description.split("\n");
+    } catch {
+      continue;
     }
+    // PRIMARY target: backend-independent uiautomator dump → normalized centre.
+    let picked: { target: string; x: number; y: number } | null = null;
+    const screen = screenSizePx();
+    if (screen) {
+      const xml = dumpUiTree();
+      if (xml) picked = uiTreeNavTarget(xml, screen);
+    }
+    // FALLBACK target: the old backend-describe pick (concatenated row label
+    // prefix), used only when the dump produced nothing.
+    if (!picked) {
+      for (const cand of NAV_CANDIDATES) {
+        const line = rootLines.find((l) => {
+          const label = lineLabel(l);
+          return !!label && label.startsWith(cand) && !!frameCenterOf(l);
+        });
+        if (line) {
+          const c = frameCenterOf(line)!;
+          picked = { target: cand, x: c.x, y: c.y };
+          break;
+        }
+      }
+    }
+    if (!picked) continue;
+    await reg
+      .invokeTool("gesture-tap", { udid: SERIAL, x: picked.x, y: picked.y })
+      .catch(() => undefined);
+    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    let destLabels: Set<string>;
+    try {
+      const dest = (await reg.invokeTool("describe", {
+        udid: SERIAL,
+        ...(settleForDerive === undefined ? {} : { settle: settleForDerive }),
+      })) as { description: string };
+      destLabels = labelSetOf(dest.description);
+    } catch {
+      await ensureSettings(reg);
+      continue;
+    }
+    const markers = [...destLabels].filter((l) => !rootLabels.has(l));
+    await ensureSettings(reg);
+    return { target: picked.target, x: picked.x, y: picked.y, markers };
   }
-  if (!picked) return null;
-  await reg
-    .invokeTool("gesture-tap", { udid: SERIAL, x: picked.x, y: picked.y })
-    .catch(() => undefined);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
-  let dest: { description: string };
-  try {
-    dest = (await reg.invokeTool("describe", {
-      udid: SERIAL,
-      ...(settleForDerive === undefined ? {} : { settle: settleForDerive }),
-    })) as { description: string };
-  } catch {
-    return null;
-  }
-  const destLabels = labelSetOf(dest.description);
-  const markers = [...destLabels].filter((l) => !rootLabels.has(l));
-  await ensureSettings(reg);
-  return { ...picked, markers };
+  return null;
 }
 
 // After a navigating tap, does the IMMEDIATE describe already show the
@@ -1359,19 +1495,15 @@ interface BlockResult {
   // taps were actually evaluated.
   effectCheckedTotal: number;
   originLostTotal: number;
+  // Phase 3j item 3d (fix h): the host↔device transport this block's open path used
+  // — "redir" on the CI emulator once the redir client pings, else "adb-forward";
+  // "n/a (proprietary)" on the OFF blocks (no open server). Printed per block.
+  transport: string | null;
+  // Phase 3h review A1 (fix b): reasons this block's OFF arm was DEGRADED (not merely
+  // unarmed) — await-screen-idle / await-ui-element capped on every iteration, or the
+  // paste search field never found. Non-empty ⇒ the merge fails the block.
+  degradedReasons: string[];
   notes: string[];
-}
-
-// Screen fingerprint for the effect check: the sorted label set of a describe.
-// Both backends emit the same `"label"` shape, so this is comparable across
-// configs; a navigating tap changes the set, a no-op tap leaves it identical.
-async function describeLabelHash(reg: Reg): Promise<string | undefined> {
-  try {
-    const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
-    return [...labelSetOf(d.description)].sort().join("\n");
-  } catch {
-    return undefined;
-  }
 }
 
 async function coldStart(config: "OFF" | "ON"): Promise<number[]> {
@@ -1427,6 +1559,12 @@ async function runBlock(
   const lastDesc = clean.description;
   const lastSource = clean.source;
   const parsed = parseDescribe(lastDesc);
+  // Transport used by the open path this block (fix h). On ON it is the describe
+  // metadata ("redir" on the CI emulator, else "adb-forward"); the proprietary
+  // (OFF) path has no open server, so it is reported n/a. Physical devices would
+  // stay loopback + adb-forward (redir is gated to emulators on-device).
+  const lastTransport =
+    config === "ON" ? (clean.transport ?? "adb-forward (metadata absent)") : "n/a (proprietary)";
 
   // describe latency AND its decomposition from the SAME N back-to-back idle
   // describes (phase 3i correction): the verb p50/p95 and the stage + host/server
@@ -1570,10 +1708,11 @@ async function runBlock(
   const tapX = nav ? nav.x : 0.5;
   const tapY = nav ? nav.y : 0.5;
   const canEffect = !!nav;
-  // Effect fingerprint = the describe label set (position-independent, so a scroll
-  // does not read as a change); origin restore = a system BACK keyevent (adb, not
-  // the backend under test), hard-reset = ensureSettings.
-  const fingerprint = (): Promise<string | undefined> => describeLabelHash(reg);
+  // Effect fingerprint = the BACKEND-INDEPENDENT uiautomator-dump label set (fix a),
+  // position-independent (a scroll is not a change) and identical in sensitivity on
+  // OFF and ON; the tap it judges still goes through the backend under test. Origin
+  // restore = a system BACK keyevent (adb, not the backend), hard-reset = ensureSettings.
+  const fingerprint = (): Promise<string | undefined> => uiAutomatorLabelHash();
   // Light reset (no pm clear) for the tap loop — fast enough to run per originLost.
   const ensureOrigin = async (): Promise<void> => {
     await relaunchSettings(reg);
@@ -1829,6 +1968,41 @@ async function runBlock(
     `effect-check: ${effectZeroTotal} no-effect tap iteration(s) of ${effectCheckedTotal} checked ` +
       `(originLost=${originLostTotal}, target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
   );
+  // flushInput asymmetry (fix c, review A2): only the scrcpy branch defers the input
+  // drain to the next read; the UiAutomation/proprietary tap RPC drains inline. So
+  // gesture-tap (the tap-RPC row) is NOT like-for-like across backends — the
+  // like-for-like tap row is tap+describe(settle:false), which pays the drain in
+  // every block. The fold itself is unchanged in this ticket.
+  notes.push(
+    "tap-RPC row (gesture-tap) carries the flushInput asymmetry: scrcpy defers the input " +
+      "drain to the next read, UiAutomation/proprietary drain inline — headline like-for-like " +
+      "tap row is tap+describe(settle:false)"
+  );
+
+  // Degraded-arm detection (fix b, review A1): a block whose await-screen-idle /
+  // await-ui-element hit the 4000 ms cap on EVERY iteration, or whose paste never
+  // found the search field, was on the WRONG screen for part of the block — its rows
+  // are not a valid baseline. Surface the reasons; the merge FAILS such a block.
+  const CAP_MS = 4000;
+  const degradedReasons: string[] = [];
+  const idleVerb = verbs.find((v) => v.verb === "await-screen-idle");
+  if (idleVerb && idleVerb.latency.n > 0 && idleVerb.latency.min >= CAP_MS - 100) {
+    degradedReasons.push(
+      `await-screen-idle hit the ${CAP_MS}ms cap on every iteration (min=${idleVerb.latency.min}ms)`
+    );
+  }
+  const elemVerb = verbs.find((v) => v.verb === "await-ui-element");
+  if (elemVerb && elemVerb.latency.n > 0 && elemVerb.latency.min >= CAP_MS - 100) {
+    degradedReasons.push(
+      `await-ui-element hit the ${CAP_MS}ms cap on every iteration (min=${elemVerb.latency.min}ms, ` +
+        `selector=${String(elemVerb.extra?.selector ?? "?")})`
+    );
+  }
+  if (!pasteReady) {
+    degradedReasons.push("paste could not locate the Settings search field (measured on the wrong focus)");
+  }
+  for (const r of degradedReasons) notes.push(`DEGRADED ARM: ${r}`);
+  realDebug(`[bench] ${block} transport=${lastTransport} degradedReasons=${JSON.stringify(degradedReasons)}`);
 
   // Fidelity is compared on the pristine Settings root captured at block start
   // (before any tap/paste/keyboard state), so OFF and ON are the same screen.
@@ -1864,6 +2038,8 @@ async function runBlock(
     adbFormFactorAfterP50: adbFF.afterP50,
     adbFormFactorN: adbFF.n,
     destinationVisible,
+    transport: lastTransport,
+    degradedReasons,
     notes,
   };
 }
