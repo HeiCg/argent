@@ -502,39 +502,52 @@ interface TapEffectResult extends VerbResult {
   // was retried away). A dropped injection on this runner is the backend's real
   // behaviour and stays fatal on ON — it is NOT masked by a retry.
   firstTapNoEffect: number;
+  // Iterations excluded because the UNTIMED fresh locate could not find the target
+  // label even after a relaunch — never a blind tap (run-3 review).
+  locateFailed: number;
+  // Iterations whose located coordinate moved vs the previous one — evidence of the
+  // BACK-restore layout drift the per-iteration re-locate corrects for.
+  coordMoved: number;
+  // How the coordinate was located: backend-independent uiautomator-dump file vs the
+  // block's backend describe fallback. Same PRIMARY source in every block.
+  locateVia: { dump: number; describe: number };
 }
 
 /**
- * Timing-independent, FIRST-ATTEMPT effect-checked tap measurement (phase 3h; run-3
- * review). Per iteration: force-stop + relaunch a PRISTINE root (`ensureOrigin`),
- * TIME exactly `tapRpc` (the tap RPC, or tap RPC + describe RPC for tap+describe),
- * then OUTSIDE the timed window poll the fingerprint (fresh read each step) until it
- * differs from the origin or 3 s elapse. `effectZero` = `firstTapNoEffect` counts the
- * FIRST tap missing — it is NEVER retried away (a dropped injection is the backend's
- * real behaviour on this runner and stays fatal on ON). `restoreBack` is unused here
- * now (the per-iteration relaunch restores state); it is kept in the signature for the
- * oracle self-test, which shares these primitives.
+ * Timing-independent, FIRST-ATTEMPT effect-checked tap measurement, with a SYMMETRIC
+ * per-iteration locate (phase 3h; run-3 review). Every iteration, in EVERY block,
+ * identically: (1) UNTIMED fresh locate of `target` on the CURRENT screen
+ * (`locateTargetCoord` — backend-independent uiautomator-dump file, backend-describe
+ * fallback), so a coordinate that drifted after a BACK restore is re-found and the tap
+ * always hits the right place; (2) the TIMED `timedTapAt(x, y)` = a coordinate tap
+ * through the backend under test (all backends, including UiAutomation, tap by x,y —
+ * no element re-resolution inside the timed call); (3) poll the fingerprint (fresh
+ * read each step) ≤3 s. `effectZero` = `firstTapNoEffect` counts the FIRST tap missing
+ * — NEVER retried away (a dropped injection is the backend's real behaviour, fatal on
+ * ON). Then BACK to restore for the next iteration. A locate that fails even after a
+ * relaunch fallback EXCLUDES the iteration (`locateFailed`), never a blind tap.
  */
 async function timeTapEffect(
   label: string,
-  tapRpc: (i: number) => Promise<void>,
+  target: string,
+  timedTapAt: (x: number, y: number, i: number) => Promise<void>,
+  reg: Reg,
   fingerprint: () => Promise<string | undefined>,
   ensureOrigin: () => Promise<void>,
-  _restoreBack: () => Promise<void>
+  restoreBack: () => Promise<void>
 ): Promise<TapEffectResult> {
-  // Canonical ROOT fingerprint: after a full reset, the first defined fingerprint is
-  // the root the navigating tap moves AWAY from. Each iteration relaunches to it, so a
-  // miss can never cascade — this mirrors the on-device test's per-iteration `fiHome`.
+  // Canonical ROOT fingerprint: after a reset, the first defined fingerprint is the
+  // root the navigating tap moves AWAY from. Used only to confirm BACK restored it.
   let rootFp: string | undefined;
   for (let a = 0; a < 4 && rootFp === undefined; a++) {
     await ensureOrigin().catch(() => undefined);
     rootFp = await fingerprint().catch(() => undefined);
   }
   for (let i = 0; i < WARMUP; i++) {
+    const loc = await locateTargetCoord(reg, target);
+    if (loc) await timedTapAt(loc.x, loc.y, i).catch(() => undefined);
     await ensureOrigin().catch(() => undefined);
-    await tapRpc(i).catch(() => undefined);
   }
-  await ensureOrigin().catch(() => undefined);
   const mark = debugLines.length;
   const lat: number[] = [];
   let errors = 0;
@@ -542,46 +555,57 @@ async function timeTapEffect(
   let effectChecked = 0;
   let effectZero = 0;
   let originLost = 0;
+  let locateFailed = 0;
+  let coordMoved = 0;
+  const locateVia = { dump: 0, describe: 0 };
+  let prev: { x: number; y: number } | undefined;
   for (let i = 0; i < N; i++) {
-    // Start every iteration from a FRESHLY RELAUNCHED, pristine root (force-stop +
-    // relaunch — the same thing the device test's fiHome does). Run-3 showed that
-    // tapping a BACK-restored homepage (same resumed-activity as root, so a
-    // fingerprint check passes, but not pristine at the derived coordinate) misses
-    // 38-75% for the coordinate-injection backends while UiAutomation — which
-    // re-resolves the element — misses 0%. That was a restore artifact, not the
-    // backend's real first-attempt rate. Relaunching per iteration makes the first
-    // tap always hit a pristine layout, so effectZero is the HONEST first-attempt
-    // miss rate on a clean root. No BACK, no re-tap: the next iteration relaunches.
-    await ensureOrigin().catch(() => undefined);
-    let origin = await fingerprint().catch(() => undefined);
-    // Verify we actually reached the canonical root (team-lead req 4); one retry.
-    if (origin === undefined || (rootFp !== undefined && origin !== rootFp)) {
+    // 1. UNTIMED fresh locate on the CURRENT screen. If it fails, relaunch a pristine
+    //    root ONCE (the only relaunch path) and re-locate; still nothing ⇒ exclude.
+    let loc = await locateTargetCoord(reg, target);
+    if (!loc) {
       await ensureOrigin().catch(() => undefined);
-      origin = await fingerprint().catch(() => undefined);
+      loc = await locateTargetCoord(reg, target);
     }
+    if (!loc) {
+      locateFailed++;
+      if (errorSamples.length < 5) errorSamples.push(`i=${i}: locate('${target}') failed — excluded`);
+      continue;
+    }
+    locateVia[loc.source]++;
+    if (prev && (Math.abs(loc.x - prev.x) > 0.002 || Math.abs(loc.y - prev.y) > 0.002)) coordMoved++;
+    prev = { x: loc.x, y: loc.y };
+    // 2. Origin fingerprint (baseline for the effect poll).
+    const origin = await fingerprint().catch(() => undefined);
     if (origin === undefined) {
       originLost++;
       continue;
     }
     const originFp = origin;
-    // TIMED window: exactly the tap RPC(s) — the FIRST attempt only.
+    // 3. TIMED window: the coordinate tap [+describe] through the backend under test.
     const t0 = Date.now();
     try {
-      await tapRpc(i);
+      await timedTapAt(loc.x, loc.y, i);
       lat.push(Date.now() - t0);
     } catch (e) {
       errors++;
       if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+      await ensureOrigin().catch(() => undefined);
       continue;
     }
-    // UNTIMED: did the FIRST tap change the screen within 3 s? (poll, FRESH read each
-    // step). This is the verdict — no re-tap. A dropped injection on this runner is
-    // the backend's real behaviour and must stay visible, so a first-attempt miss is
-    // counted as effectZero (fatal on ON), never retried away.
+    // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
     const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
     effectChecked++;
     if (!changed) effectZero++;
-    // No restore needed: the next iteration force-stops and relaunches a pristine root.
+    // 5. Restore for the next iteration: BACK; if not back on the root, hard-reset.
+    if (changed) {
+      await restoreBack().catch(() => undefined);
+      const restored = await pollUntil(fingerprint, (f) => f !== undefined && f === rootFp, 2000, 150);
+      if (!restored) {
+        originLost++;
+        await ensureOrigin().catch(() => undefined);
+      }
+    }
   }
   const fb = fallbackCountSince(mark);
   return {
@@ -595,6 +619,9 @@ async function timeTapEffect(
     effectZero,
     originLost,
     firstTapNoEffect: effectZero,
+    locateFailed,
+    coordMoved,
+    locateVia,
   };
 }
 
@@ -610,16 +637,20 @@ async function timeTapEffect(
  * first-attempt miss during the timed loop) and from a degraded await arm.
  */
 async function oracleSelfTest(
-  tapRpc: (i: number) => Promise<void>,
+  target: string,
+  timedTapAt: (x: number, y: number, i: number) => Promise<void>,
+  reg: Reg,
   fingerprint: () => Promise<string | undefined>,
   ensureOrigin: () => Promise<void>,
   restoreBack: () => Promise<void>
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 3; attempt++) {
     await ensureOrigin().catch(() => undefined);
+    const loc = await locateTargetCoord(reg, target);
+    if (!loc) continue;
     const origin = await fingerprint().catch(() => undefined);
     if (origin === undefined) continue;
-    await tapRpc(0).catch(() => undefined);
+    await timedTapAt(loc.x, loc.y, 0).catch(() => undefined);
     const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== origin, 3000, 150);
     if (!changed) continue;
     await restoreBack().catch(() => undefined);
@@ -1341,22 +1372,6 @@ function screenSizePx(): { width: number; height: number } | null {
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
-// Raw `adb shell uiautomator dump /dev/tty` XML, INDEPENDENT of the backend under
-// test. Returns the <hierarchy>…</hierarchy> slice, or "" if no tree was produced.
-function dumpUiTree(): string {
-  let out = "";
-  try {
-    out = adbShell("uiautomator dump /dev/tty 2>/dev/null", 12_000);
-  } catch {
-    return "";
-  }
-  const start = out.indexOf("<hierarchy");
-  const close = "</hierarchy>";
-  const end = out.lastIndexOf(close);
-  if (start === -1 || end === -1) return "";
-  return out.slice(start, end + close.length);
-}
-
 // First NAV_CANDIDATE present in the dump (by text or content-desc, prefix match in
 // candidate-priority order) with parseable bounds, as a normalized (0..1) tap
 // centre. null if none present or the screen size is unknown.
@@ -1379,6 +1394,97 @@ function uiTreeNavTarget(
       if (r <= l || bot <= t) continue;
       return { target: cand, x: (l + r) / 2 / screen.width, y: (t + bot) / 2 / screen.height };
     }
+  }
+  return null;
+}
+
+// Per-BLOCK probe state: once `uiautomator dump` proves unusable (an ON backend holds
+// UiAutomation, so the shell dump errors after its idle timeout), stop calling it for
+// the rest of the block so the fresh locate falls straight through to the backend
+// describe instead of paying ~6 s per iteration. Reset at each block start.
+let uiDumpEmptyStreak = 0;
+function resetUiDumpProbe(): void {
+  uiDumpEmptyStreak = 0;
+}
+
+// `adb shell uiautomator dump <file>` then `cat` — the FILE variant works where the
+// `/dev/tty` variant returns nothing under non-interactive adb. Backend-independent.
+// Returns the <hierarchy> slice or "" (e.g. UiAutomation busy while a backend holds
+// it). After 2 consecutive empties in a block it short-circuits (dump unusable here).
+function dumpUiTreeFile(): string {
+  if (uiDumpEmptyStreak >= 2) return "";
+  try {
+    adbShell("uiautomator dump /sdcard/df_bench_ui.xml >/dev/null 2>&1", 6_000);
+    const out = adbShell("cat /sdcard/df_bench_ui.xml 2>/dev/null", 5_000);
+    const start = out.indexOf("<hierarchy");
+    const end = out.lastIndexOf("</hierarchy>");
+    if (start === -1 || end === -1) {
+      uiDumpEmptyStreak++;
+      return "";
+    }
+    uiDumpEmptyStreak = 0;
+    return out.slice(start, end + "</hierarchy>".length);
+  } catch {
+    uiDumpEmptyStreak++;
+    return "";
+  }
+}
+
+// Normalized centre of a SPECIFIC label in a uiautomator-dump XML (prefix match on
+// text or content-desc), or null. Same parse as uiTreeNavTarget, one target.
+function locateLabelInXml(
+  xml: string,
+  screen: { width: number; height: number },
+  target: string
+): { x: number; y: number } | null {
+  for (const node of xml.match(/<node\b[^>]*>/g) ?? []) {
+    const text = xmlUnescape(node.match(/\btext="((?:[^"\\]|\\.)*)"/)?.[1] ?? "");
+    const desc = xmlUnescape(node.match(/\bcontent-desc="((?:[^"\\]|\\.)*)"/)?.[1] ?? "");
+    if (!text.startsWith(target) && !desc.startsWith(target)) continue;
+    const b = node.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
+    if (!b) continue;
+    const l = Number(b[1]), t = Number(b[2]), r = Number(b[3]), bot = Number(b[4]);
+    if (r <= l || bot <= t) continue;
+    return { x: (l + r) / 2 / screen.width, y: (t + bot) / 2 / screen.height };
+  }
+  return null;
+}
+
+// UNTIMED fresh locate of `target` on the CURRENT screen (run-3 review: every
+// iteration re-locates so a coordinate that drifted after a BACK restore is found
+// afresh, and the timed tap always hits the right place — the miss rate then measures
+// injection reliability, not a stale coordinate). PRIMARY source is the backend-
+// INDEPENDENT uiautomator-dump file (identical in every block); FALLBACK is the
+// block's own backend describe when the dump is empty (UiAutomation held by the
+// backend, so the shell dump can return nothing). Returns the coord + which source
+// found it, or null (locate failed → the iteration is excluded, never a blind tap).
+async function locateTargetCoord(
+  reg: Reg,
+  target: string
+): Promise<{ x: number; y: number; source: "dump" | "describe" } | null> {
+  const screen = screenSizePx();
+  if (screen) {
+    const xml = dumpUiTreeFile();
+    if (xml) {
+      const c = locateLabelInXml(xml, screen, target);
+      if (c) return { ...c, source: "dump" };
+    }
+  }
+  // Fallback: the backend describe (untimed). Same target row, same parse as
+  // deriveNavTarget's fallback; the coordinate for a given row is the physical row
+  // centre regardless of which backend rendered it.
+  try {
+    const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+    const line = d.description.split("\n").find((l) => {
+      const label = l.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/)?.[1];
+      return !!label && label.startsWith(target) && !!frameCenterOf(l);
+    });
+    if (line) {
+      const c = frameCenterOf(line)!;
+      return { x: c.x, y: c.y, source: "describe" };
+    }
+  } catch {
+    /* locate failed */
   }
   return null;
 }
@@ -1450,7 +1556,7 @@ async function deriveNavTarget(
     let picked: { target: string; x: number; y: number } | null = null;
     const screen = screenSizePx();
     if (screen) {
-      const xml = dumpUiTree();
+      const xml = dumpUiTreeFile();
       if (xml) picked = uiTreeNavTarget(xml, screen);
     }
     // FALLBACK target: the old backend-describe pick (concatenated row label
@@ -1605,6 +1711,13 @@ interface BlockResult {
   // retried). A positive count on an ON block is fatal — it is the honest
   // "N first attempts did not land" result for this backend on this runner.
   firstTapNoEffectTotal: number;
+  // Iterations excluded because the per-iteration fresh locate could not find the
+  // target even after a relaunch (never a blind tap); how many located coordinates
+  // moved vs the previous iteration (BACK-restore drift evidence); and which source
+  // located the coordinate (backend-independent dump vs backend-describe fallback).
+  locateFailedTotal: number;
+  coordMovedTotal: number;
+  locateViaTotal: { dump: number; describe: number };
   // Oracle self-test verdict (run-2 review): did the backend complete ONE
   // detected+restored navigation before the timed loop? false ⇒ the block's effect
   // rows are untrustworthy; the merge fails it with a DISTINCT "oracle self-test
@@ -1651,6 +1764,7 @@ async function runBlock(
   fastInject: boolean
 ): Promise<BlockResult> {
   const notes: string[] = [];
+  resetUiDumpProbe(); // re-probe the backend-independent locate source per block
   if (config === "ON") setFlag("open-device-server", true, "project");
   else unsetFlag("open-device-server", "project");
   // Phase 3f: the scrcpy control-channel touch backend is gated by this flag; the
@@ -1860,10 +1974,14 @@ async function runBlock(
   }
   await ensureSettings(reg);
 
-  // gesture-tap. Latency = the tap RPC ONLY; the effect check (timing-independent
-  // poll for a screen change up to 3 s, then BACK to restore the origin) is OUTSIDE
-  // the timed window (phase 3h). effectZero counts taps that NEVER changed the
-  // screen; the block fails on effectZero > 0 in the merge.
+  // TIMED coordinate tap at a per-iteration LOCATED (x, y) — identical call in every
+  // block (ON UiAutomation, ON scrcpy, OFF proprietary all tap by x,y; no element
+  // re-resolution inside the timed call). The `_i` keeps the timedTapAt signature.
+  const target = nav ? nav.target : "";
+  const timedTapAt = async (x: number, y: number, _i: number): Promise<void> => {
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
+  };
+  // For the no-target fallback only (canEffect false): a fixed neutral tap.
   const gestureTapRpc = async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
   };
@@ -1874,29 +1992,39 @@ async function runBlock(
   // was derivable (canEffect false — already surfaced as no effect check).
   let oracleSelfTestPassed = true;
   if (canEffect) {
-    oracleSelfTestPassed = await oracleSelfTest(gestureTapRpc, fingerprint, ensureOrigin, restoreBack);
+    oracleSelfTestPassed = await oracleSelfTest(target, timedTapAt, reg, fingerprint, ensureOrigin, restoreBack);
     notes.push(
       oracleSelfTestPassed
-        ? `oracle self-test: PASSED (navigate→detect→restore for ${nav ? nav.target : "?"})`
-        : `ORACLE SELF-TEST FAILED: backend could not complete one detected+restored navigation to ` +
-            `${nav ? nav.target : "?"} — this block's effect rows are untrustworthy (distinct from a ` +
-            `first-attempt miss)`
+        ? `oracle self-test: PASSED (locate→tap→detect→restore for ${target})`
+        : `ORACLE SELF-TEST FAILED: backend could not complete one located+detected+restored navigation ` +
+            `to ${target} — this block's effect rows are untrustworthy (distinct from a first-attempt miss)`
     );
     await ensureSettings(reg);
   }
+  // gesture-tap. TIMED = the coordinate tap ONLY; the per-iteration UNTIMED fresh
+  // locate + the effect poll + BACK restore are outside the timed window (phase 3h).
+  // effectZero = firstTapNoEffect counts the FIRST tap missing; the block fails on
+  // effectZero > 0 in the merge (ON) / is reported (OFF).
   verbs.push(
     canEffect
-      ? await timeTapEffect("gesture-tap", gestureTapRpc, fingerprint, ensureOrigin, restoreBack)
+      ? await timeTapEffect("gesture-tap", target, timedTapAt, reg, fingerprint, ensureOrigin, restoreBack)
       : await timeCalls("gesture-tap", gestureTapRpc, undefined, ensureOrigin)
   );
 
   await ensureSettings(reg);
 
   // tap+describe (F4 / P3d): what an agent actually does (act, then read). TIMED
-  // window = tap RPC + describe RPC; the effect poll + BACK restore are outside it.
-  // ON runs both idle policies (settle:false like-for-like, settle:true our policy);
-  // OFF has one policy.
-  const tapThenDescribe = (settle?: boolean) => async (): Promise<void> => {
+  // window = coordinate tap RPC + describe RPC; the fresh locate, effect poll and BACK
+  // restore are outside it. ON runs both idle policies (settle:false like-for-like,
+  // settle:true our policy); OFF has one policy.
+  const tapDescribeAt = (settle?: boolean) => async (x: number, y: number, _i: number): Promise<void> => {
+    await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
+    await reg.invokeTool("describe", {
+      udid: SERIAL,
+      ...(settle === undefined ? {} : { settle }),
+    });
+  };
+  const tapThenDescribeFixed = (settle?: boolean) => async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
     await reg.invokeTool("describe", {
       udid: SERIAL,
@@ -1905,8 +2033,8 @@ async function runBlock(
   };
   const runTapDescribe = (name: string, settle?: boolean): Promise<VerbResult> =>
     canEffect
-      ? timeTapEffect(name, tapThenDescribe(settle), fingerprint, ensureOrigin, restoreBack)
-      : timeCalls(name, tapThenDescribe(settle), undefined, ensureOrigin);
+      ? timeTapEffect(name, target, tapDescribeAt(settle), reg, fingerprint, ensureOrigin, restoreBack)
+      : timeCalls(name, tapThenDescribeFixed(settle), undefined, ensureOrigin);
   if (config === "ON") {
     verbs.push(await runTapDescribe("tap+describe(settle:false)", false));
     await ensureSettings(reg);
@@ -2044,25 +2172,31 @@ async function runBlock(
     )
   );
 
-  // paste: open Settings search, focus field, then type into it N times
-  await ensureSettings(reg);
+  // paste: open Settings search, focus field, then type into it N times. The search
+  // entry can fail to render with parseable bounds on the FIRST proprietary describe
+  // after a reset (run-2 OFF-2, run-3 OFF-1 both degraded here). Retry the settle +
+  // describe + locate a few times before giving up, so an intermittent render race is
+  // not scored as a degraded arm.
   let pasteReady = false;
-  try {
-    const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
-    // Find the search entry line and tap its centre.
-    const line = d.description
-      .split("\n")
-      .find((l) => /search/i.test(l) && /\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)/.test(l));
-    const fm = line?.match(/\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)\s*$/);
-    if (fm) {
-      const x = Number(fm[1]) + Number(fm[3]) / 2;
-      const y = Number(fm[2]) + Number(fm[4]) / 2;
-      await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
-      await sleep(1200);
-      pasteReady = true;
+  for (let attempt = 0; attempt < 3 && !pasteReady; attempt++) {
+    await ensureSettledSettingsRoot(reg);
+    try {
+      const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+      // Find the search entry line and tap its centre.
+      const line = d.description
+        .split("\n")
+        .find((l) => /search/i.test(l) && /\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)/.test(l));
+      const fm = line?.match(/\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)\s*$/);
+      if (fm) {
+        const x = Number(fm[1]) + Number(fm[3]) / 2;
+        const y = Number(fm[2]) + Number(fm[4]) / 2;
+        await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
+        await sleep(1200);
+        pasteReady = true;
+      }
+    } catch {
+      /* retry */
     }
-  } catch {
-    /* pasteReady stays false */
   }
   if (!pasteReady) notes.push("paste: could not locate Settings search field; measured on current focus");
   verbs.push(
@@ -2125,9 +2259,26 @@ async function runBlock(
   const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
   const originLostTotal = verbs.reduce((s, v) => s + (v.originLost ?? 0), 0);
   const firstTapNoEffectTotal = effectZeroTotal; // first-attempt only; no retry masks it
+  const locateFailedTotal = verbs.reduce(
+    (s, v) => s + ((v as Partial<TapEffectResult>).locateFailed ?? 0),
+    0
+  );
+  const coordMovedTotal = verbs.reduce((s, v) => s + ((v as Partial<TapEffectResult>).coordMoved ?? 0), 0);
+  const locateViaTotal = verbs.reduce(
+    (acc, v) => {
+      const lv = (v as Partial<TapEffectResult>).locateVia;
+      if (lv) {
+        acc.dump += lv.dump;
+        acc.describe += lv.describe;
+      }
+      return acc;
+    },
+    { dump: 0, describe: 0 }
+  );
   notes.push(
     `effect-check: firstTapNoEffect=${firstTapNoEffectTotal}/${effectCheckedTotal} ` +
-      `(first-attempt only, no re-tap; originLost=${originLostTotal}, ` +
+      `(first-attempt only, no re-tap; originLost=${originLostTotal}, locateFailed=${locateFailedTotal}, ` +
+      `coordMoved=${coordMovedTotal}, locateVia dump/describe=${locateViaTotal.dump}/${locateViaTotal.describe}, ` +
       `target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
   );
   // flushInput asymmetry (fix c, review A2): only the scrcpy branch defers the input
@@ -2189,6 +2340,9 @@ async function runBlock(
     effectCheckedTotal,
     originLostTotal,
     firstTapNoEffectTotal,
+    locateFailedTotal,
+    coordMovedTotal,
+    locateViaTotal,
     oracleSelfTestPassed,
     describeSplitIdle,
     describeSplitAfterTap,
@@ -2276,7 +2430,9 @@ async function main(): Promise<void> {
       `[bench][${block}] fastInject=${fastInject} fastInjectFallbacks=${fbTotal} ` +
         `oracleSelfTest=${r.oracleSelfTestPassed ? "pass" : "FAILED"} ` +
         `firstTapNoEffect=${r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
-        `effectZero=${r.effectZeroTotal}/${r.effectCheckedTotal} originLost=${r.originLostTotal} ` +
+        `locateFailed=${r.locateFailedTotal} coordMoved=${r.coordMovedTotal} ` +
+        `locateVia(dump/describe)=${r.locateViaTotal.dump}/${r.locateViaTotal.describe} ` +
+        `originLost=${r.originLostTotal} ` +
         `tapFrames=${r.injectedTapTimeline.frameCount}(move=${r.injectedTapTimeline.hasMoveFrame})`
     );
     realDebug(
