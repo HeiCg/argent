@@ -226,12 +226,22 @@ async function execCaptureStep(reg: Reg, step: BenchStep): Promise<void> {
       break;
     }
     case "swipe": {
-      const cx = Math.round(W / 2);
-      const [fromY, toY] =
-        a.direction === "up"
-          ? [Math.round(H * 0.7), Math.round(H * 0.3)]
-          : [Math.round(H * 0.3), Math.round(H * 0.7)];
-      await server.swipeWithOutcome(cx, fromY, cx, toY, 10).catch(() => undefined);
+      // Phase D.2 L1: use the SAME controlled, momentum-free swipe the matrix
+      // runs (`gesture-swipe`, durationMs 250) rather than a 10-step fling. The
+      // fling over-/under-shoots, so the Display row landed inconsistently and
+      // `settings-display` reached its destination only ~1/6 in pre-flight while
+      // the matrix reaches it. A controlled swipe reveals the row reliably.
+      const [fromY, toY] = a.direction === "up" ? [0.7, 0.3] : [0.3, 0.7];
+      await reg
+        .invokeTool("gesture-swipe", {
+          udid: SERIAL,
+          fromX: 0.5,
+          fromY,
+          toX: 0.5,
+          toY,
+          durationMs: 250,
+        })
+        .catch(() => undefined);
       break;
     }
     case "type": {
@@ -386,7 +396,7 @@ async function verifyDestinationPresence(
   launch: ScreenDump
 ): Promise<boolean | null> {
   const launchSet = screenTextSet(launch);
-  const ATTEMPTS = 6;
+  const ATTEMPTS = 10;
   let reachedDistinct = 0;
   let unreachedOrThrew = 0;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
