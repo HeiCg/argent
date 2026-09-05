@@ -1270,19 +1270,6 @@ function dumpUiTree(): string {
   return out.slice(start, end + close.length);
 }
 
-// Every non-empty text= / content-desc= value in a uiautomator dump (unescaped) —
-// the backend-independent label set for the effect fingerprint.
-function uiTreeLabelSet(xml: string): Set<string> {
-  const set = new Set<string>();
-  const re = /(?:text|content-desc)="((?:[^"\\]|\\.)*)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) {
-    const v = xmlUnescape(m[1] ?? "");
-    if (v.trim().length) set.add(v);
-  }
-  return set;
-}
-
 // First NAV_CANDIDATE present in the dump (by text or content-desc, prefix match in
 // candidate-priority order) with parseable bounds, as a normalized (0..1) tap
 // centre. null if none present or the screen size is unknown.
@@ -1309,15 +1296,37 @@ function uiTreeNavTarget(
   return null;
 }
 
-// The effect fingerprint (phase 3h review A2/A3, fix a): the sorted label set of an
-// untimed uiautomator dump. Backend-independent, so OFF and ON have IDENTICAL
-// sensitivity — a navigating tap changes the set, a no-op tap leaves it identical.
-async function uiAutomatorLabelHash(): Promise<string | undefined> {
-  const xml = dumpUiTree();
-  if (!xml) return undefined;
-  const set = uiTreeLabelSet(xml);
-  if (set.size === 0) return undefined;
-  return [...set].sort().join("\n");
+// Backend-independent, UiAutomation-free, animation-immune effect fingerprint
+// (phase 3h review A2/A3 fix a; run-1 correction). The first cut used
+// `uiautomator dump /dev/tty`, which returned NO tree on the CI emulator (dump to a
+// tty in non-interactive adb yields nothing), so origin was undefined on 100% of
+// iterations (originLost=N, effectChecked=0 — the unarmed gate then fired). The
+// resumed activity from `dumpsys activity activities` needs no UiAutomation (so it
+// works while EITHER backend holds it), never blocks on idle, and is immune to clock
+// / ripple animation: a navigating tap moves the resumed activity from the Settings
+// homepage to a sub-page (.SubSettings / a dedicated activity), a no-op tap leaves it
+// unchanged. Identical on OFF and ON — it touches neither backend, so the effect
+// check has the SAME sensitivity in every block.
+function resumedActivityFingerprint(): Promise<string | undefined> {
+  return Promise.resolve().then(() => {
+    let out = "";
+    try {
+      out = adbShell("dumpsys activity activities | grep -m1 -E 'mResumedActivity|topResumedActivity'", 8_000);
+    } catch {
+      out = "";
+    }
+    let m = out.match(/([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)/);
+    if (m) return "act:" + m[1];
+    // Fallback: the focused window's activity component (still backend-independent).
+    try {
+      const w = adbShell("dumpsys window | grep -m1 mCurrentFocus", 8_000);
+      const wm = w.match(/([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)/);
+      if (wm) return "win:" + wm[1];
+    } catch {
+      /* fall through */
+    }
+    return undefined;
+  });
 }
 
 // Derive a deterministic navigating tap TARGET and the destination-only marker
@@ -1722,11 +1731,12 @@ async function runBlock(
   const tapX = nav ? nav.x : 0.5;
   const tapY = nav ? nav.y : 0.5;
   const canEffect = !!nav;
-  // Effect fingerprint = the BACKEND-INDEPENDENT uiautomator-dump label set (fix a),
-  // position-independent (a scroll is not a change) and identical in sensitivity on
-  // OFF and ON; the tap it judges still goes through the backend under test. Origin
+  // Effect fingerprint = the BACKEND-INDEPENDENT resumed activity (fix a; run-1
+  // correction — the uiautomator-dump oracle produced no tree on the CI emulator).
+  // A navigating tap changes the resumed activity, a no-op tap leaves it identical;
+  // it touches neither backend, so OFF and ON have identical sensitivity. Origin
   // restore = a system BACK keyevent (adb, not the backend), hard-reset = ensureSettings.
-  const fingerprint = (): Promise<string | undefined> => uiAutomatorLabelHash();
+  const fingerprint = (): Promise<string | undefined> => resumedActivityFingerprint();
   // Light reset (no pm clear) for the tap loop — fast enough to run per originLost.
   const ensureOrigin = async (): Promise<void> => {
     await relaunchSettings(reg);
