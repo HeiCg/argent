@@ -445,13 +445,11 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
 
     steps:
-      # Check out the bench tree by BRANCH NAME, not a pinned SHA, so the job
-      # always reads the branch head (review C-L3). Phase D bench tree:
-      # feat/screen-graph-d (H_id keying + selector-carrying edges + honest accounting).
-      - name: Checkout feat/screen-graph-d (branch head)
+      # feat/screen-graph-d is merged into open/main, so the screen-graph bench
+      # tree is this job's own checked-out ref — build it directly, same as the
+      # latency job (no separate branch checkout).
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: feat/screen-graph-d
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

@@ -8,8 +8,12 @@ review. The fork is the only home of this work from 2026-09-13 on.
 ## Where things are
 - Working branch: `open/main` = `feat/android-open-server-final` (driver 3h+3i+3j) +
   `feat/bench-ci-final` (bench workflow with all gates) + these docs.
-- Not yet merged: `feat/screen-graph-d` (screen-graph D→D.3, plus the start of D.4) and
-  `feat/bench-ci-d` (screen-graph matrix job). `feat/run-script` = upstream PR #995.
+- Merged: `feat/screen-graph-d` (screen-graph D→D.3, plus the start of D.4) is merged with
+  `open/main` on branch `merge/screen-graph-d` — a hand-resolved semantic union of the
+  driver (3h/3i/3j) and the screen-graph tree, awaiting the planner's fast-forward of
+  `open/main`. `feat/bench-ci-d` is superseded by `feat/bench-ci-final` (already in
+  `open/main`, a strict superset) and will not be merged; it stays on origin as history.
+  `feat/run-script` = upstream PR #995.
 - CI: `.github/workflows/bench-open-vs-proprietary.yml` (`workflow_dispatch`, inputs
   `suite=latency|screen-graph|both`); proprietary package fetched from npm at run time,
   never committed (its LICENSE forbids redistribution and reverse-engineering).
@@ -28,24 +32,22 @@ at 400 ms vs proprietary (reproducible; inferred cause: host paces one injectTou
 frame). Compact payload (3j) disabled: not output-preserving.
 
 ## Execution order (next)
-1. Merge `feat/screen-graph-d` + `feat/bench-ci-d` into `open/main` (code merge; one
-   `suite=both` run must stay green).
-2. **3k** — `2026-09-05-open-server-phase3k-fling-pacing-and-gates.md`. Decision taken:
+1. **3k** — `2026-09-05-open-server-phase3k-fling-pacing-and-gates.md`. Decision taken:
    option (i): measure delivered-vs-requested duration/distance for all three arms from
    logcat, fix scrcpy pacing (drift-corrected writes without per-frame socket await, else
    device-side timeline), gate scrcpy/uia ±0.15 without whitelist, transparency rows
    scrcpy/off and uia/off; NO velocity tuning toward the proprietary curve. Then review.
-3. **D.4** — `2026-09-05-screen-graph-phase-d4-symmetric-locate.md` (symmetric locate
+2. **D.4** — `2026-09-05-screen-graph-phase-d4-symmetric-locate.md` (symmetric locate
    resolver for B1 and open configs; unique navTarget). Then review.
-4. Artemis-derived driver items (see `2026-09-13` note below): verified tap
+3. Artemis-derived driver items (see `2026-09-13` note below): verified tap
    (`verify: {selector}` resolved on the live tree before injecting), execution incident
    persisted across steps, `gesture-sequence` for transient UI, index-based describe tier
    (measure tokens first).
-5. Phase E — screen graph under dynamic content (Netflix-like): template edges per
+4. Phase E — screen graph under dynamic content (Netflix-like): template edges per
    scrollable container, TTL/pruning, churn experiment on a real app. Not ticketed yet.
-6. AndroidWorld with a fixed agent (Artemis Flash profile) swapping only the driver /
+5. AndroidWorld with a fixed agent (Artemis Flash profile) swapping only the driver /
    observation tier: success, tokens/step, s/step. Needs a runner with an emulator.
-7. Release: `open/main` distribution, package name, nightly device test; paper (design
+6. Release: `open/main` distribution, package name, nightly device test; paper (design
    doc + related work exist: `2026-09-02-screen-graph-architecture.md`,
    `2026-09-02-screen-graph-related-work.md`).
 
