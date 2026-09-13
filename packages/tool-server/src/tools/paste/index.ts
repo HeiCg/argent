@@ -77,7 +77,13 @@ Supports \`{{secret:<NAME>}}\` placeholders like \`keyboard\`; the value is neve
       return serializedPerDevice(params.udid, async () => {
         if (secrets.length === 0) return dispatch(services, params, options);
         try {
-          return await dispatch(services, { ...params, text }, options);
+          // Thread `secretsUsed` so the open path redacts the recorded graph node
+          // live (Phase B leftover B1); the field is internal, not in the schema.
+          return await dispatch(
+            services,
+            { ...params, text, secretsUsed: true } as PasteParams,
+            options
+          );
         } catch (err) {
           throw redactSecretsFromError(err, secrets);
         }

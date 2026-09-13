@@ -50,18 +50,25 @@ describe("open-server screen-size cache (F21)", () => {
           ? { screenWidth: 1000, screenHeight: 2000, displayRotation: 0 }
           : { screenWidth: 2000, screenHeight: 1000, displayRotation: 1 };
       }),
-      tap: vi.fn(async () => ({ success: true })),
+      tapWithOutcome: vi.fn(async () => ({
+        success: true,
+        before: { version: 1, hash: "a", stateHash: "a" },
+        after: { version: 1, hash: "a", stateHash: "a" },
+        changed: false,
+        newScreen: false,
+        idleMs: 0,
+      })),
     };
     const tool = makeTool(openApi);
 
     await tool.execute({}, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
     // Portrait: 0.5 * 1000 = 500, 0.5 * 2000 = 1000.
-    expect(openApi.tap.mock.calls[0]!.slice(0, 2)).toEqual([500, 1000]);
+    expect(openApi.tapWithOutcome.mock.calls[0]!.slice(0, 2)).toEqual([500, 1000]);
 
     await tool.execute({}, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
     // Landscape: the cache must NOT reuse the portrait size — 0.5 * 2000 = 1000,
     // 0.5 * 1000 = 500. (The pre-fix bug converted against the stale portrait size.)
-    expect(openApi.tap.mock.calls[1]!.slice(0, 2)).toEqual([1000, 500]);
+    expect(openApi.tapWithOutcome.mock.calls[1]!.slice(0, 2)).toEqual([1000, 500]);
   });
 
   it("reuses the cached size while the rotation is unchanged", async () => {
@@ -75,14 +82,21 @@ describe("open-server screen-size cache (F21)", () => {
           ? { screenWidth: 1000, screenHeight: 2000, displayRotation: 0 }
           : { screenWidth: 4444, screenHeight: 5555, displayRotation: 0 };
       }),
-      tap: vi.fn(async () => ({ success: true })),
+      tapWithOutcome: vi.fn(async () => ({
+        success: true,
+        before: { version: 1, hash: "a", stateHash: "a" },
+        after: { version: 1, hash: "a", stateHash: "a" },
+        changed: false,
+        newScreen: false,
+        idleMs: 0,
+      })),
     };
     const tool = makeTool(openApi);
 
     await tool.execute({}, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
     await tool.execute({}, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
-    expect(openApi.tap.mock.calls[0]!.slice(0, 2)).toEqual([500, 1000]);
-    expect(openApi.tap.mock.calls[1]!.slice(0, 2)).toEqual([500, 1000]);
+    expect(openApi.tapWithOutcome.mock.calls[0]!.slice(0, 2)).toEqual([500, 1000]);
+    expect(openApi.tapWithOutcome.mock.calls[1]!.slice(0, 2)).toEqual([500, 1000]);
   });
 
   it("invalidateScreenSize (called on service dispose) clears the device entry", () => {

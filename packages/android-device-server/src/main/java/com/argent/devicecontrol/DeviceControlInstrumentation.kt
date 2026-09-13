@@ -68,6 +68,10 @@ class DeviceControlInstrumentation : Instrumentation() {
             Log.w(TAG, "Could not set UiAutomation service flags", e)
         }
 
+        // Screen-graph Phase A: start the versioned tree store + AX-event listener
+        // before serving requests, so the version clock is live from the first RPC.
+        TreeStore.init(uiDevice, uiAutomation)
+
         // Phase 3j: bench-only debug params (`_padTo`, `_benchLegacyEncode`) are
         // honored only when the server is started with `-e benchDebug true`. Off in
         // production regardless of what a request sends.

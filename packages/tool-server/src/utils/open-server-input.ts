@@ -8,6 +8,9 @@ import {
   openDeviceServerRef,
   type GesturePointerPath,
   type OpenDeviceServerApi,
+  type OpenServerActionOutcome,
+  type OpenServerAwaitChangeResult,
+  type OpenServerSelector,
 } from "../blueprints/android-open-server";
 import { openDeviceServerMutex } from "./device-mutex";
 import {
@@ -15,11 +18,90 @@ import {
   setCachedScreenSize,
   __resetOpenServerScreenSizeCache,
 } from "./open-server-screen-cache";
+import { recordOpenServerObservation, screenGraphRecordingEnabled } from "./screen-graph-open-wiring";
+import type { EdgeSelector } from "../screen-graph";
+import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
 
 // Defaults for the multi-tap timeline the on-device server builds (F1/F8/F9).
 // Kept in sync with the host constants of the same name in `gesture-tap`.
 const TAP_HOLD_MS = 50;
 const MULTI_TAP_GAP_MS = 100;
+
+/** 1/16 grid for the edge selector's bounds bucket (mirrors canonical.ts GRID). */
+const EDGE_BUCKET_GRID = 16;
+
+/**
+ * The acted element's selector for a coordinate tap (phase D §2): the smallest
+ * node in the BEFORE tree whose bounds contain (x, y) and that carries a
+ * resource-id / text / content-description. Recorded on the edge so replay
+ * re-resolves the element instead of replaying a bare coordinate.
+ */
+function tappedSelectorFromTree(
+  tree: OpenServerElement[],
+  x: number,
+  y: number,
+  size: { width: number; height: number }
+): EdgeSelector | undefined {
+  let best: OpenServerElement | undefined;
+  let bestArea = Infinity;
+  for (const el of tree) {
+    const b = el.bounds;
+    if (x < b.x1 || x > b.x2 || y < b.y1 || y > b.y2) continue;
+    if (!(el.resourceId?.trim() || el.text?.trim() || el.contentDesc?.trim())) continue;
+    const area = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+    if (area < bestArea) {
+      bestArea = area;
+      best = el;
+    }
+  }
+  if (!best) return undefined;
+  const bucket = {
+    x: Math.min(EDGE_BUCKET_GRID - 1, Math.max(0, Math.floor((x * EDGE_BUCKET_GRID) / Math.max(1, size.width)))),
+    y: Math.min(EDGE_BUCKET_GRID - 1, Math.max(0, Math.floor((y * EDGE_BUCKET_GRID) / Math.max(1, size.height)))),
+  };
+  const sel: EdgeSelector = { className: best.className, indexInParent: best.index, boundsBucket: bucket };
+  const id = best.resourceId?.trim();
+  if (id) sel.resourceId = id;
+  const text = best.text?.trim();
+  if (text) sel.text = text;
+  const cd = best.contentDesc?.trim();
+  if (cd) sel.contentDescription = cd;
+  // Phase D.1 Fix A: choose the key that is UNIQUE on the source tree so replay
+  // never resolves a shared resource-id (every Settings list row is
+  // `android:id/title`; tapping the first match lands on the wrong sibling and
+  // diverges). Count matches over the visible tree and record the chosen `via`;
+  // replay honours it and refuses when the live query is not size 1.
+  const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
+  const idLc = norm(id);
+  const textLc = norm(text);
+  const cdLc = norm(cd);
+  let idCount = 0;
+  let textCount = 0;
+  let cdCount = 0;
+  for (const el of tree) {
+    if (id && norm(el.resourceId) === idLc) idCount++;
+    if (text && norm(el.text) === textLc) textCount++;
+    if (cd && norm(el.contentDesc) === cdLc) cdCount++;
+  }
+  if (id && idCount === 1) sel.via = "id";
+  else if (text && textCount === 1) sel.via = "text";
+  else if (cd && cdCount === 1) sel.via = "text";
+  else sel.via = "position";
+  return sel;
+}
+
+/** Drop the action's own `{success}` and keep the outcome fingerprint delta. */
+function toOutcome(r: OpenServerActionOutcome & { success?: unknown }): OpenServerActionOutcome {
+  return {
+    before: r.before,
+    after: r.after,
+    changed: r.changed,
+    newScreen: r.newScreen,
+    settled: r.settled,
+    firstEventMs: r.firstEventMs,
+    idleMs: r.idleMs,
+  };
+}
 
 /**
  * Open-source input backend: routes touch gestures through
@@ -40,6 +122,32 @@ export function shouldUseOpenServer(device: DeviceInfo): boolean {
 // Re-export the reset seam so existing importers keep working; the cache itself
 // now lives in `open-server-screen-cache` (see F21).
 export { __resetOpenServerScreenSizeCache };
+
+/**
+ * Screen-graph Phase A.1: block on the device's AX-event clock until the tree
+ * changes (and, with `until`, until that selector matches), settling on the next
+ * stable state when `settle` is set. Lets `await-ui-element` wait on-device
+ * instead of host-polling `describe`. Serialized under the device mutex like the
+ * other open paths; throws on any RPC failure so the caller can fall back to the
+ * poll loop.
+ */
+export function openServerAwaitChange(
+  registry: Registry,
+  device: DeviceInfo,
+  opts: {
+    fromVersion: number;
+    timeoutMs: number;
+    until?: OpenServerSelector;
+    settle?: boolean;
+    quietMs?: number;
+  }
+): Promise<OpenServerAwaitChangeResult> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    return server.awaitChange(opts);
+  });
+}
 
 async function withServer<T>(
   registry: Registry,
@@ -146,6 +254,60 @@ export function openServerSetClipboard(
 }
 
 /**
+ * Screen-graph Phase A: tap and report the before/after fingerprint delta in one
+ * round-trip. For a multi-tap (`clickCount > 1`) the leading taps run plain and
+ * the outcome's `before` is taken from a pre-gesture `getState`, so the delta
+ * spans the whole gesture; the final tap carries the server-side idle wait.
+ */
+export function openServerTapWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  xNorm: number,
+  yNorm: number,
+  clickCount: number,
+  idleTimeoutMs?: number
+): Promise<OpenServerActionOutcome> {
+  return withServer(registry, device, async (server, size) => {
+    const { x, y } = toPixels(size, xNorm, yNorm);
+    // Phase D §2: when the screen graph is recording, read the BEFORE tree once so
+    // the edge can carry the acted element's selector (re-resolved on replay). The
+    // extra read is an internal RPC (not a counted bench round-trip) and only runs
+    // while the graph flag is on.
+    let actedSelector: EdgeSelector | undefined;
+    if (screenGraphRecordingEnabled()) {
+      try {
+        const before = await server.getState({ includeScreenshot: false });
+        actedSelector = tappedSelectorFromTree(before.tree, x, y, size);
+      } catch {
+        /* best-effort — a coordinate edge without a selector still records */
+      }
+    }
+    // ONE `tap` RPC carries the whole multi-tap timeline (F1/F8/F9 —
+    // `clickCount` presses each held `holdMs`, spaced `gapMs` apart, built
+    // server-side) AND the outcome request, so a double-tap is a single
+    // round-trip that both lands inside the OS double-tap window and reports the
+    // before/after fingerprint delta.
+    const outcome = toOutcome(
+      await server.tapWithOutcome(x, y, {
+        clickCount,
+        holdMs: TAP_HOLD_MS,
+        ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+        ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+      })
+    );
+    await recordOpenServerObservation(
+      device,
+      server,
+      size,
+      { kind: "tap", x, y },
+      outcome,
+      actedSelector ? { actedSelector } : {}
+    );
+    return outcome;
+  });
+}
+
+/**
  * Swipe between two normalized points via the open server. The server runs its
  * own UiAutomator interpolation (`steps`), so this is one RPC rather than the
  * per-frame Move loop the simulator-server path drives host-side.
@@ -174,6 +336,36 @@ export function openServerSwipe(
   });
 }
 
+/** Screen-graph Phase A: swipe and report the before/after fingerprint delta. */
+export function openServerSwipeWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  fromXNorm: number,
+  fromYNorm: number,
+  toXNorm: number,
+  toYNorm: number,
+  steps: number,
+  holdEndMs?: number,
+  idleTimeoutMs?: number
+): Promise<OpenServerActionOutcome> {
+  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
+  return withServer(registry, device, async (server, size) => {
+    const from = toPixels(size, fromXNorm, fromYNorm);
+    const to = toPixels(size, toXNorm, toYNorm);
+    const outcome = toOutcome(
+      await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts)
+    );
+    await recordOpenServerObservation(
+      device,
+      server,
+      size,
+      { kind: "swipe", startX: from.x, startY: from.y, endX: to.x, endY: to.y },
+      outcome
+    );
+    return outcome;
+  });
+}
+
 /**
  * Type text via the open server's `typeText` RPC. Backs the Android `paste`
  * tool's open path: phase 2 accepts typing the text over injecting the device
@@ -189,6 +381,95 @@ export function openServerTypeText(
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     await server.typeText(text);
+  });
+}
+
+/**
+ * Screen-graph Phase A: type text and report the before/after fingerprint delta.
+ * `opts.secretsUsed` (Phase B leftover B1) marks the observation as holding a
+ * secret so the recorded target node is redacted live, even when the field is
+ * not flagged password on-device — the paste tool sets it when the typed text
+ * came from a `{{secret:…}}` placeholder.
+ */
+export function openServerTypeTextWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  text: string,
+  opts: { secretsUsed?: boolean; idleTimeoutMs?: number } = {}
+): Promise<OpenServerActionOutcome> {
+  const ref = openDeviceServerRef(device);
+  const outcomeOpts = opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : undefined;
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const outcome = toOutcome(await server.typeTextWithOutcome(text, outcomeOpts));
+    // No coordinates for typeText, so bucketing is irrelevant — pass a 0 size.
+    await recordOpenServerObservation(
+      device,
+      server,
+      { width: 0, height: 0 },
+      { kind: "typeText" },
+      outcome,
+      opts.secretsUsed ? { secret: true } : {}
+    );
+    return outcome;
+  });
+}
+
+/**
+ * Screen-graph Phase A: wait for the screen to settle using the device's AX
+ * event clock (`awaitChange`) instead of a host poll loop. "Settled" = the
+ * screen has content AND no AX event fired for `minStableMs`, which is exactly an
+ * `awaitChange` that times out with no change. Content that keeps changing
+ * re-arms the wait until the overall `timeoutMs`.
+ *
+ * Returns the same `{ settled, waitedMs, polls }` shape as the poll path; `polls`
+ * counts the round-trips made. Throws on any failure so the caller falls back to
+ * the describe-tree poll loop.
+ */
+export async function awaitScreenIdleViaOpenServer(
+  registry: Registry,
+  device: DeviceInfo,
+  opts: { timeoutMs: number; minStableMs: number },
+  signal?: AbortSignal
+): Promise<{ settled: boolean; waitedMs: number; polls: number }> {
+  const ref = openDeviceServerRef(device);
+  const start = Date.now();
+  const deadline = start + opts.timeoutMs;
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    let polls = 0;
+    let state = await server.getState({ includeScreenshot: false });
+    polls += 1;
+    let version = state.version ?? 0;
+
+    const waited = (): number => Date.now() - start;
+
+    for (;;) {
+      if (signal?.aborted) return { settled: false, waitedMs: waited(), polls };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { settled: false, waitedMs: waited(), polls };
+
+      const hasContent = state.tree.length > 0;
+      if (hasContent && opts.minStableMs === 0) {
+        return { settled: true, waitedMs: waited(), polls };
+      }
+
+      // Blank screen: wait for anything to appear. Content present: wait for the
+      // stability window; a timeout there (no event) means it settled.
+      const waitMs = hasContent ? Math.min(opts.minStableMs, remaining) : remaining;
+      const change = await server.awaitChange({ fromVersion: version, timeoutMs: waitMs });
+      polls += 1;
+
+      if (change.timedOut) {
+        // No event within the window. Settled iff there was content to hold still.
+        return { settled: hasContent, waitedMs: waited(), polls };
+      }
+
+      // Something changed — re-read and keep waiting.
+      version = change.version;
+      state = await server.getState({ includeScreenshot: false, sinceVersion: version });
+      polls += 1;
+    }
   });
 }
 

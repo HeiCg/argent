@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.util.Base64
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.TreeStore
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.WindowTimings
 import com.argent.devicecontrol.accessibility.NodeSerializer
@@ -62,6 +63,10 @@ class StateHandler(
         // their label sets / id forms match. A nested capture never includes a
         // screenshot (the poll loops don't read it).
         val nested = params.optBoolean("nested", false)
+        // Screen-graph Phase A: when the caller passes the version it last saw and
+        // nothing has changed, the caller already holds the tree; `unchanged` in the
+        // response lets it short-circuit re-reading the body.
+        val sinceVersion = params.optLong("sinceVersion", -1L)
         // The describe-tree poll loops (await-screen-idle / await-ui-element) want
         // the idle+tree+info in one round-trip but never read the screenshot;
         // skipping the capture makes getState a strict latency win for them
@@ -128,14 +133,19 @@ class StateHandler(
             ""
         }
 
-        // 3. Hierarchy — nested multi-window tree (F12) or the flat compressed list.
-        //    Capture the active package from the SAME root we serialize, before it
-        //    is recycled, so `info` below never calls uiDevice.currentPackageName
+        // 3. Fingerprints + version from the AX cache (cache hit → no traversal, so
+        //    the Phase A traversals counter is unchanged across unchanged reads).
+        val snap = TreeStore.ensure()
+        val unchanged = sinceVersion == snap.version
+
+        // 4. Hierarchy — the nested raw multi-window tree (F12 token parity, its own
+        //    traversal for raw class names/ids) or the flat compressed list. Capture
+        //    the active package from the SAME accessibility root we serialize, before
+        //    it is recycled, so `info` below never calls uiDevice.currentPackageName
         //    (a waitForIdle caller).
-        //    Per-stage timings (phase 3g) attribute the after-tap captureMs:
-        //    `rootMs` is the active-root read, the rest come from the multi-window
-        //    serializer. The root comes from the interactive-windows snapshot
-        //    (`windows.firstOrNull { it.isActive }?.root`) rather than
+        //    Per-stage timings (phase 3g) attribute the after-tap captureMs: `rootMs`
+        //    is the active-root read, the rest come from the multi-window serializer.
+        //    The root comes from the interactive-windows snapshot rather than
         //    `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase 3g
         //    bench); `timings.rootSource` records which path served it.
         val windowTimings = WindowTimings()
@@ -145,6 +155,12 @@ class StateHandler(
         val rootMs = System.currentTimeMillis() - rootStart
         val activePackage = rootNode?.packageName?.toString() ?: ""
         var serializeMsFlat = 0L
+        // Screen-graph Phase A: the flat compressed list can be cut short by
+        // `maxElements`; report `truncated` so the caller knows the list is partial.
+        // NodeSerializer stops adding only when it reaches the cap, so length == cap
+        // is an exact truncation signal. The nested token-parity path is never capped
+        // below 3000, so it stays false.
+        var truncated = false
         val hierarchy = if (rootNode != null) {
             try {
                 if (nested) {
@@ -153,6 +169,7 @@ class StateHandler(
                     val t0 = System.currentTimeMillis()
                     val flat = NodeSerializer.serialize(rootNode, maxElements)
                     serializeMsFlat = System.currentTimeMillis() - t0
+                    truncated = flat.length() >= maxElements
                     flat
                 }
             } finally {
@@ -166,7 +183,7 @@ class StateHandler(
         // before falling back to rootInActiveWindow, so a null root here means
         // neither path had one.
 
-        // 4. Info — geometry from one idle-free Display snapshot, package from the
+        // 5. Info — geometry from one idle-free Display snapshot, package from the
         //    accessibility root above; never a UiDevice getter that waits for idle.
         val geo = DisplayReader.read(context)
         val info = JSONObject().apply {
@@ -213,10 +230,18 @@ class StateHandler(
         return JSONObject().apply {
             put("screenshot", screenshotBase64)
             put("tree", treeValue)
+            // Screen-graph Phase A: flat-list truncation flag (false for nested).
+            put("truncated", truncated)
             put("info", info)
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
             put("timings", timings)
+            // Screen-graph Phase A/D fingerprints + version.
+            put("hash", snap.hash)
+            put("stateHash", snap.stateHash)
+            put("idHash", snap.idHash)
+            put("version", snap.version)
+            put("unchanged", unchanged)
             // Serialize-once splice payload (phase 3j), per-request: JsonRpcHandler
             // removes this member (so it never ships) and splices it over TREE_TOKEN.
             if (rawTreeJson != null) put(RAW_TREE_MEMBER, rawTreeJson)

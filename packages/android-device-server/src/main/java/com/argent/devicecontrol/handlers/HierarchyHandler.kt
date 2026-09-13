@@ -2,6 +2,7 @@ package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.TreeStore
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
 import com.argent.devicecontrol.accessibility.WindowTimings
@@ -78,10 +79,25 @@ class HierarchyHandler(
                 put("encodeMs", encodeMs)
                 put("rootSource", resolved.source)
             }
-            return JSONObject().apply {
+            val response = JSONObject().apply {
                 put("tree", tree)
                 put("timings", timings)
             }
+            // Screen-graph Phase A/D fingerprints, added on top of the phase-3g
+            // capture: the flat read also carries the version-clock hashes so the
+            // screen-graph consumers can key off the same reply. `TreeStore.ensure()`
+            // reuses the version cache when nothing changed. The nested token-parity
+            // path stays fingerprint-free (the host derives its own). `truncated` is
+            // exact: NodeSerializer stops only when it hits `maxElements`.
+            if (!nested) {
+                val snap = TreeStore.ensure()
+                response.put("hash", snap.hash)
+                response.put("stateHash", snap.stateHash)
+                response.put("idHash", snap.idHash)
+                response.put("version", snap.version)
+                response.put("truncated", tree.length() >= maxElements)
+            }
+            return response
         } finally {
             rootNode.recycle()
         }

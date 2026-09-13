@@ -14,8 +14,9 @@ import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
-import { shouldUseOpenServer } from "../../utils/open-server-input";
-import { describeAndroidViaOpenState } from "../../utils/open-server-describe";
+import { shouldUseOpenServer, openServerAwaitChange } from "../../utils/open-server-input";
+import { describeAndroidViaOpenState, readAndroidOpenState } from "../../utils/open-server-describe";
+import type { OpenServerSelector } from "../../blueprints/android-open-server";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
@@ -259,6 +260,23 @@ export function evaluateMatches(params: Params, matches: DescribeNode[]): boolea
   return evaluateCondition(params.condition, params.expectedText, matches, params.textMatch);
 }
 
+/**
+ * Map the tool selector (`{ text?, identifier?, role? }`) to the on-device
+ * `awaitChange` selector (Phase A.1). Only `text` / `identifier` map, both as
+ * case-insensitive substrings — deliberately LOOSER than the host matcher,
+ * because the on-device match only WAKES the wait; the authoritative host-side
+ * condition is re-checked on the settled tree, so a loose on-device match at
+ * worst wakes early (host then keeps waiting) and never a false success. `role`
+ * has no on-device equivalent; a role-only selector returns null so the caller
+ * keeps the poll loop.
+ */
+export function toOpenServerAwaitSelector(selector: Params["selector"]): OpenServerSelector | null {
+  const sel: OpenServerSelector = {};
+  if (selector.text) sel.text = { contains: selector.text, caseInsensitive: true };
+  if (selector.identifier) sel.id = { contains: selector.identifier, caseInsensitive: true };
+  return sel.text !== undefined || sel.id !== undefined ? sel : null;
+}
+
 // An empty tree is not trustworthy evidence the element is gone, so `hidden` —
 // the only condition that resolves true on one — must not resolve off it when
 // the adapter flagged the read (`describeIos` returns an empty tree plus a hint /
@@ -437,6 +455,97 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       // When the last read that could EVALUATE the condition landed. Still
       // undefined at the deadline means no read ever did.
       let lastTrustedReadAt: number | undefined;
+
+      // Evaluate one describe read against the condition, keeping the same trust
+      // bookkeeping the poll loop uses (`everMatched`, `lastTrustedReadAt`).
+      const evalRead = (data: DescribeTreeData): boolean => {
+        const matches = findAll(data.tree, selector);
+        if (matches.length > 0) everMatched = true;
+        const blind = isBlindRead(data, everMatched);
+        if (!blind) lastTrustedReadAt = Date.now();
+        return !blind && evaluateMatches(params, matches);
+      };
+
+      /**
+       * Screen-graph Phase A.1 open path: block on the device's AX-event clock
+       * via `awaitChange({ until, settle:true })` rather than host-polling the
+       * describe tree. The on-device match only WAKES the wait; the full
+       * condition is re-checked host-side on the SETTLED tree with the same trust
+       * rules, and the loop re-arms if the host check is stricter than the
+       * on-device match. Returns a complete verdict (success, or failure with the
+       * usual cause/note). Throws on any RPC failure so the caller falls back to
+       * the poll loop below.
+       */
+      const awaitViaOpenServerChange = async (until: OpenServerSelector): Promise<WaitResult> => {
+        // Immediate trusted read: awaitChange fires only on the NEXT event, so a
+        // condition already true on a static screen must be caught here.
+        const first = await readAndroidOpenState(registry, device);
+        let last: DescribeTreeData = first.data;
+        if (evalRead(first.data)) return { success: true, elapsed: Date.now() - start };
+
+        const deadline = start + timeoutMs;
+        let fromVersion = first.version;
+        let finalRead: FinalRead = isBlindRead(first.data, everMatched) ? "untrusted" : "trusted";
+
+        while (Date.now() < deadline) {
+          if (signal?.aborted) return cancelled();
+          const remaining = deadline - Date.now();
+          const res = await openServerAwaitChange(registry, device, {
+            fromVersion,
+            timeoutMs: remaining,
+            until,
+            settle: true,
+          });
+          if (signal?.aborted) return cancelled();
+          if (res.timedOut) {
+            // One fresh read at the deadline so the verdict is judged on the
+            // current screen, not the pre-block snapshot — mirrors the poll
+            // loop's deadline straddle.
+            const atDeadline = await describeAndroidViaOpenState(registry, device);
+            last = atDeadline;
+            finalRead = isBlindRead(atDeadline, everMatched) ? "untrusted" : "trusted";
+            if (evalRead(atDeadline)) return { success: true, elapsed: Date.now() - start };
+            break;
+          }
+          // The device woke on an (approximate) on-device match; confirm the full
+          // condition host-side on the settled tree.
+          const settled = await describeAndroidViaOpenState(registry, device);
+          last = settled;
+          finalRead = isBlindRead(settled, everMatched) ? "untrusted" : "trusted";
+          if (evalRead(settled)) return { success: true, elapsed: Date.now() - start };
+          fromVersion = res.version;
+        }
+
+        return {
+          success: false,
+          elapsed: Date.now() - start,
+          note: timeoutNote(params, last.tree, undefined, last),
+          cause: timeoutCause(params.condition, lastTrustedReadAt, finalRead, pollIntervalMs),
+        };
+      };
+
+      // Prefer the on-device awaitChange wait on the open server for APPEARANCE
+      // conditions with a selector the on-device match can express. `hidden`
+      // (waits for disappearance) and role-only selectors keep the poll loop, as
+      // does any RPC failure.
+      if (
+        device.platform === "android" &&
+        shouldUseOpenServer(device) &&
+        params.condition !== "hidden"
+      ) {
+        const until = toOpenServerAwaitSelector(selector);
+        if (until) {
+          try {
+            return await awaitViaOpenServerChange(until);
+          } catch (err) {
+            console.debug(
+              `[await-ui-element] open-device-server awaitChange failed, falling back to poll: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+          }
+        }
+      }
 
       const poll = await pollDescribeTree<WaitResult>({
         fetchTree: () => fetchTree(device, params, services, isTvOs, androidIsTv),

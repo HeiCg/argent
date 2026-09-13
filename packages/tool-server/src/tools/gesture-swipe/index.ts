@@ -9,7 +9,8 @@ import type {
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
-import { shouldUseOpenServer, openServerSwipe } from "../../utils/open-server-input";
+import { shouldUseOpenServer, openServerSwipeWithOutcome } from "../../utils/open-server-input";
+import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -92,6 +93,11 @@ type Params = z.infer<typeof zodSchema>;
 interface Result {
   swiped: boolean;
   timestampMs: number;
+  /**
+   * Screen-graph Phase A: present only on the Android open-device-server path.
+   * The before/after fingerprint delta of this swipe.
+   */
+  outcome?: OpenServerActionOutcome;
 }
 
 // Touch platforms only: on a desktop renderer a mouse drag selects text instead
@@ -145,7 +151,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           // position `holdEndMs` before the lift so the release velocity decays to
           // ~0 (T7 option (a)), instead of that behaviour being lost.
           const steps = Math.max(1, Math.round(duration / 16));
-          await openServerSwipe(
+          const outcome = await openServerSwipeWithOutcome(
             registry,
             device,
             params.fromX,
@@ -155,7 +161,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             steps,
             momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
-          return { swiped: true, timestampMs };
+          return { swiped: true, timestampMs, outcome };
         } catch (err) {
           console.debug(
             `[gesture-swipe] open-device-server failed, falling back to simulator-server: ${

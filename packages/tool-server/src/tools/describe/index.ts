@@ -9,6 +9,7 @@ import type {
 import type { DescribeResult, DescribeTreeData } from "./contract";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import { describeAndroid, androidRequires } from "./platforms/android";
+import { describeAndroidTiered } from "./platforms/android/tiered";
 import { iosRequires, describeIos, withBootCaveatOncePerDevice } from "./platforms/ios";
 import { describeChromium } from "./platforms/chromium";
 import { describeTv } from "./platforms/tv";
@@ -69,6 +70,15 @@ const zodSchema = z.object({
         "proprietary path); true waits for the screen to settle (a 500 ms idle-quiescence window) " +
         "first, and a number sets a custom idle-quiescence window in ms — use it to read a settled " +
         "tree right after a navigating tap."
+    ),
+  tier: z
+    .enum(["summary", "compact", "full"])
+    .optional()
+    .describe(
+      "Android open-device-server path only. `summary`: the screen graph's label + top affordances " +
+        "(~100 tokens); `compact` (the default when omitted): the current pruned tree, served from the " +
+        "screen-graph cache when the screen is unchanged; `full`: the full tree. `summary` and the " +
+        "compact cache require the `screen-graph` flag; other platforms ignore this."
     ),
 });
 
@@ -141,16 +151,22 @@ function makeDescribeExecute(
     },
     android: {
       requires: androidRequires,
-      handler: async (_services, params, device) =>
+      handler: async (_services, params, device) => {
         // Resolve the form factor cache-first (phase 3i): a warm serial spawns zero
         // `adb` here, where `isAndroidTv` used to run `adb devices` + getprop on
         // every describe, inside the timed window. Thread the known `isTv: false`
         // through so describeAndroid doesn't re-probe.
-        (await isAndroidTvCached(device.id))
-          ? describeTv(registry, device)
-          : withDescription(
-              await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)
-            ),
+        if (await isAndroidTvCached(device.id)) return describeTv(registry, device);
+        // A `tier` request routes through the screen-graph-aware path; it falls
+        // back to the standard describe on any failure, so the default (no
+        // `tier`) keeps the exact current behaviour.
+        if (params.tier) return describeAndroidTiered(registry, device, params.tier);
+        // No `tier`: the phase-3 path, threading `settle` so a post-tap describe can
+        // read the settled tree.
+        return withDescription(
+          await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)
+        );
+      },
     },
     chromium: {
       handler: async (services) => withDescription(await describeChromium(services.chromium)),

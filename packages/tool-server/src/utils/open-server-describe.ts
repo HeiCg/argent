@@ -26,6 +26,21 @@ export function describeAndroidViaOpenState(
   registry: Registry,
   device: DeviceInfo
 ): Promise<DescribeTreeData> {
+  return readAndroidOpenState(registry, device).then((r) => r.data);
+}
+
+/**
+ * As [describeAndroidViaOpenState], but also returns the AX version clock at
+ * capture. `await-ui-element`'s open path (Phase A.1) needs the version to arm
+ * `awaitChange({ fromVersion })` after an immediate trusted read, so it blocks
+ * on the device's AX clock instead of host-polling describe. `version` is 0 on a
+ * pre-0.2.0 server that doesn't report it — the caller then just waits for the
+ * next event, which is still correct.
+ */
+export function readAndroidOpenState(
+  registry: Registry,
+  device: DeviceInfo
+): Promise<{ data: DescribeTreeData; version: number }> {
   const ref = openDeviceServerRef(device);
   // Serialize against describe / input on the same device, exactly as the
   // describe and gesture open paths do.
@@ -37,6 +52,6 @@ export function describeAndroidViaOpenState(
       state.info.screenWidth,
       state.info.screenHeight
     );
-    return { tree, source: "open-device-server" };
+    return { data: { tree, source: "open-device-server" }, version: state.version ?? 0 };
   });
 }

@@ -1,0 +1,5678 @@
+{
+  "version": 1,
+  "packageName": "com.android.settings",
+  "versionCode": "34",
+  "nodes": {
+    "284ef0302b28c5de": {
+      "hash": "284ef0302b28c5de",
+      "firstSeen": 1788589191598,
+      "lastSeen": 1788591132035,
+      "visits": 45,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Network & internet\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.725)\n  ScrollView id=\"recycler_view\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout [clickable]  (0.000, 0.249, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.274, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.279, 0.058, 0.026)\n  StaticText \"Internet\" id=\"title\"  (0.175, 0.267, 0.167, 0.030)\n  StaticText \"AndroidWifi\" id=\"summary\"  (0.175, 0.296, 0.178, 0.021)\n  LinearLayout [clickable]  (0.000, 0.335, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.360, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.365, 0.058, 0.026)\n  StaticText \"Calls & SMS\" id=\"title\"  (0.175, 0.352, 0.263, 0.030)\n  StaticText \"T-Mobile\" id=\"summary\"  (0.175, 0.382, 0.130, 0.021)\n  LinearLayout [clickable]  (0.000, 0.421, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.446, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.450, 0.058, 0.026)\n  StaticText \"SIMs\" id=\"title\"  (0.175, 0.438, 0.109, 0.030)\n  StaticText \"T-Mobile\" id=\"summary\"  (0.175, 0.468, 0.130, 0.021)\n  LinearLayout [clickable]  (0.000, 0.507, 1.000, 0.065)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.521, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.526, 0.058, 0.026)\n  StaticText \"Airplane mode\" id=\"title\"  (0.175, 0.524, 0.317, 0.030)\n  LinearLayout id=\"widget_frame\"  (0.787, 0.507, 0.174, 0.065)\n  Switch id=\"switch_widget\"  (0.826, 0.512, 0.135, 0.052)\n  LinearLayout [clickable]  (0.000, 0.571, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.596, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.601, 0.058, 0.026)\n  StaticText \"Hotspot & tethering\" id=\"title\"  (0.175, 0.589, 0.423, 0.030)\n  StaticText \"Off\" id=\"summary\"  (0.175, 0.618, 0.047, 0.021)\n  LinearLayout [clickable]  (0.000, 0.657, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.682, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.687, 0.058, 0.026)\n  StaticText \"Data Saver\" id=\"title\"  (0.175, 0.675, 0.236, 0.030)\n  StaticText \"Off\" id=\"summary\"  (0.175, 0.704, 0.047, 0.021)\n  LinearLayout [clickable]  (0.000, 0.743, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.768, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.772, 0.058, 0.026)\n  StaticText \"VPN\" id=\"title\"  (0.175, 0.760, 0.097, 0.030)\n  StaticText \"None\" id=\"summary\"  (0.175, 0.790, 0.081, 0.021)\n  LinearLayout id=\"widget_frame\"  (0.786, 0.743, 0.175, 0.086)\n  LinearLayout [clickable]  (0.000, 0.829, 1.000, 0.065)\n  StaticText \"Mobile plan\" id=\"title\"  (0.058, 0.846, 0.254, 0.030)\n  LinearLayout [clickable]  (0.000, 0.893, 1.000, 0.080)\n  StaticText \"Private DNS\" id=\"title\"  (0.058, 0.911, 0.260, 0.030)\n  StaticText \"Automatic\" id=\"summary\"  (0.058, 0.940, 0.156, 0.021)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fNetwork & internet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1843,
+            "x2": 189,
+            "y2": 1928
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1854,
+            "x2": 126,
+            "y2": 1917
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2392,
+            "x2": 567,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fInternet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 640,
+            "x2": 369,
+            "y2": 711
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2463,
+            "x2": 108,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fAndroidWifi": {
+          "bounds": {
+            "x1": 189,
+            "y1": 711,
+            "x2": 381,
+            "y2": 762
+          },
+          "flags": 16
+        },
+        "text\u001fCalls & SMS": {
+          "bounds": {
+            "x1": 189,
+            "y1": 846,
+            "x2": 473,
+            "y2": 917
+          },
+          "flags": 16
+        },
+        "text\u001fT-Mobile": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1123,
+            "x2": 329,
+            "y2": 1174
+          },
+          "flags": 16
+        },
+        "text\u001fSIMs": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1052,
+            "x2": 307,
+            "y2": 1123
+          },
+          "flags": 16
+        },
+        "text\u001fAirplane mode": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1258,
+            "x2": 531,
+            "y2": 1329
+          },
+          "flags": 16
+        },
+        "id\u001fwidget_frame": {
+          "bounds": {
+            "x1": 849,
+            "y1": 1783,
+            "x2": 1038,
+            "y2": 1989
+          },
+          "flags": 16
+        },
+        "id\u001fswitch_widget": {
+          "bounds": {
+            "x1": 892,
+            "y1": 1230,
+            "x2": 1038,
+            "y2": 1356
+          },
+          "flags": 16
+        },
+        "text\u001fHotspot & tethering": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1413,
+            "x2": 646,
+            "y2": 1484
+          },
+          "flags": 16
+        },
+        "text\u001fOff": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1690,
+            "x2": 240,
+            "y2": 1741
+          },
+          "flags": 16
+        },
+        "text\u001fData Saver": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1619,
+            "x2": 444,
+            "y2": 1690
+          },
+          "flags": 16
+        },
+        "text\u001fVPN": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1825,
+            "x2": 294,
+            "y2": 1896
+          },
+          "flags": 16
+        },
+        "text\u001fNone": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1896,
+            "x2": 276,
+            "y2": 1947
+          },
+          "flags": 16
+        },
+        "text\u001fMobile plan": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2031,
+            "x2": 337,
+            "y2": 2102
+          },
+          "flags": 16
+        },
+        "text\u001fPrivate DNS": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2186,
+            "x2": 344,
+            "y2": 2257
+          },
+          "flags": 16
+        },
+        "text\u001fAutomatic": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2257,
+            "x2": 232,
+            "y2": 2308
+          },
+          "flags": 16
+        },
+        "text\u001fAdaptive connectivity": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2392,
+            "x2": 567,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOn": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2463,
+            "x2": 108,
+            "y2": 2337
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "a8cb4ce0e8a2d028",
+      "version": 9,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "widget_frame",
+        "switch_widget",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "widget_frame",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary"
+      ],
+      "label": "Network & internet: Internet"
+    },
+    "c0f355cf56c0936b": {
+      "hash": "c0f355cf56c0936b",
+      "firstSeen": 1788589197826,
+      "lastSeen": 1788590407010,
+      "visits": 10,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Connected devices\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.367)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.367)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.367)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.367)\n  ScrollView id=\"recycler_view\" [scrollable]  (0.000, 0.249, 1.000, 0.367)\n  LinearLayout [clickable]  (0.000, 0.249, 1.000, 0.065)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.264, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.268, 0.058, 0.026)\n  StaticText \"Pair new device\" id=\"title\"  (0.175, 0.267, 0.342, 0.030)\n  StaticText \"Saved devices\" id=\"title\"  (0.058, 0.340, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.370, 1.000, 0.065)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.385, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.389, 0.058, 0.026)\n  StaticText \"See all\" id=\"title\"  (0.175, 0.388, 0.144, 0.030)\n  LinearLayout [clickable]  (0.000, 0.435, 1.000, 0.086)\n  StaticText \"Connection preferences\" id=\"title\"  (0.058, 0.452, 0.519, 0.030)\n  StaticText \"Bluetooth, Android Auto\" id=\"summary\"  (0.058, 0.482, 0.359, 0.021)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.520, 0.136, 0.048)\n  Image id=\"icon\"  (0.058, 0.538, 0.058, 0.026)\n  StaticText \"Visible as “sdk_gphone64_x86_64” to other devices\" id=\"title\"  (0.058, 0.569, 0.779, 0.048)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fConnected devices": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 1479
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 1479
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 1479
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 1479
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 1479
+          },
+          "flags": 18
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1249,
+            "x2": 210,
+            "y2": 1365
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1291,
+            "x2": 126,
+            "y2": 1354
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1365,
+            "x2": 904,
+            "y2": 1479
+          },
+          "flags": 16
+        },
+        "text\u001fPair new device": {
+          "bounds": {
+            "x1": 189,
+            "y1": 640,
+            "x2": 558,
+            "y2": 711
+          },
+          "flags": 16
+        },
+        "text\u001fSaved devices": {
+          "bounds": {
+            "x1": 63,
+            "y1": 816,
+            "x2": 1038,
+            "y2": 867
+          },
+          "flags": 16
+        },
+        "text\u001fSee all": {
+          "bounds": {
+            "x1": 189,
+            "y1": 930,
+            "x2": 344,
+            "y2": 1001
+          },
+          "flags": 16
+        },
+        "text\u001fConnection preferences": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1085,
+            "x2": 623,
+            "y2": 1156
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1156,
+            "x2": 451,
+            "y2": 1207
+          },
+          "flags": 16
+        },
+        "text\u001fBluetooth, Android Auto": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1156,
+            "x2": 451,
+            "y2": 1207
+          },
+          "flags": 16
+        },
+        "text\u001fVisible as “sdk_gphone64_x86_64” to other devices": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1365,
+            "x2": 904,
+            "y2": 1479
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "103dde0a90927c26",
+      "version": 29,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "icon_frame",
+        "icon",
+        "title",
+        "title",
+        "icon_frame",
+        "icon",
+        "title",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title"
+      ],
+      "label": "Connected devices: Pair new device"
+    },
+    "487ac481af02a343": {
+      "hash": "487ac481af02a343",
+      "firstSeen": 1788589204029,
+      "lastSeen": 1788591209714,
+      "visits": 52,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Apps\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.692)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.692)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.692)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.692)\n  ScrollView id=\"recycler_view\"  (0.000, 0.249, 1.000, 0.692)\n  StaticText \"Recently opened apps\" id=\"title\"  (0.058, 0.275, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.305, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.326, 0.117, 0.044)\n  Image id=\"icon\"  (0.058, 0.331, 0.078, 0.035)\n  StaticText \"Chrome\" id=\"title\"  (0.175, 0.323, 0.172, 0.030)\n  StaticText \"0 min. ago\" id=\"summary\"  (0.175, 0.352, 0.786, 0.021)\n  LinearLayout [clickable]  (0.000, 0.391, 1.000, 0.065)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.406, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.410, 0.058, 0.026)\n  StaticText \"See all 25 apps\" id=\"title\"  (0.175, 0.409, 0.331, 0.030)\n  StaticText \"General\" id=\"title\"  (0.058, 0.482, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.512, 1.000, 0.086)\n  StaticText \"Default apps\" id=\"title\"  (0.058, 0.530, 0.276, 0.030)\n  StaticText \"Chrome, Phone, and Messages\" id=\"summary\"  (0.058, 0.559, 0.469, 0.021)\n  LinearLayout [clickable]  (0.000, 0.598, 1.000, 0.086)\n  StaticText \"Screen time\" id=\"title\"  (0.058, 0.615, 0.258, 0.030)\n  StaticText \"56 minutes today\" id=\"summary\"  (0.058, 0.645, 0.263, 0.021)\n  LinearLayout [clickable]  (0.000, 0.684, 1.000, 0.086)\n  StaticText \"Unused apps\" id=\"title\"  (0.058, 0.701, 0.283, 0.030)\n  StaticText \"0 unused apps\" id=\"summary\"  (0.058, 0.731, 0.222, 0.021)\n  LinearLayout [clickable]  (0.000, 0.770, 1.000, 0.086)\n  StaticText \"App battery usage\" id=\"title\"  (0.058, 0.787, 0.397, 0.030)\n  StaticText \"Set battery usage for apps\" id=\"summary\"  (0.058, 0.817, 0.403, 0.021)\n  LinearLayout [clickable]  (0.000, 0.855, 1.000, 0.086)\n  StaticText \"Special app access\" id=\"title\"  (0.058, 0.873, 0.420, 0.030)\n  StaticText \"1 app can use unrestricted data\" id=\"summary\"  (0.058, 0.902, 0.479, 0.021)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fApps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2259
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2259
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2259
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2259
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2259
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2095,
+            "x2": 517,
+            "y2": 2166
+          },
+          "flags": 16
+        },
+        "text\u001fRecently opened apps": {
+          "bounds": {
+            "x1": 63,
+            "y1": 661,
+            "x2": 1038,
+            "y2": 712
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 974,
+            "x2": 189,
+            "y2": 1059
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 985,
+            "x2": 126,
+            "y2": 1048
+          },
+          "flags": 16
+        },
+        "text\u001fChrome": {
+          "bounds": {
+            "x1": 189,
+            "y1": 775,
+            "x2": 375,
+            "y2": 846
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2166,
+            "x2": 580,
+            "y2": 2217
+          },
+          "flags": 16
+        },
+        "text\u001f0 min. ago": {
+          "bounds": {
+            "x1": 189,
+            "y1": 846,
+            "x2": 1038,
+            "y2": 897
+          },
+          "flags": 16
+        },
+        "text\u001fSee all 25 apps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 981,
+            "x2": 546,
+            "y2": 1052
+          },
+          "flags": 16
+        },
+        "text\u001fGeneral": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1157,
+            "x2": 1038,
+            "y2": 1208
+          },
+          "flags": 16
+        },
+        "text\u001fDefault apps": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1271,
+            "x2": 361,
+            "y2": 1342
+          },
+          "flags": 16
+        },
+        "text\u001fChrome, Phone, and Messages": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1342,
+            "x2": 569,
+            "y2": 1393
+          },
+          "flags": 16
+        },
+        "text\u001fScreen time": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1477,
+            "x2": 342,
+            "y2": 1548
+          },
+          "flags": 16
+        },
+        "text\u001f56 minutes today": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1548,
+            "x2": 347,
+            "y2": 1599
+          },
+          "flags": 16
+        },
+        "text\u001fUnused apps": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1683,
+            "x2": 369,
+            "y2": 1754
+          },
+          "flags": 16
+        },
+        "text\u001f0 unused apps": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1754,
+            "x2": 303,
+            "y2": 1805
+          },
+          "flags": 16
+        },
+        "text\u001fApp battery usage": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1889,
+            "x2": 492,
+            "y2": 1960
+          },
+          "flags": 16
+        },
+        "text\u001fSet battery usage for apps": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1960,
+            "x2": 498,
+            "y2": 2011
+          },
+          "flags": 16
+        },
+        "text\u001fSpecial app access": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2095,
+            "x2": 517,
+            "y2": 2166
+          },
+          "flags": 16
+        },
+        "text\u001f1 app can use unrestricted data": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2166,
+            "x2": 580,
+            "y2": 2217
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "8ef63c061101ee68",
+      "version": 55,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "title",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary"
+      ],
+      "label": "Apps: Recently opened apps"
+    },
+    "3ed4975114523f07": {
+      "hash": "3ed4975114523f07",
+      "firstSeen": 1788589209863,
+      "lastSeen": 1788590418331,
+      "visits": 10,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Notifications\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.725)\n  ScrollView id=\"recycler_view\" [scrollable]  (0.000, 0.249, 1.000, 0.725)\n  StaticText \"Manage\" id=\"title\"  (0.058, 0.275, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.305, 1.000, 0.086)\n  StaticText \"App notifications\" id=\"title\"  (0.058, 0.323, 0.369, 0.030)\n  StaticText \"Control notifications from individual apps\" id=\"summary\"  (0.058, 0.352, 0.625, 0.021)\n  LinearLayout [clickable]  (0.000, 0.391, 1.000, 0.086)\n  StaticText \"Notification history\" id=\"title\"  (0.058, 0.409, 0.412, 0.030)\n  StaticText \"Show recent and snoozed notifications\" id=\"summary\"  (0.058, 0.438, 0.588, 0.021)\n  StaticText \"Conversation\" id=\"title\"  (0.058, 0.503, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.533, 1.000, 0.086)\n  StaticText \"Conversations\" id=\"title\"  (0.058, 0.551, 0.313, 0.030)\n  StaticText \"No priority conversations\" id=\"summary\"  (0.058, 0.580, 0.381, 0.021)\n  LinearLayout [clickable]  (0.000, 0.619, 1.000, 0.086)\n  StaticText \"Bubbles\" id=\"title\"  (0.058, 0.637, 0.176, 0.030)\n  StaticText \"On / Conversations can appear as floating icons\" id=\"summary\"  (0.058, 0.666, 0.726, 0.021)\n  StaticText \"Privacy\" id=\"title\"  (0.058, 0.731, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.761, 1.000, 0.086)\n  StaticText \"Device & app notifications\" id=\"title\"  (0.058, 0.779, 0.565, 0.030)\n  StaticText \"Control which apps and devices can read notifications\" id=\"summary\"  (0.058, 0.808, 0.818, 0.021)\n  LinearLayout [clickable]  (0.000, 0.847, 1.000, 0.086)\n  StaticText \"Notifications on lock screen\" id=\"title\"  (0.058, 0.865, 0.606, 0.030)\n  StaticText \"Hide silent conversations and notifications\" id=\"summary\"  (0.058, 0.894, 0.644, 0.021)\n  StaticText \"General\" id=\"title\"  (0.058, 0.959, 0.903, 0.015)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fNotifications": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2622,
+            "x2": 494,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fManage": {
+          "bounds": {
+            "x1": 63,
+            "y1": 661,
+            "x2": 1038,
+            "y2": 712
+          },
+          "flags": 16
+        },
+        "text\u001fApp notifications": {
+          "bounds": {
+            "x1": 63,
+            "y1": 775,
+            "x2": 462,
+            "y2": 846
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2693,
+            "x2": 114,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fControl notifications from individual apps": {
+          "bounds": {
+            "x1": 63,
+            "y1": 846,
+            "x2": 738,
+            "y2": 897
+          },
+          "flags": 16
+        },
+        "text\u001fNotification history": {
+          "bounds": {
+            "x1": 63,
+            "y1": 981,
+            "x2": 508,
+            "y2": 1052
+          },
+          "flags": 16
+        },
+        "text\u001fShow recent and snoozed notifications": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1052,
+            "x2": 698,
+            "y2": 1103
+          },
+          "flags": 16
+        },
+        "text\u001fConversation": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1208,
+            "x2": 1038,
+            "y2": 1259
+          },
+          "flags": 16
+        },
+        "text\u001fConversations": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1322,
+            "x2": 401,
+            "y2": 1393
+          },
+          "flags": 16
+        },
+        "text\u001fNo priority conversations": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1393,
+            "x2": 475,
+            "y2": 1444
+          },
+          "flags": 16
+        },
+        "text\u001fBubbles": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1528,
+            "x2": 253,
+            "y2": 1599
+          },
+          "flags": 16
+        },
+        "text\u001fOn / Conversations can appear as floating icons": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1599,
+            "x2": 847,
+            "y2": 1650
+          },
+          "flags": 16
+        },
+        "text\u001fPrivacy": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1755,
+            "x2": 1038,
+            "y2": 1806
+          },
+          "flags": 16
+        },
+        "text\u001fDevice & app notifications": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1869,
+            "x2": 673,
+            "y2": 1940
+          },
+          "flags": 16
+        },
+        "text\u001fControl which apps and devices can read notifications": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1940,
+            "x2": 946,
+            "y2": 1991
+          },
+          "flags": 16
+        },
+        "text\u001fNotifications on lock screen": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2075,
+            "x2": 717,
+            "y2": 2146
+          },
+          "flags": 16
+        },
+        "text\u001fHide silent conversations and notifications": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2146,
+            "x2": 759,
+            "y2": 2197
+          },
+          "flags": 16
+        },
+        "text\u001fGeneral": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2302,
+            "x2": 1038,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fDo Not Disturb": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2416,
+            "x2": 408,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOff": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2693,
+            "x2": 114,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fFlash notifications": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2622,
+            "x2": 494,
+            "y2": 2337
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "e0dae8074e4a428a",
+      "version": 72,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary"
+      ],
+      "label": "Notifications: Manage"
+    },
+    "89af0fb2a3a1f9e2": {
+      "hash": "89af0fb2a3a1f9e2",
+      "firstSeen": 1788589215286,
+      "lastSeen": 1788590456196,
+      "visits": 28,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Battery\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.618)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.618)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.618)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.618)\n  ScrollView id=\"recycler_view\"  (0.000, 0.249, 1.000, 0.618)\n  StaticText \"100 %\" id=\"usage_summary\"  (0.058, 0.249, 0.303, 0.093)\n  StaticText id=\"total_summary\"  (0.361, 0.307, 0.600, 0.021)\n  ProgressBar id=\"progress\"  (0.058, 0.343, 0.903, 0.018)\n  StaticText \"Charged\" id=\"bottom_summary\"  (0.058, 0.371, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.410, 1.000, 0.086)\n  StaticText \"Battery usage\" id=\"title\"  (0.058, 0.427, 0.300, 0.030)\n  StaticText \"View usage since last full charge\" id=\"summary\"  (0.058, 0.457, 0.497, 0.021)\n  LinearLayout [clickable]  (0.000, 0.495, 1.000, 0.086)\n  StaticText \"Battery Saver\" id=\"title\"  (0.058, 0.513, 0.289, 0.030)\n  StaticText \"Off\" id=\"summary\"  (0.058, 0.542, 0.047, 0.021)\n  LinearLayout [clickable]  (0.000, 0.581, 1.000, 0.086)\n  StaticText \"Battery percentage\" id=\"title\"  (0.058, 0.599, 0.412, 0.030)\n  StaticText \"Show battery percentage in status bar\" id=\"summary\"  (0.058, 0.628, 0.577, 0.021)\n  LinearLayout id=\"widget_frame\"  (0.787, 0.581, 0.174, 0.086)\n  Switch id=\"switch_widget\"  (0.826, 0.598, 0.135, 0.052)\n  LinearLayout [clickable]  (0.000, 0.667, 1.000, 0.086)\n  StaticText \"Battery widget\" id=\"title\"  (0.058, 0.685, 0.314, 0.030)\n  StaticText \"Add to home screen to see battery levels for your devices\" id=\"summary\"  (0.058, 0.714, 0.870, 0.021)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.753, 0.136, 0.048)\n  Image id=\"icon\"  (0.058, 0.770, 0.058, 0.026)\n  StaticText \"Remaining battery life is approximate and can change based on usage\" id=\"title\"  (0.058, 0.801, 0.903, 0.065)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fBattery": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "id\u001fusage_summary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 598,
+            "x2": 390,
+            "y2": 822
+          },
+          "flags": 16
+        },
+        "text\u001f100 %": {
+          "bounds": {
+            "x1": 63,
+            "y1": 598,
+            "x2": 390,
+            "y2": 822
+          },
+          "flags": 16
+        },
+        "id\u001ftotal_summary": {
+          "bounds": {
+            "x1": 390,
+            "y1": 736,
+            "x2": 1038,
+            "y2": 787
+          },
+          "flags": 16
+        },
+        "id\u001fprogress": {
+          "bounds": {
+            "x1": 63,
+            "y1": 822,
+            "x2": 1038,
+            "y2": 864
+          },
+          "flags": 16
+        },
+        "id\u001fbottom_summary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 890,
+            "x2": 1038,
+            "y2": 941
+          },
+          "flags": 16
+        },
+        "text\u001fCharged": {
+          "bounds": {
+            "x1": 63,
+            "y1": 890,
+            "x2": 1038,
+            "y2": 941
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1923,
+            "x2": 1038,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "text\u001fBattery usage": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1025,
+            "x2": 387,
+            "y2": 1096
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1714,
+            "x2": 1003,
+            "y2": 1765
+          },
+          "flags": 16
+        },
+        "text\u001fView usage since last full charge": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1096,
+            "x2": 600,
+            "y2": 1147
+          },
+          "flags": 16
+        },
+        "text\u001fBattery Saver": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1231,
+            "x2": 375,
+            "y2": 1302
+          },
+          "flags": 16
+        },
+        "text\u001fOff": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1302,
+            "x2": 114,
+            "y2": 1353
+          },
+          "flags": 16
+        },
+        "text\u001fBattery percentage": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1437,
+            "x2": 508,
+            "y2": 1508
+          },
+          "flags": 16
+        },
+        "text\u001fShow battery percentage in status bar": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1508,
+            "x2": 686,
+            "y2": 1559
+          },
+          "flags": 16
+        },
+        "id\u001fwidget_frame": {
+          "bounds": {
+            "x1": 850,
+            "y1": 1395,
+            "x2": 1038,
+            "y2": 1601
+          },
+          "flags": 16
+        },
+        "id\u001fswitch_widget": {
+          "bounds": {
+            "x1": 892,
+            "y1": 1435,
+            "x2": 1038,
+            "y2": 1561
+          },
+          "flags": 16
+        },
+        "text\u001fBattery widget": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1643,
+            "x2": 402,
+            "y2": 1714
+          },
+          "flags": 16
+        },
+        "text\u001fAdd to home screen to see battery levels for your devices": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1714,
+            "x2": 1003,
+            "y2": 1765
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1807,
+            "x2": 210,
+            "y2": 1923
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1849,
+            "x2": 126,
+            "y2": 1912
+          },
+          "flags": 16
+        },
+        "text\u001fRemaining battery life is approximate and can change based on usage": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1923,
+            "x2": 1038,
+            "y2": 2080
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "76fedbcdd89519b7",
+      "version": 90,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "usage_summary",
+        "total_summary",
+        "progress",
+        "bottom_summary",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "widget_frame",
+        "switch_widget",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title"
+      ],
+      "label": "Battery: Battery usage"
+    },
+    "abf7a94206321a86": {
+      "hash": "abf7a94206321a86",
+      "firstSeen": 1788589221283,
+      "lastSeen": 1788590429018,
+      "visits": 10,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Storage\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.725)\n  ScrollView id=\"recycler_view\"  (0.000, 0.249, 1.000, 0.725)\n  StaticText \"3.0 GB used\" id=\"usage_summary\"  (0.058, 0.249, 0.350, 0.093)\n  StaticText \"8.0 GB total\" id=\"total_summary\"  (0.408, 0.307, 0.553, 0.021)\n  ProgressBar id=\"progress\"  (0.058, 0.343, 0.903, 0.018)\n  CardView [clickable]  (0.058, 0.386, 0.903, 0.086)\n  LinearLayout id=\"card_preference_parent\"  (0.088, 0.404, 0.127, 0.051)\n  LinearLayout id=\"icon_frame\"  (0.088, 0.407, 0.127, 0.044)\n  Image id=\"icon\"  (0.088, 0.412, 0.078, 0.035)\n  StaticText \"Free up space\" id=\"title\"  (0.215, 0.404, 0.305, 0.030)\n  StaticText \"Go to Files app to manage and free up space\" id=\"summary\"  (0.215, 0.433, 0.677, 0.021)\n  LinearLayout [clickable]  (0.000, 0.481, 1.000, 0.078)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.502, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.507, 0.058, 0.026)\n  StaticText \"Trash\" id=\"title\"  (0.175, 0.496, 0.716, 0.030)\n  StaticText \"0 B\" id=\"summary\"  (0.891, 0.496, 0.070, 0.030)\n  ProgressBar id=\"progress\"  (0.175, 0.539, 0.786, 0.005)\n  LinearLayout [clickable]  (0.000, 0.559, 1.000, 0.078)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.580, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.585, 0.058, 0.026)\n  StaticText \"System\" id=\"title\"  (0.175, 0.575, 0.642, 0.030)\n  StaticText \"2.3 GB\" id=\"summary\"  (0.817, 0.575, 0.144, 0.030)\n  ProgressBar id=\"progress\"  (0.175, 0.618, 0.786, 0.005)\n  LinearLayout [clickable]  (0.000, 0.637, 1.000, 0.078)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.659, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.663, 0.058, 0.026)\n  StaticText \"Documents & other\" id=\"title\"  (0.175, 0.653, 0.716, 0.030)\n  StaticText \"0 B\" id=\"summary\"  (0.891, 0.653, 0.070, 0.030)\n  ProgressBar id=\"progress\"  (0.175, 0.696, 0.786, 0.005)\n  LinearLayout [clickable]  (0.000, 0.716, 1.000, 0.078)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.737, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.742, 0.058, 0.026)\n  StaticText \"Games\" id=\"title\"  (0.175, 0.731, 0.716, 0.030)\n  StaticText \"0 B\" id=\"summary\"  (0.891, 0.731, 0.070, 0.030)\n  ProgressBar id=\"progress\"  (0.175, 0.774, 0.786, 0.005)\n  LinearLayout [clickable]  (0.000, 0.794, 1.000, 0.078)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.815, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.820, 0.058, 0.026)\n  StaticText \"Apps\" id=\"title\"  (0.175, 0.810, 0.618, 0.030)\n  StaticText \"731 MB\" id=\"summary\"  (0.793, 0.810, 0.169, 0.030)\n  ProgressBar id=\"progress\"  (0.175, 0.853, 0.786, 0.005)\n  LinearLayout [clickable]  (0.000, 0.873, 1.000, 0.078)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.894, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.898, 0.058, 0.026)\n  StaticText \"Audio\" id=\"title\"  (0.175, 0.888, 0.716, 0.030)\n  StaticText \"0 B\" id=\"summary\"  (0.891, 0.888, 0.070, 0.030)\n  ProgressBar id=\"progress\"  (0.175, 0.931, 0.786, 0.005)\n  LinearLayout [clickable]  (0.000, 0.951, 1.000, 0.023)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.972, 0.117, 0.002)\n  StaticText \"Videos\" id=\"title\"  (0.175, 0.966, 0.716, 0.007)\n  StaticText \"0 B\" id=\"summary\"  (0.891, 0.966, 0.070, 0.007)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fStorage": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fusage_summary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 598,
+            "x2": 441,
+            "y2": 822
+          },
+          "flags": 16
+        },
+        "text\u001f3.0 GB used": {
+          "bounds": {
+            "x1": 63,
+            "y1": 598,
+            "x2": 441,
+            "y2": 822
+          },
+          "flags": 16
+        },
+        "id\u001ftotal_summary": {
+          "bounds": {
+            "x1": 441,
+            "y1": 736,
+            "x2": 1038,
+            "y2": 787
+          },
+          "flags": 16
+        },
+        "text\u001f8.0 GB total": {
+          "bounds": {
+            "x1": 441,
+            "y1": 736,
+            "x2": 1038,
+            "y2": 787
+          },
+          "flags": 16
+        },
+        "id\u001fprogress": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2610,
+            "x2": 1038,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcard_preference_parent": {
+          "bounds": {
+            "x1": 95,
+            "y1": 969,
+            "x2": 232,
+            "y2": 1091
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2521,
+            "x2": 189,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2532,
+            "x2": 126,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2507,
+            "x2": 962,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fFree up space": {
+          "bounds": {
+            "x1": 232,
+            "y1": 969,
+            "x2": 561,
+            "y2": 1040
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 962,
+            "y1": 2507,
+            "x2": 1038,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fGo to Files app to manage and free up space": {
+          "bounds": {
+            "x1": 232,
+            "y1": 1040,
+            "x2": 963,
+            "y2": 1091
+          },
+          "flags": 16
+        },
+        "text\u001fTrash": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1191,
+            "x2": 962,
+            "y2": 1262
+          },
+          "flags": 16
+        },
+        "text\u001f0 B": {
+          "bounds": {
+            "x1": 962,
+            "y1": 2507,
+            "x2": 1038,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSystem": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1379,
+            "x2": 882,
+            "y2": 1450
+          },
+          "flags": 16
+        },
+        "text\u001f2.3 GB": {
+          "bounds": {
+            "x1": 882,
+            "y1": 1379,
+            "x2": 1038,
+            "y2": 1450
+          },
+          "flags": 16
+        },
+        "text\u001fDocuments & other": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1567,
+            "x2": 962,
+            "y2": 1638
+          },
+          "flags": 16
+        },
+        "text\u001fGames": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1755,
+            "x2": 962,
+            "y2": 1826
+          },
+          "flags": 16
+        },
+        "text\u001fApps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1943,
+            "x2": 856,
+            "y2": 2014
+          },
+          "flags": 16
+        },
+        "text\u001f731 MB": {
+          "bounds": {
+            "x1": 856,
+            "y1": 1943,
+            "x2": 1038,
+            "y2": 2014
+          },
+          "flags": 16
+        },
+        "text\u001fAudio": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2131,
+            "x2": 962,
+            "y2": 2202
+          },
+          "flags": 16
+        },
+        "text\u001fVideos": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2319,
+            "x2": 962,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fImages": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2507,
+            "x2": 962,
+            "y2": 2337
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "9de132cb47097adf",
+      "version": 111,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "usage_summary",
+        "total_summary",
+        "progress",
+        "card_preference_parent",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress",
+        "icon_frame",
+        "icon",
+        "title",
+        "summary",
+        "progress"
+      ],
+      "label": "Storage: Free up space"
+    },
+    "52cff9e7c238d140": {
+      "hash": "52cff9e7c238d140",
+      "firstSeen": 1788589227202,
+      "lastSeen": 1788591187780,
+      "visits": 55,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Sound & vibration\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.725)\n  ScrollView id=\"recycler_view\" [scrollable]  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.281, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.286, 0.058, 0.026)\n  StaticText \"Media volume\" id=\"title\"  (0.175, 0.267, 0.786, 0.030)\n  SeekBar \"Media volume\" id=\"seekbar\"  (0.175, 0.296, 0.786, 0.052)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.381, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.385, 0.058, 0.026)\n  StaticText \"Call volume\" id=\"title\"  (0.175, 0.366, 0.786, 0.030)\n  SeekBar \"Call volume\" id=\"seekbar\"  (0.175, 0.396, 0.786, 0.052)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.480, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.485, 0.058, 0.026)\n  StaticText \"Ring volume\" id=\"title\"  (0.175, 0.466, 0.786, 0.030)\n  SeekBar \"Ring volume\" id=\"seekbar\"  (0.175, 0.495, 0.786, 0.052)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.580, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.585, 0.058, 0.026)\n  StaticText \"Notification volume\" id=\"title\"  (0.175, 0.565, 0.786, 0.030)\n  SeekBar \"Notification volume\" id=\"seekbar\"  (0.175, 0.595, 0.786, 0.052)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.680, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.684, 0.058, 0.026)\n  StaticText \"Alarm volume\" id=\"title\"  (0.175, 0.665, 0.786, 0.030)\n  SeekBar \"Alarm volume\" id=\"seekbar\"  (0.175, 0.695, 0.786, 0.052)\n  LinearLayout [clickable]  (0.000, 0.747, 1.000, 0.086)\n  StaticText \"Do Not Disturb\" id=\"title\"  (0.058, 0.765, 0.319, 0.030)\n  StaticText \"Off\" id=\"summary\"  (0.058, 0.794, 0.047, 0.021)\n  LinearLayout [clickable]  (0.000, 0.833, 1.000, 0.086)\n  StaticText \"Phone ringtone\" id=\"title\"  (0.058, 0.850, 0.330, 0.030)\n  StaticText \"Flutey Phone\" id=\"summary\"  (0.058, 0.880, 0.196, 0.021)\n  LinearLayout [clickable]  (0.000, 0.919, 1.000, 0.055)\n  StaticText \"Live Caption\" id=\"title\"  (0.058, 0.936, 0.270, 0.030)\n  StaticText \"Automatically caption speech\" id=\"summary\"  (0.058, 0.966, 0.448, 0.008)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fSound & vibration": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1631,
+            "x2": 189,
+            "y2": 1716
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1642,
+            "x2": 126,
+            "y2": 1705
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2659,
+            "x2": 209,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fMedia volume": {
+          "bounds": {
+            "x1": 189,
+            "y1": 640,
+            "x2": 1038,
+            "y2": 711
+          },
+          "flags": 16
+        },
+        "id\u001fseekbar": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1667,
+            "x2": 1038,
+            "y2": 1793
+          },
+          "flags": 16
+        },
+        "text\u001fCall volume": {
+          "bounds": {
+            "x1": 189,
+            "y1": 879,
+            "x2": 1038,
+            "y2": 950
+          },
+          "flags": 16
+        },
+        "text\u001fRing volume": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1118,
+            "x2": 1038,
+            "y2": 1189
+          },
+          "flags": 16
+        },
+        "text\u001fNotification volume": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1357,
+            "x2": 1038,
+            "y2": 1428
+          },
+          "flags": 16
+        },
+        "text\u001fAlarm volume": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1596,
+            "x2": 1038,
+            "y2": 1667
+          },
+          "flags": 16
+        },
+        "text\u001fDo Not Disturb": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1835,
+            "x2": 408,
+            "y2": 1906
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2730,
+            "x2": 264,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOff": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1906,
+            "x2": 114,
+            "y2": 1957
+          },
+          "flags": 16
+        },
+        "text\u001fPhone ringtone": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2041,
+            "x2": 419,
+            "y2": 2112
+          },
+          "flags": 16
+        },
+        "text\u001fFlutey Phone": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2112,
+            "x2": 275,
+            "y2": 2163
+          },
+          "flags": 16
+        },
+        "text\u001fLive Caption": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2247,
+            "x2": 355,
+            "y2": 2318
+          },
+          "flags": 16
+        },
+        "text\u001fAutomatically caption speech": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2318,
+            "x2": 547,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fNow Playing": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2453,
+            "x2": 356,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fIdentify songs playing nearby": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2524,
+            "x2": 543,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fMedia": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2659,
+            "x2": 209,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fShow player": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2730,
+            "x2": 264,
+            "y2": 2337
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "1640e25124e42c7d",
+      "version": 131,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "icon_frame",
+        "icon",
+        "title",
+        "seekbar",
+        "icon_frame",
+        "icon",
+        "title",
+        "seekbar",
+        "icon_frame",
+        "icon",
+        "title",
+        "seekbar",
+        "icon_frame",
+        "icon",
+        "title",
+        "seekbar",
+        "icon_frame",
+        "icon",
+        "title",
+        "seekbar",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "summary"
+      ],
+      "label": "Sound & vibration: Media volume"
+    },
+    "9039b5e414bd7f6f": {
+      "hash": "9039b5e414bd7f6f",
+      "firstSeen": 1788589232614,
+      "lastSeen": 1788591199389,
+      "visits": 39,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 1.000)\n  ScrollView id=\"settings_homepage_container\"  (0.000, 0.053, 1.000, 0.920)\n  LinearLayout id=\"app_bar\"  (0.000, 0.053, 1.000, 0.092)\n  LinearLayout id=\"app_bar_container\"  (0.000, 0.053, 1.000, 0.092)\n  LinearLayout id=\"homepage_app_bar_regular_phone_view\"  (0.000, 0.053, 1.000, 0.092)\n  CardView id=\"search_bar\"  (0.039, 0.071, 0.922, 0.057)\n  ViewGroup id=\"search_action_bar\" [clickable]  (0.039, 0.071, 0.922, 0.057)\n  StaticText \"Search settings\" id=\"search_action_bar_title\"  (0.185, 0.085, 0.327, 0.030)\n  ScrollView id=\"main_content_scrollable_container\" [scrollable]  (0.000, 0.145, 1.000, 0.828)\n  LinearLayout id=\"homepage_container\"  (0.000, 0.145, 1.000, 0.828)\n  FrameLayout id=\"main_content\"  (0.000, 0.145, 1.000, 0.828)\n  LinearLayout id=\"container_material\"  (0.000, 0.145, 1.000, 0.828)\n  FrameLayout id=\"list_container\"  (0.000, 0.145, 1.000, 0.828)\n  ScrollView id=\"recycler_view\"  (0.000, 0.145, 1.000, 0.828)\n  LinearLayout [clickable]  (0.000, 0.145, 1.000, 0.083)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.163, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.168, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.145, 0.864, 0.078)\n  StaticText \"Connected devices\" id=\"title\"  (0.175, 0.155, 0.414, 0.030)\n  StaticText \"Bluetooth, pairing\" id=\"summary\"  (0.175, 0.185, 0.266, 0.021)\n  LinearLayout [clickable]  (0.000, 0.229, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.259, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.264, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.234, 0.864, 0.086)\n  StaticText \"Apps\" id=\"title\"  (0.175, 0.251, 0.113, 0.030)\n  StaticText \"Assistant, recent apps, default apps\" id=\"summary\"  (0.175, 0.281, 0.542, 0.021)\n  LinearLayout [clickable]  (0.000, 0.325, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.355, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.360, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.330, 0.864, 0.086)\n  StaticText \"Notifications\" id=\"title\"  (0.175, 0.347, 0.278, 0.030)\n  StaticText \"Notification history, conversations\" id=\"summary\"  (0.175, 0.377, 0.515, 0.021)\n  LinearLayout [clickable]  (0.000, 0.421, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.452, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.456, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.426, 0.864, 0.086)\n  StaticText \"Battery\" id=\"title\"  (0.175, 0.444, 0.156, 0.030)\n  StaticText \"100%\" id=\"summary\"  (0.175, 0.473, 0.083, 0.021)\n  LinearLayout [clickable]  (0.000, 0.517, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.548, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.552, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.522, 0.864, 0.086)\n  StaticText \"Storage\" id=\"title\"  (0.175, 0.540, 0.169, 0.030)\n  StaticText \"37% used - 5.01 GB free\" id=\"summary\"  (0.175, 0.570, 0.362, 0.021)\n  LinearLayout [clickable]  (0.000, 0.614, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.644, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.649, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.619, 0.864, 0.086)\n  StaticText \"Sound & vibration\" id=\"title\"  (0.175, 0.636, 0.381, 0.030)\n  StaticText \"Volume, haptics, Do Not Disturb\" id=\"summary\"  (0.175, 0.666, 0.480, 0.021)\n  LinearLayout [clickable]  (0.000, 0.710, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.740, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.745, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.715, 0.864, 0.086)\n  StaticText \"Display\" id=\"title\"  (0.175, 0.733, 0.159, 0.030)\n  StaticText \"Dark theme, font size, brightness\" id=\"summary\"  (0.175, 0.762, 0.496, 0.021)\n  LinearLayout [clickable]  (0.000, 0.806, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.837, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.841, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.811, 0.864, 0.086)\n  StaticText \"Wallpaper & style\" id=\"title\"  (0.175, 0.829, 0.376, 0.030)\n  StaticText \"Colors, themed icons, app grid\" id=\"summary\"  (0.175, 0.858, 0.459, 0.021)\n  LinearLayout [clickable]  (0.000, 0.902, 1.000, 0.071)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.933, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.938, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.907, 0.864, 0.066)\n  StaticText \"Accessibility\" id=\"title\"  (0.175, 0.925, 0.275, 0.030)\n  StaticText \"Display, interaction, audio\" id=\"summary\"  (0.175, 0.955, 0.385, 0.019)\n  View id=\"statusBarBackground\"  (0.000, 0.000, 1.000, 0.053)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2400
+          },
+          "flags": 16
+        },
+        "id\u001fsettings_homepage_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 349
+          },
+          "flags": 16
+        },
+        "id\u001fapp_bar_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 349
+          },
+          "flags": 16
+        },
+        "id\u001fhomepage_app_bar_regular_phone_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 349
+          },
+          "flags": 16
+        },
+        "id\u001faccount_avatar": {
+          "bounds": {
+            "x1": 891,
+            "y1": 128,
+            "x2": 1017,
+            "y2": -20
+          },
+          "flags": 17
+        },
+        "text\u001fProfile picture, double tap to open Google Account": {
+          "bounds": {
+            "x1": 891,
+            "y1": 128,
+            "x2": 1017,
+            "y2": -20
+          },
+          "flags": 17
+        },
+        "id\u001fhomepage_title": {
+          "bounds": {
+            "x1": 63,
+            "y1": 128,
+            "x2": 408,
+            "y2": 107
+          },
+          "flags": 16
+        },
+        "text\u001fSettings": {
+          "bounds": {
+            "x1": 63,
+            "y1": 128,
+            "x2": 408,
+            "y2": 107
+          },
+          "flags": 16
+        },
+        "id\u001fsearch_bar": {
+          "bounds": {
+            "x1": 42,
+            "y1": 170,
+            "x2": 1038,
+            "y2": 307
+          },
+          "flags": 16
+        },
+        "id\u001fsearch_action_bar": {
+          "bounds": {
+            "x1": 42,
+            "y1": 170,
+            "x2": 1038,
+            "y2": 307
+          },
+          "flags": 17
+        },
+        "id\u001fsearch_action_bar_title": {
+          "bounds": {
+            "x1": 200,
+            "y1": 203,
+            "x2": 553,
+            "y2": 274
+          },
+          "flags": 16
+        },
+        "text\u001fSearch settings": {
+          "bounds": {
+            "x1": 200,
+            "y1": 203,
+            "x2": 553,
+            "y2": 274
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content_scrollable_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fhomepage_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontextual_cards_content": {
+          "bounds": {
+            "x1": 11,
+            "y1": 349,
+            "x2": 1069,
+            "y2": 87
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 4355,
+            "x2": 147,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 84,
+            "y1": 4366,
+            "x2": 147,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftext_frame": {
+          "bounds": {
+            "x1": 147,
+            "y1": 4294,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4336,
+            "x2": 533,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fNetwork & internet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 349,
+            "x2": 625,
+            "y2": 212
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4407,
+            "x2": 626,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fMobile, Wi‑Fi, hotspot": {
+          "bounds": {
+            "x1": 189,
+            "y1": 349,
+            "x2": 540,
+            "y2": 263
+          },
+          "flags": 16
+        },
+        "text\u001fConnected devices": {
+          "bounds": {
+            "x1": 189,
+            "y1": 372,
+            "x2": 636,
+            "y2": 443
+          },
+          "flags": 16
+        },
+        "text\u001fBluetooth, pairing": {
+          "bounds": {
+            "x1": 189,
+            "y1": 443,
+            "x2": 476,
+            "y2": 494
+          },
+          "flags": 16
+        },
+        "text\u001fApps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 603,
+            "x2": 311,
+            "y2": 674
+          },
+          "flags": 16
+        },
+        "text\u001fAssistant, recent apps, default apps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 674,
+            "x2": 774,
+            "y2": 725
+          },
+          "flags": 16
+        },
+        "text\u001fNotifications": {
+          "bounds": {
+            "x1": 189,
+            "y1": 834,
+            "x2": 489,
+            "y2": 905
+          },
+          "flags": 16
+        },
+        "text\u001fNotification history, conversations": {
+          "bounds": {
+            "x1": 189,
+            "y1": 905,
+            "x2": 745,
+            "y2": 956
+          },
+          "flags": 16
+        },
+        "text\u001fBattery": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1065,
+            "x2": 357,
+            "y2": 1136
+          },
+          "flags": 16
+        },
+        "text\u001f100%": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1136,
+            "x2": 279,
+            "y2": 1187
+          },
+          "flags": 16
+        },
+        "text\u001fStorage": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1296,
+            "x2": 371,
+            "y2": 1367
+          },
+          "flags": 16
+        },
+        "text\u001f37% used - 5.01 GB free": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1367,
+            "x2": 580,
+            "y2": 1418
+          },
+          "flags": 16
+        },
+        "text\u001fSound & vibration": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1527,
+            "x2": 601,
+            "y2": 1598
+          },
+          "flags": 16
+        },
+        "text\u001fVolume, haptics, Do Not Disturb": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1598,
+            "x2": 707,
+            "y2": 1649
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1758,
+            "x2": 361,
+            "y2": 1829
+          },
+          "flags": 16
+        },
+        "text\u001fDark theme, font size, brightness": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1829,
+            "x2": 725,
+            "y2": 1880
+          },
+          "flags": 16
+        },
+        "text\u001fWallpaper & style": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1989,
+            "x2": 595,
+            "y2": 2060
+          },
+          "flags": 16
+        },
+        "text\u001fColors, themed icons, app grid": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2060,
+            "x2": 685,
+            "y2": 2111
+          },
+          "flags": 16
+        },
+        "text\u001fAccessibility": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2220,
+            "x2": 486,
+            "y2": 2291
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay, interaction, audio": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2291,
+            "x2": 605,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSecurity & privacy": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2451,
+            "x2": 606,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fApp security, device lock, permissions": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2522,
+            "x2": 810,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fLocation": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2682,
+            "x2": 394,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOn - 3 apps have access to location": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2753,
+            "x2": 767,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSafety & emergency": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2913,
+            "x2": 655,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fEmergency SOS, medical info, alerts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2984,
+            "x2": 779,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fPasswords & accounts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3144,
+            "x2": 726,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSaved passwords, autofill, synced accounts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3215,
+            "x2": 899,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fDigital Wellbeing & parental controls": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3363,
+            "x2": 1017,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fScreen time, app timers, bedtime schedules": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3496,
+            "x2": 904,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fGoogle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3643,
+            "x2": 356,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fServices & preferences": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3714,
+            "x2": 568,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSystem": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3874,
+            "x2": 363,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fLanguages, gestures, time, backup": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3945,
+            "x2": 755,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fAbout emulated device": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4105,
+            "x2": 729,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fsdk_gphone64_x86_64": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4176,
+            "x2": 566,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fTips & support": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4336,
+            "x2": 533,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fHelp articles, phone & chat": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4407,
+            "x2": 626,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fstatusBarBackground": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 128
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "299378e09b0fe830",
+      "stateHash": "1c2da27abd5edc90",
+      "version": 146,
+      "resourceIds": [
+        "content",
+        "settings_homepage_container",
+        "app_bar",
+        "app_bar_container",
+        "homepage_app_bar_regular_phone_view",
+        "account_avatar",
+        "homepage_title",
+        "search_bar",
+        "search_action_bar",
+        "search_action_bar_title",
+        "main_content_scrollable_container",
+        "homepage_container",
+        "contextual_cards_content",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "icon_frame",
+        "icon",
+        "text_frame",
+        "title",
+        "summary",
+        "statusBarBackground"
+      ],
+      "label": "Settings: Network & internet"
+    },
+    "c367c6d328daf0fd": {
+      "hash": "c367c6d328daf0fd",
+      "firstSeen": 1788589234498,
+      "lastSeen": 1788591203235,
+      "visits": 47,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Display\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.725)\n  ScrollView id=\"recycler_view\" [scrollable]  (0.000, 0.249, 1.000, 0.725)\n  StaticText \"Brightness\" id=\"title\"  (0.058, 0.275, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.305, 1.000, 0.086)\n  StaticText \"Brightness level\" id=\"title\"  (0.058, 0.323, 0.344, 0.030)\n  StaticText \"83%\" id=\"summary\"  (0.058, 0.352, 0.064, 0.021)\n  StaticText \"Lock display\" id=\"title\"  (0.058, 0.417, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.448, 1.000, 0.086)\n  StaticText \"Lock screen\" id=\"title\"  (0.058, 0.465, 0.264, 0.030)\n  StaticText \"Show all notification content\" id=\"summary\"  (0.058, 0.495, 0.430, 0.021)\n  LinearLayout [clickable]  (0.000, 0.533, 1.000, 0.086)\n  StaticText \"Screen timeout\" id=\"title\"  (0.058, 0.551, 0.329, 0.030)\n  StaticText \"Not set\" id=\"summary\"  (0.058, 0.580, 0.110, 0.021)\n  StaticText \"Appearance\" id=\"title\"  (0.058, 0.645, 0.903, 0.021)\n  LinearLayout [clickable]  (0.000, 0.675, 1.000, 0.086)\n  StaticText \"Dark theme\" id=\"title\"  (0.058, 0.693, 0.250, 0.030)\n  StaticText \"Will never turn on automatically\" id=\"summary\"  (0.058, 0.723, 0.476, 0.021)\n  LinearLayout id=\"two_target_divider\"  (0.744, 0.675, 0.042, 0.086)\n  LinearLayout id=\"widget_frame\"  (0.786, 0.675, 0.175, 0.086)\n  Switch \"Dark theme\" id=\"switchWidget\" [clickable]  (0.786, 0.675, 0.175, 0.086)\n  LinearLayout [clickable]  (0.000, 0.761, 1.000, 0.086)\n  StaticText \"Screen saver\" id=\"title\"  (0.058, 0.779, 0.280, 0.030)\n  StaticText \"On / Clock\" id=\"summary\"  (0.058, 0.808, 0.157, 0.021)\n  LinearLayout [clickable]  (0.000, 0.847, 1.000, 0.065)\n  StaticText \"Display size and text\" id=\"title\"  (0.058, 0.865, 0.445, 0.030)\n  LinearLayout [clickable]  (0.000, 0.912, 1.000, 0.062)\n  StaticText \"Navigation mode\" id=\"title\"  (0.058, 0.929, 0.371, 0.030)\n  StaticText \"Gesture navigation\" id=\"summary\"  (0.058, 0.959, 0.285, 0.015)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2571,
+            "x2": 216,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fBrightness": {
+          "bounds": {
+            "x1": 63,
+            "y1": 661,
+            "x2": 1038,
+            "y2": 712
+          },
+          "flags": 16
+        },
+        "text\u001fBrightness level": {
+          "bounds": {
+            "x1": 63,
+            "y1": 775,
+            "x2": 435,
+            "y2": 846
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2301,
+            "x2": 371,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001f83%": {
+          "bounds": {
+            "x1": 63,
+            "y1": 846,
+            "x2": 132,
+            "y2": 897
+          },
+          "flags": 16
+        },
+        "text\u001fLock display": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1002,
+            "x2": 1038,
+            "y2": 1053
+          },
+          "flags": 16
+        },
+        "text\u001fLock screen": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1116,
+            "x2": 348,
+            "y2": 1187
+          },
+          "flags": 16
+        },
+        "text\u001fShow all notification content": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1187,
+            "x2": 527,
+            "y2": 1238
+          },
+          "flags": 16
+        },
+        "text\u001fScreen timeout": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1322,
+            "x2": 418,
+            "y2": 1393
+          },
+          "flags": 16
+        },
+        "text\u001fNot set": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1393,
+            "x2": 182,
+            "y2": 1444
+          },
+          "flags": 16
+        },
+        "text\u001fAppearance": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1549,
+            "x2": 1038,
+            "y2": 1600
+          },
+          "flags": 16
+        },
+        "text\u001fDark theme": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1663,
+            "x2": 333,
+            "y2": 1734
+          },
+          "flags": 16
+        },
+        "text\u001fWill never turn on automatically": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1734,
+            "x2": 577,
+            "y2": 1785
+          },
+          "flags": 16
+        },
+        "id\u001ftwo_target_divider": {
+          "bounds": {
+            "x1": 804,
+            "y1": 1621,
+            "x2": 849,
+            "y2": 1827
+          },
+          "flags": 16
+        },
+        "id\u001fwidget_frame": {
+          "bounds": {
+            "x1": 849,
+            "y1": 1621,
+            "x2": 1038,
+            "y2": 1827
+          },
+          "flags": 16
+        },
+        "id\u001fswitchWidget": {
+          "bounds": {
+            "x1": 849,
+            "y1": 1621,
+            "x2": 1038,
+            "y2": 1827
+          },
+          "flags": 17
+        },
+        "text\u001fScreen saver": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1869,
+            "x2": 365,
+            "y2": 1940
+          },
+          "flags": 16
+        },
+        "text\u001fOn / Clock": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1940,
+            "x2": 233,
+            "y2": 1991
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay size and text": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2075,
+            "x2": 544,
+            "y2": 2146
+          },
+          "flags": 16
+        },
+        "text\u001fNavigation mode": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2230,
+            "x2": 464,
+            "y2": 2301
+          },
+          "flags": 16
+        },
+        "text\u001fGesture navigation": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2301,
+            "x2": 371,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fColor": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2457,
+            "x2": 1038,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fColors": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2571,
+            "x2": 216,
+            "y2": 2337
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "1a69344a86efc028",
+      "version": 154,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "summary",
+        "title",
+        "title",
+        "summary",
+        "two_target_divider",
+        "widget_frame",
+        "switchWidget",
+        "title",
+        "summary",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "title"
+      ],
+      "label": "Display: Brightness"
+    },
+    "77a189ce621258ea": {
+      "hash": "77a189ce621258ea",
+      "firstSeen": 1788589859565,
+      "lastSeen": 1788589859565,
+      "visits": 1,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 1.000)\n  ScrollView id=\"settings_homepage_container\" [scrollable]  (0.000, 0.053, 1.000, 0.920)\n  LinearLayout id=\"app_bar\"  (0.000, 0.053, 1.000, 0.268)\n  LinearLayout id=\"app_bar_container\"  (0.000, 0.053, 1.000, 0.268)\n  LinearLayout id=\"homepage_app_bar_regular_phone_view\"  (0.000, 0.053, 1.000, 0.268)\n  Image \"Profile picture, double tap to open Google Account\" id=\"account_avatar\" [clickable]  (0.825, 0.115, 0.117, 0.052)\n  StaticText \"Settings\" id=\"homepage_title\"  (0.058, 0.167, 0.319, 0.053)\n  CardView id=\"search_bar\"  (0.039, 0.246, 0.922, 0.057)\n  ViewGroup id=\"search_action_bar\" [clickable]  (0.039, 0.246, 0.922, 0.057)\n  StaticText \"Search settings\" id=\"search_action_bar_title\"  (0.185, 0.260, 0.327, 0.030)\n  ScrollView id=\"main_content_scrollable_container\" [scrollable]  (0.000, 0.321, 1.000, 0.653)\n  LinearLayout id=\"homepage_container\"  (0.000, 0.321, 1.000, 0.653)\n  FrameLayout id=\"main_content\"  (0.000, 0.321, 1.000, 0.653)\n  LinearLayout id=\"container_material\"  (0.000, 0.321, 1.000, 0.653)\n  FrameLayout id=\"list_container\"  (0.000, 0.321, 1.000, 0.653)\n  ScrollView id=\"recycler_view\"  (0.000, 0.321, 1.000, 0.653)\n  LinearLayout [clickable]  (0.000, 0.321, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.351, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.356, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.326, 0.864, 0.086)\n  StaticText \"Network & internet\" id=\"title\"  (0.175, 0.343, 0.404, 0.030)\n  StaticText \"Mobile, Wi‑Fi, hotspot\" id=\"summary\"  (0.175, 0.373, 0.325, 0.021)\n  LinearLayout [clickable]  (0.000, 0.417, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.448, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.452, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.422, 0.864, 0.086)\n  StaticText \"Connected devices\" id=\"title\"  (0.175, 0.440, 0.414, 0.030)\n  StaticText \"Bluetooth, pairing\" id=\"summary\"  (0.175, 0.469, 0.266, 0.021)\n  LinearLayout [clickable]  (0.000, 0.513, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.544, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.548, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.518, 0.864, 0.086)\n  StaticText \"Apps\" id=\"title\"  (0.175, 0.536, 0.113, 0.030)\n  StaticText \"Assistant, recent apps, default apps\" id=\"summary\"  (0.175, 0.565, 0.542, 0.021)\n  LinearLayout [clickable]  (0.000, 0.610, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.640, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.645, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.615, 0.864, 0.086)\n  StaticText \"Notifications\" id=\"title\"  (0.175, 0.632, 0.278, 0.030)\n  StaticText \"Notification history, conversations\" id=\"summary\"  (0.175, 0.662, 0.515, 0.021)\n  LinearLayout [clickable]  (0.000, 0.706, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.736, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.741, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.711, 0.864, 0.086)\n  StaticText \"Battery\" id=\"title\"  (0.175, 0.728, 0.156, 0.030)\n  StaticText \"100%\" id=\"summary\"  (0.175, 0.758, 0.083, 0.021)\n  LinearLayout [clickable]  (0.000, 0.802, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.833, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.837, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.807, 0.864, 0.086)\n  StaticText \"Storage\" id=\"title\"  (0.175, 0.825, 0.169, 0.030)\n  StaticText \"37% used - 5.00 GB free\" id=\"summary\"  (0.175, 0.854, 0.362, 0.021)\n  LinearLayout [clickable]  (0.000, 0.898, 1.000, 0.075)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.929, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.933, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.903, 0.864, 0.070)\n  StaticText \"Sound & vibration\" id=\"title\"  (0.175, 0.921, 0.381, 0.030)\n  StaticText \"Volume, haptics, Do Not Disturb\" id=\"summary\"  (0.175, 0.950, 0.480, 0.021)\n  View id=\"statusBarBackground\"  (0.000, 0.000, 1.000, 0.053)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2400
+          },
+          "flags": 16
+        },
+        "id\u001fsettings_homepage_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 770
+          },
+          "flags": 16
+        },
+        "id\u001fapp_bar_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 770
+          },
+          "flags": 16
+        },
+        "id\u001fhomepage_app_bar_regular_phone_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 770
+          },
+          "flags": 16
+        },
+        "id\u001faccount_avatar": {
+          "bounds": {
+            "x1": 891,
+            "y1": 275,
+            "x2": 1017,
+            "y2": 401
+          },
+          "flags": 17
+        },
+        "text\u001fProfile picture, double tap to open Google Account": {
+          "bounds": {
+            "x1": 891,
+            "y1": 275,
+            "x2": 1017,
+            "y2": 401
+          },
+          "flags": 17
+        },
+        "id\u001fhomepage_title": {
+          "bounds": {
+            "x1": 63,
+            "y1": 401,
+            "x2": 408,
+            "y2": 528
+          },
+          "flags": 16
+        },
+        "text\u001fSettings": {
+          "bounds": {
+            "x1": 63,
+            "y1": 401,
+            "x2": 408,
+            "y2": 528
+          },
+          "flags": 16
+        },
+        "id\u001fsearch_bar": {
+          "bounds": {
+            "x1": 42,
+            "y1": 591,
+            "x2": 1038,
+            "y2": 728
+          },
+          "flags": 16
+        },
+        "id\u001fsearch_action_bar": {
+          "bounds": {
+            "x1": 42,
+            "y1": 591,
+            "x2": 1038,
+            "y2": 728
+          },
+          "flags": 17
+        },
+        "id\u001fsearch_action_bar_title": {
+          "bounds": {
+            "x1": 200,
+            "y1": 624,
+            "x2": 553,
+            "y2": 695
+          },
+          "flags": 16
+        },
+        "text\u001fSearch settings": {
+          "bounds": {
+            "x1": 200,
+            "y1": 624,
+            "x2": 553,
+            "y2": 695
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content_scrollable_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 770,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fhomepage_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 770,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontextual_cards_content": {
+          "bounds": {
+            "x1": 11,
+            "y1": 770,
+            "x2": 1069,
+            "y2": 770
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 770,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 770,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 770,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 770,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 5038,
+            "x2": 147,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 84,
+            "y1": 5049,
+            "x2": 147,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftext_frame": {
+          "bounds": {
+            "x1": 147,
+            "y1": 4977,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 5019,
+            "x2": 533,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fNetwork & internet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 824,
+            "x2": 625,
+            "y2": 895
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 189,
+            "y1": 5090,
+            "x2": 626,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fMobile, Wi‑Fi, hotspot": {
+          "bounds": {
+            "x1": 189,
+            "y1": 895,
+            "x2": 540,
+            "y2": 946
+          },
+          "flags": 16
+        },
+        "text\u001fConnected devices": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1055,
+            "x2": 636,
+            "y2": 1126
+          },
+          "flags": 16
+        },
+        "text\u001fBluetooth, pairing": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1126,
+            "x2": 476,
+            "y2": 1177
+          },
+          "flags": 16
+        },
+        "text\u001fApps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1286,
+            "x2": 311,
+            "y2": 1357
+          },
+          "flags": 16
+        },
+        "text\u001fAssistant, recent apps, default apps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1357,
+            "x2": 774,
+            "y2": 1408
+          },
+          "flags": 16
+        },
+        "text\u001fNotifications": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1517,
+            "x2": 489,
+            "y2": 1588
+          },
+          "flags": 16
+        },
+        "text\u001fNotification history, conversations": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1588,
+            "x2": 745,
+            "y2": 1639
+          },
+          "flags": 16
+        },
+        "text\u001fBattery": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1748,
+            "x2": 357,
+            "y2": 1819
+          },
+          "flags": 16
+        },
+        "text\u001f100%": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1819,
+            "x2": 279,
+            "y2": 1870
+          },
+          "flags": 16
+        },
+        "text\u001fStorage": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1979,
+            "x2": 371,
+            "y2": 2050
+          },
+          "flags": 16
+        },
+        "text\u001f37% used - 5.00 GB free": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2050,
+            "x2": 580,
+            "y2": 2101
+          },
+          "flags": 16
+        },
+        "text\u001fSound & vibration": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2210,
+            "x2": 601,
+            "y2": 2281
+          },
+          "flags": 16
+        },
+        "text\u001fVolume, haptics, Do Not Disturb": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2281,
+            "x2": 707,
+            "y2": 2332
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2441,
+            "x2": 361,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fDark theme, font size, brightness": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2512,
+            "x2": 725,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fWallpaper & style": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2672,
+            "x2": 595,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fColors, themed icons, app grid": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2743,
+            "x2": 685,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fAccessibility": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2903,
+            "x2": 486,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay, interaction, audio": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2974,
+            "x2": 605,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSecurity & privacy": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3134,
+            "x2": 606,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fApp security, device lock, permissions": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3205,
+            "x2": 810,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fLocation": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3365,
+            "x2": 394,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOn - 3 apps have access to location": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3436,
+            "x2": 767,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSafety & emergency": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3596,
+            "x2": 655,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fEmergency SOS, medical info, alerts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3667,
+            "x2": 779,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fPasswords & accounts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3827,
+            "x2": 726,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSaved passwords, autofill, synced accounts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3898,
+            "x2": 899,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fDigital Wellbeing & parental controls": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4046,
+            "x2": 1017,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fScreen time, app timers, bedtime schedules": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4179,
+            "x2": 904,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fGoogle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4326,
+            "x2": 356,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fServices & preferences": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4397,
+            "x2": 568,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSystem": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4557,
+            "x2": 363,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fLanguages, gestures, time, backup": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4628,
+            "x2": 755,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fAbout emulated device": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4788,
+            "x2": 729,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fsdk_gphone64_x86_64": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4859,
+            "x2": 566,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fTips & support": {
+          "bounds": {
+            "x1": 189,
+            "y1": 5019,
+            "x2": 533,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fHelp articles, phone & chat": {
+          "bounds": {
+            "x1": 189,
+            "y1": 5090,
+            "x2": 626,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fstatusBarBackground": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 128
+          },
+          "flags": 16
+        }
+      },
+      "stateHash": "dfccfb920d9d4497",
+      "version": 1,
+      "label": "Settings: Network & internet"
+    },
+    "2bf46d4fd2e567c9": {
+      "hash": "2bf46d4fd2e567c9",
+      "firstSeen": 1788589861545,
+      "lastSeen": 1788589861545,
+      "visits": 1,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Network & internet\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"main_content\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout id=\"container_material\"  (0.000, 0.249, 1.000, 0.725)\n  FrameLayout id=\"list_container\"  (0.000, 0.249, 1.000, 0.725)\n  ScrollView id=\"recycler_view\"  (0.000, 0.249, 1.000, 0.725)\n  LinearLayout [clickable]  (0.000, 0.249, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.274, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.279, 0.058, 0.026)\n  StaticText \"Internet\" id=\"title\"  (0.175, 0.267, 0.167, 0.030)\n  StaticText \"AndroidWifi\" id=\"summary\"  (0.175, 0.296, 0.178, 0.021)\n  LinearLayout [clickable]  (0.000, 0.335, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.360, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.365, 0.058, 0.026)\n  StaticText \"Calls & SMS\" id=\"title\"  (0.175, 0.352, 0.263, 0.030)\n  StaticText \"T-Mobile\" id=\"summary\"  (0.175, 0.382, 0.130, 0.021)\n  LinearLayout [clickable]  (0.000, 0.421, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.446, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.450, 0.058, 0.026)\n  StaticText \"SIMs\" id=\"title\"  (0.175, 0.438, 0.109, 0.030)\n  StaticText \"T-Mobile\" id=\"summary\"  (0.175, 0.468, 0.130, 0.021)\n  LinearLayout [clickable]  (0.000, 0.507, 1.000, 0.065)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.521, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.526, 0.058, 0.026)\n  StaticText \"Airplane mode\" id=\"title\"  (0.175, 0.524, 0.317, 0.030)\n  LinearLayout id=\"widget_frame\"  (0.787, 0.507, 0.174, 0.065)\n  Switch id=\"switch_widget\"  (0.826, 0.512, 0.135, 0.052)\n  LinearLayout [clickable]  (0.000, 0.571, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.596, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.601, 0.058, 0.026)\n  StaticText \"Hotspot & tethering\" id=\"title\"  (0.175, 0.589, 0.423, 0.030)\n  StaticText \"Off\" id=\"summary\"  (0.175, 0.618, 0.047, 0.021)\n  LinearLayout [clickable]  (0.000, 0.657, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.682, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.687, 0.058, 0.026)\n  StaticText \"Data Saver\" id=\"title\"  (0.175, 0.675, 0.236, 0.030)\n  StaticText \"Off\" id=\"summary\"  (0.175, 0.704, 0.047, 0.021)\n  LinearLayout [clickable]  (0.000, 0.743, 1.000, 0.086)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.768, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.772, 0.058, 0.026)\n  StaticText \"VPN\" id=\"title\"  (0.175, 0.760, 0.097, 0.030)\n  StaticText \"None\" id=\"summary\"  (0.175, 0.790, 0.081, 0.021)\n  LinearLayout id=\"widget_frame\"  (0.786, 0.743, 0.175, 0.086)\n  LinearLayout [clickable]  (0.000, 0.829, 1.000, 0.065)\n  StaticText \"Mobile plan\" id=\"title\"  (0.058, 0.846, 0.254, 0.030)\n  LinearLayout [clickable]  (0.000, 0.893, 1.000, 0.080)\n  StaticText \"Private DNS\" id=\"title\"  (0.058, 0.911, 0.260, 0.030)\n  StaticText \"Automatic\" id=\"summary\"  (0.058, 0.940, 0.156, 0.021)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fNetwork & internet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1843,
+            "x2": 189,
+            "y2": 1928
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1854,
+            "x2": 126,
+            "y2": 1917
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2392,
+            "x2": 567,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fInternet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 640,
+            "x2": 369,
+            "y2": 711
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2463,
+            "x2": 108,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fAndroidWifi": {
+          "bounds": {
+            "x1": 189,
+            "y1": 711,
+            "x2": 381,
+            "y2": 762
+          },
+          "flags": 16
+        },
+        "text\u001fCalls & SMS": {
+          "bounds": {
+            "x1": 189,
+            "y1": 846,
+            "x2": 473,
+            "y2": 917
+          },
+          "flags": 16
+        },
+        "text\u001fT-Mobile": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1123,
+            "x2": 329,
+            "y2": 1174
+          },
+          "flags": 16
+        },
+        "text\u001fSIMs": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1052,
+            "x2": 307,
+            "y2": 1123
+          },
+          "flags": 16
+        },
+        "text\u001fAirplane mode": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1258,
+            "x2": 531,
+            "y2": 1329
+          },
+          "flags": 16
+        },
+        "id\u001fwidget_frame": {
+          "bounds": {
+            "x1": 849,
+            "y1": 1783,
+            "x2": 1038,
+            "y2": 1989
+          },
+          "flags": 16
+        },
+        "id\u001fswitch_widget": {
+          "bounds": {
+            "x1": 892,
+            "y1": 1230,
+            "x2": 1038,
+            "y2": 1356
+          },
+          "flags": 16
+        },
+        "text\u001fHotspot & tethering": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1413,
+            "x2": 646,
+            "y2": 1484
+          },
+          "flags": 16
+        },
+        "text\u001fOff": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1690,
+            "x2": 240,
+            "y2": 1741
+          },
+          "flags": 16
+        },
+        "text\u001fData Saver": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1619,
+            "x2": 444,
+            "y2": 1690
+          },
+          "flags": 16
+        },
+        "text\u001fVPN": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1825,
+            "x2": 294,
+            "y2": 1896
+          },
+          "flags": 16
+        },
+        "text\u001fNone": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1896,
+            "x2": 276,
+            "y2": 1947
+          },
+          "flags": 16
+        },
+        "text\u001fMobile plan": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2031,
+            "x2": 337,
+            "y2": 2102
+          },
+          "flags": 16
+        },
+        "text\u001fPrivate DNS": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2186,
+            "x2": 344,
+            "y2": 2257
+          },
+          "flags": 16
+        },
+        "text\u001fAutomatic": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2257,
+            "x2": 232,
+            "y2": 2308
+          },
+          "flags": 16
+        },
+        "text\u001fAdaptive connectivity": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2392,
+            "x2": 567,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOn": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2463,
+            "x2": 108,
+            "y2": 2337
+          },
+          "flags": 16
+        }
+      },
+      "stateHash": "a8cb4ce0e8a2d028",
+      "version": 11,
+      "label": "Network & internet: Internet"
+    },
+    "299378e09b0fe830": {
+      "hash": "299378e09b0fe830",
+      "firstSeen": 1788589902280,
+      "lastSeen": 1788589902280,
+      "visits": 1,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 1.000)\n  ScrollView id=\"settings_homepage_container\"  (0.000, 0.053, 1.000, 0.920)\n  LinearLayout id=\"app_bar\"  (0.000, 0.053, 1.000, 0.092)\n  LinearLayout id=\"app_bar_container\"  (0.000, 0.053, 1.000, 0.092)\n  LinearLayout id=\"homepage_app_bar_regular_phone_view\"  (0.000, 0.053, 1.000, 0.092)\n  CardView id=\"search_bar\"  (0.039, 0.071, 0.922, 0.057)\n  ViewGroup id=\"search_action_bar\" [clickable]  (0.039, 0.071, 0.922, 0.057)\n  StaticText \"Search settings\" id=\"search_action_bar_title\"  (0.185, 0.085, 0.327, 0.030)\n  ScrollView id=\"main_content_scrollable_container\" [scrollable]  (0.000, 0.145, 1.000, 0.828)\n  LinearLayout id=\"homepage_container\"  (0.000, 0.145, 1.000, 0.828)\n  FrameLayout id=\"main_content\"  (0.000, 0.145, 1.000, 0.828)\n  LinearLayout id=\"container_material\"  (0.000, 0.145, 1.000, 0.828)\n  FrameLayout id=\"list_container\"  (0.000, 0.145, 1.000, 0.828)\n  ScrollView id=\"recycler_view\"  (0.000, 0.145, 1.000, 0.828)\n  LinearLayout [clickable]  (0.000, 0.145, 1.000, 0.070)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.150, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.155, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.145, 0.864, 0.065)\n  StaticText \"Connected devices\" id=\"title\"  (0.175, 0.145, 0.414, 0.026)\n  StaticText \"Bluetooth, pairing\" id=\"summary\"  (0.175, 0.172, 0.266, 0.021)\n  LinearLayout [clickable]  (0.000, 0.216, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.246, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.251, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.221, 0.864, 0.086)\n  StaticText \"Apps\" id=\"title\"  (0.175, 0.238, 0.113, 0.030)\n  StaticText \"Assistant, recent apps, default apps\" id=\"summary\"  (0.175, 0.268, 0.542, 0.021)\n  LinearLayout [clickable]  (0.000, 0.312, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.343, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.347, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.317, 0.864, 0.086)\n  StaticText \"Notifications\" id=\"title\"  (0.175, 0.335, 0.278, 0.030)\n  StaticText \"Notification history, conversations\" id=\"summary\"  (0.175, 0.364, 0.515, 0.021)\n  LinearLayout [clickable]  (0.000, 0.408, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.439, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.443, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.413, 0.864, 0.086)\n  StaticText \"Battery\" id=\"title\"  (0.175, 0.431, 0.156, 0.030)\n  StaticText \"100%\" id=\"summary\"  (0.175, 0.460, 0.083, 0.021)\n  LinearLayout [clickable]  (0.000, 0.505, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.535, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.540, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.510, 0.864, 0.086)\n  StaticText \"Storage\" id=\"title\"  (0.175, 0.527, 0.169, 0.030)\n  StaticText \"37% used - 5.00 GB free\" id=\"summary\"  (0.175, 0.557, 0.362, 0.021)\n  LinearLayout [clickable]  (0.000, 0.601, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.631, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.636, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.606, 0.864, 0.086)\n  StaticText \"Sound & vibration\" id=\"title\"  (0.175, 0.623, 0.381, 0.030)\n  StaticText \"Volume, haptics, Do Not Disturb\" id=\"summary\"  (0.175, 0.653, 0.480, 0.021)\n  LinearLayout [clickable]  (0.000, 0.697, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.728, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.732, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.702, 0.864, 0.086)\n  StaticText \"Display\" id=\"title\"  (0.175, 0.720, 0.159, 0.030)\n  StaticText \"Dark theme, font size, brightness\" id=\"summary\"  (0.175, 0.749, 0.496, 0.021)\n  LinearLayout [clickable]  (0.000, 0.793, 1.000, 0.096)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.824, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.828, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.798, 0.864, 0.086)\n  StaticText \"Wallpaper & style\" id=\"title\"  (0.175, 0.816, 0.376, 0.030)\n  StaticText \"Colors, themed icons, app grid\" id=\"summary\"  (0.175, 0.845, 0.459, 0.021)\n  LinearLayout [clickable]  (0.000, 0.890, 1.000, 0.084)\n  LinearLayout id=\"icon_frame\"  (0.000, 0.920, 0.136, 0.035)\n  Image id=\"icon\"  (0.078, 0.925, 0.058, 0.026)\n  RelativeLayout id=\"text_frame\"  (0.136, 0.895, 0.864, 0.079)\n  StaticText \"Accessibility\" id=\"title\"  (0.175, 0.912, 0.275, 0.030)\n  StaticText \"Display, interaction, audio\" id=\"summary\"  (0.175, 0.942, 0.385, 0.021)\n  View id=\"statusBarBackground\"  (0.000, 0.000, 1.000, 0.053)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2400
+          },
+          "flags": 16
+        },
+        "id\u001fsettings_homepage_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 349
+          },
+          "flags": 16
+        },
+        "id\u001fapp_bar_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 349
+          },
+          "flags": 16
+        },
+        "id\u001fhomepage_app_bar_regular_phone_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 349
+          },
+          "flags": 16
+        },
+        "id\u001faccount_avatar": {
+          "bounds": {
+            "x1": 891,
+            "y1": 128,
+            "x2": 1017,
+            "y2": -20
+          },
+          "flags": 17
+        },
+        "text\u001fProfile picture, double tap to open Google Account": {
+          "bounds": {
+            "x1": 891,
+            "y1": 128,
+            "x2": 1017,
+            "y2": -20
+          },
+          "flags": 17
+        },
+        "id\u001fhomepage_title": {
+          "bounds": {
+            "x1": 63,
+            "y1": 128,
+            "x2": 408,
+            "y2": 107
+          },
+          "flags": 16
+        },
+        "text\u001fSettings": {
+          "bounds": {
+            "x1": 63,
+            "y1": 128,
+            "x2": 408,
+            "y2": 107
+          },
+          "flags": 16
+        },
+        "id\u001fsearch_bar": {
+          "bounds": {
+            "x1": 42,
+            "y1": 170,
+            "x2": 1038,
+            "y2": 307
+          },
+          "flags": 16
+        },
+        "id\u001fsearch_action_bar": {
+          "bounds": {
+            "x1": 42,
+            "y1": 170,
+            "x2": 1038,
+            "y2": 307
+          },
+          "flags": 17
+        },
+        "id\u001fsearch_action_bar_title": {
+          "bounds": {
+            "x1": 200,
+            "y1": 203,
+            "x2": 553,
+            "y2": 274
+          },
+          "flags": 16
+        },
+        "text\u001fSearch settings": {
+          "bounds": {
+            "x1": 200,
+            "y1": 203,
+            "x2": 553,
+            "y2": 274
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content_scrollable_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fhomepage_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontextual_cards_content": {
+          "bounds": {
+            "x1": 11,
+            "y1": 349,
+            "x2": 1069,
+            "y2": 56
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 349,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 4324,
+            "x2": 147,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 84,
+            "y1": 4335,
+            "x2": 147,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftext_frame": {
+          "bounds": {
+            "x1": 147,
+            "y1": 4263,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4305,
+            "x2": 533,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fNetwork & internet": {
+          "bounds": {
+            "x1": 189,
+            "y1": 349,
+            "x2": 625,
+            "y2": 181
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4376,
+            "x2": 626,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fMobile, Wi‑Fi, hotspot": {
+          "bounds": {
+            "x1": 189,
+            "y1": 349,
+            "x2": 540,
+            "y2": 232
+          },
+          "flags": 16
+        },
+        "text\u001fConnected devices": {
+          "bounds": {
+            "x1": 189,
+            "y1": 349,
+            "x2": 636,
+            "y2": 412
+          },
+          "flags": 16
+        },
+        "text\u001fBluetooth, pairing": {
+          "bounds": {
+            "x1": 189,
+            "y1": 412,
+            "x2": 476,
+            "y2": 463
+          },
+          "flags": 16
+        },
+        "text\u001fApps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 572,
+            "x2": 311,
+            "y2": 643
+          },
+          "flags": 16
+        },
+        "text\u001fAssistant, recent apps, default apps": {
+          "bounds": {
+            "x1": 189,
+            "y1": 643,
+            "x2": 774,
+            "y2": 694
+          },
+          "flags": 16
+        },
+        "text\u001fNotifications": {
+          "bounds": {
+            "x1": 189,
+            "y1": 803,
+            "x2": 489,
+            "y2": 874
+          },
+          "flags": 16
+        },
+        "text\u001fNotification history, conversations": {
+          "bounds": {
+            "x1": 189,
+            "y1": 874,
+            "x2": 745,
+            "y2": 925
+          },
+          "flags": 16
+        },
+        "text\u001fBattery": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1034,
+            "x2": 357,
+            "y2": 1105
+          },
+          "flags": 16
+        },
+        "text\u001f100%": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1105,
+            "x2": 279,
+            "y2": 1156
+          },
+          "flags": 16
+        },
+        "text\u001fStorage": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1265,
+            "x2": 371,
+            "y2": 1336
+          },
+          "flags": 16
+        },
+        "text\u001f37% used - 5.00 GB free": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1336,
+            "x2": 580,
+            "y2": 1387
+          },
+          "flags": 16
+        },
+        "text\u001fSound & vibration": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1496,
+            "x2": 601,
+            "y2": 1567
+          },
+          "flags": 16
+        },
+        "text\u001fVolume, haptics, Do Not Disturb": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1567,
+            "x2": 707,
+            "y2": 1618
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1727,
+            "x2": 361,
+            "y2": 1798
+          },
+          "flags": 16
+        },
+        "text\u001fDark theme, font size, brightness": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1798,
+            "x2": 725,
+            "y2": 1849
+          },
+          "flags": 16
+        },
+        "text\u001fWallpaper & style": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1958,
+            "x2": 595,
+            "y2": 2029
+          },
+          "flags": 16
+        },
+        "text\u001fColors, themed icons, app grid": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2029,
+            "x2": 685,
+            "y2": 2080
+          },
+          "flags": 16
+        },
+        "text\u001fAccessibility": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2189,
+            "x2": 486,
+            "y2": 2260
+          },
+          "flags": 16
+        },
+        "text\u001fDisplay, interaction, audio": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2260,
+            "x2": 605,
+            "y2": 2311
+          },
+          "flags": 16
+        },
+        "text\u001fSecurity & privacy": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2420,
+            "x2": 606,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fApp security, device lock, permissions": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2491,
+            "x2": 810,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fLocation": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2651,
+            "x2": 394,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fOn - 3 apps have access to location": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2722,
+            "x2": 767,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSafety & emergency": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2882,
+            "x2": 655,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fEmergency SOS, medical info, alerts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 2953,
+            "x2": 779,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fPasswords & accounts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3113,
+            "x2": 726,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSaved passwords, autofill, synced accounts": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3184,
+            "x2": 899,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fDigital Wellbeing & parental controls": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3332,
+            "x2": 1017,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fScreen time, app timers, bedtime schedules": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3465,
+            "x2": 904,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fGoogle": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3612,
+            "x2": 356,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fServices & preferences": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3683,
+            "x2": 568,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fSystem": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3843,
+            "x2": 363,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fLanguages, gestures, time, backup": {
+          "bounds": {
+            "x1": 189,
+            "y1": 3914,
+            "x2": 755,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fAbout emulated device": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4074,
+            "x2": 729,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fsdk_gphone64_x86_64": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4145,
+            "x2": 566,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fTips & support": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4305,
+            "x2": 533,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "text\u001fHelp articles, phone & chat": {
+          "bounds": {
+            "x1": 189,
+            "y1": 4376,
+            "x2": 626,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fstatusBarBackground": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 128
+          },
+          "flags": 16
+        }
+      },
+      "stateHash": "165c46c32d374b9f",
+      "version": 145,
+      "label": "Settings: Network & internet"
+    },
+    "b40d3a2064ea2a58": {
+      "hash": "b40d3a2064ea2a58",
+      "firstSeen": 1788589983401,
+      "lastSeen": 1788590388531,
+      "visits": 4,
+      "compact": "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\nPass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\nTo tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n\nROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n  FrameLayout id=\"content\"  (0.000, 0.000, 1.000, 0.974)\n  ScrollView id=\"content_parent\" [scrollable]  (0.000, 0.000, 1.000, 0.974)\n  LinearLayout id=\"app_bar\"  (0.000, 0.000, 1.000, 0.249)\n  FrameLayout \"Location\" id=\"collapsing_toolbar\"  (0.000, 0.000, 1.000, 0.249)\n  ViewGroup id=\"action_bar\"  (0.000, 0.053, 1.000, 0.061)\n  Button \"Navigate up\" [clickable]  (0.000, 0.053, 0.136, 0.061)\n  FrameLayout id=\"content_frame\"  (0.000, 0.249, 1.000, 0.704)\n  LinearLayout id=\"switch_bar\" [clickable]  (0.000, 0.249, 1.000, 0.117)\n  LinearLayout id=\"frame\"  (0.058, 0.267, 0.903, 0.082)\n  StaticText \"Use location\" id=\"switch_text\"  (0.107, 0.293, 0.611, 0.030)\n  Switch id=\"switch_widget\"  (0.777, 0.281, 0.135, 0.052)\n  FrameLayout id=\"main_content\"  (0.000, 0.366, 1.000, 0.587)\n  LinearLayout id=\"container_material\"  (0.000, 0.366, 1.000, 0.587)\n  FrameLayout id=\"list_container\"  (0.000, 0.366, 1.000, 0.587)\n  ScrollView id=\"recycler_view\"  (0.000, 0.366, 1.000, 0.587)\n  StaticText \"Recent access\" id=\"title\"  (0.058, 0.393, 0.903, 0.021)\n  StaticText \"No apps recently accessed location\" id=\"title\"  (0.058, 0.440, 0.774, 0.030)\n  LinearLayout [clickable]  (0.000, 0.487, 1.000, 0.065)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.502, 0.117, 0.035)\n  Image id=\"icon\"  (0.058, 0.506, 0.058, 0.026)\n  StaticText \"See all\" id=\"title\"  (0.175, 0.505, 0.144, 0.030)\n  LinearLayout [clickable]  (0.000, 0.552, 1.000, 0.086)\n  StaticText \"App location permissions\" id=\"title\"  (0.058, 0.569, 0.554, 0.030)\n  StaticText \"3 of 10 apps have access to location\" id=\"summary\"  (0.058, 0.599, 0.555, 0.021)\n  LinearLayout [clickable]  (0.000, 0.637, 1.000, 0.065)\n  StaticText \"Location services\" id=\"title\"  (0.058, 0.655, 0.383, 0.030)\n  LinearLayout id=\"icon_frame\"  (0.058, 0.702, 0.136, 0.048)\n  Image id=\"icon\"  (0.058, 0.720, 0.058, 0.026)\n  StaticText \"Location may use sources like GPS, Wi‑Fi, mobile networks, and sensors to help estimate your device’s location. Google may collect location data periodically and use this data in an anonymous way to improve location accuracy and location-based services.\\n\\nApps with the Nearby devices permission can determine the relative position of connected devices.\" id=\"title\"  (0.058, 0.750, 0.903, 0.173)\n  StaticText \"Learn more about Location Settings.\" id=\"settingslib_learn_more\"  (0.058, 0.923, 0.552, 0.030)",
+      "index": {
+        "id\u001fcontent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 16
+        },
+        "id\u001fcontent_parent": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 2337
+          },
+          "flags": 18
+        },
+        "id\u001fapp_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "id\u001fcollapsing_toolbar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 0,
+            "x2": 1080,
+            "y2": 598
+          },
+          "flags": 16
+        },
+        "text\u001fLocation": {
+          "bounds": {
+            "x1": 189,
+            "y1": 166,
+            "x2": 189,
+            "y2": 237
+          },
+          "flags": 16
+        },
+        "id\u001faction_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 1080,
+            "y2": 275
+          },
+          "flags": 16
+        },
+        "text\u001fNavigate up": {
+          "bounds": {
+            "x1": 0,
+            "y1": 128,
+            "x2": 147,
+            "y2": 275
+          },
+          "flags": 17
+        },
+        "id\u001fcontent_frame": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 2288
+          },
+          "flags": 16
+        },
+        "id\u001fswitch_bar": {
+          "bounds": {
+            "x1": 0,
+            "y1": 598,
+            "x2": 1080,
+            "y2": 879
+          },
+          "flags": 17
+        },
+        "id\u001fframe": {
+          "bounds": {
+            "x1": 63,
+            "y1": 640,
+            "x2": 1038,
+            "y2": 837
+          },
+          "flags": 16
+        },
+        "id\u001fswitch_text": {
+          "bounds": {
+            "x1": 116,
+            "y1": 703,
+            "x2": 776,
+            "y2": 774
+          },
+          "flags": 16
+        },
+        "text\u001fUse location": {
+          "bounds": {
+            "x1": 116,
+            "y1": 703,
+            "x2": 776,
+            "y2": 774
+          },
+          "flags": 16
+        },
+        "id\u001fswitch_widget": {
+          "bounds": {
+            "x1": 839,
+            "y1": 675,
+            "x2": 985,
+            "y2": 801
+          },
+          "flags": 16
+        },
+        "id\u001fmain_content": {
+          "bounds": {
+            "x1": 0,
+            "y1": 879,
+            "x2": 1080,
+            "y2": 2288
+          },
+          "flags": 16
+        },
+        "id\u001fcontainer_material": {
+          "bounds": {
+            "x1": 0,
+            "y1": 879,
+            "x2": 1080,
+            "y2": 2288
+          },
+          "flags": 16
+        },
+        "id\u001flist_container": {
+          "bounds": {
+            "x1": 0,
+            "y1": 879,
+            "x2": 1080,
+            "y2": 2288
+          },
+          "flags": 16
+        },
+        "id\u001frecycler_view": {
+          "bounds": {
+            "x1": 0,
+            "y1": 879,
+            "x2": 1080,
+            "y2": 2288
+          },
+          "flags": 16
+        },
+        "id\u001ftitle": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1801,
+            "x2": 1038,
+            "y2": 2216
+          },
+          "flags": 16
+        },
+        "text\u001fRecent access": {
+          "bounds": {
+            "x1": 63,
+            "y1": 942,
+            "x2": 1038,
+            "y2": 993
+          },
+          "flags": 16
+        },
+        "text\u001fNo apps recently accessed location": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1056,
+            "x2": 899,
+            "y2": 1127
+          },
+          "flags": 16
+        },
+        "id\u001ficon_frame": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1685,
+            "x2": 210,
+            "y2": 1801
+          },
+          "flags": 16
+        },
+        "id\u001ficon": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1727,
+            "x2": 126,
+            "y2": 1790
+          },
+          "flags": 16
+        },
+        "text\u001fSee all": {
+          "bounds": {
+            "x1": 189,
+            "y1": 1211,
+            "x2": 344,
+            "y2": 1282
+          },
+          "flags": 16
+        },
+        "text\u001fApp location permissions": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1366,
+            "x2": 661,
+            "y2": 1437
+          },
+          "flags": 16
+        },
+        "id\u001fsummary": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1437,
+            "x2": 662,
+            "y2": 1488
+          },
+          "flags": 16
+        },
+        "text\u001f3 of 10 apps have access to location": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1437,
+            "x2": 662,
+            "y2": 1488
+          },
+          "flags": 16
+        },
+        "text\u001fLocation services": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1572,
+            "x2": 477,
+            "y2": 1643
+          },
+          "flags": 16
+        },
+        "text\u001fLocation may use sources like GPS, Wi‑Fi, mobile networks, and sensors to help estimate your device’s location. Google may collect location data periodically and use this data in an anonymous way to improve location accuracy and location-based services.\n\nApps with the Nearby devices permission can determine the relative position of connected devices.": {
+          "bounds": {
+            "x1": 63,
+            "y1": 1801,
+            "x2": 1038,
+            "y2": 2216
+          },
+          "flags": 16
+        },
+        "id\u001fsettingslib_learn_more": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2216,
+            "x2": 659,
+            "y2": 2288
+          },
+          "flags": 16
+        },
+        "text\u001fLearn more about Location Settings.": {
+          "bounds": {
+            "x1": 63,
+            "y1": 2216,
+            "x2": 659,
+            "y2": 2288
+          },
+          "flags": 16
+        }
+      },
+      "structuralHash": "2bf46d4fd2e567c9",
+      "stateHash": "b5c263fd935cb7b1",
+      "version": 405,
+      "resourceIds": [
+        "content",
+        "content_parent",
+        "app_bar",
+        "collapsing_toolbar",
+        "action_bar",
+        "content_frame",
+        "switch_bar",
+        "frame",
+        "switch_text",
+        "switch_widget",
+        "main_content",
+        "container_material",
+        "list_container",
+        "recycler_view",
+        "title",
+        "title",
+        "icon_frame",
+        "icon",
+        "title",
+        "title",
+        "summary",
+        "title",
+        "icon_frame",
+        "icon",
+        "title",
+        "settingslib_learn_more"
+      ],
+      "label": "Location: Recent access"
+    }
+  },
+  "edges": [
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 6,
+          "y": 5
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "284ef0302b28c5de",
+      "count": 30,
+      "successes": 30,
+      "lastSeen": 1788591130715,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 23,
+        "boundsBucket": {
+          "x": 6,
+          "y": 5
+        },
+        "resourceId": "title",
+        "text": "Network & internet"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 6,
+          "y": 7
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "c0f355cf56c0936b",
+      "count": 10,
+      "successes": 10,
+      "lastSeen": 1788590407009,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 29,
+        "boundsBucket": {
+          "x": 6,
+          "y": 7
+        },
+        "resourceId": "title",
+        "text": "Connected devices"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 3,
+          "y": 8
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "487ac481af02a343",
+      "count": 23,
+      "successes": 23,
+      "lastSeen": 1788591208555,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 35,
+        "boundsBucket": {
+          "x": 3,
+          "y": 8
+        },
+        "resourceId": "title",
+        "text": "Apps"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 5,
+          "y": 10
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "3ed4975114523f07",
+      "count": 10,
+      "successes": 10,
+      "lastSeen": 1788590418331,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 41,
+        "boundsBucket": {
+          "x": 5,
+          "y": 10
+        },
+        "resourceId": "title",
+        "text": "Notifications"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 4,
+          "y": 11
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "89af0fb2a3a1f9e2",
+      "count": 28,
+      "successes": 28,
+      "lastSeen": 1788590456196,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 47,
+        "boundsBucket": {
+          "x": 4,
+          "y": 11
+        },
+        "resourceId": "title",
+        "text": "Battery"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 4,
+          "y": 13
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "abf7a94206321a86",
+      "count": 10,
+      "successes": 10,
+      "lastSeen": 1788590429018,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 53,
+        "boundsBucket": {
+          "x": 4,
+          "y": 13
+        },
+        "resourceId": "title",
+        "text": "Storage"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 5,
+          "y": 14
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "52cff9e7c238d140",
+      "count": 25,
+      "successes": 25,
+      "lastSeen": 1788591185516,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 59,
+        "boundsBucket": {
+          "x": 5,
+          "y": 14
+        },
+        "resourceId": "title",
+        "text": "Sound & vibration"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "swipe",
+        "dir": "up"
+      },
+      "to": "9039b5e414bd7f6f",
+      "count": 30,
+      "successes": 30,
+      "lastSeen": 1788591199389
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 4,
+          "y": 11
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "c367c6d328daf0fd",
+      "count": 23,
+      "successes": 23,
+      "lastSeen": 1788591201073,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 65,
+        "boundsBucket": {
+          "x": 4,
+          "y": 5
+        },
+        "resourceId": "title",
+        "text": "Display"
+      }
+    },
+    {
+      "from": "284ef0302b28c5de",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 2,
+          "y": 1
+        },
+        "target": {
+          "text": "Network & internet"
+        }
+      },
+      "to": "284ef0302b28c5de",
+      "count": 15,
+      "successes": 15,
+      "lastSeen": 1788591132035,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 8,
+        "boundsBucket": {
+          "x": 2,
+          "y": 1
+        },
+        "text": "Network & internet"
+      }
+    },
+    {
+      "from": "52cff9e7c238d140",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 8,
+          "y": 1
+        },
+        "target": {
+          "id": "app_bar"
+        }
+      },
+      "to": "52cff9e7c238d140",
+      "count": 30,
+      "successes": 30,
+      "lastSeen": 1788591187780,
+      "selector": {
+        "className": "LinearLayout",
+        "indexInParent": 3,
+        "boundsBucket": {
+          "x": 8,
+          "y": 1
+        },
+        "resourceId": "app_bar"
+      }
+    },
+    {
+      "from": "c367c6d328daf0fd",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 6,
+          "y": 3
+        },
+        "target": {
+          "id": "app_bar"
+        }
+      },
+      "to": "c367c6d328daf0fd",
+      "count": 24,
+      "successes": 24,
+      "lastSeen": 1788591203235,
+      "selector": {
+        "className": "LinearLayout",
+        "indexInParent": 3,
+        "boundsBucket": {
+          "x": 11,
+          "y": 3
+        },
+        "resourceId": "app_bar"
+      }
+    },
+    {
+      "from": "487ac481af02a343",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 8,
+          "y": 1
+        },
+        "target": {
+          "id": "app_bar"
+        }
+      },
+      "to": "487ac481af02a343",
+      "count": 29,
+      "successes": 29,
+      "lastSeen": 1788591209714,
+      "selector": {
+        "className": "LinearLayout",
+        "indexInParent": 3,
+        "boundsBucket": {
+          "x": 8,
+          "y": 1
+        },
+        "resourceId": "app_bar"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 4,
+          "y": 11
+        },
+        "target": {
+          "id": "title"
+        }
+      },
+      "to": "9039b5e414bd7f6f",
+      "count": 4,
+      "successes": 4,
+      "lastSeen": 1788591074701,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 35,
+        "boundsBucket": {
+          "x": 3,
+          "y": 8
+        },
+        "resourceId": "title",
+        "text": "Apps"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 4,
+          "y": 0
+        },
+        "target": {
+          "id": "statusBarBackground"
+        }
+      },
+      "to": "9039b5e414bd7f6f",
+      "count": 4,
+      "successes": 4,
+      "lastSeen": 1788591124939,
+      "selector": {
+        "className": "View",
+        "indexInParent": 133,
+        "boundsBucket": {
+          "x": 4,
+          "y": 0
+        },
+        "resourceId": "statusBarBackground"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 6,
+          "y": 3
+        },
+        "target": {
+          "id": "text_frame"
+        }
+      },
+      "to": "b40d3a2064ea2a58",
+      "count": 2,
+      "successes": 2,
+      "lastSeen": 1788590387303,
+      "selector": {
+        "className": "RelativeLayout",
+        "indexInParent": 88,
+        "boundsBucket": {
+          "x": 6,
+          "y": 3
+        },
+        "resourceId": "text_frame"
+      }
+    },
+    {
+      "from": "b40d3a2064ea2a58",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 11,
+          "y": 3
+        },
+        "target": {
+          "id": "app_bar"
+        }
+      },
+      "to": "b40d3a2064ea2a58",
+      "count": 2,
+      "successes": 2,
+      "lastSeen": 1788590388531,
+      "selector": {
+        "className": "LinearLayout",
+        "indexInParent": 3,
+        "boundsBucket": {
+          "x": 11,
+          "y": 3
+        },
+        "resourceId": "app_bar"
+      }
+    },
+    {
+      "from": "9039b5e414bd7f6f",
+      "action": {
+        "kind": "tap",
+        "bucket": {
+          "x": 5,
+          "y": 4
+        },
+        "target": {
+          "id": "search_action_bar_title"
+        }
+      },
+      "to": "9039b5e414bd7f6f",
+      "count": 1,
+      "successes": 1,
+      "lastSeen": 1788590633472,
+      "selector": {
+        "className": "TextView",
+        "indexInParent": 11,
+        "boundsBucket": {
+          "x": 5,
+          "y": 4
+        },
+        "resourceId": "search_action_bar_title",
+        "text": "Search settings"
+      }
+    }
+  ]
+}

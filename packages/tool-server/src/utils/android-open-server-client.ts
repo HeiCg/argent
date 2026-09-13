@@ -94,9 +94,19 @@ export class AndroidOpenServerClient {
     this.timeoutMs = opts.timeoutMs ?? 10_000;
   }
 
-  /** Invoke a JSON-RPC method; resolves with `result`, rejects on RPC error. */
-  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    return this.enqueue(() => this.sendOne<T>(method, params)).then((r) => r.result);
+  /**
+   * Invoke a JSON-RPC method; resolves with `result`, rejects on RPC error.
+   *
+   * `opts.timeoutMs` overrides the client default for this one call — blocking
+   * RPCs (`awaitChange`) pass a budget larger than their own `timeoutMs` so the
+   * socket is not torn down before the server answers.
+   */
+  request<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    opts?: { timeoutMs?: number }
+  ): Promise<T> {
+    return this.enqueue(() => this.sendOne<T>(method, params, opts?.timeoutMs)).then((r) => r.result);
   }
 
   /**
@@ -141,7 +151,8 @@ export class AndroidOpenServerClient {
 
   private async sendOne<T>(
     method: string,
-    params?: Record<string, unknown>
+    params?: Record<string, unknown>,
+    timeoutMsOverride?: number
   ): Promise<RequestWithStats<T>> {
     if (this.closed) {
       throw new FailureError("open-device-server client closed", {
@@ -154,6 +165,7 @@ export class AndroidOpenServerClient {
     const socket = await this.connect();
     const id = this.nextId++;
     const payload = JSON.stringify({ jsonrpc: "2.0", method, params: params ?? {}, id });
+    const timeoutMs = timeoutMsOverride ?? this.timeoutMs;
 
     return new Promise<RequestWithStats<T>>((resolve, reject) => {
       // t1: request line fully written to the socket. Defaulted to pre-write in
@@ -164,7 +176,7 @@ export class AndroidOpenServerClient {
         // A wedged request means the connection is suspect: destroy it so the
         // next call reconnects rather than reading a stale reply.
         const err = new FailureError(
-          `open-device-server ${method} timed out after ${this.timeoutMs}ms`,
+          `open-device-server ${method} timed out after ${timeoutMs}ms`,
           {
             error_code: FAILURE_CODES.OPEN_DEVICE_SERVER_RPC_TIMEOUT,
             failure_stage: "open_device_server_rpc_request",
@@ -174,7 +186,7 @@ export class AndroidOpenServerClient {
         );
         this.destroySocket(err);
         reject(err);
-      }, this.timeoutMs);
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve: (v, stats) =>
