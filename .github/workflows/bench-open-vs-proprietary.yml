@@ -200,14 +200,13 @@ jobs:
           echo "boot step complete"
 
       - name: Install argent deps + build TS
-        # `npm install` (NOT `npm ci`): phase 3n.2 removed the @yume-chan/* deps and the
-        # scrcpy-server postinstall from package.json, but the committed lockfile still
-        # lists them (it cannot be regenerated in the worktree — no install there).
-        # `npm install` regenerates package-lock.json from the edited package.json and
-        # installs; `npm ci` would fail its out-of-sync check. Rollup's native binary is
-        # an optional dep npm can skip, so install it explicitly.
+        # `npm ci` (phase 3n.3, 3N2-H2): the committed lockfile was regenerated in the
+        # main checkout after the 3n.2 merge (the @yume-chan/* + fetch-scrcpy-server
+        # subtree dropped), so it matches package.json again and the lockfile-integrity
+        # check is back. Rollup's native binary is an optional dep npm can skip, so
+        # install it explicitly.
         run: |
-          npm install
+          npm ci
           npm install @rollup/rollup-linux-x64-gnu --no-save
           npx tsc --build
 
@@ -528,10 +527,11 @@ jobs:
           adb -s emulator-5554 shell settings put global animator_duration_scale 0 || true
 
       - name: Install deps + build (screen-graph tree)
-        # `npm install` not `npm ci`: phase 3n.2 dropped the @yume-chan/* deps from
-        # package.json but not the committed lockfile, so regenerate it on install.
+        # `npm ci` (phase 3n.3, 3N2-H2): the lockfile was regenerated in the main checkout
+        # after the 3n.2 merge, so it matches package.json again — restore the
+        # lockfile-integrity check on this job too.
         run: |
-          npm install
+          npm ci
           npm install @rollup/rollup-linux-x64-gnu --no-save
           npx tsc --build
           npm run build:android-device-server
