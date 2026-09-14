@@ -58,12 +58,29 @@ jobs:
       - name: Create and boot an iPhone simulator
         shell: bash
         run: |
+          # Newest available iOS runtime (numeric version sort).
           RUNTIME=$(xcrun simctl list runtimes -j \
-            | jq -r '[.runtimes[] | select(.platform=="iOS" and .isAvailable)] | sort_by(.version) | last | .identifier')
-          DEVTYPE=$(xcrun simctl list devicetypes -j \
-            | jq -r '[.devicetypes[] | select(.productFamily=="iPhone")] | last | .identifier')
-          echo "runtime=$RUNTIME devicetype=$DEVTYPE"
-          UDID=$(xcrun simctl create "argent-ios-open" "$DEVTYPE" "$RUNTIME")
+            | jq -r '[.runtimes[] | select(.platform=="iOS" and .isAvailable)]
+                     | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')
+          echo "runtime=$RUNTIME"
+          # Candidate "iPhone N" device types, newest model number first. `last` alone
+          # picked the iPod touch (family "iPhone") which no modern runtime supports.
+          CANDIDATES=$(xcrun simctl list devicetypes -j \
+            | jq -r '[.devicetypes[] | select(.name | test("^iPhone [0-9]+"))]
+                     | map(. + {n: (.name | capture("iPhone (?<x>[0-9]+)").x | tonumber)})
+                     | sort_by(.n) | reverse | .[].identifier')
+          UDID=""
+          for DT in $CANDIDATES; do
+            if UDID=$(xcrun simctl create "argent-ios-open" "$DT" "$RUNTIME" 2>/dev/null); then
+              echo "created simulator with $DT"
+              break
+            fi
+            UDID=""
+          done
+          if [ -z "$UDID" ]; then
+            echo "::error::no iPhone device type is compatible with $RUNTIME"
+            exit 1
+          fi
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"

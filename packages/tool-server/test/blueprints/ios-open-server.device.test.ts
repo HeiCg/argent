@@ -44,15 +44,25 @@ async function toBmp(png: string): Promise<Buffer> {
   return readFileSync(bmp);
 }
 
-/** Parse a 24-bit uncompressed BMP into { width, height, rows(RGB) }. */
-function parseBmp(buf: Buffer): { width: number; height: number; data: Buffer; stride: number; offset: number } {
+interface Bmp {
+  width: number;
+  height: number;
+  data: Buffer;
+  stride: number;
+  offset: number;
+  bpp: number;
+}
+
+/** Parse an uncompressed 24- or 32-bit BMP (both are `sips`'s bmp outputs). */
+function parseBmp(buf: Buffer): Bmp {
   const offset = buf.readUInt32LE(10);
   const width = buf.readInt32LE(18);
   const height = Math.abs(buf.readInt32LE(22));
   const bpp = buf.readUInt16LE(28);
-  if (bpp !== 24) throw new Error(`expected 24-bit BMP, got ${bpp}`);
-  const stride = Math.floor((width * 3 + 3) / 4) * 4;
-  return { width, height, data: buf, stride, offset };
+  if (bpp !== 24 && bpp !== 32) throw new Error(`expected 24/32-bit BMP, got ${bpp}`);
+  const bytesPerPixel = bpp / 8;
+  const stride = Math.floor((width * bytesPerPixel + 3) / 4) * 4;
+  return { width, height, data: buf, stride, offset, bpp };
 }
 
 /** Fraction of pixels that differ by more than `threshold` on any channel. */
@@ -61,12 +71,14 @@ async function neutralPixelDiffRatio(pngA: string, pngB: string, threshold = 14)
   const b = parseBmp(await toBmp(pngB));
   const w = Math.min(a.width, b.width);
   const h = Math.min(a.height, b.height);
+  const bppA = a.bpp / 8;
+  const bppB = b.bpp / 8;
   let changed = 0;
   let total = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const ia = a.offset + y * a.stride + x * 3;
-      const ib = b.offset + y * b.stride + x * 3;
+      const ia = a.offset + y * a.stride + x * bppA;
+      const ib = b.offset + y * b.stride + x * bppB;
       const d =
         Math.abs(a.data[ia]! - b.data[ib]!) +
         Math.abs(a.data[ia + 1]! - b.data[ib + 1]!) +
