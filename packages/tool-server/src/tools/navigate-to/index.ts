@@ -208,7 +208,7 @@ async function executeCanonicalAction(
         // taken"). Surface the reason and report the current H_id so runNavigation
         // records a divergence.
         onDiverge?.(point.reason);
-        return idOf(await server.getState({ includeScreenshot: false }));
+        return idOf(await server.getState({ includeScreenshot: false, fingerprints: true }));
       }
       const { cx, cy } = point;
       const res =
@@ -236,7 +236,7 @@ async function executeCanonicalAction(
         return res.after.idHash ?? res.after.hash;
       }
       // Nothing to type without stored text — read the current H_id instead.
-      return idOf(await server.getState({ includeScreenshot: false }));
+      return idOf(await server.getState({ includeScreenshot: false, fingerprints: true }));
     }
   }
 }
@@ -427,7 +427,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         },
       }) as OpenDeviceServerApi;
       const { store } = await resolveStoreForCurrentApp(device.id, server);
-      const state = await server.getState({ includeScreenshot: false });
+      const state = await server.getState({ includeScreenshot: false, fingerprints: true });
       // The graph keys nodes by H_id (phase D §1): localize, plan and verify on
       // the identity hash, which is stable across scroll/focus so the FROM screen
       // matches its node exactly (the C.4 structural-`H` drift is gone).
@@ -500,7 +500,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
             if (reason) divergeReason = reason;
           });
           // Re-read the landed screen for its H_id and resource-id multiset.
-          const after = await server.getState({ includeScreenshot: false });
+          const after = await server.getState({ includeScreenshot: false, fingerprints: true });
           stepFrom = step.to;
           return { afterHash: idOf(after), afterResourceIds: resourceIdsOf(after.tree) };
         },

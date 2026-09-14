@@ -481,7 +481,7 @@ async function main(): Promise<number> {
     // offline. Best-effort — a miss just omits the fixture.
     try {
       const server = await openServer(reg);
-      const ns = await server.getNestedState({});
+      const ns = await server.getNestedState({ fingerprints: true });
       out.identityFixture = {
         packageName: SETTINGS,
         idHash: ns.idHash ?? "",

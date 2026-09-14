@@ -478,8 +478,12 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
        */
       const awaitViaOpenServerChange = async (until: OpenServerSelector): Promise<WaitResult> => {
         // Immediate trusted read: awaitChange fires only on the NEXT event, so a
-        // condition already true on a static screen must be caught here.
-        const first = await readAndroidOpenState(registry, device);
+        // condition already true on a static screen must be caught here. Phase 3m.1
+        // (3M-H5): request fingerprints so this read ARMS the device AX clock and
+        // returns a live `version` before the awaitChange loop below keys off it —
+        // otherwise an event between this read and the first (self-arming)
+        // awaitChange is missed and the wait blocks to the full timeout.
+        const first = await readAndroidOpenState(registry, device, { fingerprints: true });
         let last: DescribeTreeData = first.data;
         if (evalRead(first.data)) return { success: true, elapsed: Date.now() - start };
 

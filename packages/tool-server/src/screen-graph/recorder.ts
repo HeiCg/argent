@@ -7,6 +7,7 @@
  */
 import type { ScreenGraphStore } from "./store";
 import type { CanonicalAction, EdgeSelector, ScreenNode } from "./types";
+import { EMPTY_TREE_HASH } from "../utils/screen-hash";
 
 /** The screen payload used to insert an unknown target node. */
 export interface FetchedScreen {
@@ -46,6 +47,17 @@ export interface ObserveContext {
  */
 export async function recordObservation(ctx: ObserveContext): Promise<void> {
   const { store, action, before, after } = ctx;
+  // Phase 3m.1 (3M-H1): the store REFUSES to mint a node — or an edge into one —
+  // from an empty tree. An `after` whose structural or state hash is the
+  // EMPTY_TREE_HASH sentinel is a transient mid-transition frame (0 kept nodes),
+  // never a real destination; recording it is what produced the run-34827025184
+  // multi-destination-edge / empty-node store-invariant failure. The device now
+  // omits the hash for an empty forest (versionCode 26+), and the open wiring
+  // skips + counts these before they reach here; this is the last-line guard for
+  // any other caller and for replayed pre-26 artifacts.
+  if (after.structuralHash === EMPTY_TREE_HASH || after.stateHash === EMPTY_TREE_HASH) {
+    return;
+  }
   store.observe(before.hash, action, after.hash, {
     success: ctx.success ?? true,
     ...(ctx.selector ? { selector: ctx.selector } : {}),

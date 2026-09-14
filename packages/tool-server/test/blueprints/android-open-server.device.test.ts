@@ -29,6 +29,7 @@ import {
 import type { OpenServerElement, OpenServerNestedElement } from "../../src/tools/describe/platforms/android/open-server-tree";
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
+import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
@@ -815,6 +816,130 @@ suite("android open-device-server on-device", () => {
       `${st.tree.length} window root(s), first root has ${root.children?.length ?? 0} children; nested shape ok`
     );
   }, 90_000);
+
+  it("3m fingerprints opt-in — Σ(stages)≈captureMs, 1 traversal after tap, no forced rebuild", async () => {
+    // Sum of the on-device capture stages (everything inside captureMs; idleMs is
+    // the pre-capture waitForIdle and is excluded). Phase 3m adds `fingerprintMs`,
+    // so nothing hides in the residual.
+    const sumStages = (t: {
+      rootMs?: number;
+      windowsMs?: number;
+      rootsMs?: number[];
+      serializeMs?: number;
+      encodeMs?: number;
+      fingerprintMs?: number;
+    }): number =>
+      (t.rootMs ?? 0) +
+      (t.windowsMs ?? 0) +
+      (t.rootsMs ?? []).reduce((a, b) => a + b, 0) +
+      (t.serializeMs ?? 0) +
+      (t.encodeMs ?? 0) +
+      (t.fingerprintMs ?? 0);
+    const median = (xs: number[]): number => {
+      const s = [...xs].sort((a, b) => a - b);
+      return s[Math.floor(s.length / 2)] ?? 0;
+    };
+
+    // ---- (A) Idle describes: residual within tolerance, no fingerprints requested.
+    await freshSettings();
+    const idleResiduals: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const st = await api.getNestedState({});
+      expect(st.timings).toBeTruthy();
+      idleResiduals.push(st.captureMs - sumStages(st.timings!));
+      // Plain describe path: fingerprints NOT requested ⇒ absent, and ~0 cost.
+      expect(st.hash).toBeUndefined();
+      expect(st.timings!.fingerprintMs ?? 0).toBeLessThanOrEqual(5);
+      // Phase 3m.1 (3M-H4): `version` is ABSENT while the AX clock is unarmed
+      // (pinned at 0, no information) and a number once any armed read/action has
+      // registered the listener — never a literal 0 a host could replay as
+      // `sinceVersion: 0`. The clock is process-global and sticky, so its state
+      // here depends on suite order; assert the invariant that holds either way.
+      expect(st.version === undefined || typeof st.version === "number").toBe(true);
+      if (st.version !== undefined) expect(st.version).toBeGreaterThanOrEqual(0);
+    }
+    const idleResidualMed = median(idleResiduals.map((r) => Math.abs(r)));
+    expect(idleResidualMed).toBeLessThanOrEqual(10);
+
+    // ---- (B) After-tap describes: same residual bound, and the capture never
+    //          re-enters rootInActiveWindow (rootSource stays "windows").
+    const tapTarget = async (): Promise<{ x: number; y: number }> => {
+      const info = await freshSettings();
+      const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+      const clickables = before.filter(
+        (e) =>
+          e.clickable === true &&
+          e.bounds.y1 > info.screenHeight * 0.12 &&
+          e.bounds.y2 < info.screenHeight * 0.85
+      );
+      const inside = (p: { x: number; y: number }, e: Element): boolean =>
+        p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
+      const row =
+        before.find(
+          (e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))
+        ) ?? clickables.find((e) => label(e).length > 0);
+      if (!row) throw new Error("no labelled clickable row found on Settings");
+      return center(row);
+    };
+    const afterResiduals: number[] = [];
+    let afterRootSource: string | undefined;
+    for (let i = 0; i < 5; i++) {
+      const c = await tapTarget();
+      await api.tap(c.x, c.y);
+      // settle:false shape — capture mid/just-after transition (waitTimeoutMs 0).
+      const st = await api.getNestedState({ waitTimeoutMs: 0 });
+      expect(st.timings).toBeTruthy();
+      afterResiduals.push(st.captureMs - sumStages(st.timings!));
+      afterRootSource = st.timings!.rootSource ?? afterRootSource;
+      expect(st.hash).toBeUndefined(); // still opt-out on the plain describe path
+    }
+    const afterResidualMed = median(afterResiduals.map((r) => Math.abs(r)));
+    expect(afterResidualMed).toBeLessThanOrEqual(10);
+    // The active root came from the interactive-windows snapshot, not
+    // rootInActiveWindow (phase 3g fix not bypassed).
+    expect(afterRootSource).toBe("windows");
+
+    // ---- (C) Exactly ONE forest traversal per after-tap describe (was 2 pre-fix:
+    //          the forced TreeStore.ensure() rebuild + the capture serialize).
+    const c = await tapTarget();
+    await api.tap(c.x, c.y);
+    await api.waitForIdle(3000);
+    const tBefore = ((await api.getInfo()) as { traversals?: number }).traversals ?? NaN;
+    await api.getNestedState({ waitTimeoutMs: 0 });
+    const tAfter = ((await api.getInfo()) as { traversals?: number }).traversals ?? NaN;
+    expect(tAfter - tBefore).toBe(1);
+
+    // ---- (D) Opt-IN: fingerprints requested ⇒ hashes present on both read RPCs.
+    await freshSettings();
+    const fpNested = await api.getNestedState({ fingerprints: true });
+    expect(typeof fpNested.hash).toBe("string");
+    expect((fpNested.hash ?? "").length).toBeGreaterThan(0);
+    expect(typeof fpNested.idHash).toBe("string");
+    // Phase 3m.1 (3M-H1): a real screen never carries the EMPTY_TREE_HASH sentinel.
+    expect(fpNested.hash).not.toBe(EMPTY_TREE_HASH);
+    expect(fpNested.stateHash).not.toBe(EMPTY_TREE_HASH);
+    // Phase 3m.1 (3M-H4): a fingerprints read ARMS the clock, so `version` is a
+    // number (not absent) and non-negative — the same value that describes `hash`.
+    expect(typeof fpNested.version).toBe("number");
+    const plainFlat = await api.getState({ includeScreenshot: false });
+    expect(plainFlat.hash).toBeUndefined();
+    // Clock is now armed (the opt-in reads above registered the listener), so even
+    // a plain read reports a numeric version (3M-H4: armed ⇒ present).
+    expect(typeof plainFlat.version).toBe("number");
+    const fpFlat = await api.getState({ includeScreenshot: false, fingerprints: true });
+    expect(typeof fpFlat.hash).toBe("string");
+    expect((fpFlat.hash ?? "").length).toBeGreaterThan(0);
+    expect(fpFlat.hash).not.toBe(EMPTY_TREE_HASH);
+    expect(typeof fpFlat.version).toBe("number");
+
+    record(
+      "3m fingerprints opt-in",
+      "PASS",
+      `idle residual med ${idleResidualMed}ms, after-tap residual med ${afterResidualMed}ms (<=10); ` +
+        `rootSource=${afterRootSource}; after-tap traversals delta ${tAfter - tBefore} (==1); ` +
+        `opt-out hash absent, opt-in hash present`
+    );
+  }, 180_000);
 
   it("3j paste (setClipboard + KEYCODE_PASTE / typeText fallback, F20) — URL lands in an EditText", async () => {
     const KEYCODE_PASTE = 279;

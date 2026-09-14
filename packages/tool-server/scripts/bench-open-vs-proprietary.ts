@@ -698,6 +698,9 @@ type DescribeStages = {
   rootsMs: StageStat;
   serializeMs: StageStat;
   encodeMs: StageStat;
+  // Fingerprint (hash) build cost (phase 3m). ~0 on the plain describe path (G1);
+  // its own stage so the after-tap residual (G2) no longer hides a forced rebuild.
+  fingerprintMs: StageStat;
   // Host-side split (phase 3i): the cost OUTSIDE the on-device `timings`.
   // `hostParseMs` is the host JSON.parse of the reply, `hostRenderMs` the host
   // tree-lowering + v2 trim. The host-clock timeline decomposes the round-trip:
@@ -723,6 +726,7 @@ const STAGE_KEYS = [
   "rootsMs",
   "serializeMs",
   "encodeMs",
+  "fingerprintMs",
   "hostParseMs",
   "hostRenderMs",
   "hostTtfbMs",
@@ -740,6 +744,24 @@ function stageStat(xs: number[]): StageStat {
   return { p50: sm.p50, p95: sm.p95, n: xs.length };
 }
 
+// Phase 3m.1 (3M-M5): one ALIGNED record per describe call. The p50/p95 summaries
+// below are a sum-of-medians, which is neither an upper nor a lower bound on the
+// median of per-sample residuals (`captureMs − Σ stage`), so a residual cannot be
+// honestly recomputed from them (finding 3M-M5). Persisting the raw per-call
+// stages lets a reviewer recompute the per-sample residual median directly.
+type PerSampleStage = {
+  captureMs?: number;
+  waitedMs?: number;
+  rootMs?: number;
+  windowsMs?: number;
+  rootsMs?: number;
+  serializeMs?: number;
+  encodeMs?: number;
+  fingerprintMs?: number;
+  wireBytes?: number;
+  hostRttMs?: number;
+};
+
 // Named so BlockResult and runBlock share one shape.
 type DescribeSplit = {
   waitedP50: number | null;
@@ -753,6 +775,9 @@ type DescribeSplit = {
   // Reply wire size (phase 3i), the full nested tree over `adb forward`. Bytes, not
   // ms, so it rides beside `stages` rather than in the ms table.
   wireBytes: StageStat;
+  // Phase 3m.1 (3M-M5): the raw per-sample stage records, so per-sample residuals
+  // can be recomputed off the artifact rather than trusted from the p50 proxy.
+  samples: PerSampleStage[];
 };
 
 // The describe result metadata the phase 3g/3i instrumentation attaches.
@@ -772,6 +797,7 @@ type DescribeMeta = {
     rootsMs?: number[];
     serializeMs?: number;
     encodeMs?: number;
+    fingerprintMs?: number;
     prevServerHandleMs?: number;
     prevServerWriteMs?: number;
     prevServerTotalMs?: number;
@@ -784,6 +810,8 @@ interface SplitAcc {
   captured: number[];
   wireBytesSamples: number[];
   stageSamples: Record<StageKey, number[]>;
+  // Phase 3m.1 (3M-M5): aligned per-call records.
+  perSample: PerSampleStage[];
 }
 function newSplitAcc(): SplitAcc {
   return {
@@ -792,9 +820,11 @@ function newSplitAcc(): SplitAcc {
     wireBytesSamples: [],
     stageSamples: {
       idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+      fingerprintMs: [],
       hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
       prevServerWriteMs: [], prevServerHandleMs: [], prevServerTotalMs: [],
     },
+    perSample: [],
   };
 }
 function collectSplit(acc: SplitAcc, d: DescribeMeta): void {
@@ -816,10 +846,26 @@ function collectSplit(acc: SplitAcc, d: DescribeMeta): void {
     if (Array.isArray(t.rootsMs)) s.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
     if (typeof t.serializeMs === "number") s.serializeMs.push(t.serializeMs);
     if (typeof t.encodeMs === "number") s.encodeMs.push(t.encodeMs);
+    if (typeof t.fingerprintMs === "number") s.fingerprintMs.push(t.fingerprintMs);
     if (typeof t.prevServerWriteMs === "number") s.prevServerWriteMs.push(t.prevServerWriteMs);
     if (typeof t.prevServerHandleMs === "number") s.prevServerHandleMs.push(t.prevServerHandleMs);
     if (typeof t.prevServerTotalMs === "number") s.prevServerTotalMs.push(t.prevServerTotalMs);
   }
+  // Phase 3m.1 (3M-M5): one aligned record per call for per-sample residual recompute.
+  const sample: PerSampleStage = {};
+  if (typeof d.captureMs === "number") sample.captureMs = d.captureMs;
+  if (typeof d.waitedMs === "number") sample.waitedMs = d.waitedMs;
+  if (typeof d.wireBytes === "number") sample.wireBytes = d.wireBytes;
+  if (typeof d.hostRoundTripMs === "number") sample.hostRttMs = d.hostRoundTripMs;
+  if (t) {
+    if (typeof t.rootMs === "number") sample.rootMs = t.rootMs;
+    if (typeof t.windowsMs === "number") sample.windowsMs = t.windowsMs;
+    if (Array.isArray(t.rootsMs)) sample.rootsMs = t.rootsMs.reduce((a, b) => a + b, 0);
+    if (typeof t.serializeMs === "number") sample.serializeMs = t.serializeMs;
+    if (typeof t.encodeMs === "number") sample.encodeMs = t.encodeMs;
+    if (typeof t.fingerprintMs === "number") sample.fingerprintMs = t.fingerprintMs;
+  }
+  acc.perSample.push(sample);
 }
 function finalizeSplit(acc: SplitAcc): DescribeSplit {
   const p50 = (xs: number[]): number | null => (xs.length ? summarize(xs).p50 : null);
@@ -831,6 +877,7 @@ function finalizeSplit(acc: SplitAcc): DescribeSplit {
     rootsMs: stageStat(s.rootsMs),
     serializeMs: stageStat(s.serializeMs),
     encodeMs: stageStat(s.encodeMs),
+    fingerprintMs: stageStat(s.fingerprintMs),
     hostParseMs: stageStat(s.hostParseMs),
     hostRenderMs: stageStat(s.hostRenderMs),
     hostTtfbMs: stageStat(s.hostTtfbMs),
@@ -846,6 +893,7 @@ function finalizeSplit(acc: SplitAcc): DescribeSplit {
     n: Math.max(acc.waited.length, acc.stageSamples.hostRttMs.length),
     stages,
     wireBytes: stageStat(acc.wireBytesSamples),
+    samples: acc.perSample,
   };
 }
 
@@ -864,6 +912,45 @@ async function describeSplit(
     }
   }
   return finalizeSplit(acc);
+}
+
+/**
+ * Phase 3m.1 (3M-M4): the plain `describe` path is opt-OUT of fingerprints, so its
+ * `fingerprintMs` stage is a tautological 0 — it confirms the opt-out path, not the
+ * opt-in one, and says nothing about what the screen-graph path pays. This variant
+ * drives the SAME after-tap setup but reads through the open API with
+ * `fingerprints: true`, so `timings.fingerprintMs` is the REAL cost of the opt-in
+ * `TreeStore.ensure(rootNode)` rebuild (a second `ScreenTree.build` of the capture's
+ * already-resolved root). ON arms only (no open server on OFF); returns null if the
+ * server cannot be resolved.
+ */
+async function describeSplitAfterTapFingerprints(
+  reg: Reg,
+  n: number,
+  tapX: number,
+  tapY: number
+): Promise<DescribeSplit | null> {
+  try {
+    const device = resolveDevice(SERIAL);
+    const ref = openDeviceServerRef(device);
+    const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const acc = newSplitAcc();
+    for (let i = 0; i < n; i++) {
+      await ensureSettings(reg);
+      await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY }).catch(() => undefined);
+      try {
+        // settle:false shape (waitTimeoutMs 0) so the fingerprint rebuild runs
+        // mid-transition — the exact after-tap condition C1 lived in.
+        const r = (await server.getNestedState({ waitTimeoutMs: 0, fingerprints: true })) as DescribeMeta;
+        collectSplit(acc, r);
+      } catch {
+        /* skip */
+      }
+    }
+    return finalizeSplit(acc);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1649,6 +1736,14 @@ interface BlockResult {
   // path (no split surfaced). Carries the phase 3i host split + wire bytes.
   describeSplitIdle: DescribeSplit;
   describeSplitAfterTap: DescribeSplit;
+  // Phase 3m.1 (3M-M4): after-tap describe split read with `fingerprints: true`, so
+  // `stages.fingerprintMs` is the REAL opt-in `TreeStore.ensure(rootNode)` cost, not
+  // the tautological 0 of the opt-out plain describe. ON arms only; absent on OFF.
+  describeSplitAfterTapFingerprints?: DescribeSplit;
+  // Phase 3m.1 (3M-H2): the scrcpy host pacing PINNED for this arm ("legacy" is the
+  // shipped default the latency reference ran; "drift" only if explicitly forced;
+  // "n/a" on non-fast-inject arms). Recorded so no run's pacing is silent.
+  scrcpyPacing: "legacy" | "drift" | "n/a";
   // Raw RPC round-trip floor (phase 3i): `getState`-free `ping` p50/p95 over
   // `adb forward`. ~1 ms confirms the transport itself is cheap and the idle
   // describe residual is payload/serialize, not the socket. null on OFF blocks
@@ -1768,6 +1863,24 @@ async function runBlock(
   // tap/swipe/gesture stay on the UiAutomation (or proprietary) path.
   if (fastInject) setFlag("open-device-server-fast-inject", true, "project");
   else unsetFlag("open-device-server-fast-inject", "project");
+
+  // Phase 3m.1 (3M-H2): PIN the scrcpy host pacing per arm so no block silently
+  // inherits a different process default. Run 34827025184 was not like-for-like
+  // with reference run 34813849446 precisely because it predated the 3k.1 default
+  // flip and ran `drift` while the reference ran the shipped `legacy`. The
+  // ON-scrcpy latency arm pins the shipped default `legacy` (an operator can still
+  // force a paired `drift` probe by exporting ARGENT_SCRCPY_PACING=drift before the
+  // run); non-fast-inject arms clear the var so a stray default can't be misread as
+  // this arm's pacing. The effective mode rides the block JSON (`scrcpyPacing`).
+  let scrcpyPacing: "legacy" | "drift" | "n/a";
+  if (fastInject) {
+    scrcpyPacing = process.env.ARGENT_SCRCPY_PACING === "drift" ? "drift" : "legacy";
+    process.env.ARGENT_SCRCPY_PACING = scrcpyPacing;
+  } else {
+    delete process.env.ARGENT_SCRCPY_PACING;
+    scrcpyPacing = "n/a";
+  }
+  realDebug(`[bench] ${block} scrcpyPacing=${scrcpyPacing} (fastInject=${fastInject})`);
 
   const coldStartMs = await coldStart(config);
 
@@ -2047,6 +2160,15 @@ async function runBlock(
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY }).catch(() => undefined);
   });
 
+  // Phase 3m.1 (3M-M4): a companion after-tap split read with fingerprints ON, so
+  // `describeSplitAfterTapFp.stages.fingerprintMs` measures the opt-in rebuild cost
+  // (the plain split above is opt-out and reads fingerprintMs 0 tautologically).
+  // ON arms only; the proprietary path has no open server.
+  const describeSplitAfterTapFp =
+    config === "ON"
+      ? await describeSplitAfterTapFingerprints(reg, Math.min(N, 10), tapX, tapY)
+      : null;
+
   // Print the per-stage p50/p95 split (idle vs after-tap) so the residual is
   // attributable to a concrete stage. Persisted in the block JSON via
   // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
@@ -2317,6 +2439,10 @@ async function runBlock(
     oracleSelfTestPassed,
     describeSplitIdle,
     describeSplitAfterTap,
+    // Phase 3m.1 (3M-M4): opt-in fingerprint cost probe (ON only; null on OFF).
+    ...(describeSplitAfterTapFp ? { describeSplitAfterTapFingerprints: describeSplitAfterTapFp } : {}),
+    // Phase 3m.1 (3M-H2): the pinned scrcpy host pacing for this arm.
+    scrcpyPacing,
     pingP50: ping.p50,
     pingP95: ping.p95,
     pingN: ping.n,
