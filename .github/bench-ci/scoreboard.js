@@ -162,6 +162,69 @@ if (onScr) {
   L.push("");
 }
 
+// Phase 3n: Kotlin injection-strategy arms (uia-sync / uia-async / input-manager)
+// vs the ON-scrcpy control arm and the OFF baseline, judged at the OFF-1↔OFF-2
+// drift floor per verb (the pre-registered acceptance for promoting a strategy to
+// default — see the 3n ticket Result). Rendered only when a strategy arm ran, so
+// legacy four-block runs are unchanged.
+const strategyArms = blocks.filter((b) => /^ON-(uia-sync|uia-async|input-manager)$/.test(b.block));
+if (strategyArms.length) {
+  const p50 = (b, vn) => b && (b.verbs || []).find((x) => x.verb === vn)?.latency.p50;
+  const driftFloor = (vn) => {
+    const a = p50(off1, vn), b = p50(off2, vn);
+    return a != null && b != null ? Math.max(2, Math.abs(a - b)) : 2;
+  };
+  // Which verbs to score against the floor. tap+describe(settle:false) is the
+  // like-for-like headline row (both scrcpy and the async strategies defer the drain).
+  const scoreVerbs = ["gesture-tap", "tap+describe(settle:false)", "gesture-swipe", "gesture-pinch"];
+  const present = scoreVerbs.filter((vn) => verbNames.includes(vn));
+  L.push("### phase 3n — Kotlin strategy arms vs scrcpy/OFF (judged at the drift floor)");
+  L.push("");
+  L.push(
+    "Pre-registered acceptance to make a strategy the default: tap RPC and swipe RPC within the " +
+      "OFF-1↔OFF-2 drift floor of the ON-scrcpy block (or faster); pinch not slower than scrcpy by " +
+      "more than the floor; `tap+describe(settle:false)` not worse than the scrcpy arm; plus " +
+      "landing ≥95%, zero fallbacks, fling gate PASS on every informative cell (graded separately)."
+  );
+  L.push("");
+  const cols = ["verb", ...strategyArms.map((b) => b.block), "ON-scrcpy", "OFF-1", "OFF-2", "floor", "verdict vs scrcpy"];
+  L.push("| " + cols.join(" | ") + " |");
+  L.push("| " + cols.map(() => "---").join(" | ") + " |");
+  for (const vn of present) {
+    const floor = driftFloor(vn);
+    const s = p50(onScr, vn);
+    const cells = strategyArms.map((b) => {
+      const v = p50(b, vn);
+      return v == null ? "-" : `${v}`;
+    });
+    // Verdict: worst strategy arm vs scrcpy at the floor (informational; the blocking
+    // grade is applied at promotion time in the ticket).
+    const verdicts = strategyArms.map((b) => {
+      const v = p50(b, vn);
+      if (v == null || s == null) return `${b.block}:n/a`;
+      const d = v - s;
+      const tag = Math.abs(d) <= floor ? "parity" : d < 0 ? `-${-d}ms` : `+${d}ms`;
+      return `${b.block.replace("ON-", "")}:${tag}`;
+    });
+    L.push(
+      "| " +
+        [vn, ...cells, s ?? "-", p50(off1, vn) ?? "-", p50(off2, vn) ?? "-", `±${floor}`, verdicts.join(" · ")].join(" | ") +
+        " |"
+    );
+  }
+  // Surface any input-manager arm that fell back to uia-async on-device (hiddenapi).
+  for (const b of strategyArms) {
+    if (b.injectStrategyReported === "unavailable") {
+      L.push("");
+      L.push(
+        `- **NOTE (${b.block}): input-manager was UNAVAILABLE on-device** (hiddenapi policy) — the arm ran ` +
+          "uia-async; DROP this block from the strategy comparison (ticket §3)."
+      );
+    }
+  }
+  L.push("");
+}
+
 // Effect-check + tap-timeline parity (phase 3h) — the taps actually landed and the
 // injected shape was as intended.
 // Print zero/checked, never the numerator alone (phase 3h review A2, fix a): a
