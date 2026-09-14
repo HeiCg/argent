@@ -24,28 +24,31 @@
  *
  *   emulator -avd bench-api35 -no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token
  *
- * Run under ts-node from the repo root (the package's composite tsconfig rejects
- * files under scripts/, so register ts-node with skipProject via a tiny loader):
- *
- *   // run-bench-sg.js
- *   require("ts-node").register({ transpileOnly: true, skipProject: true,
- *     compilerOptions: { module: "commonjs", target: "ES2022",
- *       moduleResolution: "node", esModuleInterop: true, resolveJsonModule: true,
- *       skipLibCheck: true, strict: false, ignoreDeprecations: "6.0" } });
- *   require("./packages/tool-server/scripts/bench-screen-graph.ts");
+ * Run under ts-node (the package's composite tsconfig rejects files under
+ * scripts/, so the runner registers ts-node with skipProject). The loader lives
+ * beside this file at `packages/tool-server/scripts/run-bench-sg.cjs` and resolves
+ * its target relative to __dirname, so it works from any CWD:
  *
  *   ARGENT_SIMULATOR_SERVER_DIR=<pkg>/bin \
  *   ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR=<pkg>/bin \
  *   ARGENT_NATIVE_DEVTOOLS_DIR=<pkg>/dylibs \
  *   ANDROID_HOME=$HOME/Library/Android/sdk BENCH_SERIAL=emulator-5554 \
- *   node run-bench-sg.js
+ *   node packages/tool-server/scripts/run-bench-sg.cjs
  *
  * Env knobs: BENCH_SERIAL (default emulator-5554), BENCH_REPS (3),
  * BENCH_CONFIGS (comma list; default all), BENCH_OUT
  * (default <cwd>/.bench-results/screen-graph).
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag, argentHomeDir } from "@argent/configuration-core";
@@ -60,10 +63,7 @@ import {
   resetSkippedNoIdHash,
   takeRecordMs,
 } from "../src/utils/screen-graph-open-wiring";
-import {
-  ALL_TASKS,
-  validateTasks,
-} from "../src/screen-graph/bench/tasks";
+import { ALL_TASKS, validateTasks } from "../src/screen-graph/bench/tasks";
 import type { BenchSelector, BenchStep, BenchTask } from "../src/screen-graph/bench/types";
 import { BENCH_CONFIG_IDS } from "../src/screen-graph/bench/types";
 import type { BenchConfigId } from "../src/screen-graph/bench/types";
@@ -107,8 +107,7 @@ const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
 // separate configs above the ~3.4–8.3 pp run-to-run noise floor the C.3 review
 // measured on identical code.
 const REPS = Number(process.env.BENCH_REPS ?? 5);
-const OUT_DIR =
-  process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results", "screen-graph");
+const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results", "screen-graph");
 const PHYSICAL_DENY = "ZF524RZBHD";
 
 if (SERIAL === PHYSICAL_DENY) throw new Error(`refuse to target physical device ${PHYSICAL_DENY}`);
@@ -140,6 +139,51 @@ const TASKS = TASK_FILTER ? ALL_TASKS.filter((t) => TASK_FILTER.has(t.id)) : ALL
 const REPORT_ORDER: BenchConfigId[] = [...BENCH_CONFIG_IDS];
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Phase D.4.1 (D4-H1) — symmetric post-action settle budget.
+ *
+ * The open configs get an idle wait for free: their tap goes through the open
+ * server, whose settled `getState`/`awaitChange` inside the tap RPC blocks until
+ * the screen has changed and gone quiet (B2's step-1 tap `actionRttMs` ≈ 1.6 s vs
+ * B1's ≈ 55 ms). B1 (proprietary describe+tap) paid NO such wait, so its
+ * next-step describe read the SOURCE screen (the two-level "Internet" step read
+ * 657 tok / the root row, never the Network & internet destination).
+ *
+ * `settleScreen` gives EVERY config the same wait AFTER each non-launch action,
+ * before the next observation: a short fixed delay so the transition has begun
+ * (a proprietary describe poll cannot wait-for-change the way the open
+ * `awaitChange` does, so a pure idle poll could latch onto the pre-transition
+ * source screen), then `await-screen-idle` — which on B1 falls back to the
+ * describe-tree poll and on the open configs uses `awaitChange` — to confirm the
+ * screen is still. The elapsed ms are recorded per step as `settleMs` (NOT folded
+ * into the observation or action RTT of either arm) so the report can show the
+ * settle policy is identical across configs.
+ */
+const BENCH_SETTLE_FIXED_MS = Number(process.env.BENCH_SETTLE_FIXED_MS ?? 700);
+const BENCH_SETTLE_IDLE_TIMEOUT_MS = Number(process.env.BENCH_SETTLE_IDLE_TIMEOUT_MS ?? 3000);
+
+async function settleScreen(
+  reg: Reg
+): Promise<{ settleMs: number; settled: boolean | null; polls: number | null }> {
+  const t0 = Date.now();
+  if (BENCH_SETTLE_FIXED_MS > 0) await sleep(BENCH_SETTLE_FIXED_MS);
+  // Capture the idle tool's OWN outcome (D41-M3): whether it CONFIRMED stillness
+  // (`settled`) and how many poll / `awaitChange` rounds it took (`polls`). On B1
+  // this is the describe-tree poll (quiet-only); on the open configs the device
+  // `awaitChange` clock (change-then-quiet) — both return the same
+  // `{ settled, waitedMs, polls }` shape. Recording them makes B1's freshness
+  // (whether its poll actually observed the transition) direct evidence instead of
+  // inferred from the token count. `null` when the tool threw.
+  const idle = (await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: BENCH_SETTLE_IDLE_TIMEOUT_MS })
+    .catch(() => undefined)) as { settled?: boolean; polls?: number } | undefined;
+  return {
+    settleMs: Date.now() - t0,
+    settled: typeof idle?.settled === "boolean" ? idle.settled : null,
+    polls: typeof idle?.polls === "number" ? idle.polls : null,
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /* adb (always explicit -s SERIAL; never the physical device)                 */
@@ -241,10 +285,14 @@ function checkStoreInvariants(): string[] {
       try {
         const store = ScreenGraphStore.loadSync({ packageName: pkg.name, versionCode });
         for (const g of store.duplicateScreens()) {
-          out.push(`${pkg.name}/${versionCode}: duplicate screen — ${g.length} nodes share compact+resourceIds+stateHash: ${g.join(", ")}`);
+          out.push(
+            `${pkg.name}/${versionCode}: duplicate screen — ${g.length} nodes share compact+resourceIds+stateHash: ${g.join(", ")}`
+          );
         }
         for (const e of store.duplicateEdgeTargets()) {
-          out.push(`${pkg.name}/${versionCode}: edge "${e.key}" has ${e.tos.length} destinations: ${e.tos.join(", ")}`);
+          out.push(
+            `${pkg.name}/${versionCode}: edge "${e.key}" has ${e.tos.length} destinations: ${e.tos.join(", ")}`
+          );
         }
       } catch (err) {
         out.push(`${pkg.name}/${versionCode}: store unreadable (${String(err)})`);
@@ -259,12 +307,14 @@ function checkStoreInvariants(): string[] {
  * out-degree. `buildSummary` lists up to 6 outgoing edges, so the warm summary
  * (and thus H3's ratio) tracks out-degree; report it beside H3. Best-effort.
  */
-function settingsGraphShape(): {
-  nodes: number;
-  edges: number;
-  maxOutDegree: number;
-  meanOutDegree: number;
-} | undefined {
+function settingsGraphShape():
+  | {
+      nodes: number;
+      edges: number;
+      maxOutDegree: number;
+      meanOutDegree: number;
+    }
+  | undefined {
   try {
     const dir = join(graphDir(), "com.android.settings");
     if (!existsSync(dir)) return undefined;
@@ -390,7 +440,9 @@ async function launchApp(reg: Reg, app: BenchTask["app"]): Promise<void> {
     // more than the old 3 s or the assertion reads a half-painted page.
     await sleep(4500);
   }
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+    .catch(() => undefined);
 }
 
 /** Clickable-label / id patterns that dismiss the Chrome first-run experience. */
@@ -420,7 +472,9 @@ async function prepareChromeOnce(): Promise<void> {
       12_000
     );
     await sleep(3500);
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+      .catch(() => undefined);
     for (let i = 0; i < 6; i++) {
       const info = await server.getInfo().catch(() => ({ screenWidth: 1080, screenHeight: 2400 }));
       const W = info.screenWidth || 1080;
@@ -447,10 +501,14 @@ async function prepareChromeOnce(): Promise<void> {
       }
       const cx = Math.round((fre.bounds.x1 + fre.bounds.x2) / 2);
       const cy = Math.round((fre.bounds.y1 + fre.bounds.y2) / 2);
-      realDebug(`[bench-sg] chrome FRE: tapping "${(fre.text ?? fre.cd ?? fre.id ?? "").slice(0, 40)}"`);
+      realDebug(
+        `[bench-sg] chrome FRE: tapping "${(fre.text ?? fre.cd ?? fre.id ?? "").slice(0, 40)}"`
+      );
       await server.tapWithOutcome(cx, cy).catch(() => undefined);
       await sleep(1500);
-      await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+      await reg
+        .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+        .catch(() => undefined);
       void W;
       void H;
     }
@@ -504,7 +562,9 @@ interface Located {
  */
 async function locateNorm(reg: Reg, config: BenchConfigId, sel: BenchSelector): Promise<Located> {
   if (!usesOpenServer(config)) {
-    throw new Error(`locateNorm called for non-open config ${config}; B1 locates from its own describe`);
+    throw new Error(
+      `locateNorm called for non-open config ${config}; B1 locates from its own describe`
+    );
   }
   try {
     const server = await openServer(reg);
@@ -520,7 +580,9 @@ async function locateNorm(reg: Reg, config: BenchConfigId, sel: BenchSelector): 
       return { xNorm: (b.x1 + b.x2) / 2 / w, yNorm: (b.y1 + b.y2) / 2 / h, found: true };
     }
     if (picked.ambiguous) {
-      realDebug(`[bench-sg] locate AMBIGUOUS for ${JSON.stringify(sel)} (${q.nodes.length} candidates); not tapping`);
+      realDebug(
+        `[bench-sg] locate AMBIGUOUS for ${JSON.stringify(sel)} (${q.nodes.length} candidates); not tapping`
+      );
       return { xNorm: 0.5, yNorm: 0.5, found: false, ambiguous: true };
     }
     return { xNorm: 0.5, yNorm: 0.5, found: false };
@@ -667,6 +729,23 @@ interface StepRecord {
    * attributed. 0 for B1 (no open-server recording) and non-open steps.
    */
   recordMs: number;
+  /**
+   * Phase D.4.1 (D4-H1): the symmetric post-action settle wait (ms) this step
+   * paid via `settleScreen` before the next observation — identical policy for
+   * every config, so the report can show B1 now pays the same idle wait the open
+   * tap RPC gives the open configs for free. NOT counted inside `rttMs`
+   * (observation) or `actionRttMs`.
+   */
+  settleMs: number;
+  /**
+   * Phase D.4.1 (D41-M3): the idle tool's OWN outcome for this step's settle —
+   * whether it confirmed stillness (`settled`) and how many poll / `awaitChange`
+   * rounds (`polls`) it took. Direct evidence that B1's describe-tree idle poll
+   * actually observed the post-action transition (previously only inferred from
+   * the destination token count). `null` on launch steps and if the tool threw.
+   */
+  settled?: boolean | null;
+  polls?: number | null;
   /**
    * Phase D.2 HIGH-2: measured device RPCs for a routed known-target tap — the
    * navigate-to RPCs plus the bench's arrival verify (queryPresent + idle). Only
@@ -833,7 +912,9 @@ async function runAction(
       if (r?.divergeReason) nav.divergeReason = r.divergeReason;
       if (typeof r?.rpcCount === "number") nav.rpcCount = r.rpcCount;
       if (nav.reached) {
-        await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+        await reg
+          .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+          .catch(() => undefined);
         // Verify the route landed where the needle lives; the graph verifies by
         // hash only. `navSel` is a destination identity distinct from the oracle.
         const present = await queryPresent(reg, target);
@@ -873,7 +954,9 @@ async function runAction(
       }
     } catch (e) {
       nav.error = String(e);
-      realDebug(`[bench-sg] navigate-to threw for ${JSON.stringify(target)}: ${String(e)}; falling back`);
+      realDebug(
+        `[bench-sg] navigate-to threw for ${JSON.stringify(target)}: ${String(e)}; falling back`
+      );
     }
     // Fallback: re-observe when the route already EXECUTED a plan step, then
     // re-locate LIVE so the tap uses the current screen, not a stale coordinate.
@@ -883,7 +966,9 @@ async function runAction(
     // so `completedSteps:0` does NOT mean "never tapped" (review C4-H4). A true
     // no-route has `totalSteps:0` (no plan), leaving the source screen intact.
     if (nav.totalSteps > 0) {
-      await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+      await reg
+        .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+        .catch(() => undefined);
       await reg.invokeTool("describe", { udid: SERIAL }).catch(() => undefined);
     }
     // A zero-step route is NOT a routing failure — its `navFallback` stays false;
@@ -903,7 +988,15 @@ async function runAction(
     }
     const tapRes = await tapAt(reg, located);
     if (tapRes.failed) {
-      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "locate-tap", nav, navFallback: fb, locateFailed: false, actionFailed: true };
+      return {
+        rttMs: Date.now() - t0,
+        usedNavigate: false,
+        strategy: "locate-tap",
+        nav,
+        navFallback: fb,
+        locateFailed: false,
+        actionFailed: true,
+      };
     }
     return {
       rttMs: Date.now() - t0,
@@ -919,16 +1012,37 @@ async function runAction(
 
   if (a.kind === "launch") {
     // launch handled by the caller (app reset); this is a no-op timing anchor.
-    return { rttMs: 0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false };
+    return {
+      rttMs: 0,
+      usedNavigate: false,
+      strategy: "none",
+      navFallback: false,
+      locateFailed: false,
+      actionFailed: false,
+    };
   }
   if (a.kind === "back") {
     try {
       adb(["shell", "input keyevent 4"], 6_000);
     } catch (e) {
       realDebug(`[bench-sg] back keyevent failed: ${String(e)}`);
-      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: true };
+      return {
+        rttMs: Date.now() - t0,
+        usedNavigate: false,
+        strategy: "none",
+        navFallback: false,
+        locateFailed: false,
+        actionFailed: true,
+      };
     }
-    return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false };
+    return {
+      rttMs: Date.now() - t0,
+      usedNavigate: false,
+      strategy: "none",
+      navFallback: false,
+      locateFailed: false,
+      actionFailed: false,
+    };
   }
   if (a.kind === "swipe") {
     const [fromY, toY] = a.direction === "up" ? [0.7, 0.3] : [0.3, 0.7];
@@ -943,9 +1057,23 @@ async function runAction(
       });
     } catch (e) {
       realDebug(`[bench-sg] swipe failed: ${String(e)}`);
-      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: true };
+      return {
+        rttMs: Date.now() - t0,
+        usedNavigate: false,
+        strategy: "none",
+        navFallback: false,
+        locateFailed: false,
+        actionFailed: true,
+      };
     }
-    return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false };
+    return {
+      rttMs: Date.now() - t0,
+      usedNavigate: false,
+      strategy: "none",
+      navFallback: false,
+      locateFailed: false,
+      actionFailed: false,
+    };
   }
   if (a.kind === "type") {
     // A `type` follows a tap that opened + focused the field (e.g. the Settings
@@ -954,31 +1082,82 @@ async function runAction(
       await reg.invokeTool("keyboard", { udid: SERIAL, text: a.text });
     } catch (e) {
       realDebug(`[bench-sg] keyboard failed: ${String(e)}`);
-      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: true };
+      return {
+        rttMs: Date.now() - t0,
+        usedNavigate: false,
+        strategy: "none",
+        navFallback: false,
+        locateFailed: false,
+        actionFailed: true,
+      };
     }
     await sleep(800); // async search results populate off the main thread
-    return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false };
+    return {
+      rttMs: Date.now() - t0,
+      usedNavigate: false,
+      strategy: "none",
+      navFallback: false,
+      locateFailed: false,
+      actionFailed: false,
+    };
   }
   if (a.kind === "tapXY") {
     // Fixed-coordinate tap (no locate) for the same-screen H2 no-op taps.
     const tapRes = await tapAt(reg, { xNorm: a.x, yNorm: a.y, found: true });
     if (tapRes.failed) {
-      return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: true };
+      return {
+        rttMs: Date.now() - t0,
+        usedNavigate: false,
+        strategy: "none",
+        navFallback: false,
+        locateFailed: false,
+        actionFailed: true,
+      };
     }
-    return { rttMs: Date.now() - t0, outcome: tapRes.outcome, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false };
+    return {
+      rttMs: Date.now() - t0,
+      outcome: tapRes.outcome,
+      usedNavigate: false,
+      strategy: "none",
+      navFallback: false,
+      locateFailed: false,
+      actionFailed: false,
+    };
   }
   // Plain tap. `located` is resolved by the caller (open `query` live for every
   // open config; for B1 parsed live from the describe it just paid for). A failed
   // locate ABORTS the task instead of tapping screen centre (ticket §2) — a centre
   // tap silently corrupts every downstream step and the assertion.
   if (!located || !located.found) {
-    return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "locate-tap", navFallback: false, locateFailed: true, actionFailed: false };
+    return {
+      rttMs: Date.now() - t0,
+      usedNavigate: false,
+      strategy: "locate-tap",
+      navFallback: false,
+      locateFailed: true,
+      actionFailed: false,
+    };
   }
   const tapRes = await tapAt(reg, located);
   if (tapRes.failed) {
-    return { rttMs: Date.now() - t0, usedNavigate: false, strategy: "locate-tap", navFallback: false, locateFailed: false, actionFailed: true };
+    return {
+      rttMs: Date.now() - t0,
+      usedNavigate: false,
+      strategy: "locate-tap",
+      navFallback: false,
+      locateFailed: false,
+      actionFailed: true,
+    };
   }
-  return { rttMs: Date.now() - t0, outcome: tapRes.outcome, usedNavigate: false, strategy: "locate-tap", navFallback: false, locateFailed: false, actionFailed: false };
+  return {
+    rttMs: Date.now() - t0,
+    outcome: tapRes.outcome,
+    usedNavigate: false,
+    strategy: "locate-tap",
+    navFallback: false,
+    locateFailed: false,
+    actionFailed: false,
+  };
 }
 
 /** Perform a normalized-coordinate tap; surface its outcome or a throw. */
@@ -987,10 +1166,16 @@ async function tapAt(
   loc: Located
 ): Promise<{ outcome?: { changed: boolean; newScreen: boolean }; failed: boolean }> {
   try {
-    const res = (await reg.invokeTool("gesture-tap", { udid: SERIAL, x: loc.xNorm, y: loc.yNorm })) as {
+    const res = (await reg.invokeTool("gesture-tap", {
+      udid: SERIAL,
+      x: loc.xNorm,
+      y: loc.yNorm,
+    })) as {
       outcome?: { changed: boolean; newScreen: boolean };
     };
-    const outcome = res.outcome ? { changed: res.outcome.changed, newScreen: res.outcome.newScreen } : undefined;
+    const outcome = res.outcome
+      ? { changed: res.outcome.changed, newScreen: res.outcome.newScreen }
+      : undefined;
     return { outcome, failed: false };
   } catch (e) {
     realDebug(`[bench-sg] gesture-tap failed: ${String(e)}`);
@@ -1044,7 +1229,9 @@ async function oracleRead(reg: Reg, needle: string): Promise<OracleReadout> {
   let nodes = await fetchNodes();
   let result = evaluateAssertion(nodes, needle, { screen });
   if (!result.matched) {
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 })
+      .catch(() => undefined);
     await sleep(300);
     nodes = await fetchNodes();
     result = evaluateAssertion(nodes, needle, { screen });
@@ -1098,7 +1285,15 @@ async function runAssertion(
       };
     } catch (e) {
       realDebug(`[bench-sg] ${config} oracle read failed: ${String(e)}`);
-      return { obs: "query", success: false, matches: [], tokensTiktoken: 0, tokensCharsDiv4: 0, plumbingMs: 0, error: true };
+      return {
+        obs: "query",
+        success: false,
+        matches: [],
+        tokensTiktoken: 0,
+        tokensCharsDiv4: 0,
+        plumbingMs: 0,
+        error: true,
+      };
     }
   }
   // B1: instrumentation switch so the proprietary screen is judged by the same
@@ -1124,7 +1319,15 @@ async function runAssertion(
     };
   } catch (e) {
     realDebug(`[bench-sg] B1 oracle switch failed: ${String(e)}`);
-    return { obs: "query", success: false, matches: [], tokensTiktoken: 0, tokensCharsDiv4: 0, plumbingMs: Date.now() - t0, error: true };
+    return {
+      obs: "query",
+      success: false,
+      matches: [],
+      tokensTiktoken: 0,
+      tokensCharsDiv4: 0,
+      plumbingMs: Date.now() - t0,
+      error: true,
+    };
   } finally {
     await tmp.dispose().catch(() => undefined);
     forceStopInstrumentation();
@@ -1172,35 +1375,67 @@ async function runTask(
       b1Obs = await runObservation(reg, config, "describe", {});
       const tapSel = (step.action as { selector: BenchSelector }).selector;
       located = parseDescribeLocate(b1Obs.text, tapSel);
-      // Phase D.4 (ticket §2): when B1's SYMMETRIC resolver cannot uniquely locate
-      // a target, quote its proprietary describe rendering of the rows that mention
-      // the selector — so B1's outcome is explained by the RENDERING, not the
-      // resolver. Dumped once per (task, selector, rep 0) into the teed matrix log.
-      if (!located.found && rep === 0) {
+      // Phase D.4 (ticket §2) / D.4.1 (D4-H1, item 4): quote B1's proprietary
+      // describe rendering of the rows that mention the selector, so B1's outcome
+      // on a task is explained by the RENDERING, not the resolver. B1's tap-step
+      // describe is now taken AFTER the symmetric post-action settle of the
+      // PREVIOUS step (D4-H1), so on a two-level task step 2's describe reads the
+      // DESTINATION screen (Network & internet), not the source root it read
+      // before — the excerpt below is the real destination rendering. Dumped once
+      // per (task, selector) at rep 0 for EVERY B1 tap step — including the steps
+      // where the symmetric resolver DID find a unique node (FOUND-UNIQUE) but the
+      // tap did not reach the destination. The describe token count is logged too
+      // so the report can quote the destination-screen observation size. This is a
+      // log line only: it changes no tap, route, oracle read or success count.
+      if (rep === 0) {
         const needle = (tapSel.text ?? tapSel.id ?? "").toLowerCase();
         const rows = b1Obs.text
           .split("\n")
           .filter((l) => needle && l.toLowerCase().includes(needle))
           .map((l) => l.trim())
           .slice(0, 6);
+        const outcome = located.found ? "FOUND-UNIQUE" : located.ambiguous ? "AMBIGUOUS" : "MISS";
         realDebug(
-          `[bench-sg][D4] B1 locate ${located.ambiguous ? "AMBIGUOUS" : "MISS"} for ${JSON.stringify(tapSel)} ` +
-            `on ${task.id} step ${i}; describe rows containing "${needle}": ${rows.join(" || ") || "(none)"}`
+          `[bench-sg][D4] B1 locate ${outcome} for ${JSON.stringify(tapSel)} ` +
+            `on ${task.id} step ${i} (describe ${b1Obs.tokensTiktoken} tok o200k, post-settle); ` +
+            `describe rows containing "${needle}": ${rows.join(" || ") || "(none)"}`
         );
       }
     } else if (isTap && usesOpenServer(config)) {
-      located = await locateNorm(reg, config, (step.action as { selector: BenchSelector }).selector);
+      located = await locateNorm(
+        reg,
+        config,
+        (step.action as { selector: BenchSelector }).selector
+      );
     }
 
     // O5 routes to the DESTINATION identity, per-STEP first (phase D.3 D2-H1) then
     // the task default, never the tap selector (on the current screen → 0 steps).
     const navSel: BenchSelector | null =
-      step.navTarget ?? task.navTarget ?? (isTap ? (step.action as { selector: BenchSelector }).selector : null);
+      step.navTarget ??
+      task.navTarget ??
+      (isTap ? (step.action as { selector: BenchSelector }).selector : null);
 
     const tBefore = await traversals(reg, config);
     const action: ActionResult = isLaunch
-      ? { rttMs: 0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false }
+      ? {
+          rttMs: 0,
+          usedNavigate: false,
+          strategy: "none",
+          navFallback: false,
+          locateFailed: false,
+          actionFailed: false,
+        }
       : await runAction(reg, config, step, useNavigate, located, navSel);
+
+    // Phase D.4.1 (D4-H1): symmetric post-action settle. The open configs got an
+    // idle wait for free inside the tap RPC's settled getState; B1 (proprietary
+    // describe) paid none, so its NEXT-step describe read the source screen. Give
+    // every config the same settle after every non-launch action, before the
+    // resulting-screen read and the next observation. The launch step already
+    // settles inside `launchApp`, so it is skipped here (its `settleMs` is 0).
+    const settle = isLaunch ? null : await settleScreen(reg);
+    const settleMs = settle ? settle.settleMs : 0;
 
     // Resulting screen hash → known/revisited bookkeeping.
     const hash = await currentHash(reg, config);
@@ -1231,14 +1466,12 @@ async function runTask(
     }
 
     const tAfter = await traversals(reg, config);
-    const traversalsDelta =
-      isFinite(tBefore) && isFinite(tAfter) ? tAfter - tBefore : NaN;
+    const traversalsDelta = isFinite(tBefore) && isFinite(tAfter) ? tAfter - tBefore : NaN;
 
     // Learn the screen for later revisits within this run.
     if (hash.length > 0) knownBefore.add(hash);
 
-    const rttCount =
-      (isLaunch ? 0 : 1) + (kind === "none" || kind === "graph-lookup" ? 0 : 1);
+    const rttCount = (isLaunch ? 0 : 1) + (kind === "none" || kind === "graph-lookup" ? 0 : 1);
 
     // Phase D.2 L4: sample the recording wall time accrued for this step (settled
     // getState + store write inside the tap RPC), off the timed tool cost.
@@ -1275,6 +1508,8 @@ async function runTask(
       actionFailed: action.actionFailed,
       sameScreen: step.sameScreen === true,
       recordMs,
+      settleMs,
+      ...(settle ? { settled: settle.settled, polls: settle.polls } : {}),
       ...(measuredRpc !== undefined ? { measuredRpc } : {}),
     });
 
@@ -1283,12 +1518,16 @@ async function runTask(
     // The run is excluded from the success denominator and counted by reason.
     if (action.locateFailed) {
       abortReason = "locate";
-      realDebug(`[bench-sg] ${config}/${task.id}/rep${rep}: locate failed at step ${i}; aborting task`);
+      realDebug(
+        `[bench-sg] ${config}/${task.id}/rep${rep}: locate failed at step ${i}; aborting task`
+      );
       break;
     }
     if (action.actionFailed) {
       abortReason = "action";
-      realDebug(`[bench-sg] ${config}/${task.id}/rep${rep}: action failed at step ${i}; aborting task`);
+      realDebug(
+        `[bench-sg] ${config}/${task.id}/rep${rep}: action failed at step ${i}; aborting task`
+      );
       break;
     }
   }
@@ -1344,11 +1583,18 @@ async function runTask(
 }
 
 /** A minimal record for a task-run that THREW before producing data (HIGH-4). */
-function erroredTaskRecord(config: BenchConfigId, task: BenchTask, rep: number, err?: unknown): TaskRecord {
+function erroredTaskRecord(
+  config: BenchConfigId,
+  task: BenchTask,
+  rep: number,
+  err?: unknown
+): TaskRecord {
   // Phase D.3 (D2-M6): exclude the run as pre-action infra ONLY when the throw is
   // a device/adb/open-server connectivity fault; any other exception is the
   // config's own failure and counts against it (no outcome-shaped exclusion).
-  const infraPreAction = isPreActionInfraError(String((err as { message?: string })?.message ?? err ?? ""));
+  const infraPreAction = isPreActionInfraError(
+    String((err as { message?: string })?.message ?? err ?? "")
+  );
   return {
     config,
     task: task.id,
@@ -1402,6 +1648,8 @@ interface ConfigAgg {
    *  measured RPCs on routed known-target taps. */
   actionRttMs: ReturnType<typeof summarize>;
   recordMs: ReturnType<typeof summarize>;
+  /** Phase D.4.1 (D4-H1): symmetric post-action settle wait, non-launch steps. */
+  settleMs: ReturnType<typeof summarize>;
   measuredRpc: ReturnType<typeof summarize>;
   rttCountPerStep: ReturnType<typeof summarize>;
   /** RTT count/step over SAME-SCREEN steps only (H2 subset; review addendum). */
@@ -1485,6 +1733,7 @@ function aggregate(
   // Phase D.2 HIGH-2 / L4: measured wall + RPC accounting.
   const actionRtt: number[] = [];
   const recordMsArr: number[] = [];
+  const settleMsArr: number[] = [];
   const measuredRpc: number[] = [];
   let plumbingMs = extraPlumbingMs;
   let knownTargetSteps = 0;
@@ -1558,6 +1807,7 @@ function aggregate(
       if (s.sameScreen) rttCountSS.push(eff);
       if (typeof s.actionRttMs === "number") actionRtt.push(s.actionRttMs);
       if (typeof s.recordMs === "number") recordMsArr.push(s.recordMs);
+      if (typeof s.settleMs === "number") settleMsArr.push(s.settleMs);
       if (typeof s.measuredRpc === "number") measuredRpc.push(s.measuredRpc);
       // A step reaching a screen already in the graph is warm; a novel screen is
       // cold. In O3 (cold store) most steps are cold; in O4/O5 (preloaded) warm.
@@ -1584,6 +1834,7 @@ function aggregate(
     perStepRtt: summarize(stepRtt),
     actionRttMs: summarize(actionRtt),
     recordMs: summarize(recordMsArr),
+    settleMs: summarize(settleMsArr),
     measuredRpc: summarize(measuredRpc),
     rttCountPerStep: summarize(rttCount),
     rttCountSameScreen: summarize(rttCountSS),
@@ -1698,7 +1949,11 @@ function clusterBootstrap95(records: TaskRecord[], config: BenchConfigId): Inter
     boots.push(rateOverTasks(byTask, sample) * 100);
   }
   boots.sort((x, y) => x - y);
-  return { p: point, lo: boots[Math.floor(0.025 * BOOTSTRAP_B)]!, hi: boots[Math.ceil(0.975 * BOOTSTRAP_B) - 1]! };
+  return {
+    p: point,
+    lo: boots[Math.floor(0.025 * BOOTSTRAP_B)]!,
+    hi: boots[Math.ceil(0.975 * BOOTSTRAP_B) - 1]!,
+  };
 }
 
 /** Paired cluster-bootstrap 95% CI (pp) for `config − baseline` success. */
@@ -1720,7 +1975,11 @@ function pairedClusterBootstrap95(
     boots.push((rateOverTasks(byA, sample) - rateOverTasks(byB, sample)) * 100);
   }
   boots.sort((x, y) => x - y);
-  return { p: point, lo: boots[Math.floor(0.025 * BOOTSTRAP_B)]!, hi: boots[Math.ceil(0.975 * BOOTSTRAP_B) - 1]! };
+  return {
+    p: point,
+    lo: boots[Math.floor(0.025 * BOOTSTRAP_B)]!,
+    hi: boots[Math.ceil(0.975 * BOOTSTRAP_B) - 1]!,
+  };
 }
 
 /** O5-pure vs O5-mixed split (C.4 work item B). */
@@ -1730,7 +1989,12 @@ interface O5Split {
   /**
    * O5 scored runs whose EVERY known-target tap routed via navigate-to (no
    * fallback) — the "pure navigate" runs. */
-  pure: { ok: number; scored: number; tokens: ReturnType<typeof summarize>; rtt: ReturnType<typeof summarize> };
+  pure: {
+    ok: number;
+    scored: number;
+    tokens: ReturnType<typeof summarize>;
+    rtt: ReturnType<typeof summarize>;
+  };
 }
 
 function o5Split(records: TaskRecord[]): O5Split {
@@ -1778,7 +2042,9 @@ function buildReport(
     for (let rep = 0; rep < REPS; rep++) {
       const toks = records
         .filter((r) => r.config === c && r.rep === rep)
-        .flatMap((r) => r.steps.filter((s) => s.actionKind !== "launch").map((s) => s.tokensTiktoken));
+        .flatMap((r) =>
+          r.steps.filter((s) => s.actionKind !== "launch").map((s) => s.tokensTiktoken)
+        );
       if (toks.length) out.push(summarize(toks).p50);
     }
     return out;
@@ -1789,7 +2055,9 @@ function buildReport(
       // Denominator excludes locate-failed runs (ticket §2), matching successRate.
       const scored = records.filter((r) => r.config === c && r.rep === rep && !r.locateFailed);
       if (scored.length) {
-        out.push(Number(((scored.filter((r) => r.success).length / scored.length) * 100).toFixed(0)));
+        out.push(
+          Number(((scored.filter((r) => r.success).length / scored.length) * 100).toFixed(0))
+        );
       }
     }
     return out;
@@ -1890,7 +2158,8 @@ function buildReport(
         (split.pure.scored > 0
           ? ` = ${(pureW.p || 0).toFixed(0)}% [${pureW.lo.toFixed(0)}, ${pureW.hi.toFixed(0)}]; ` +
             `tokens/step p50 ${fmt(split.pure.tokens.p50)} (n=${split.pure.tokens.n}).`
-          : " — no run routed every known-target tap (see coverage above)."));
+          : " — no run routed every known-target tap (see coverage above).")
+    );
     // Phase D.2 HIGH-2: MEASURED RPCs for a routed known-target tap (navigate-to's
     // real getState/query/tap/getState + the bench's arrival verify), replacing
     // the modelled "2". Half of O5's 100 runs have no known-target tap, so this is
@@ -1918,13 +2187,18 @@ function buildReport(
   // H2 (review addendum): the honest test is over SAME-SCREEN steps only — the
   // navigation tasks change the screen every step, so O2's outcome has nothing to
   // skip there. Same-screen steps are where an unchanged outcome removes the read.
-  const h2ss =
-    o2 && b2 ? b2.rttCountSameScreen.p50 - o2.rttCountSameScreen.p50 : NaN;
+  const h2ss = o2 && b2 ? b2.rttCountSameScreen.p50 - o2.rttCountSameScreen.p50 : NaN;
   // H3: warm cost (O4, all screens preloaded → graph-lookup) vs cold cost
   // (O3, novel screens → describe). Falls back to overall per-step if a side has
   // no cold/warm samples.
-  const o3Cold = o3 && isFinite(o3.coldTokensTiktoken.p50) ? o3.coldTokensTiktoken.p50 : o3?.perStepTokensTiktoken.p50 ?? NaN;
-  const o4Warm = o4 && isFinite(o4.warmTokensTiktoken.p50) ? o4.warmTokensTiktoken.p50 : o4?.perStepTokensTiktoken.p50 ?? NaN;
+  const o3Cold =
+    o3 && isFinite(o3.coldTokensTiktoken.p50)
+      ? o3.coldTokensTiktoken.p50
+      : (o3?.perStepTokensTiktoken.p50 ?? NaN);
+  const o4Warm =
+    o4 && isFinite(o4.warmTokensTiktoken.p50)
+      ? o4.warmTokensTiktoken.p50
+      : (o4?.perStepTokensTiktoken.p50 ?? NaN);
   const h3 = ratio(o4Warm, o3Cold);
   L.push("| Hypothesis | Target | Measured | Verdict |");
   L.push("|---|---|---|---|");
@@ -1988,7 +2262,9 @@ function buildReport(
       "(review C4-H2). B1 locates LIVE from its own describe (no precompute)."
   );
   L.push("");
-  L.push("| Baseline | Baseline success (cluster / Wilson) | Verdict (O1..O5, paired cluster-bootstrap Δ) |");
+  L.push(
+    "| Baseline | Baseline success (cluster / Wilson) | Verdict (O1..O5, paired cluster-bootstrap Δ) |"
+  );
   L.push("|---|---|---|");
   L.push(
     `| B1 (argent proprietary) | ${baseCell(b1)}${b1Invalid ? " ⚠INVALID" : ""} | ${h4Row(b1, b1Invalid)} |`
@@ -2004,7 +2280,9 @@ function buildReport(
       "action-only (1) on a step whose outcome reports no change."
   );
   L.push("");
-  L.push("| Config | RTT/step p50 (all) | RTT/step mean (all) | RTT/step p50 (same-screen) | RTT/step mean (same-screen) | same-screen n |");
+  L.push(
+    "| Config | RTT/step p50 (all) | RTT/step mean (all) | RTT/step p50 (same-screen) | RTT/step mean (same-screen) | same-screen n |"
+  );
   L.push("|---|---|---|---|---|---|");
   for (const c of REPORT_ORDER) {
     const a = by(c);
@@ -2019,10 +2297,16 @@ function buildReport(
   L.push("## Cold vs warm (O3 vs O4)");
   L.push("");
   if (o3 && o4) {
-    L.push(`- O3 cold (novel-screen) tokens/step p50: ${fmt(o3Cold)} (n=${o3.coldTokensTiktoken.n})`);
-    L.push(`- O4 warm (known-screen) tokens/step p50: ${fmt(o4Warm)} (n=${o4.warmTokensTiktoken.n})`);
+    L.push(
+      `- O3 cold (novel-screen) tokens/step p50: ${fmt(o3Cold)} (n=${o3.coldTokensTiktoken.n})`
+    );
+    L.push(
+      `- O4 warm (known-screen) tokens/step p50: ${fmt(o4Warm)} (n=${o4.warmTokensTiktoken.n})`
+    );
     L.push(`- cold/warm ratio (O4 warm / O3 cold): ${fmt(h3)}×`);
-    L.push(`- O3 overall tokens/step p50: ${fmt(o3.perStepTokensTiktoken.p50)}; O4 overall: ${fmt(o4.perStepTokensTiktoken.p50)}`);
+    L.push(
+      `- O3 overall tokens/step p50: ${fmt(o3.perStepTokensTiktoken.p50)}; O4 overall: ${fmt(o4.perStepTokensTiktoken.p50)}`
+    );
     L.push(`- O3 wall/task p50: ${fmt(o3.wallMs.p50)} ms; O4: ${fmt(o4.wallMs.p50)} ms`);
   } else {
     L.push("- O3/O4 not both present in this run.");
@@ -2036,7 +2320,9 @@ function buildReport(
     if (!by(c)) continue;
     const toks = perRepTokenMedian(c);
     const succ = perRepSuccess(c);
-    L.push(`| ${c} | ${toks.join(" / ") || "—"} (range ${range(toks)}) | ${succ.join(" / ") || "—"} |`);
+    L.push(
+      `| ${c} | ${toks.join(" / ") || "—"} (range ${range(toks)}) | ${succ.join(" / ") || "—"} |`
+    );
   }
   L.push("");
   L.push("## Per-config wall time / task (ms) — p50 / p95 / range");
@@ -2046,7 +2332,9 @@ function buildReport(
   for (const c of REPORT_ORDER) {
     const a = by(c);
     if (!a) continue;
-    L.push(`| ${c} | ${fmt(a.wallMs.p50)} | ${fmt(a.wallMs.p95)} | ${range([a.wallMs.min, a.wallMs.max])} |`);
+    L.push(
+      `| ${c} | ${fmt(a.wallMs.p50)} | ${fmt(a.wallMs.p95)} | ${range([a.wallMs.min, a.wallMs.max])} |`
+    );
   }
   L.push("");
   L.push("## Notes");
@@ -2054,38 +2342,45 @@ function buildReport(
   L.push(
     "- Gesture-param parity gate passed: every config drove identical " +
       `holdMs=${BENCH_GESTURE_PARAMS.tapHoldMs}, swipeDurationMs=${BENCH_GESTURE_PARAMS.swipeDurationMs} ` +
-      "(asserted across configs; the run aborts otherwise).");
+      "(asserted across configs; the run aborts otherwise)."
+  );
   L.push(
     "- Token counts are of the exact payload the scripted agent would see per the " +
-      "config policy (describe / query / diff / graph-lookup summary); `none` steps cost 0.");
+      "config policy (describe / query / diff / graph-lookup summary); `none` steps cost 0."
+  );
   L.push(
     "- O3 is the cold baseline (empty store, never reuses the graph); O4/O5 preload " +
-      "the graph O3 persisted. cold/warm compares O3 novel-screen describe vs O4 known-screen graph-lookup.");
+      "the graph O3 persisted. cold/warm compares O3 novel-screen describe vs O4 known-screen graph-lookup."
+  );
   L.push(
     "- H2 counts action + observation round-trips. B2 always issues action + describe; O2 " +
       "drops the read when the outcome reports no change. On the navigation tasks every step " +
       "changes the screen, so O2 saves nothing there (all-steps H2 ≈ 0) — the saving is real " +
       "only on the SAME-SCREEN tasks (see the H2 detail table), where an unchanged step costs " +
-      "1 RTT for O2 vs 2 for B2.");
+      "1 RTT for O2 vs 2 for B2."
+  );
   L.push(
     "- Locate (C.4 work item A): open configs locate via the live open-server `query`; B1 " +
       "locates LIVE from the `describe` it pays for each step (a plain describe+tap agent) — no " +
       "precompute, no stale/replayed coordinate. A failed locate ABORTS the task (`locate-fail`) " +
-      "instead of tapping screen centre, and is excluded from the success denominator.");
+      "instead of tapping screen centre, and is excluded from the success denominator."
+  );
   L.push(
     "- O5 navigate-to (C.4 work item B/C): `navTarget` is a DESTINATION identity, never the " +
       "oracle needle; the tool localizes the FROM screen by exact hash else a resource-id " +
       "Jaccard match (≥0.9) and verifies each arrival tolerantly, so a drifted root hash no " +
       "longer loses the route. A route that does not reach, or reaches but leaves the target not " +
       "live-present, re-observes and falls back to a plain locate+tap (counted structurally as " +
-      "`navFb`). O5-pure = runs whose every known-target tap routed; O5-mixed = all O5 runs.");
+      "`navFb`). O5-pure = runs whose every known-target tap routed; O5-mixed = all O5 runs."
+  );
   L.push(
     "- ONE success oracle for every config (ticket §3): a needle counts as present when it " +
       "appears case-insensitively in the `text` OR `contentDescription` of a VISIBLE node " +
       "(geometry-gated), read by the on-device `query`. B1 is read through an instrumentation " +
       "switch (stop ADT → bring our server up → query → restore B1) so it is judged by the same " +
       "rule as the open configs, not the old describe substring scan. The matched node text is " +
-      "persisted per assertion (below) as evidence.");
+      "persisted per assertion (below) as evidence."
+  );
   L.push("- Emulator torn down after the run (see harness teardown).");
   L.push("");
 
@@ -2127,7 +2422,9 @@ function buildReport(
       const r = records.find((x) => x.config === c && x.task === task && x.rep === 0);
       if (!r) continue;
       if (r.locateFailed) {
-        L.push(`| ${c} | ${task} | ${r.assertionNeedle} | locate-fail | — | (task aborted on locate) |`);
+        L.push(
+          `| ${c} | ${task} | ${r.assertionNeedle} | locate-fail | — | (task aborted on locate) |`
+        );
         continue;
       }
       const m = r.assertionMatches[0];
@@ -2181,25 +2478,29 @@ function buildReport(
   if (pass1Path && existsSync(pass1Path)) {
     try {
       const prior = JSON.parse(readFileSync(pass1Path, "utf8")) as { aggregates: ConfigAgg[] };
-      const p = (c: BenchConfigId): ConfigAgg | undefined => prior.aggregates.find((a) => a.config === c);
+      const p = (c: BenchConfigId): ConfigAgg | undefined =>
+        prior.aggregates.find((a) => a.config === c);
       const pB2 = p("B2");
       const pO1 = p("O1");
       const pO3 = p("O3");
       const pO4 = p("O4");
       const pH1 =
         pO1 && pB2 ? ratio(pO1.perStepTokensTiktoken.p50, pB2.perStepTokensTiktoken.p50) : NaN;
-      const pColdSrc = pO3 && isFinite(pO3.coldTokensTiktoken.p50)
-        ? pO3.coldTokensTiktoken.p50
-        : pO3?.perStepTokensTiktoken.p50 ?? NaN;
-      const pWarmSrc = pO4 && isFinite(pO4.warmTokensTiktoken.p50)
-        ? pO4.warmTokensTiktoken.p50
-        : pO4?.perStepTokensTiktoken.p50 ?? NaN;
+      const pColdSrc =
+        pO3 && isFinite(pO3.coldTokensTiktoken.p50)
+          ? pO3.coldTokensTiktoken.p50
+          : (pO3?.perStepTokensTiktoken.p50 ?? NaN);
+      const pWarmSrc =
+        pO4 && isFinite(pO4.warmTokensTiktoken.p50)
+          ? pO4.warmTokensTiktoken.p50
+          : (pO4?.perStepTokensTiktoken.p50 ?? NaN);
       const pH3 = ratio(pWarmSrc, pColdSrc);
       L.push("## Appendix: pass1 provenance (pre-C.1 harness)");
       L.push("");
       L.push(
         `Source: \`${pass1Path.split("/").pop()}\`. The C.1 oracle/locate fixes do not touch the ` +
-          "token metric path, so H1/H3 should sit within ±10 % of these.");
+          "token metric path, so H1/H3 should sit within ±10 % of these."
+      );
       L.push("");
       L.push("| Metric | pass1 | this pass |");
       L.push("|---|---|---|");
@@ -2220,7 +2521,8 @@ function buildReport(
       L.push("");
       L.push(
         "pass1 H4/B1 (33 %) is intentionally omitted: it was the pre-C.1 artifact " +
-          "(centre taps + a describe-scan oracle) this ticket replaces.");
+          "(centre taps + a describe-scan oracle) this ticket replaces."
+      );
       L.push("");
     } catch (e) {
       realDebug(`[bench-sg] pass1 appendix skipped: ${String(e)}`);
@@ -2258,7 +2560,11 @@ function regenerateFromJson(regenPath: string): void {
     if (rs.length === 0) continue;
     aggs.push(aggregate(c, rs, fbByConfig.get(c) ?? 0, 0));
   }
-  const env = { ...(raw.env ?? {}), regeneratedFrom: regenPath.split("/").pop(), regeneratedAt: new Date().toISOString() };
+  const env = {
+    ...(raw.env ?? {}),
+    regeneratedFrom: regenPath.split("/").pop(),
+    regeneratedAt: new Date().toISOString(),
+  };
   const report = buildReport(aggs, env, skipped, records);
   const outPath = process.env.BENCH_REPORT ?? join(OUT_DIR, "results-ci.md");
   mkdirSync(OUT_DIR, { recursive: true });
@@ -2347,7 +2653,8 @@ async function main(): Promise<void> {
     // pre-populated store does not change its cold token cost).
     if (usesGraph(config) && config !== "O3") {
       // Warm: a store should exist by now (earlier configs populated it).
-      if (!existsSync(graphDir())) skipped[`${config}-note`] = "no warm store (earlier configs recorded none)";
+      if (!existsSync(graphDir()))
+        skipped[`${config}-note`] = "no warm store (earlier configs recorded none)";
     }
 
     const reg = createRegistry();
@@ -2430,6 +2737,11 @@ async function main(): Promise<void> {
   // Phase D.2 M1: persist the bootstrap resample count so the doc reads it from
   // the JSON instead of hand-typing it.
   env.bootstrapB = BOOTSTRAP_B;
+  // Phase D.4.1 (D4-M6): persist the fixed bootstrap RNG seed so the report can
+  // publish it and the cluster intervals are reproducible to the digit. Written
+  // as an unsigned 32-bit int and its hex form.
+  env.bootstrapSeed = BOOTSTRAP_SEED >>> 0;
+  env.bootstrapSeedHex = `0x${(BOOTSTRAP_SEED >>> 0).toString(16)}`;
   // Phase D.2 M2: persist the settings graph shape (out-degree) so H3 can be read
   // alongside it — the warm summary lists ≤6 outgoing edges, so the token ratio
   // tracks graph density.
@@ -2473,7 +2785,9 @@ async function main(): Promise<void> {
     );
     process.exitCode = 1;
   } else {
-    process.stdout.write("[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges\n");
+    process.stdout.write(
+      "[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges\n"
+    );
   }
 
   // Partial-run reuse: splice a prior full pass's aggregates + records for every
