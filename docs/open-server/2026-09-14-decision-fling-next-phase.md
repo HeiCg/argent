@@ -45,3 +45,11 @@ adversarial review before the scoreboard.
 ## Also open on the consolidated base (separate ticket, investigation running)
 `tap+describe(settle:false)` ON 505/529 vs OFF 354/297 (+150–230 ms, floor 57, n = 19):
 new loss vs run 7's parity; root-cause doc `2026-09-14-tap-describe-loss-root-cause.md`.
+
+## Decision taken (owner, 2026-09-14): option D — our Kotlin injector replaces scrcpy
+Neither A nor B. The Kotlin server already injects device-timestamped timelines
+(`MotionInjector`); the gap to scrcpy is ~25–35 ms of RPC latency, not fidelity. Ticket
+`2026-09-14-open-server-phase3n-kotlin-injector-replaces-scrcpy.md`: strategies
+`uia-sync | uia-async | input-manager`, pre-registered gates, scrcpy removed if one
+passes. "Port scrcpy to Rust" answered: the device half must stay Java/Kotlin; we own
+that process already.
