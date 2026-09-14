@@ -103,3 +103,47 @@ One new run WAS needed: run 34794414764. The B1 "Internet" describe excerpt was 
 reference run 34788497583's artifact (the `[D4]` diagnostic was gated to `!found && rep===0`
 and the two-level step resolves a unique-but-wrong node at rep 0), the exact case the
 addendum names — so the capture was added first, then one run.
+
+## Result (D.4.1) — 2026-09-14
+
+Supersedes the D.4 `## Result` above and the D.4 report. The D.4 adversarial review
+(`2026-09-13-review-d4-findings.md`) returned REJECT: B1's 82/100 was attributed to a
+"describe-rendering capability gap", but the supporting excerpt was the Settings ROOT
+screen (B1's tap-step describe read the SOURCE screen because the B1 path paid no post-tap
+settle — D4-H1), and the exact-text tiers of the shared resolver were unreachable for B1's
+collapsed rows because the harness parser left `cd` undefined (D4-H3). Both were harness
+asymmetries. D.4.1 removes them (symmetric `settleScreen`; collapsed-label `" / "` split in
+`describeLinesToNodes`) and re-runs once.
+
+**Run 34801849653** (`feat/screen-graph-d4` @ `fcc86ce9`, `sg_mode=matrix`, screen-graph
+job SUCCESS, invariants gate green). With both asymmetries removed, **B1 = 100/100 and
+every config is ~100 %** — the D.4 "82 % gap" does not survive a symmetric harness. Report:
+`2026-09-13-screen-graph-phase-d4-results-ci.md` (rewritten from the new JSON). Seed
+`0x5eedc0de` published; both same-code reference runs (34788497583, 34794414764) carried
+side by side; no O5-pure.
+
+| Finding | How addressed |
+|---|---|
+| **D4-H1** Item-2 excerpt was the root screen; B1 never observed the destination (no settle) | Added `settleScreen()` — fixed pre-delay + `await-screen-idle` after every non-launch action for EVERY config, recorded per step as `settleMs` (not in obs/action RTT). B1's step-2 describe now reads the settled DESTINATION (598 tok, `sg-matrix.log` line 29), not the 657-tok root. settleMs p50 B1 2226 vs open ~1015 — B1 no longer under-waits. |
+| **D4-H2** "CAPTURED" test had a fabricated "Airplane mode" row + a row from another screen | Deleted the fabricated block. Rebuilt locate tests from rows quoted verbatim from run 34794414764 (root: preflight `settingsRoot` + `[D4]` rows) and run 34801849653 (destination: graph-store `284ef0302b28c5de` + `sg-matrix.log` line 29), each labelled by source file+line. 14/14 green. |
+| **D4-H3** Exact-text/cd tiers unreachable for collapsed B1 rows (parser left `cd` undefined) | `describeLinesToNodes` splits `"<title> / <summary>"` on the first `" / "` into `text`/`cd`, mirroring the open split. `t("Display")`/`t("Internet")` now hit EXACT text. Unit-tested on verbatim `sg-matrix.log` rows. |
+| **D4-H4** O5-pure 47/47 = 100 % is selection on the outcome | O5-pure removed from the report. Only routing coverage (59/60) and the measured-RPC row (min/p50/max 7) published. |
+| **D4-H5** Withheld a same-code reference run refuting two headline claims | Report `§Same-code reproducibility` carries all three runs side by side (34788497583 B1 81/O5 100; 34794414764 B1 82/O5 95; new B1 100/O5 100), states the run-to-run spread as the noise floor, and shows the +18 pp B1 jump is the fix (mechanistically evidenced), not noise. |
+| **D4-M1** 3 of B1's locate-fails were a degenerate 112-tok describe, not a rendering | Moot: B1 has 0 locate-fails this run. The settle removed the degenerate post-back capture; `settings-battery-then-back` step 3 now reads the settled root (657 tok, line 33) — YYYYY. Documented in the superseded table. |
+| **D4-M2** O5's 3 `settings-display` failures were its own divergences, not config-neutral | Moot: O5 = 100/100. Its single divergence is `settings-connected` (fell back, passed). The D.4 Display divergences were under-settled transitions, removed by the settle. |
+| **D4-M3** Divergences attributed to `same-display-slider` (which issues no navigate-to) | Moot: no Display divergence this run; the one divergence is named exactly (`settings-connected` rep 4 step 1). |
+| **D4-M4** taskError printed as oracle-unmet `N`; legend lacked `T` | Legend now defines `T` (taskError) distinctly; none occur this run (B2's D.4 `same-display-slider` T is gone). |
+| **D4-M5** H1 mislabelled "unchanged steps" | H1 labelled "all non-launch steps" with n (O1 p50 179 / B2 p50 651, n=155 each) = 0.275×. |
+| **D4-M6** Bootstrap seed not published; intervals moved | Seed `0x5eedc0de` fixed in the harness and persisted to `env.bootstrapSeedHex`; report publishes it beside every cluster interval. |
+| **D4-M7** "Airplane mode" uniqueness cited a run absent from the artifact set | Report cites graph-store node `284ef0302b28c5de` in THIS run's artifact (only screen bearing "Airplane mode" across the 11 settings screens). |
+| **D4-L1** Token/RTT denominators undisclosed | Column note: "non-launch steps only (n=155 each; launch-step observation excluded)". |
+| **D4-L2** `fail (L/A/O/T)` header mismatched its contents | Column renamed `fail (L/A/oracleErr/T)`; a separate `unmet` column counts oracle-unmet runs. |
+| **D4-L3** O5-pure N conflated runs and taps | O5-pure removed entirely (D4-H4); the measured-RPC row states its own n (n=59). |
+| **D4-L4** H2 same-screen n differed per arm | Both arms n=50 this run (no taskError); stated explicitly. |
+| **D4-L5** Blanket "reproduced to the digit" of the harness doc | Report endorses only the specific statistics recomputed from JSON, not the harness `results-ci.md` wholesale. |
+
+Harness/latency note: the symmetric settle roughly doubles B1's per-step wall wait
+(settleMs p50 2226 ms), because B1's describe-tree idle poll is slower to confirm stillness
+than the open `awaitChange`. Correctness is established; `BENCH_SETTLE_FIXED_MS` (default
+700 ms) can be tuned down later — a latency-only follow-up (phase 3k), not a bar item. No
+second run was taken (one-run budget); `open/main` not fast-forwarded (planner re-reviews).
