@@ -1,6 +1,7 @@
 package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
+import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
 import org.json.JSONObject
 
@@ -35,14 +36,21 @@ class TapHandler(private val uiAutomation: UiAutomation) {
         val clickCount = maxOf(1, params.optInt("clickCount", 1))
         val holdMs = maxOf(0L, params.optLong("holdMs", DEFAULT_HOLD_MS))
         val gapMs = maxOf(0L, params.optLong("gapMs", DEFAULT_GAP_MS))
+        // Phase 3n: per-RPC injection strategy. Absent / unknown → DEFAULT (today's
+        // async-UP tap). uia-sync / uia-async / input-manager select the explicit
+        // pipes; input-manager degrades to uia-async when the hidden API is blocked.
+        val strategy = InjectStrategy.fromWire(params.optString("inject", ""))
         // `dropped` is true when the framework rejected an injected event (no
         // injectable window mid-transition, secure surface, contended input pipe).
         // Surface it so the host fails the tap and falls back rather than reporting
         // a tap that never landed (R1, phase 3g).
-        val dropped = MotionInjector.injectTaps(uiAutomation, x, y, clickCount, holdMs, gapMs)
+        val outcome = MotionInjector.injectTaps(uiAutomation, x, y, clickCount, holdMs, gapMs, strategy)
         return JSONObject().apply {
-            put("success", !dropped)
-            if (dropped) put("dropped", true)
+            put("success", !outcome.dropped)
+            if (outcome.dropped) put("dropped", true)
+            put("strategy", outcome.strategy)
+            outcome.fellBackTo?.let { put("fellBackTo", it) }
+            outcome.error?.let { put("injectError", it) }
         }
     }
 }
