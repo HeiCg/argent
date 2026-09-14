@@ -42,6 +42,7 @@
  * the `@yume-chan` ESM deps.
  */
 import { readFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import { Adb, AdbServerClient } from "@yume-chan/adb";
 import { AdbServerNodeTcpConnector } from "@yume-chan/adb-server-node-tcp";
 import { AdbScrcpyClient, AdbScrcpyOptionsLatest } from "@yume-chan/adb-scrcpy";
@@ -126,13 +127,17 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export type ScrcpyPacingMode = "drift" | "legacy";
 
 /**
- * Pacing mode for this process, read from `ARGENT_SCRCPY_PACING` at inject time
- * (`legacy` for the pre-3k await-per-frame loop; anything else, including unset,
- * for the drift-corrected socket-decoupled fix). Read lazily per gesture so the
- * fling A/B can set it in-process before the first swipe.
+ * Pacing mode for this process, read from `ARGENT_SCRCPY_PACING` at inject time.
+ *
+ * DEFAULT is `legacy` — the pre-3k await-per-frame loop, byte-equal to the wire
+ * behaviour of `690e66bc` (phase 3k.1 decision: the drift/decoupled pacing showed
+ * no distinguishable same-run effect and run 7's deficit did not reproduce, so the
+ * default must not change until a paired effect clears p < 0.05 with the gate
+ * green). `drift` (the socket-decoupled fix) is OPT-IN via `ARGENT_SCRCPY_PACING=drift`.
+ * Read lazily per gesture so the fling A/B can flip it in-process before each swipe.
  */
 function scrcpyPacingMode(): ScrcpyPacingMode {
-  return process.env.ARGENT_SCRCPY_PACING === "legacy" ? "legacy" : "drift";
+  return process.env.ARGENT_SCRCPY_PACING === "drift" ? "drift" : "legacy";
 }
 
 /** Per-frame host pacing sample (phase 3k measurement). */
@@ -325,31 +330,45 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
    * Inject a whole timeline, paced against a real wall clock anchored at the
    * gesture start.
    *
-   * Phase 3k — the long-duration fling deficit. The pre-3k loop (kept as
-   * `legacy`) AWAITS one `injectTouch` per frame: `injectTouch` resolves only once
-   * the control message has been `consumed` (serialized + written to and drained
-   * by the scrcpy socket), so a per-frame consume cost W stretches a K-frame swipe
-   * to ~K·max(16, W) instead of K·16 ms. The scrcpy server stamps each MotionEvent
-   * with `SystemClock.uptimeMillis()` at READ time, so a stretched write cadence
-   * feeds the OS VelocityTracker a lower release velocity and the fling under-
-   * scrolls (reproducible 35-42 % at 400 ms vs proprietary, review F2).
+   * Phase 3k — the long-duration fling deficit. The DEFAULT loop (`legacy`) AWAITS
+   * one `injectTouch` per frame: `injectTouch` resolves only once the control
+   * message has been `consumed` (serialized + written to and drained by the scrcpy
+   * socket).
    *
-   * `drift` (default, the fix) decouples the write from the frame clock: it sleeps
-   * to each frame's drift-corrected slot (`anchor + tMs`, recomputed against the
-   * real clock so an overslept `sleep` is absorbed) and INITIATES the write there
-   * without awaiting its consume. The WHATWG `WritableStream` under `injectTouch`
-   * queues concurrent `write()`s and drains them IN ORDER (verified:
-   * `ScrcpyControlMessageWriter.write` → `ConsumableWritableStream.write` →
-   * `writer.write`), so the frames still reach the device in order, but a slow
-   * consume no longer delays the NEXT frame's dispatch — the DOWN→UP dispatch span
-   * stays == the requested duration. It only falls back to the socket's own drain
-   * rate if the socket genuinely cannot keep up with 16 ms/frame (a residual that
-   * needs the device-side timeline of work-order step 2(b)); the per-frame trace
-   * below measures exactly that.
+   * HYPOTHESIS, NOT OBSERVED on the CI runner (reviewed status, 3k/3k.1). The
+   * original theory was that a per-frame consume cost W stretches a K-frame swipe to
+   * ~K·max(16, W) instead of K·16 ms, and that — since the scrcpy server stamps each
+   * MotionEvent with `SystemClock.uptimeMillis()` at READ time — a stretched write
+   * cadence feeds the OS VelocityTracker a lower release velocity so the fling
+   * under-scrolls (the deficit reported at 400 ms in review F2). CI does NOT bear
+   * this out as the host-pacing cause: on run 34813849446 the deficit reproduced,
+   * but host pacing was NEUTRAL — the `drift` fix (below) is statistically
+   * indistinguishable from `legacy` (same-run paired legacy→drift permutation
+   * p ≥ 0.13 in every cell), and the host dispatch span already equals the requested
+   * duration on the drift arm (median worst-frame drift 2.1 ms). What WAS observed is
+   * device-side: `dumpsys input` shows both scrcpy arms delivering ~439–452 ms for a
+   * 416 ms request with a 35–46 ms final MOVE→UP gap, vs 417/17 ms for UiAutomation
+   * — an arrival-time stretch on the last frames, cause OPEN. The 8-frame schedule
+   * alone is ruled out: the UiAutomation arm sends the identical 8 wire frames and
+   * reaches `uia/off` 1.037 at 400/0.3. So this per-frame-consume story stays a
+   * hypothesis; do not treat it as the mechanism. The legacy branch is BYTE-EQUAL to
+   * `690e66bc`'s loop (no per-frame instrumentation on this path), so the default
+   * gesture wire behaviour is exactly the pre-3k code path.
    *
-   * Selected per process by `ARGENT_SCRCPY_PACING` (`legacy` | anything ⇒ drift),
-   * so the fling A/B can carry both the before (`legacy`) and after (`drift`) arms
-   * in one CI run.
+   * `drift` (OPT-IN, `ARGENT_SCRCPY_PACING=drift`) decouples the write from the
+   * frame clock: it sleeps to each frame's drift-corrected slot (`anchor + tMs`,
+   * recomputed against the real clock so an overslept `sleep` is absorbed) and
+   * INITIATES the write there without awaiting its consume. The WHATWG
+   * `WritableStream` under `injectTouch` queues concurrent `write()`s and drains
+   * them IN ORDER (verified: `ScrcpyControlMessageWriter.write` →
+   * `ConsumableWritableStream.write` → `writer.write`), so the frames still reach
+   * the device in order, but a slow consume no longer delays the NEXT frame's
+   * dispatch — the DOWN→UP dispatch span stays == the requested duration. Only the
+   * drift branch carries the per-frame pacing trace.
+   *
+   * Phase 3k.1: `drift` is opt-in and `legacy` is the default (the same-run paired
+   * before/after showed no distinguishable effect, review 3K-H1). The fling A/B
+   * flips `ARGENT_SCRCPY_PACING` per swipe to carry both arms in one CI run.
    */
   private async injectTimeline(frames: TouchFrame[]): Promise<void> {
     await this.ensureStarted();
@@ -386,13 +405,29 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     const anchor = performance.now();
     try {
       if (mode === "legacy") {
+        // BYTE-EQUAL to 690e66bc's injectTimeline loop (the pre-3k await-per-frame
+        // pacing). Kept verbatim and free of the drift branch's per-frame
+        // instrumentation so the DEFAULT gesture wire behaviour is identical to the
+        // pre-3k code path (phase 3k.1: drift is opt-in, legacy is the default). Do
+        // not add trace/`performance.now()` calls here — the diff of this loop
+        // against `690e66bc:…/scrcpy-inject-backend.ts` must stay empty.
         for (const f of frames) {
           const wait = anchor + f.tMs - performance.now();
           if (wait > 0) await sleep(wait);
-          const dispatchMs = performance.now() - anchor;
-          await controller.injectTouch(build(f));
-          trace.push({ tMs: f.tMs, action: f.action, dispatchMs, writeMs: performance.now() - anchor });
-          applyDown(f);
+          await controller.injectTouch({
+            action: wireAction(f.action),
+            pointerId: BigInt(f.pointerId),
+            pointerX: Math.round(f.x),
+            pointerY: Math.round(f.y),
+            videoWidth: width,
+            videoHeight: height,
+            pressure: f.pressure,
+            actionButton: 0,
+            buttons: 0,
+          });
+          if (f.action === TouchAction.Down) down.set(f.pointerId, { x: f.x, y: f.y });
+          else if (f.action === TouchAction.Up) down.delete(f.pointerId);
+          else down.set(f.pointerId, { x: f.x, y: f.y });
         }
       } else {
         // Drift-corrected, socket-decoupled. Initiate each write at its slot and
@@ -402,8 +437,15 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
         let writeErr: unknown = null;
         const pending: Promise<void>[] = [];
         for (const f of frames) {
+          // 3K-L4: once any write has rejected, STOP the frame loop — do not sleep
+          // through the rest of the timeline (which delayed the Kotlin fallback by a
+          // whole gesture duration) and do not queue further writes. The `throw
+          // writeErr` after the loop runs the loud fallback (lift pointers + drop
+          // client) immediately instead of a gesture-duration later.
+          if (writeErr !== null) break;
           const wait = anchor + f.tMs - performance.now();
           if (wait > 0) await sleep(wait);
+          if (writeErr !== null) break; // a rejection surfaced while sleeping to this slot
           const dispatchMs = performance.now() - anchor;
           applyDown(f); // synchronous, so a mid-gesture failure lifts the right pointers
           const rec: FrameTrace = { tMs: f.tMs, action: f.action, dispatchMs, writeMs: NaN };
@@ -423,8 +465,9 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
         if (writeErr !== null) {
           throw writeErr instanceof Error ? writeErr : new Error(String(writeErr));
         }
+        // Only the drift branch is instrumented; legacy stays byte-equal to pre-3k.
+        this.emitPacingTrace(mode, trace, performance.now() - anchor);
       }
-      this.emitPacingTrace(mode, trace, performance.now() - anchor);
     } catch (err) {
       if (mode !== "legacy") {
         // Drift applied every frame optimistically (a UP cleared its pointer even
@@ -476,10 +519,22 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
     this.log(line);
     // The bench routes the log callback through a captured/filtered console.debug,
     // so also emit straight to stdout when the pacing trace is explicitly requested
-    // (ARGENT_SCRCPY_PACING_TRACE=1) — this is how the per-frame host measurement
-    // reaches the fling-log artifact for the phase-3k before/after.
+    // (ARGENT_SCRCPY_PACING_TRACE=1). NOTE (phase 3k.1 / review 3K-H3): stdout is
+    // ALSO swallowed by the fling harness, so on run 34800933407 zero `[pacing-trace]`
+    // lines reached any artifact. The reliable sink is a FILE: when
+    // ARGENT_SCRCPY_PACING_TRACE_FILE is set the line is appended there directly
+    // (fs cannot be swallowed by a console/stdout interception), and the harness cats
+    // that file into the fling-log so the host per-frame trace is captured for real.
     if (process.env.ARGENT_SCRCPY_PACING_TRACE === "1") {
       process.stdout.write(`[pacing-trace] ${line}\n`);
+    }
+    const traceFile = process.env.ARGENT_SCRCPY_PACING_TRACE_FILE;
+    if (traceFile) {
+      try {
+        appendFileSync(traceFile, `[pacing-trace] ${line}\n`);
+      } catch {
+        // best-effort measurement sink — never let a trace-file write fail a gesture.
+      }
     }
   }
 

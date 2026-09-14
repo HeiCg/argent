@@ -20,6 +20,7 @@ interface FakeCtl {
 }
 interface Hoisted {
   injectTouchCalls: Array<Record<string, unknown>>;
+  injectTouchCallTimes: number[];
   failAtIndex: number | null;
   writeDelayMs: number;
   // Serialize the mock consume like the real WHATWG WritableStream: write N+1's
@@ -40,6 +41,7 @@ interface Hoisted {
 const h = vi.hoisted((): Hoisted => {
   const self = {
     injectTouchCalls: [] as Array<Record<string, unknown>>,
+    injectTouchCallTimes: [] as number[],
     failAtIndex: null as number | null,
     writeDelayMs: 0,
     writeChain: Promise.resolve(),
@@ -48,6 +50,7 @@ const h = vi.hoisted((): Hoisted => {
     injectTouch: vi.fn((m: Record<string, unknown>) => {
       const idx = self.injectTouchCalls.length;
       self.injectTouchCalls.push(m); // recorded at CALL time = dispatch order
+      self.injectTouchCallTimes.push(performance.now()); // dispatch wall-clock
       if (self.failAtIndex !== null && idx === self.failAtIndex) {
         self.failAtIndex = null;
         return Promise.reject(new Error("simulated scrcpy control-socket write failure"));
@@ -119,17 +122,31 @@ function parsePacing(logs: string[]): Record<string, string> | null {
 describe("scrcpy fast-inject pacing (phase 3k)", () => {
   beforeEach(() => {
     h.injectTouchCalls.length = 0;
+    h.injectTouchCallTimes.length = 0;
     h.failAtIndex = null;
     h.writeDelayMs = 0;
     h.writeChain = Promise.resolve();
     delete process.env.ARGENT_SCRCPY_PACING;
+    delete process.env.ARGENT_SCRCPY_PACING_TRACE_FILE;
     vi.clearAllMocks();
     h.createAdb.mockResolvedValue(h.adb);
     h.start.mockResolvedValue(h.client);
     h.adb.subprocess.noneProtocol.spawnWaitText.mockResolvedValue("present");
   });
 
-  it("defaults to drift pacing, emits a per-swipe summary, frames in order (DOWN…UP)", async () => {
+  it("DEFAULTS to legacy pacing (phase 3k.1: drift is opt-in), frames in order (DOWN…UP)", async () => {
+    // Phase 3k.1 decision: the default is the byte-equal pre-3k await-per-frame loop.
+    // The legacy branch carries NO per-frame pacing trace, so no `pacing …` summary is
+    // emitted on the default path — only the frames-in-order wire contract is asserted.
+    const { backend, logs } = makeBackend();
+    await backend.swipe(0.5, 0.72, 0.5, 0.32, 8, 0);
+    expect(parsePacing(logs)).toBeNull(); // legacy emits no trace (byte-equal to pre-3k)
+    expect(h.injectTouchCalls[0]).toMatchObject({ action: 0 });
+    expect(h.injectTouchCalls[h.injectTouchCalls.length - 1]).toMatchObject({ action: 1 });
+  });
+
+  it("drift pacing is OPT-IN via ARGENT_SCRCPY_PACING=drift and emits a per-swipe summary", async () => {
+    process.env.ARGENT_SCRCPY_PACING = "drift";
     const { backend, logs } = makeBackend();
     await backend.swipe(0.5, 0.72, 0.5, 0.32, 8, 0);
     const p = parsePacing(logs);
@@ -139,29 +156,37 @@ describe("scrcpy fast-inject pacing (phase 3k)", () => {
     expect(h.injectTouchCalls[h.injectTouchCalls.length - 1]).toMatchObject({ action: 1 });
   });
 
-  it("legacy pacing is selected by ARGENT_SCRCPY_PACING=legacy", async () => {
-    process.env.ARGENT_SCRCPY_PACING = "legacy";
+  it("any other ARGENT_SCRCPY_PACING value falls back to the legacy default", async () => {
+    process.env.ARGENT_SCRCPY_PACING = "something-else";
     const { backend, logs } = makeBackend();
     await backend.swipe(0.5, 0.72, 0.5, 0.32, 8, 0);
-    expect(parsePacing(logs)!.mode).toBe("legacy");
+    expect(parsePacing(logs)).toBeNull(); // legacy default, no trace
+    expect(h.injectTouchCalls[0]).toMatchObject({ action: 0 });
+    expect(h.injectTouchCalls[h.injectTouchCalls.length - 1]).toMatchObject({ action: 1 });
   });
 
-  it("drift DECOUPLES writes from the frame clock under a slow socket; legacy couples them", async () => {
+  it("drift DECOUPLES writes from the frame clock under a slow socket; legacy stretches the gesture", async () => {
     // 30 ms per-frame consume (> the dense-tail 16 ms cadence). The structural
     // difference the fix makes, independent of exact magnitudes on a loaded runner:
-    //  - legacy: each frame's dispatch waits for the prior write, so the WRITE span
-    //    and the DISPATCH span move together (coupled).
+    //  - legacy (default, untraced byte-equal path): each frame's dispatch AWAITS the
+    //    prior write, so the whole gesture's wall time is dragged out by the coupled
+    //    writes — measured here by wall-clock since the legacy path emits no trace.
     //  - drift: dispatch is paced by the clock while writes drain behind it, so the
     //    WRITE span lags the DISPATCH span (decoupled) and the dispatch span stays
     //    near the requested duration.
     h.writeDelayMs = 30;
 
+    // Legacy: no trace summary on the byte-equal path, so measure its DISPATCH span
+    // (first→last injectTouch CALL time) directly from the mock.
     process.env.ARGENT_SCRCPY_PACING = "legacy";
     const legacy = makeBackend();
     await legacy.backend.swipe(0.5, 0.72, 0.5, 0.32, 10, 0);
-    const pl = parsePacing(legacy.logs)!;
+    const lt = h.injectTouchCallTimes;
+    const legacyDispatchSpan = lt[lt.length - 1]! - lt[0]!;
+    expect(parsePacing(legacy.logs)).toBeNull(); // byte-equal legacy path emits no trace
+    h.injectTouchCallTimes.length = 0;
 
-    delete process.env.ARGENT_SCRCPY_PACING;
+    process.env.ARGENT_SCRCPY_PACING = "drift";
     const drift = makeBackend();
     await drift.backend.swipe(0.5, 0.72, 0.5, 0.32, 10, 0);
     const pd = parsePacing(drift.logs)!;
@@ -171,17 +196,68 @@ describe("scrcpy fast-inject pacing (phase 3k)", () => {
     // Drift: writes lag the dispatch span (decoupled), dispatch tracks the duration.
     expect(Number(pd.writeSpanMs) - Number(pd.downUpDispatchMs)).toBeGreaterThan(30);
     expect(Number(pd.downUpDispatchMs)).toBeLessThan(intended + 25);
-    // Legacy: write span and dispatch span are coupled (within roughly one write).
-    expect(Math.abs(Number(pl.writeSpanMs) - Number(pl.downUpDispatchMs))).toBeLessThan(30);
-    // And legacy's dispatch span is dragged out by the coupled writes, well past drift.
-    expect(Number(pl.downUpDispatchMs)).toBeGreaterThan(Number(pd.downUpDispatchMs) + 30);
+    // Legacy STRETCHES: awaiting one 30 ms write per frame drags the DISPATCH span
+    // (the DOWN→UP gesture the OS VelocityTracker sees) well past drift's, which
+    // stays near the requested duration.
+    expect(legacyDispatchSpan).toBeGreaterThan(Number(pd.downUpDispatchMs) + 30);
   });
 
   it("drift still lifts still-down pointers (CANCEL) and drops the client on a write failure", async () => {
+    process.env.ARGENT_SCRCPY_PACING = "drift";
     h.failAtIndex = 0; // fail the DOWN
     const { backend } = makeBackend();
     await expect(backend.swipe(0.5, 0.72, 0.5, 0.32, 6, 0)).rejects.toThrow(/scrcpy|write failure/);
     expect(h.injectTouchCalls.some((m) => m.action === 3)).toBe(true); // CANCEL emitted
     expect(h.client.close).toHaveBeenCalledTimes(1); // client dropped
+  });
+
+  it("3K-L4: drift BREAKS the frame loop on a write error (does not queue the rest of the timeline)", async () => {
+    // Before 3K-L4 the drift loop kept sleeping to each remaining frame's slot and
+    // queueing its write after the first rejection, so the loud fallback (lift
+    // pointers + drop client) arrived a whole gesture duration late. With the break,
+    // a DOWN-write failure stops the loop almost immediately: only a couple of the
+    // eight wire frames are ever dispatched before it throws.
+    process.env.ARGENT_SCRCPY_PACING = "drift";
+    h.failAtIndex = 0; // fail the DOWN write
+    const { backend } = makeBackend();
+    // steps=8 → an 8-frame momentum swipe (2 head + 5 tail + DOWN/UP).
+    await expect(backend.swipe(0.5, 0.72, 0.5, 0.32, 8, 0)).rejects.toThrow(/scrcpy|write failure/);
+    // The loop broke early: far fewer than the 8 timeline frames were dispatched.
+    const nonCancel = h.injectTouchCalls.filter((m) => m.action !== 3).length;
+    expect(nonCancel).toBeLessThanOrEqual(3); // without the break this is 8
+    expect(nonCancel).toBeLessThan(8);
+    // …and it still fell back LOUDLY: still-down pointers cancelled + client dropped.
+    expect(h.injectTouchCalls.some((m) => m.action === 3)).toBe(true); // CANCEL emitted
+    expect(h.client.close).toHaveBeenCalledTimes(1); // client dropped
+  });
+
+  it("legacy (default) also lifts still-down pointers (CANCEL) and drops the client on a write failure", async () => {
+    // The byte-equal default path keeps the pre-3k recovery: a mid-gesture MOVE
+    // failure (the DOWN already recorded) still cancels the down pointer and drops
+    // the client. (Legacy records the pointer only AFTER its write, so it is a later
+    // frame — not the DOWN itself — that leaves a pointer to cancel, exactly as
+    // pre-3k; the drift arm records optimistically and so cancels even on the DOWN.)
+    h.failAtIndex = 2; // fail a MOVE (no ARGENT_SCRCPY_PACING ⇒ legacy default)
+    const { backend } = makeBackend();
+    await expect(backend.swipe(0.5, 0.72, 0.5, 0.32, 6, 0)).rejects.toThrow(/scrcpy|write failure/);
+    expect(h.injectTouchCalls.some((m) => m.action === 3)).toBe(true); // CANCEL emitted
+    expect(h.client.close).toHaveBeenCalledTimes(1); // client dropped
+  });
+
+  it("appends the drift per-swipe trace to ARGENT_SCRCPY_PACING_TRACE_FILE (reliable sink)", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const nodePath = await import("node:path");
+    const file = nodePath.join(fs.mkdtempSync(nodePath.join(os.tmpdir(), "pacing-trace-")), "trace.txt");
+    process.env.ARGENT_SCRCPY_PACING = "drift";
+    process.env.ARGENT_SCRCPY_PACING_TRACE_FILE = file;
+    try {
+      const { backend } = makeBackend();
+      await backend.swipe(0.5, 0.72, 0.5, 0.32, 8, 0);
+      const contents = fs.readFileSync(file, "utf8");
+      expect(contents).toMatch(/\[pacing-trace\] pacing mode=drift /);
+    } finally {
+      delete process.env.ARGENT_SCRCPY_PACING_TRACE_FILE;
+    }
   });
 });
