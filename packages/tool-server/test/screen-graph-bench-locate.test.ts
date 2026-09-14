@@ -196,3 +196,48 @@ describe("phase D.4.1 (D4-H2) — root Settings screen, both renderings (verbati
     expect(b1Node.ambiguous).toBe(false);
   });
 });
+
+/* --------------------------------------------------------------------------
+ * Phase D.4.1 (D4-H2 b / D4-H1, item 4) — the DESTINATION Network & internet
+ * screen in BOTH renderings, quoted verbatim from run 34801849653. This is the
+ * screen B1 now observes AFTER the symmetric settle (D4-H1): its step-2 describe
+ * on settings-network-internet is 598 tok (the destination), not the 657-tok root
+ * it read before the fix. The screen carries a DISCRETE "Internet" row, so
+ * t("Internet") resolves the same row in both renderings — refuting the D.4
+ * report's "no discrete Internet row" claim, which had quoted the ROOT screen
+ * (review D4-H1). All rows verbatim: open from graph-store node 284ef0302b28c5de
+ * (com.android.settings/34.json); proprietary from logs/sg-matrix.log line 29.
+ * -------------------------------------------------------------------------- */
+describe("phase D.4.1 (D4-H2/H1, item 4) — DESTINATION Network & internet screen, both renderings (run 34801849653)", () => {
+  // Open query nodes — verbatim from graph-store node 284ef0302b28c5de ("Network &
+  // internet: Internet"), normalized bounds as captured (x, y, w, h -> x1,y1,x2,y2).
+  const openDest: QueryNodeLite[] = [
+    { id: "collapsing_toolbar", text: "Network & internet", bounds: { x1: 0.0, y1: 0.0, x2: 1.0, y2: 0.249 } },
+    { id: "title", text: "Internet", bounds: { x1: 0.175, y1: 0.267, x2: 0.342, y2: 0.297 } },
+    { id: "summary", text: "T-Mobile", bounds: { x1: 0.175, y1: 0.296, x2: 0.305, y2: 0.317 } },
+  ];
+  // Proprietary describe of the SAME screen — verbatim logs/sg-matrix.log line 29
+  // ("describe rows containing 'internet'", B1 settings-network-internet step 2).
+  const b1Dest = [
+    `  FrameLayout "Network & internet" id="com.android.settings:id/collapsing_toolbar"  (0.000, 0.000, 1.000, 0.249)`,
+    `  LinearLayout "Internet / T-Mobile" [clickable]  (0.000, 0.249, 1.000, 0.086)`,
+  ].join("\n");
+
+  it("t('Internet') resolves the DISCRETE Internet row in BOTH renderings (not the 'Network & internet' toolbar)", () => {
+    // Open: EXACT text "Internet" over the discrete title; the toolbar
+    // "Network & internet" only CONTAINS "internet", so tier 2 is unique.
+    const open = pickUniqueNode(openDest, { text: "Internet" });
+    expect(open.node?.text).toBe("Internet");
+    expect(open.node?.id).toBe("title");
+    // B1: after the D4-H3 split the collapsed "Internet / T-Mobile" row has EXACT
+    // text "Internet"; the toolbar again only contains it → tier 2 resolves the row.
+    const b1Node = pickUniqueNode(describeLinesToNodes(b1Dest), { text: "Internet" });
+    expect(b1Node.node?.text).toBe("Internet");
+    expect(b1Node.ambiguous).toBe(false);
+    const b1 = parseDescribeLocate(b1Dest, { text: "Internet" });
+    expect(b1.found).toBe(true);
+    // Centre of the discrete "Internet / T-Mobile" row: 0.249 + 0.086/2 = 0.292 —
+    // NOT the toolbar centre (0.1245).
+    expect(b1.yNorm).toBeCloseTo(0.292, 3);
+  });
+});
