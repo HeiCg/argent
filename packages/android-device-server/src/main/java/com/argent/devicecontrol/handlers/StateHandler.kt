@@ -3,6 +3,7 @@ package com.argent.devicecontrol.handlers
 import android.app.Instrumentation
 import android.app.UiAutomation
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.util.Base64
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
@@ -131,13 +132,20 @@ class StateHandler(
         //    passes 500 to match the proprietary comparator's cap). This is the ONLY
         //    idle gate on the path — the info block below reads geometry/package
         //    without any UiDevice getter that would trigger a second, hidden one.
-        val waitStart = System.currentTimeMillis()
+        // Phase 3n.2 (review 3N1-L2): every stage clock in this capture — and
+        // `captureMs` itself — uses SystemClock.uptimeMillis(), the SAME monotonic
+        // clock NestedWindowSerializer already uses for windowsMs/rootsMs/serializeMs.
+        // Mixing currentTimeMillis (wall, NTP-steppable) with the serializer's
+        // uptimeMillis on either side of a 1 ms-resolution residual subtraction added
+        // avoidable noise to the stage-accounting gate; a single clock makes
+        // `otherMs = captureMs − Σ(stages)` exact.
+        val waitStart = SystemClock.uptimeMillis()
         uiDevice.waitForIdle(waitTimeoutMs)
-        val waitedMs = System.currentTimeMillis() - waitStart
+        val waitedMs = SystemClock.uptimeMillis() - waitStart
 
         // captureMs isolates the post-idle capture cost (screenshot + tree + info)
         // from the idle wait above, so the host can report the idle-vs-capture split.
-        val captureStart = System.currentTimeMillis()
+        val captureStart = SystemClock.uptimeMillis()
 
         // 2. Screenshot
         val bitmap = if (includeScreenshot) uiAutomation.takeScreenshot() else null
@@ -170,10 +178,10 @@ class StateHandler(
         //    `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase 3g
         //    bench); `timings.rootSource` records which path served it.
         val windowTimings = WindowTimings()
-        val rootStart = System.currentTimeMillis()
+        val rootStart = SystemClock.uptimeMillis()
         val resolved = NestedWindowSerializer.activeRoot(uiAutomation)
         val rootNode = resolved.root
-        val rootMs = System.currentTimeMillis() - rootStart
+        val rootMs = SystemClock.uptimeMillis() - rootStart
         val activePackage = rootNode?.packageName?.toString() ?: ""
         var serializeMsFlat = 0L
         // Screen-graph Phase A: the flat compressed list can be cut short by
@@ -188,14 +196,18 @@ class StateHandler(
         // fingerprint work can hide in the capture residual. 0 when not requested.
         var fpSnap: TreeStore.Snapshot? = null
         var fingerprintMs = 0L
+        // Phase 3n.2 (residual gate): time the forest recycle() — it runs in the
+        // `finally` below, after serializeMs is closed, and scales with tree size, so
+        // it was unaccounted work inside captureMs on the after-tap (larger) tree.
+        var recycleMs = 0L
         val hierarchy = if (rootNode != null) {
             try {
                 val tree = if (nested) {
                     NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000), windowTimings, compact)
                 } else {
-                    val t0 = System.currentTimeMillis()
+                    val t0 = SystemClock.uptimeMillis()
                     val flat = NodeSerializer.serialize(rootNode, maxElements)
-                    serializeMsFlat = System.currentTimeMillis() - t0
+                    serializeMsFlat = SystemClock.uptimeMillis() - t0
                     truncated = flat.length() >= maxElements
                     flat
                 }
@@ -205,13 +217,15 @@ class StateHandler(
                 // 2 on the pre-fix build (the forced ensure rebuild + this capture).
                 TreeStore.recordCaptureTraversal()
                 if (wantFingerprints) {
-                    val fpStart = System.currentTimeMillis()
+                    val fpStart = SystemClock.uptimeMillis()
                     fpSnap = TreeStore.ensure(rootNode)
-                    fingerprintMs = System.currentTimeMillis() - fpStart
+                    fingerprintMs = SystemClock.uptimeMillis() - fpStart
                 }
                 tree
             } finally {
+                val recycleStart = SystemClock.uptimeMillis()
                 rootNode.recycle()
+                recycleMs = SystemClock.uptimeMillis() - recycleStart
             }
         } else {
             JSONArray()
@@ -223,6 +237,15 @@ class StateHandler(
 
         // 5. Info — geometry from one idle-free Display snapshot, package from the
         //    accessibility root above; never a UiDevice getter that waits for idle.
+        //    Phase 3n.2 (residual gate): `infoMs` times this whole block — the
+        //    `DisplayReader.read` IPC AND `isKeyboardVisible()`'s SECOND full
+        //    accessibility-window enumeration (`uiAutomation.windows`, a separate IPC
+        //    round-trip from the serializer's own). Both sat inside captureMs with no
+        //    stage; on the after-tap `waitTimeoutMs:0` capture the window set is
+        //    mid-churn and the enumeration costs several ms, which is what pushed the
+        //    stage-accounting residual to 11 ms. This accounts for the cost rather than
+        //    removing it, so `captureMs` is unchanged; the work now lands in `infoMs`.
+        val infoStart = SystemClock.uptimeMillis()
         val geo = DisplayReader.read(context)
         val info = JSONObject().apply {
             put("screenWidth", geo.width)
@@ -231,6 +254,7 @@ class StateHandler(
             put("keyboardVisible", isKeyboardVisible())
             put("displayRotation", geo.rotation)
         }
+        val infoMs = SystemClock.uptimeMillis() - infoStart
 
         // encodeMs: the cost of serializing the tree to its JSON wire form.
         // Serialize-once (phase 3j): on the default path this is the ONLY tree
@@ -239,7 +263,7 @@ class StateHandler(
         // ~27 ms second pass is gone) and `encodeMs` now measures the single pass
         // whose output actually ships. The legacy toggle reproduces the old
         // throwaway-then-re-encode so the bench can A/B both in one run.
-        val encStart = System.currentTimeMillis()
+        val encStart = SystemClock.uptimeMillis()
         val treeValue: Any
         // Per-REQUEST raw tree (finding 14): carried on the returned object, never a
         // shared field. null on the legacy path (successResponse re-serializes it).
@@ -251,19 +275,39 @@ class StateHandler(
             rawTreeJson = hierarchy.toString() // the single serialization pass
             treeValue = TREE_TOKEN // placeholder; JsonRpcHandler splices the tree in
         }
-        val encodeMs = System.currentTimeMillis() - encStart
+        val encodeMs = SystemClock.uptimeMillis() - encStart
 
-        val captureMs = System.currentTimeMillis() - captureStart
+        val captureMs = SystemClock.uptimeMillis() - captureStart
+
+        // Phase 3n.2 (residual gate): decompose the residual ON-DEVICE instead of
+        // inferring it host-side. `otherMs` is captureMs minus every NAMED stage (all
+        // now on one clock). The nested describe/state path skips the screenshot, so
+        // Σ(named) should account for captureMs to within a sample or two; the
+        // device-test gate asserts |captureMs − Σ(named)| ≤ 10, and with infoMs +
+        // recycleMs now measured, otherMs is that leftover.
+        val serializeMsStage = if (nested) windowTimings.serializeMs else serializeMsFlat
+        val rootsMsSum = windowTimings.rootsMs.sum()
+        val namedStagesMs =
+            rootMs + windowTimings.windowsMs + rootsMsSum + serializeMsStage +
+                encodeMs + fingerprintMs + infoMs + recycleMs
+        val otherMs = captureMs - namedStagesMs
 
         val timings = JSONObject().apply {
             put("idleMs", waitedMs)
             put("rootMs", rootMs)
             put("windowsMs", windowTimings.windowsMs)
             put("rootsMs", JSONArray(windowTimings.rootsMs))
-            put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
+            put("serializeMs", serializeMsStage)
             put("encodeMs", encodeMs)
             // Phase 3m: fingerprint build cost, its own stage so Σ(stages) ≈ captureMs.
             put("fingerprintMs", fingerprintMs)
+            // Phase 3n.2 (residual gate): the two stages that were unaccounted inside
+            // captureMs — the `info` block (DisplayReader.read + isKeyboardVisible's
+            // window enumeration) and the forest recycle — plus the server-computed
+            // leftover so the residual is decomposed on-device, not inferred host-side.
+            put("infoMs", infoMs)
+            put("recycleMs", recycleMs)
+            put("otherMs", otherMs)
             put("rootSource", resolved.source)
         }
 

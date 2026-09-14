@@ -947,6 +947,29 @@ suite("android open-device-server on-device", () => {
     const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
     const changed = [...afterTexts].filter((t) => !beforeTexts.has(t)).length + [...beforeTexts].filter((t) => !afterTexts.has(t)).length;
     expect(changed).toBeGreaterThan(0); // outcome unchanged: the fell-back tap still navigated
+    // Phase 3n.2 (review 3N1-L1): the seam now covers swipe and gesture too — force
+    // the fallback on each and prove it reports uia-async. After scrcpy removal the
+    // `uia-async` fallback is the only remaining safety net, so P9 must cover all
+    // three inject RPCs, not tap alone.
+    await freshSettings();
+    const forcedSwipe = (await api.swipe(0.5, 0.7, 0.5, 0.3, 12, 0, {
+      inject: "input-manager",
+      _forceInjectUnavailable: true,
+    })) as { success: boolean; strategy?: string; fellBackTo?: string };
+    expect(forcedSwipe.success).toBe(true);
+    expect(forcedSwipe.strategy).toBe("unavailable");
+    expect(forcedSwipe.fellBackTo).toBe("uia-async");
+    await freshSettings();
+    const forcedGesture = (await api.gesture(
+      [
+        { points: [{ x: 0.4, y: 0.5, tMs: 0 }, { x: 0.3, y: 0.5, tMs: 120 }] },
+        { points: [{ x: 0.6, y: 0.5, tMs: 0 }, { x: 0.7, y: 0.5, tMs: 120 }] },
+      ],
+      { inject: "input-manager", _forceInjectUnavailable: true }
+    )) as { success: boolean; strategy?: string; fellBackTo?: string };
+    expect(forcedGesture.success).toBe(true);
+    expect(forcedGesture.strategy).toBe("unavailable");
+    expect(forcedGesture.fellBackTo).toBe("uia-async");
     // Reset check: a normal input-manager tap (no force) reports input-manager again.
     await freshSettings();
     const normal = (await api.tap(c.x, c.y, { inject: "input-manager" })) as { success: boolean; strategy?: string };
@@ -954,7 +977,9 @@ suite("android open-device-server on-device", () => {
     record(
       "3n.1 P9 forced-fallback",
       "PASS",
-      `forced unavailable → strategy=${forced.strategy} fellBackTo=${forced.fellBackTo}; tap still navigated (+/-${changed} labels); reset → ${normal.strategy}`
+      `forced unavailable → tap strategy=${forced.strategy} fellBackTo=${forced.fellBackTo} (tap still navigated +/-${changed} labels); ` +
+        `swipe strategy=${forcedSwipe.strategy} fellBackTo=${forcedSwipe.fellBackTo}; ` +
+        `gesture strategy=${forcedGesture.strategy} fellBackTo=${forcedGesture.fellBackTo}; reset → ${normal.strategy}`
     );
   }, 120_000);
 
@@ -1037,6 +1062,12 @@ suite("android open-device-server on-device", () => {
     // Sum of the on-device capture stages (everything inside captureMs; idleMs is
     // the pre-capture waitForIdle and is excluded). Phase 3m adds `fingerprintMs`,
     // so nothing hides in the residual.
+    // Phase 3n.2 (residual gate): `infoMs` (DisplayReader.read + isKeyboardVisible's
+    // window enumeration) and `recycleMs` (forest recycle) are now first-class stages
+    // — the two chunks of work that used to sit inside captureMs with no stage and
+    // pushed the after-tap residual to 11 ms. `otherMs` is the server-computed
+    // leftover (captureMs − Σ(named)); it is NOT summed here (it IS the residual), so
+    // the gate |captureMs − Σ(stages)| ≤ 10 stays a real check on unaccounted work.
     const sumStages = (t: {
       rootMs?: number;
       windowsMs?: number;
@@ -1044,13 +1075,17 @@ suite("android open-device-server on-device", () => {
       serializeMs?: number;
       encodeMs?: number;
       fingerprintMs?: number;
+      infoMs?: number;
+      recycleMs?: number;
     }): number =>
       (t.rootMs ?? 0) +
       (t.windowsMs ?? 0) +
       (t.rootsMs ?? []).reduce((a, b) => a + b, 0) +
       (t.serializeMs ?? 0) +
       (t.encodeMs ?? 0) +
-      (t.fingerprintMs ?? 0);
+      (t.fingerprintMs ?? 0) +
+      (t.infoMs ?? 0) +
+      (t.recycleMs ?? 0);
     const median = (xs: number[]): number => {
       const s = [...xs].sort((a, b) => a - b);
       return s[Math.floor(s.length / 2)] ?? 0;
@@ -1059,6 +1094,12 @@ suite("android open-device-server on-device", () => {
     // ---- (A) Idle describes: residual within tolerance, no fingerprints requested.
     await freshSettings();
     const idleResiduals: number[] = [];
+    // Phase 3n.2 (residual gate): collect the two newly-measured stages + the
+    // server-computed leftover per sample so a 1 ms miss is interpretable instead of
+    // a bare assertion (review "Residual gate diagnosis").
+    const idleInfoMs: number[] = [];
+    const idleRecycleMs: number[] = [];
+    const idleOtherMs: number[] = [];
     // Phase 3n pre-registration: 20-sample median (was 5). Run 34840929610 failed the
     // |captureMs − Σ(stages)| ≤ 10 gate by 1 ms on a 5-sample median — too few samples
     // for a stable median. The 10 ms threshold is unchanged.
@@ -1066,6 +1107,9 @@ suite("android open-device-server on-device", () => {
       const st = await api.getNestedState({});
       expect(st.timings).toBeTruthy();
       idleResiduals.push(st.captureMs - sumStages(st.timings!));
+      idleInfoMs.push(st.timings!.infoMs ?? 0);
+      idleRecycleMs.push(st.timings!.recycleMs ?? 0);
+      idleOtherMs.push(st.timings!.otherMs ?? 0);
       // Plain describe path: fingerprints NOT requested ⇒ absent, and ~0 cost.
       expect(st.hash).toBeUndefined();
       expect(st.timings!.fingerprintMs ?? 0).toBeLessThanOrEqual(5);
@@ -1101,6 +1145,9 @@ suite("android open-device-server on-device", () => {
       return center(row);
     };
     const afterResiduals: number[] = [];
+    const afterInfoMs: number[] = [];
+    const afterRecycleMs: number[] = [];
+    const afterOtherMs: number[] = [];
     let afterRootSource: string | undefined;
     // Phase 3n pre-registration: 20-sample median (was 5); threshold unchanged.
     for (let i = 0; i < 20; i++) {
@@ -1110,10 +1157,25 @@ suite("android open-device-server on-device", () => {
       const st = await api.getNestedState({ waitTimeoutMs: 0 });
       expect(st.timings).toBeTruthy();
       afterResiduals.push(st.captureMs - sumStages(st.timings!));
+      afterInfoMs.push(st.timings!.infoMs ?? 0);
+      afterRecycleMs.push(st.timings!.recycleMs ?? 0);
+      afterOtherMs.push(st.timings!.otherMs ?? 0);
       afterRootSource = st.timings!.rootSource ?? afterRootSource;
       expect(st.hash).toBeUndefined(); // still opt-out on the plain describe path
     }
     const afterResidualMed = median(afterResiduals.map((r) => Math.abs(r)));
+    // Phase 3n.2 (residual gate): print the 20 per-sample residuals + the new stage
+    // medians so a miss is interpretable (review "Residual gate diagnosis": "do not
+    // loosen, do not widen the sample count again" — decompose instead). Emitted to
+    // the device-test log for both phases regardless of pass/fail.
+    const residualReport =
+      `idle |resid| med ${idleResidualMed}ms; after-tap |resid| med ${afterResidualMed}ms (<=10)\n` +
+      `  idle residuals(signed) [${idleResiduals.join(", ")}]\n` +
+      `  idle infoMs med ${median(idleInfoMs)} recycleMs med ${median(idleRecycleMs)} otherMs med ${median(idleOtherMs)}\n` +
+      `  after residuals(signed) [${afterResiduals.join(", ")}]\n` +
+      `  after infoMs med ${median(afterInfoMs)} recycleMs med ${median(afterRecycleMs)} otherMs med ${median(afterOtherMs)}`;
+    // eslint-disable-next-line no-console
+    console.log(`[3m residual gate]\n${residualReport}`);
     expect(afterResidualMed).toBeLessThanOrEqual(10);
     // The active root came from the interactive-windows snapshot, not
     // rootInActiveWindow (phase 3g fix not bypassed).
@@ -1156,8 +1218,9 @@ suite("android open-device-server on-device", () => {
       "3m fingerprints opt-in",
       "PASS",
       `idle residual med ${idleResidualMed}ms, after-tap residual med ${afterResidualMed}ms (<=10); ` +
-        `rootSource=${afterRootSource}; after-tap traversals delta ${tAfter - tBefore} (==1); ` +
-        `opt-out hash absent, opt-in hash present`
+        `new stages after-tap: infoMs med ${median(afterInfoMs)}, recycleMs med ${median(afterRecycleMs)}, ` +
+        `otherMs med ${median(afterOtherMs)}; rootSource=${afterRootSource}; ` +
+        `after-tap traversals delta ${tAfter - tBefore} (==1); opt-out hash absent, opt-in hash present`
     );
   }, 300_000);
 

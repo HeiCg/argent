@@ -141,6 +141,14 @@ export interface OpenServerTimings {
   // requested — the plain describe / latency path never computes them. Absent on
   // servers before versionCode 26.
   fingerprintMs?: number;
+  // Phase 3n.2 (residual gate): the two stages that were unaccounted inside
+  // captureMs — `infoMs` = the `info` block (DisplayReader.read + isKeyboardVisible's
+  // window enumeration), `recycleMs` = the forest recycle — plus `otherMs`, the
+  // server-computed leftover (captureMs − Σ(named stages), which may be slightly
+  // negative from 1 ms rounding). Absent on servers before versionCode 27.
+  infoMs?: number;
+  recycleMs?: number;
+  otherMs?: number;
   // Which path produced the active root (phase 3g-b): "windows" = read from the
   // interactive-windows snapshot (fast, coherent mid-transition), "activeWindow" =
   // `rootInActiveWindow` fallback. Absent on servers before versionCode 22.
@@ -448,12 +456,18 @@ export interface OpenDeviceServerApi {
     // swipe). Omit / 0 for the fast `uiDevice.swipe()` path whose lift flings.
     holdEndMs?: number,
     // `inject` (phase 3n) selects the on-device injection strategy for this RPC.
-    opts?: { inject?: OpenInjectStrategy }
+    // `_forceInjectUnavailable` (phase 3n.2, review 3N1-L1) is the benchDebug-only P9
+    // seam extended to swipe: it forces the input-manager pipe to report
+    // `strategy:"unavailable"` and fall back to `uia-async`, so the fallback is
+    // exercised on swipe (not tap only) on a device where the API resolves.
+    opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
   ): Promise<{ success: boolean } & OpenInjectReport>;
   /** Inject a synchronized multi-pointer gesture (pinch / rotate / custom). */
   gesture(
     pointers: GesturePointerPath[],
-    opts?: { inject?: OpenInjectStrategy }
+    // `_forceInjectUnavailable` (phase 3n.2, review 3N1-L1): the benchDebug-only P9
+    // seam extended to gesture — forces `uia-async` fallback on a resolving device.
+    opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
   ): Promise<{ success: boolean } & OpenInjectReport>;
   /**
    * Synchronously drain the on-device input dispatcher's touch queue (phase 3f).
@@ -1039,11 +1053,13 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
           ...(swipeOpts?.inject !== undefined ? { inject: swipeOpts.inject } : {}),
+          ...(swipeOpts?._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
       gesture: (pointers, gestureOpts) =>
         client.request<{ success: boolean } & OpenInjectReport>("gesture", {
           pointers,
           ...(gestureOpts?.inject !== undefined ? { inject: gestureOpts.inject } : {}),
+          ...(gestureOpts?._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
       flushInput: () => client.request<{ success: boolean }>("flushInput"),
       typeText: (text) =>

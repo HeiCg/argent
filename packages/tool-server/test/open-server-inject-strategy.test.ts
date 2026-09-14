@@ -48,6 +48,22 @@ describe("open-server inject strategy (phase 3n)", () => {
       process.env[ENV_KEY] = "uia";
       expect(resolveInjectStrategy()).toBeUndefined();
     });
+
+    // Phase 3n.2 (3N1-H1): guard the fling-harness contract so a future default flip
+    // cannot silently re-break the uia control arms. `bench-fling-fidelity.ts` now
+    // PINS `default` on the uia arms (never deletes the env — an unset env resolves
+    // to `input-manager` post-flip) and `input-manager` on the input-manager arm.
+    // Assert the resolved strategy the harness's two writes produce: the uia arm
+    // never resolves to `input-manager` (no `inject` on the wire), the im arm does.
+    it("fling-harness contract: uia arm pins `default` (→ no inject), im arm pins `input-manager`", () => {
+      // What the harness writes for a `uia-A`/`uia-B` visit:
+      process.env[ENV_KEY] = "default";
+      expect(resolveInjectStrategy()).toBeUndefined();
+      expect(resolveInjectStrategy()).not.toBe("input-manager");
+      // What the harness writes for the `input-manager` visit:
+      process.env[ENV_KEY] = "input-manager";
+      expect(resolveInjectStrategy()).toBe("input-manager");
+    });
   });
 
   it("threads the active strategy onto the tap RPC", async () => {

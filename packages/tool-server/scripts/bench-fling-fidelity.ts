@@ -244,9 +244,14 @@ async function runConfig(cfg: FlingConfig): Promise<Cell[]> {
   // backend from this env var; set before the registry (hence the backend) exists.
   if (cfg.fastInject && cfg.pacing) process.env.ARGENT_SCRCPY_PACING = cfg.pacing;
   else delete process.env.ARGENT_SCRCPY_PACING;
-  // Phase 3n: the input-manager arm selects the reflective pipe (single-config
-  // fallback path; the interleave sets this per arm-group itself).
+  // Phase 3n / 3n.2 (3N1-H1): the input-manager arm selects the reflective pipe;
+  // the uia arms must PIN `default`, not clear the env — after the 3n.1 flip an
+  // UNSET `ARGENT_OPEN_INJECT_STRATEGY` resolves to `input-manager`
+  // (open-server-input.ts:resolveInjectStrategy), so deleting it silently ran
+  // input-manager under a `uia` label (the run-2 leak). `default` sends NO `inject`
+  // on the wire (pre-3n.1 Kotlin DEFAULT). OFF has open-server off, so it is cleared.
   if (cfg.name === "ON-input-manager") process.env.ARGENT_OPEN_INJECT_STRATEGY = "input-manager";
+  else if (cfg.name === "ON-uia-A" || cfg.name === "ON-uia-B") process.env.ARGENT_OPEN_INJECT_STRATEGY = "default";
   else delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
   // Emit the per-frame host pacing trace to stdout (→ the fling-log artifact) so the
   // measured intended-vs-actual dispatch/write spans are captured for both arms.
@@ -334,10 +339,15 @@ function applyArmFlags(group: ArmGroup): void {
     delete process.env.ARGENT_SCRCPY_PACING;
     delete process.env.ARGENT_SCRCPY_PACING_TRACE;
     delete process.env.ARGENT_SCRCPY_PACING_TRACE_FILE;
-    // Phase 3n: the input-manager arm selects the reflective pipe; the plain uia arm
-    // clears the strategy so it runs the DEFAULT UiAutomation path.
+    // Phase 3n / 3n.2 (3N1-H1): input-manager arm → reflective pipe; the uia arms
+    // must PIN `default`, not clear the env. After the 3n.1 flip an UNSET env
+    // resolves to `input-manager`, so a deleted env ran input-manager under the
+    // `uia` label (the run-2 fling leak: logcat showed the reflective pipe on every
+    // "uia" visit). `default` sends NO `inject` on the wire (pre-3n.1 Kotlin DEFAULT).
+    // This branch is only ever reached for group `uia-A`/`uia-B` (off and scrcpy are
+    // handled above), so `default` is unconditionally correct here.
     if (group === "input-manager") process.env.ARGENT_OPEN_INJECT_STRATEGY = "input-manager";
-    else delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
+    else process.env.ARGENT_OPEN_INJECT_STRATEGY = "default";
   }
 }
 
