@@ -122,6 +122,30 @@ export interface ScrcpyBackendDeps {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Host-side pacing mode for MOVE frames (phase 3k). See {@link injectTimeline}. */
+export type ScrcpyPacingMode = "drift" | "legacy";
+
+/**
+ * Pacing mode for this process, read from `ARGENT_SCRCPY_PACING` at inject time
+ * (`legacy` for the pre-3k await-per-frame loop; anything else, including unset,
+ * for the drift-corrected socket-decoupled fix). Read lazily per gesture so the
+ * fling A/B can set it in-process before the first swipe.
+ */
+function scrcpyPacingMode(): ScrcpyPacingMode {
+  return process.env.ARGENT_SCRCPY_PACING === "legacy" ? "legacy" : "drift";
+}
+
+/** Per-frame host pacing sample (phase 3k measurement). */
+interface FrameTrace {
+  /** Intended offset (ms) from gesture start (the timeline's `tMs`). */
+  tMs: number;
+  action: TouchFrame["action"];
+  /** Wall-clock offset (ms) at which the loop initiated this frame's write. */
+  dispatchMs: number;
+  /** Wall-clock offset (ms) at which the write's consume resolved (NaN if it did not). */
+  writeMs: number;
+}
+
 class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
   private readonly serial: string;
   private readonly getScreenSize: ScrcpyBackendDeps["getScreenSize"];
@@ -299,44 +323,163 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
 
   /**
    * Inject a whole timeline, paced against a real wall clock anchored at the
-   * gesture start — mirroring `MotionInjector`'s F17 pacing: each frame waits only
-   * for the time still remaining until its slot, so a slow write does not push the
-   * rest of the gesture late and the VelocityTracker sees true arrival times.
+   * gesture start.
+   *
+   * Phase 3k — the long-duration fling deficit. The pre-3k loop (kept as
+   * `legacy`) AWAITS one `injectTouch` per frame: `injectTouch` resolves only once
+   * the control message has been `consumed` (serialized + written to and drained
+   * by the scrcpy socket), so a per-frame consume cost W stretches a K-frame swipe
+   * to ~K·max(16, W) instead of K·16 ms. The scrcpy server stamps each MotionEvent
+   * with `SystemClock.uptimeMillis()` at READ time, so a stretched write cadence
+   * feeds the OS VelocityTracker a lower release velocity and the fling under-
+   * scrolls (reproducible 35-42 % at 400 ms vs proprietary, review F2).
+   *
+   * `drift` (default, the fix) decouples the write from the frame clock: it sleeps
+   * to each frame's drift-corrected slot (`anchor + tMs`, recomputed against the
+   * real clock so an overslept `sleep` is absorbed) and INITIATES the write there
+   * without awaiting its consume. The WHATWG `WritableStream` under `injectTouch`
+   * queues concurrent `write()`s and drains them IN ORDER (verified:
+   * `ScrcpyControlMessageWriter.write` → `ConsumableWritableStream.write` →
+   * `writer.write`), so the frames still reach the device in order, but a slow
+   * consume no longer delays the NEXT frame's dispatch — the DOWN→UP dispatch span
+   * stays == the requested duration. It only falls back to the socket's own drain
+   * rate if the socket genuinely cannot keep up with 16 ms/frame (a residual that
+   * needs the device-side timeline of work-order step 2(b)); the per-frame trace
+   * below measures exactly that.
+   *
+   * Selected per process by `ARGENT_SCRCPY_PACING` (`legacy` | anything ⇒ drift),
+   * so the fling A/B can carry both the before (`legacy`) and after (`drift`) arms
+   * in one CI run.
    */
   private async injectTimeline(frames: TouchFrame[]): Promise<void> {
     await this.ensureStarted();
     const controller = this.controller;
     if (!controller) throw new Error("scrcpy control channel unavailable");
     const { width, height } = await this.displaySize();
+    const mode = scrcpyPacingMode();
     // Track pointers currently pressed so a mid-gesture failure can lift them —
     // otherwise a dropped socket leaves the OS believing a finger is still down,
     // wedging every later touch. Keyed by pointerId → last (x, y).
     const down = new Map<number, { x: number; y: number }>();
+    // Per-frame pacing trace (phase 3k measurement): the intended `tMs` vs the
+    // wall-clock offset at which the loop DISPATCHED the write (initiated it) and
+    // the offset at which the write COMPLETED (consume resolved). Proves whether
+    // the gesture stretches host-side and, with the device logcat eventTime deltas
+    // from the device test, whether `drift` removed the stretch.
+    const trace: FrameTrace[] = [];
+    const build = (f: TouchFrame) => ({
+      action: wireAction(f.action),
+      pointerId: BigInt(f.pointerId),
+      pointerX: Math.round(f.x),
+      pointerY: Math.round(f.y),
+      videoWidth: width,
+      videoHeight: height,
+      pressure: f.pressure,
+      actionButton: 0,
+      buttons: 0,
+    });
+    const applyDown = (f: TouchFrame): void => {
+      if (f.action === TouchAction.Down) down.set(f.pointerId, { x: f.x, y: f.y });
+      else if (f.action === TouchAction.Up) down.delete(f.pointerId);
+      else down.set(f.pointerId, { x: f.x, y: f.y });
+    };
     const anchor = performance.now();
     try {
-      for (const f of frames) {
-        const wait = anchor + f.tMs - performance.now();
-        if (wait > 0) await sleep(wait);
-        await controller.injectTouch({
-          action: wireAction(f.action),
-          pointerId: BigInt(f.pointerId),
-          pointerX: Math.round(f.x),
-          pointerY: Math.round(f.y),
-          videoWidth: width,
-          videoHeight: height,
-          pressure: f.pressure,
-          actionButton: 0,
-          buttons: 0,
-        });
-        if (f.action === TouchAction.Down) down.set(f.pointerId, { x: f.x, y: f.y });
-        else if (f.action === TouchAction.Up) down.delete(f.pointerId);
-        else down.set(f.pointerId, { x: f.x, y: f.y });
+      if (mode === "legacy") {
+        for (const f of frames) {
+          const wait = anchor + f.tMs - performance.now();
+          if (wait > 0) await sleep(wait);
+          const dispatchMs = performance.now() - anchor;
+          await controller.injectTouch(build(f));
+          trace.push({ tMs: f.tMs, action: f.action, dispatchMs, writeMs: performance.now() - anchor });
+          applyDown(f);
+        }
+      } else {
+        // Drift-corrected, socket-decoupled. Initiate each write at its slot and
+        // collect the promise; the WritableStream queues them in order. `writeErr`
+        // captures the first rejection (later frames were already queued) so the
+        // catch below can lift the still-down pointers and drop the client.
+        let writeErr: unknown = null;
+        const pending: Promise<void>[] = [];
+        for (const f of frames) {
+          const wait = anchor + f.tMs - performance.now();
+          if (wait > 0) await sleep(wait);
+          const dispatchMs = performance.now() - anchor;
+          applyDown(f); // synchronous, so a mid-gesture failure lifts the right pointers
+          const rec: FrameTrace = { tMs: f.tMs, action: f.action, dispatchMs, writeMs: NaN };
+          trace.push(rec);
+          pending.push(
+            controller.injectTouch(build(f)).then(
+              () => {
+                rec.writeMs = performance.now() - anchor;
+              },
+              (e: unknown) => {
+                if (writeErr === null) writeErr = e;
+              }
+            )
+          );
+        }
+        await Promise.all(pending);
+        if (writeErr !== null) {
+          throw writeErr instanceof Error ? writeErr : new Error(String(writeErr));
+        }
       }
+      this.emitPacingTrace(mode, trace, performance.now() - anchor);
     } catch (err) {
+      if (mode !== "legacy") {
+        // Drift applied every frame optimistically (a UP cleared its pointer even
+        // though a later write failed), so `down` may be empty here. Rebuild the
+        // set of pointers that were pressed at some point in the timeline and lift
+        // them all — a CANCEL for a pointer already lifted is harmless (the scrcpy
+        // server drops an unknown pointer), and a dropped socket that DID leave a
+        // finger down must not wedge every later touch.
+        down.clear();
+        for (const f of frames) {
+          if (f.action !== TouchAction.Up) down.set(f.pointerId, { x: f.x, y: f.y });
+        }
+      }
       await this.cancelDownPointers(controller, down, width, height);
       // Drop + restart the client so the next action reconnects on a clean channel.
       await this.dropClient();
       throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /**
+   * One-line host-side pacing summary per gesture (phase 3k measurement), emitted
+   * through the log callback so the fling A/B logs carry intended-vs-actual timing
+   * for every swipe. Only multi-frame gestures (swipe/gesture) are logged — a tap
+   * is two frames and carries no fling signal. `downUpDispatchMs` is the span the
+   * fix pins to the requested duration; `writeSpanMs` is the socket's own drain
+   * span (a residual over `downUpDispatchMs` is what the device-side timeline of
+   * step 2(b) would remove); `maxDispatchDriftMs` is the worst frame's dispatch
+   * error vs its intended `tMs`.
+   */
+  private emitPacingTrace(mode: ScrcpyPacingMode, trace: FrameTrace[], totalMs: number): void {
+    if (trace.length < 3) return;
+    const first = trace[0]!;
+    const last = trace[trace.length - 1]!;
+    const intendedDurMs = last.tMs - first.tMs;
+    const downUpDispatchMs = last.dispatchMs - first.dispatchMs;
+    const writes = trace.filter((t) => Number.isFinite(t.writeMs)).map((t) => t.writeMs);
+    const writeSpanMs = writes.length ? Math.max(...writes) - Math.min(...writes) : NaN;
+    let maxDispatchDriftMs = 0;
+    for (const t of trace) {
+      const d = Math.abs(t.dispatchMs - (t.tMs - first.tMs));
+      if (d > maxDispatchDriftMs) maxDispatchDriftMs = d;
+    }
+    const f1 = (n: number) => (Number.isFinite(n) ? n.toFixed(1) : "nan");
+    const line =
+      `pacing mode=${mode} frames=${trace.length} intendedDurMs=${intendedDurMs} ` +
+      `downUpDispatchMs=${f1(downUpDispatchMs)} writeSpanMs=${f1(writeSpanMs)} ` +
+      `maxDispatchDriftMs=${f1(maxDispatchDriftMs)} totalMs=${f1(totalMs)}`;
+    this.log(line);
+    // The bench routes the log callback through a captured/filtered console.debug,
+    // so also emit straight to stdout when the pacing trace is explicitly requested
+    // (ARGENT_SCRCPY_PACING_TRACE=1) — this is how the per-frame host measurement
+    // reaches the fling-log artifact for the phase-3k before/after.
+    if (process.env.ARGENT_SCRCPY_PACING_TRACE === "1") {
+      process.stdout.write(`[pacing-trace] ${line}\n`);
     }
   }
 

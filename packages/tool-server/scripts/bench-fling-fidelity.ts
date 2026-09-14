@@ -39,16 +39,24 @@ const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 // selects exactly one config for this process; it writes a per-config block file
 // that run-fling-merge.js assembles into the A/B (ON-scrcpy vs ON-uiautomation,
 // the Kotlin-vs-scrcpy fling-distance comparison) plus the OFF proprietary ref.
-type FlingConfigName = "OFF" | "ON-uiautomation" | "ON-scrcpy";
+// Phase 3k: `ON-scrcpy` runs the drift-corrected pacing fix (the after arm) and
+// `ON-scrcpy-legacy` the pre-3k await-per-frame pacing (the before arm), so one CI
+// run carries both. The pacing mode is read per-process from ARGENT_SCRCPY_PACING,
+// set here from the config, since the touch backend flag is read once at factory
+// time and each config already runs in its own process (item 9).
+type FlingConfigName = "OFF" | "ON-uiautomation" | "ON-scrcpy" | "ON-scrcpy-legacy";
+type ScrcpyPacing = "drift" | "legacy";
 interface FlingConfig {
   name: FlingConfigName;
   openServer: boolean;
   fastInject: boolean;
+  pacing?: ScrcpyPacing;
 }
 const CONFIGS: Record<FlingConfigName, FlingConfig> = {
   OFF: { name: "OFF", openServer: false, fastInject: false },
   "ON-uiautomation": { name: "ON-uiautomation", openServer: true, fastInject: false },
-  "ON-scrcpy": { name: "ON-scrcpy", openServer: true, fastInject: true },
+  "ON-scrcpy": { name: "ON-scrcpy", openServer: true, fastInject: true, pacing: "drift" },
+  "ON-scrcpy-legacy": { name: "ON-scrcpy-legacy", openServer: true, fastInject: true, pacing: "legacy" },
 };
 const PHYSICAL_DENY = "ZF524RZBHD";
 const SETTINGS = "com.android.settings";
@@ -179,6 +187,15 @@ async function runConfig(cfg: FlingConfig): Promise<Cell[]> {
   else unsetFlag("open-device-server", "project");
   if (cfg.fastInject) setFlag("open-device-server-fast-inject", true, "project");
   else unsetFlag("open-device-server-fast-inject", "project");
+  // Phase 3k: select the scrcpy host pacing for the fast-inject arms (drift = the
+  // fix / after, legacy = pre-3k await-per-frame / before). Read per-gesture by the
+  // backend from this env var; set before the registry (hence the backend) exists.
+  if (cfg.fastInject && cfg.pacing) process.env.ARGENT_SCRCPY_PACING = cfg.pacing;
+  else delete process.env.ARGENT_SCRCPY_PACING;
+  // Emit the per-frame host pacing trace to stdout (→ the fling-log artifact) so the
+  // measured intended-vs-actual dispatch/write spans are captured for both arms.
+  if (cfg.fastInject) process.env.ARGENT_SCRCPY_PACING_TRACE = "1";
+  else delete process.env.ARGENT_SCRCPY_PACING_TRACE;
   const reg = createRegistry();
   const cells: Cell[] = [];
   for (const durationMs of DURATIONS) {
@@ -236,6 +253,7 @@ async function main(): Promise<void> {
     config: cfg.name,
     openServer: cfg.openServer,
     fastInject: cfg.fastInject,
+    pacing: cfg.fastInject ? cfg.pacing ?? "drift" : null,
     startedAt: started,
     finishedAt: new Date().toISOString(),
     cells,

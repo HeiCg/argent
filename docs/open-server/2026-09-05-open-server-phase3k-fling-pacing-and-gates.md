@@ -84,3 +84,55 @@ IQR, and the unchanged verbs vs run 33975063607 within their drift floors. Push;
   in this repo (not device-farm; the v4 results file referenced above now lives in
   `docs/open-server/` as read-only history). Scoreboard rows only after adversarial
   review.
+
+## Result (2026-09-14, phase 3k)
+
+Branch `feat/open-server-3k` @ `1408e233` off `open/main` @ `690e66bc`. Reported CI run
+**34800933407** (`-f suite=latency`, N=20, fling N=12). Full write-up:
+`docs/open-server/2026-09-13-open-server-3k-results-ci.md`. First run **34795811096** is
+superseded (it enabled InputDispatcher VERBOSE during the latency+fling steps, which
+perturbed the ON synced-inject and floored the uia fling arm; VERBOSE removed).
+
+**Fix works — the reproducible long-duration under-scroll is resolved.** Fling A/B, scrcpy
+before(legacy)→after(drift), scrcpy/uia (and scrcpy/off), N=12, median + IQR:
+
+| cell | uia (IQR) | scrcpy drift (IQR) | scrcpy legacy | off | scrcpy/uia leg→drift | scrcpy/off leg→drift | gate |
+|---|---|---|---|---|---|---|---|
+| 150/0.3 | 0.232 [0.175,0.461] | 0.320 [0.175,0.464] | 0.464 | 0.443 | 2.000→1.379 | 1.048→0.722 | **FAIL** |
+| 150/0.5 | 0.175 | 0.175 | 0.175 | 0.175 | 1.000→1.000 | 1.000→1.000 | excluded (floor) |
+| 250/0.3 | 0.473 | 0.459 | 0.442 | 0.467 | 0.934→0.970 | 0.947→0.983 | OK |
+| 250/0.5 | 0.175 | 0.175 [0.175,0.464] | 0.175 | 0.320 | 1.000→1.000 | 0.547→0.547 | excluded (uia+scrcpy floor) |
+| 400/0.3 | 0.313 | 0.319 | 0.324 | 0.360 | 1.035→1.019 | 0.900→0.886 | OK |
+| 400/0.5 | 0.585 | 0.635 | 0.581 | 0.657 | 0.993→1.085 | 0.884→0.967 | OK |
+
+Verdict: `FAIL (1 informative cell outside ±0.15: 150ms/0.3=1.379)`. Run 7 (before) had
+400/0.3=0.717 and 400/0.5=0.710 vs uia (0.642/0.580 vs off); both are now at parity
+(1.019/1.085 vs uia, 0.886/0.967 vs off). The **only** red is 150/0.3, a short-duration
+bimodal cell where the uia REFERENCE under-scrolled (uia/off 0.524) — scrcpy/off 0.722 is
+closer to proprietary than uia — i.e. the "uia is the unstable arm" F2 effect, not a scrcpy
+defect. Delivered DOWN→UP span (device logcat): uia 405, scrcpy drift 416, legacy 417 ms
+(requested 416) — endpoints equal; the fix is in the MOVE cadence (the scroll A/B).
+
+**Everything else green:** device suite 19/19; latency merge passed all gates (redir on
+both ON blocks; first-attempt landing 40/40, 60/60, 60/60 scrcpy, 40/40; oracle pass ×4;
+clean 2-frame DOWN→UP tap; 0 fast-inject fallbacks; OFF baseline present, F13).
+
+**Unchanged verbs vs run 7 (within drift floors):** describe (52/33/35/52), await-screen-
+idle, await-ui-element, paste, gesture-pinch all reproduce run 7 direction/magnitude. NOT
+reproduced: ON `gesture-tap` (77→~722) and `gesture-swipe` (257→~1100) are inflated ~10x —
+a **base `open/main` regression** on on-device UiAutomation tap/swipe inject (affects
+ON-uiautomation, which uses no scrcpy; OFF and describe/pinch normal; identical across both
+3k runs), **not the 3k change**. Flagged for the planner (bisect the screen-graph-d merge).
+
+**Part B landed:** F7 (no-effect identity log+record; bench-block logcat), F6 (dump
+short-circuit logged/gated — fired this run), F12 (blocking ready gate), F13 (executable OFF
+failure fails the run), F19 (destinationVisible removed), gate unit tests
+`.github/bench-ci/gates.test.js` (17) wired into `unit-tests.yml`. Whitelist removed
+(A.3); floor-pinned exclusion kept; scrcpy/off + uia/off transparency + legacy→drift rows
+added.
+
+**Not done / open:** the fling gate is RED on 150/0.3 (uia short-duration reference noise) —
+gate-design decision left to the planner (see results file "Open items"); device-side
+timeline 2(b) not needed for the resolved 400 ms cells; the base ON tap/swipe latency
+regression is out of scope. CI budget (2 latency runs) exhausted; `open/main` NOT
+fast-forwarded.

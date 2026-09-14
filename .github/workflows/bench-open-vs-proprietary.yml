@@ -313,34 +313,70 @@ jobs:
           set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
           mkdir -p "$BENCH_OUT"
+          # F7: capture logcat ACROSS the bench blocks (not only the device-test
+          # step) so a first-attempt no-effect tap is diagnosable (ANR / crash /
+          # activity context around the miss the bench code logs with fingerprints).
+          # NB: do NOT enable InputDispatcher/InputReader VERBOSE here — verbose input
+          # logging perturbs the ON path's synced UiAutomation inject and inflated the
+          # ON gesture-tap/gesture-swipe latency ~10x in the first 3k run (OFF, which
+          # injects via the emulator gRPC console, was unaffected), contaminating the
+          # "unchanged verbs vs run 7" comparison. Plain threadtime only. The delivered
+          # MotionEvent-duration measurement lives in the isolated device-test 3k step.
+          adb -s emulator-5554 logcat -c || true
+          adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-bench.txt" 2>&1 &
+          BENCH_LOGCAT_PID=$!
+          stop_logcat () { kill "$BENCH_LOGCAT_PID" 2>/dev/null || true; }
+          trap stop_logcat EXIT
           run_block () {
             local b="$1"
             echo "########## BLOCK $b ##########"
-            # Settle before each block: an ANR dialog left up from a prior block
-            # would poison this block's effect check. Logged into the block log.
-            bash .github/bench-ci/ready-gate.sh emulator-5554 3 60 | tee -a "$BENCH_OUT/bench-log-$b.txt" || true
+            # F12: BLOCKING per-block readiness gate (strict, 4th arg = 1). A screen
+            # that never settles poisons the effect check, so a timeout FAILS the
+            # block (a tap on an ANR dialog is not a landed tap) instead of `|| true`.
+            bash .github/bench-ci/ready-gate.sh emulator-5554 3 60 1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
             BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
               2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
           }
-          OFF_OK=1
-          # OFF-1 — best-effort: a proprietary refusal on Linux downgrades to ON-only.
-          if echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
+          # F13: the OFF proprietary baseline. If the binary is executable on this
+          # runner (PROP_EXECUTABLE=1) a requested OFF block that FAILS is a real
+          # missing-baseline failure and fails the run (no warn-and-continue). Only a
+          # proprietary that cannot exec at all (PROP_EXECUTABLE=0 — the documented
+          # Linux refusal) downgrades to ON-only, and that downgrade is stated here,
+          # not a silent absent baseline. The ON blocks + merge still run first so the
+          # diagnostics survive; the OFF failure is enforced at the end of the step.
+          RUN_OFF=0
+          if [ "${PROP_EXECUTABLE:-0}" = "1" ]; then
+            RUN_OFF=1
+          else
+            echo "::warning::proprietary simulator-server not executable on this runner — OFF baseline skipped, scoring ON-only (documented downgrade)"
+          fi
+          OFF_FAILED=0
+          if [ "$RUN_OFF" = "1" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
             if run_block "OFF-1"; then :; else
-              OFF_OK=0
-              echo "::warning::OFF-1 (proprietary) failed — running ON blocks only"
+              OFF_FAILED=1
+              echo "::error::OFF-1 proprietary baseline FAILED though the binary is executable — a missing baseline fails the run (F13)"
             fi
             sleep 3
           fi
-          # ON blocks — hard requirement.
+          # ON blocks — hard requirement (set -e fails the step on any ON failure).
           if echo "$BENCH_BLOCKS" | grep -q "ON-uiautomation"; then run_block "ON-uiautomation"; sleep 3; fi
           if echo "$BENCH_BLOCKS" | grep -q "ON-scrcpy"; then run_block "ON-scrcpy"; sleep 3; fi
-          # OFF-2 — best-effort drift arm; skip if OFF-1 refused.
-          if echo "$BENCH_BLOCKS" | grep -q "OFF-2" && [ "$OFF_OK" = "1" ]; then
-            if run_block "OFF-2"; then :; else echo "::warning::OFF-2 failed — drift arm dropped"; fi
+          if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
+            if run_block "OFF-2"; then :; else
+              OFF_FAILED=1
+              echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
+            fi
             sleep 3
           fi
           echo "########## MERGE ##########"
+          stop_logcat
           node .github/bench-ci/merge-blocks.js
+          # F13 enforcement: fail the run if an executable proprietary baseline block
+          # failed (diagnostics + merge above are preserved for the artifacts first).
+          if [ "$OFF_FAILED" = "1" ]; then
+            echo "::error::proprietary OFF baseline failed on an executable runner — failing the run (missing baseline, F13)"
+            exit 1
+          fi
 
       # ---- (3) fling A/B (Kotlin vs scrcpy) when ON-scrcpy is in blocks ----
       # `!cancelled()` so a FAILED merge (e.g. the landing-rate gate) does NOT skip the
@@ -360,13 +396,36 @@ jobs:
           # run failure must be caught by the `if …; else exit 1` below.
           set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
-          for cfg in ON-uiautomation ON-scrcpy OFF; do
+          # Phase 3k measurement (option i): capture logcat PER ARM for crash/ANR
+          # context. Plain threadtime only — NOT InputDispatcher/InputReader VERBOSE:
+          # verbose input logging perturbs injection and would alter the very fling
+          # scroll distances this A/B grades (and inflated ON latency ~10x in the first
+          # 3k run). The delivered MotionEvent-duration per arm is measured in the
+          # isolated device-test 3k step; the host per-frame pacing trace
+          # ([open-server-fast-inject] `pacing …`) is captured in each fling-log.
+          # Phase 3k: ON-scrcpy runs the drift-corrected pacing fix (after arm) and
+          # ON-scrcpy-legacy the pre-3k await-per-frame pacing (before arm) — both in
+          # THIS run so the pacing fix is a same-run before/after. The harness sets
+          # ARGENT_SCRCPY_PACING per config. OFF is the proprietary reference.
+          for cfg in ON-uiautomation ON-scrcpy ON-scrcpy-legacy OFF; do
             echo "########## FLING $cfg ##########"
             if [ "$cfg" = "OFF" ] && [ "${PROP_EXECUTABLE:-0}" != "1" ]; then
               echo "skipping OFF fling reference (proprietary not executable)"; continue
             fi
-            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then :; else
-              if [ "$cfg" = "OFF" ]; then echo "::warning::OFF fling reference failed — dropping"; else exit 1; fi
+            adb -s emulator-5554 logcat -c || true
+            adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-fling-$cfg.txt" 2>&1 &
+            FLING_LOGCAT_PID=$!
+            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then FLING_RC=0; else FLING_RC=1; fi
+            kill "$FLING_LOGCAT_PID" 2>/dev/null || true
+            if [ "$FLING_RC" != "0" ]; then
+              # OFF reference and the ON-scrcpy-legacy BEFORE arm are transparency,
+              # not gated — a failure there drops that arm with a warning. The gated
+              # arms (ON-uiautomation, ON-scrcpy drift) must succeed.
+              if [ "$cfg" = "OFF" ] || [ "$cfg" = "ON-scrcpy-legacy" ]; then
+                echo "::warning::$cfg fling arm failed — dropping (transparency arm, not gated)"
+              else
+                exit 1
+              fi
             fi
             sleep 3
           done

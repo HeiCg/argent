@@ -41,3 +41,9 @@ jobs:
 
       - name: Test root scripts
         run: npm run test:scripts
+
+      - name: Test bench CI gates
+        # Unit tests for the bench merge/scoreboard gates (review: "gates never
+        # observed to fire"). Pure Node, no build/emulator — proves each gate
+        # fires/does-not-fire against synthetic block/fling JSONs.
+        run: node --test .github/bench-ci/gates.test.js
