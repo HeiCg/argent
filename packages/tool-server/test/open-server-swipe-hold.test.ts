@@ -55,7 +55,11 @@ function makeTool(openApi: unknown) {
 const base = { udid: ANDROID_SERIAL, fromX: 0.5, fromY: 0.7, toX: 0.5, toY: 0.2, durationMs: 160 };
 
 beforeEach(() => {
-  flagEnabledMock = (n) => n === "open-device-server";
+  // Outcome path is gated on the screen graph being recorded; this suite asserts
+  // the swipeWithOutcome holdEndMs behaviour, so declare `screen-graph` on. The
+  // plain-`swipe` default (flag off) is covered by
+  // open-server-outcome-default-off.test.ts.
+  flagEnabledMock = (n) => n === "open-device-server" || n === "screen-graph";
   vi.clearAllMocks();
 });
 afterEach(() => vi.restoreAllMocks());

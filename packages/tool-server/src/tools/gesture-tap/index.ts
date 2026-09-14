@@ -5,7 +5,12 @@ import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-c
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
-import { shouldUseOpenServer, openServerTapWithOutcome } from "../../utils/open-server-input";
+import {
+  shouldUseOpenServer,
+  openServerTap,
+  openServerTapWithOutcome,
+} from "../../utils/open-server-input";
+import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -134,6 +139,17 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       let api: SimulatorServerApi;
       if (shouldUseOpenServer(device)) {
         try {
+          // Default (screen-graph off): plain `tap` RPC, pre-merge semantics — no
+          // `outcome` request leaves the host, so `runAction` is the pass-through
+          // and no per-tap `settleAfterAction` wait is paid. The +800–1000ms
+          // settle only belongs when the graph is being built/recorded, which is
+          // exactly what `screenGraphRecordingEnabled()` gates (the `screen-graph`
+          // flag, or the bench's `ARGENT_SG_RECORD` record-only mode). `outcome`
+          // stays optional on the result and is absent here.
+          if (!screenGraphRecordingEnabled()) {
+            await openServerTap(registry, device, params.x, params.y, clickCount);
+            return { tapped: true, timestampMs };
+          }
           const outcome = await openServerTapWithOutcome(registry, device, params.x, params.y, clickCount);
           return { tapped: true, timestampMs, outcome };
         } catch (err) {

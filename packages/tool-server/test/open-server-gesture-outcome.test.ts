@@ -64,7 +64,11 @@ function makeTool(openApi: unknown) {
 }
 
 beforeEach(() => {
-  flagEnabledMock = (n) => n === "open-device-server";
+  // The outcome path is now gated on the screen graph being recorded, so this
+  // suite (which asserts the tapWithOutcome path) declares the `screen-graph`
+  // flag on. With it off the tool takes the plain `tap` path — see
+  // open-server-outcome-default-off.test.ts.
+  flagEnabledMock = (n) => n === "open-device-server" || n === "screen-graph";
   vi.clearAllMocks();
 });
 afterEach(() => vi.restoreAllMocks());

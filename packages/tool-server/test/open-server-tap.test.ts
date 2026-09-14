@@ -37,6 +37,9 @@ function makeOpenApi() {
       newScreen: false,
       idleMs: 0,
     })),
+    // With `screen-graph` on the outcome path reads the BEFORE tree once for the
+    // acted-element selector (best-effort); an empty tree yields no selector.
+    getState: vi.fn(async () => ({ tree: [] })),
   };
 }
 
@@ -51,7 +54,11 @@ function makeTool(openApi: unknown) {
 }
 
 beforeEach(() => {
-  flagEnabledMock = (n) => n === "open-device-server";
+  // Outcome path is gated on the screen graph being recorded; this suite asserts
+  // the multi-tap timeline on the tapWithOutcome RPC, so declare `screen-graph`
+  // on. The plain-`tap` default (flag off) is covered by
+  // open-server-outcome-default-off.test.ts.
+  flagEnabledMock = (n) => n === "open-device-server" || n === "screen-graph";
   __resetOpenServerScreenSizeCache();
   vi.clearAllMocks();
 });

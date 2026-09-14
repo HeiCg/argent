@@ -8,8 +8,10 @@ import { setSimulatorClipboardText } from "../../../utils/simulator-client";
 import {
   shouldUseOpenServer,
   openServerSetClipboard,
+  openServerTypeText,
   openServerTypeTextWithOutcome,
 } from "../../../utils/open-server-input";
+import { screenGraphRecordingEnabled } from "../../../utils/screen-graph-open-wiring";
 import {
   isClipboardUnsupported,
   recordClipboardOutcome,
@@ -75,6 +77,15 @@ export function makeAndroidImpl(
           // `secretsUsed` (set by the paste tool when the text came from a
           // `{{secret:…}}` placeholder) redacts the recorded graph node live.
           assertTypeableAndroidText(params.text);
+          // Default (screen-graph off): plain `typeText` — no `outcome` request
+          // leaves the host, so `runAction` is the pass-through and the typed
+          // paste pays no per-action settle. The before/after outcome (and its
+          // live secret redaction of the recorded node) only matters when the
+          // graph is being recorded, which `screenGraphRecordingEnabled()` gates.
+          if (!screenGraphRecordingEnabled()) {
+            await openServerTypeText(registry, device, params.text);
+            return { pasted: true };
+          }
           const secretsUsed = (params as { secretsUsed?: boolean }).secretsUsed === true;
           const outcome = await openServerTypeTextWithOutcome(registry, device, params.text, {
             secretsUsed,
