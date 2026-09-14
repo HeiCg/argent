@@ -582,8 +582,17 @@ jobs:
           # Point BENCH_REPORT under OUT_DIR (created before the write, and staged
           # by the artifact step) so writeFileSync does not ENOENT at run end.
           BENCH_REPORT: ${{ github.workspace }}/.bench-results/screen-graph/results-ci.md
+          # Phase 3n.3 (3N2-H4): start from an empty output dir + empty persisted graph
+          # store, and stamp the run id / job start time into the report, the store meta
+          # and the invariants line so a foreign execution's artifact can never be
+          # mistaken for this run's (34888577404 shipped a four-hours-earlier report).
+          BENCH_FRESH_STORE: "1"
+          BENCH_RUN_ID: ${{ github.run_id }}
+          BENCH_JOB_STARTED: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
+          echo "[bench-sg] run_id=${{ github.run_id }} job_started=${{ github.run_started_at }} — fresh $BENCH_OUT"
+          rm -rf "$BENCH_OUT"; mkdir -p "$BENCH_OUT"
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-matrix.log"
 
@@ -591,7 +600,9 @@ jobs:
         if: always()
         run: |
           STAGE="$RUNNER_TEMP/sg-artifacts"
-          mkdir -p "$STAGE/logs"
+          # Phase 3n.3 (3N2-H4): stage from an EMPTY dir so nothing from a prior step/run
+          # rides along into this run's uploaded artifact.
+          rm -rf "$STAGE"; mkdir -p "$STAGE/logs"
           cp -r .bench-results "$STAGE/" 2>/dev/null || true
           cp "$RUNNER_TEMP/sg-preflight.log" "$RUNNER_TEMP/sg-matrix.log" /tmp/emulator.log "$STAGE/logs/" 2>/dev/null || true
           # Phase D C-M3: stage the device-captured pre-flight fixture so it can be
