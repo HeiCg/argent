@@ -37,3 +37,38 @@ proprietary capability claim; the scoreboard must not carry it as one.
 Same resolver policy in both paths (test proves it); B1's two-level outcome explained by
 a quoted rendering, not by a relaxed resolver; O5 no-route on `settings-network` = 0;
 run green with the invariants gate.
+
+## Addendum 2026-09-13 — refreshed base, what is already done, how to finish
+
+- Base: `open/main` @ `801b0cfb` (contains `feat/screen-graph-d` @ `68f2d26f`, merged via
+  `2026-09-13-merge-screen-graph-d-into-open-main.md`). Branch `feat/screen-graph-d4`
+  off `open/main`, worktree `../argent-fork-wt-d4` (never /tmp). Root `node_modules`
+  exists; symlink it, never `npm ci` in the worktree. vitest with `--maxWorkers=2`.
+- Already done in `68f2d26f` (verify, do not redo): item 1 — `describe-locate.ts` runs
+  the same `pickUniqueNode` policy as the open path, refusing ambiguous sets;
+  `test/screen-graph-bench-locate.test.ts` covers it (check it feeds the SAME screen in
+  both renderings; if it only tests one side, extend it with the captured Network &
+  internet proprietary describe text + open tree). Item 3 — `tasks.ts` navTarget for
+  `settings-network` is `t("Airplane mode")`.
+- Item 4's matrix run ALREADY EXISTS: run **34788497583** (`suite=both`,
+  `sg_mode=matrix`, screen-graph job success) ran on the merged tree, which is exactly
+  this code. Download its `bench-screen-graph` artifact
+  (`gh run download 34788497583 -n bench-screen-graph -R HeiCg/argent -D <worktree>/.bench-results/d4`)
+  and generate the D.4 report from that JSON. Trigger a NEW run
+  (`gh workflow run bench-open-vs-proprietary.yml --ref feat/screen-graph-d4 -f suite=screen-graph -f sg_mode=matrix`)
+  ONLY if the artifact lacks something D.4 needs (e.g. the B1 describe excerpt for
+  item 2 is not in the artifact) or the invariants gate is not derivable. One run max;
+  polling one `gh run view` per 10 min, foreground, after `sleep 540`; `gh run download`
+  counts as one call.
+- Item 2 (B1 rendering of the "Internet" row): the proprietary describe text per step
+  should be in the artifact (per-config step logs); quote the exact excerpt. If it is
+  not captured, that is the one legitimate reason for the new run, after adding the
+  capture to the harness first.
+- Report file: `docs/open-server/2026-09-13-screen-graph-phase-d4-results-ci.md`
+  (per-config success with intervals, O5 split incl. no-route count on
+  `settings-network`, B1 two-level outcome + excerpt, invariants gate line, H1–H4,
+  D.3 marked superseded with reasons). Every number names statistic, block, N, run id.
+  Do NOT edit `2026-09-03-scoreboard.md`; the planner does that after adversarial review.
+- Housekeeping in the same branch: move the root shims `run-bench-sg.cjs` and
+  `run-preflight.cjs` under `packages/tool-server/scripts/` (or delete them if the
+  workflow no longer references them — grep the yml first) and fix references.
