@@ -101,3 +101,141 @@ method-parity and describe-lockstep tests green; docs pages added; `## Result` h
 run ids, the xcodebuild/simulator versions, per-RPC device timings as informal
 observations (NOT scoreboard numbers), what was copied from B verbatim vs changed, and
 what is deferred to iOS-2/3/4.
+
+## Result (2026-09-14)
+
+Branch `feat/ios-open-server-1` off `open/main` @ ada26126, worktree
+`../argent-fork-wt-ios1`. Commits: `613eeb46` (D1 Swift), `b007ca1f` (D2 host),
+`89b07d78` (D3 CI/device/docs), plus run fixes `bbfabff4`, `03a47ef9`,
+`bff9b1e3`. Pushed over SSH (`git@github.com:HeiCg/argent.git`) — the HTTPS token
+lacks the `workflow` scope. `open/main` not touched; no `.github/bench-ci/**`,
+`bench-open-vs-proprietary*`, Android device server, or scoreboard change.
+
+### Status: runner does not yet compile clean on the simulator — CI budget spent.
+The 3-run budget was consumed before a clean Swift build was reached. A fourth
+fix is committed (`bff9b1e3`) but **not CI-verified**. Per the ticket, stop and
+report the exact errors.
+
+### CI runs (workflow `ios-open-server-device-test.yml`, macos-latest)
+Environment: the runner image carries **Xcode 26.x / iOS 26.5 simulator runtime**
+(the `Xcode_16.4` pin was absent, so the step fell back to the newest Xcode; the
+selected runtime was `com.apple.CoreSimulator.SimRuntime.iOS-26-5`).
+
+- **Run 34895279791** — FAIL at *Install deps*. `npm ci` rejected the new
+  `@argent/ios-device-server` workspace (not in the committed lockfile:
+  `Missing: @argent/ios-device-server@0.22.1 from lock file`). Fix: CI uses
+  `npm install` (lockfile is regenerated in the main checkout before merge).
+- **Run 34896291506** — FAIL at *Create and boot an iPhone simulator*. The
+  device-type picker chose `iPod-touch--7th-generation-` (family "iPhone"),
+  incompatible with iOS 26.5 (`SimError 403: Incompatible device`). Fix: select
+  the newest `iPhone N` numerically with a create fallback loop.
+- **Run 34897488202** — install ✓, simulator create/boot ✓,
+  **build-for-testing FAILED (Swift compile)**. Exact errors:
+  ```
+  ArgentRunnerSession+Commands.swift:18:22: error: 'volumeUp' is unavailable in
+    iOS: This API is not available in the Simulator, see the XCUIDeviceButton
+    documentation for details.
+  ArgentRunnerSession+Commands.swift:19:24: error: 'volumeDown' is unavailable in
+    iOS: This API is not available in the Simulator ...
+  ```
+  Root cause: `XCUIDevice.Button.volumeUp/.volumeDown` exist only on physical
+  hardware; base B built for `iphoneos`, where they are available, while iOS-1
+  builds `iphonesimulator`. Fix (`bff9b1e3`): compile the two volume buttons in
+  only under `#if !targetEnvironment(simulator)`. Unverified by CI.
+
+The physical-device compile step, the runner launch, and the device suite never
+ran (they are gated behind the simulator build).
+
+### Copied verbatim from B vs rewritten
+- **Verbatim / logic carried over** (from `packages/ios-device-runner` @ b547b735):
+  `MainThreadGate.swift`, `ArgentExceptionGuard.{h,m}`, the bridging header,
+  `RunnerHostApp.swift`, the Xcode project + scheme; and the XCTest bodies of the
+  command extensions — `app.snapshot()` one-XPC-round-trip flatten + node
+  budget + dedup + `elementTypeName` (`+Snapshot`), the `point()` screen-point
+  mapping + `drag` duration→velocity + `settle` end-hold + tap/doubleTap
+  (`+Gestures`), `typeText` + keyboard-return (`+TextEntry`), the
+  `XCUIScreen.main` screenshot and the hardware `button` press (`+Screenshot`,
+  `+Commands`).
+- **Rewritten** (replacing B's HTTP/1.1-per-command stack): `RunnerLineServer.swift`
+  (NDJSON TCP, was `RunnerHTTPServer`), `RunnerProtocol.swift` (JSON-RPC + method
+  table, was the HTTP `CommandKind`/`Envelope`), `ArgentRunnerSession.swift`
+  (JSON-RPC dispatch + version counter, was HTTP dispatch + journal). Removed:
+  `CommandJournal.swift`. New: nested `children`-array tree + `getInfo`/
+  `getState`/`getNestedState`/`getScreenSize`/`key`/`terminateApp`/`flushInput`/
+  `batch` on the Android contract, `RunnerSerializerTests.swift`.
+- **Host** (new): `utils/ios-open-server-client.ts` (reuses the shared
+  `AndroidOpenServerClient` NDJSON transport, NOT B's HTTP client),
+  `blueprints/ios-open-server.ts`, `utils/ios-open-server-runner.ts` (adapted
+  from B's `runner-build.ts`), `utils/ios-open-server-input.ts`,
+  `tools/describe/platforms/ios/open-server-tree.ts` (nested→DescribeNode;
+  `RUNNER_TYPE_TO_ROLE`/`SCROLL_CONTAINER_TYPES` from B's `ios-device.ts`).
+
+### Server method table (as implemented; reply shapes)
+| method | reply |
+|---|---|
+| `ping` | `{status:"ok"}` |
+| `getInfo` | `{bundleId, orientation, keyboardVisible, screenWidth, screenHeight, scale, version}` |
+| `getScreenSize` | `{screenWidth, screenHeight, scale}` |
+| `getState` | `{tree, truncated, info, version, timings{snapshotMs,serializeMs,encodeMs,captureMs}, screenshot?}` |
+| `getNestedState` | as `getState`, no screenshot |
+| `tap` | `{success, dropped:false, dropReporting:"unsupported"}` |
+| `longPress` | `{success}` |
+| `swipe` | `{success}` |
+| `typeText` | `{success, charsTyped}` |
+| `key` | `{success}` |
+| `screenshot` | `{data, mimeType, width, height}` |
+| `launchApp` | `{success, bundleId}` |
+| `terminateApp` | `{success, bundleId}` |
+| `flushInput` | `{success}` |
+| `batch` | `{results:[…]}` |
+| `shutdown` | `{status:"ok"}`, then the session ends |
+Deferred (JSON-RPC `-32004` "unsupported"): `query`, `diff`, `awaitChange`,
+`gesture`, `setClipboard`, `getAccessibilityTree`, `waitForIdle`, and the
+`hash`/`stateHash`/`idHash` fingerprints.
+
+### Host files + the flag
+Blueprint `blueprints/ios-open-server.ts` (`iosOpenServerRef`,
+`IosOpenDeviceServerApi`); client `utils/ios-open-server-client.ts`; runner
+lifecycle `utils/ios-open-server-runner.ts`; describe adapter
+`tools/describe/platforms/ios/open-server-tree.ts`. Flag `open-ios-device-server`
+(off by default). Routed behind the flag: `gesture-tap`, `gesture-swipe`,
+`screenshot` (with `xcrun simctl io` fallback), `keyboard` type/key, and the iOS
+`describe` path; each falls back to the proprietary path on any failure.
+
+### Per-RPC device timings
+**None** — the device suite never ran (the simulator build failed). No numbers to
+report. (No scoreboard numbers were ever in scope for this phase.)
+
+### Verified locally
+- `tsc --noEmit` on `tool-server`: clean (exit 0).
+- vitest `--maxWorkers=2`: the 3 host unit tests green (7 tests) — describe
+  lockstep (host ↔ Swift `scrollContainerTypes`), method parity (host list ==
+  Swift `RunnerMethod`), transport framing over a fake socket. The device suite
+  compiles and skips when `OPEN_IOS_SERVER_DEVICE_TESTS` is unset.
+- Swift is read but NOT compiled locally (no Xcode). Two compile bugs were found
+  and fixed by review/CI: `CGRect.isFinite` (no such API; run-2 fix) and the
+  simulator volume-button availability (run-3 error; fix committed, unverified).
+
+### Could not verify
+- The Swift runner compiling clean on the simulator after the volume-button fix
+  (`bff9b1e3`) — CI budget spent; a 4th run is needed.
+- The whole device suite (tap/swipe neutral-pixel oracle, stage sums, screenshot,
+  typeText, launch/terminate) — never reached.
+- The physical-device compile and the manual one-off on the owner's iPhone
+  (deferred to iOS-4).
+
+### Deferred to iOS-2/3/4 (unchanged from the spec)
+- iOS-2: like-for-like bench (`bench-open-vs-proprietary-ios.yml`).
+- iOS-3: screen graph on iOS — `hash`/`stateHash`/`idHash`, `version` as a hash
+  counter, `awaitChange`/`query`/`diff` (the server answers these "unsupported"
+  today).
+- iOS-4: `sim-input` fast arm depth, multi-pointer `gesture`, physical-device CI.
+
+### Follow-ups needed before merge
+1. One more CI run to verify the volume-button fix compiles and the device suite
+   is green (the 3-run budget for this pass is exhausted).
+2. Regenerate `package-lock.json` (`npm install`) in the main checkout so the new
+   workspace is in the lockfile; then CI could revert to `npm ci`.
+3. In the main checkout after merge: `npx docusaurus build` in `packages/docs/`
+   and `npm run format` from the repo root (not run here, per the ticket).
+4. Manual physical-iPhone one-off (iOS-4).
