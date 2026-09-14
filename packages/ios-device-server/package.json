@@ -1,0 +1,6 @@
+{
+  "name": "@argent/ios-device-server",
+  "version": "0.22.1",
+  "private": true,
+  "description": "Argent's XCUITest on-device automation server for iOS, on the open device-server contract (NDJSON JSON-RPC 2.0). Simulator and physical iPhone."
+}
