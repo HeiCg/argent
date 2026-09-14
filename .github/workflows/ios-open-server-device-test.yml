@@ -1,0 +1,155 @@
+# Open iOS server — simulator device test (iOS-1).
+#
+# Builds `@argent/ios-device-server` (the XCUITest runner) on a hosted macOS
+# runner, launches it against Settings on a booted iPhone simulator, and runs the
+# NDJSON JSON-RPC device suite against it (ping, getInfo, getNestedState stage
+# sums, tap/swipe by neutral pixels, typeText, screenshot, launch/terminate).
+#
+# COST: macOS runners bill at 10x Linux minutes. Manual trigger only; keep runs
+# short. The physical-iPhone path is compiled here (device destination, no
+# signing) but NOT run — hosted runners have no attached hardware.
+name: iOS open server device test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-open-server-simulator:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Pin Xcode and print the version (part of the build cache key)
+        shell: bash
+        run: |
+          XCODE=/Applications/Xcode_16.4.app
+          if [ ! -d "$XCODE" ]; then
+            XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          fi
+          echo "Selecting $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install deps
+        shell: bash
+        run: |
+          npm ci
+          # vite/rollup native binary that npm can skip (npm/cli#4828).
+          npm install @rollup/rollup-darwin-arm64 --no-save
+
+      - name: Create and boot an iPhone simulator
+        shell: bash
+        run: |
+          RUNTIME=$(xcrun simctl list runtimes -j \
+            | jq -r '[.runtimes[] | select(.platform=="iOS" and .isAvailable)] | sort_by(.version) | last | .identifier')
+          DEVTYPE=$(xcrun simctl list devicetypes -j \
+            | jq -r '[.devicetypes[] | select(.productFamily=="iPhone")] | last | .identifier')
+          echo "runtime=$RUNTIME devicetype=$DEVTYPE"
+          UDID=$(xcrun simctl create "argent-ios-open" "$DEVTYPE" "$RUNTIME")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build the runner for the simulator (build-for-testing)
+        shell: bash
+        run: |
+          mkdir -p build
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project packages/ios-device-server/ArgentRunner/ArgentRunner.xcodeproj \
+            -scheme ArgentRunner \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/ios-open-derived \
+            ONLY_ACTIVE_ARCH=YES ENABLE_CODE_COVERAGE=NO \
+            2>&1 | tee build/build-sim.log
+
+      - name: Compile the runner for a physical device (no signing, not run)
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project packages/ios-device-server/ArgentRunner/ArgentRunner.xcodeproj \
+            -scheme ArgentRunner \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/ios-open-derived-device \
+            ONLY_ACTIVE_ARCH=YES ENABLE_CODE_COVERAGE=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build/build-device.log
+
+      - name: Launch the runner against Settings and wait until it answers
+        shell: bash
+        run: |
+          XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun 2>/dev/null \
+            | grep -i simulator | head -1)
+          if [ -z "$XCTESTRUN" ]; then
+            XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun | head -1)
+          fi
+          echo "xctestrun=$XCTESTRUN"
+          PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+          echo "SIM_PORT=$PORT" >> "$GITHUB_ENV"
+          mkdir -p build/shots
+          TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT nohup xcodebuild test-without-building \
+            -xctestrun "$XCTESTRUN" \
+            -only-testing:ArgentRunnerUITests/ArgentRunnerSession/testServeCommands \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -test-timeouts-enabled NO \
+            -resultBundlePath build/runner.xcresult \
+            > build/runner.log 2>&1 &
+          echo $! > build/runner.pid
+          # The runner answers JSON-RPC over raw TCP; poll a ping until ready (120s).
+          READY=""
+          for i in $(seq 1 120); do
+            if node -e "
+              const net=require('net');
+              const s=net.connect($PORT,'127.0.0.1');
+              s.on('connect',()=>s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping'})+'\n'));
+              s.on('data',()=>{process.exit(0)});
+              s.on('error',()=>process.exit(1));
+              setTimeout(()=>process.exit(1),1500);
+            " 2>/dev/null; then READY=1; echo "runner ready after ${i}s"; break; fi
+            sleep 1
+          done
+          if [ -z "$READY" ]; then
+            echo "::error::runner did not answer ping within 120s"
+            tail -100 build/runner.log || true
+            exit 1
+          fi
+
+      - name: Run the device suite
+        shell: bash
+        env:
+          OPEN_IOS_SERVER_DEVICE_TESTS: "1"
+          ARGENT_IOS_OPEN_SERVER_PORT: ${{ env.SIM_PORT }}
+          ARGENT_IOS_OPEN_SERVER_UDID: ${{ env.SIM_UDID }}
+          TMPDIR: ${{ github.workspace }}/build/shots
+        run: |
+          cd packages/tool-server
+          npx vitest run --maxWorkers=2 test/blueprints/ios-open-server.device.test.ts
+
+      - name: Stop the runner
+        if: always()
+        shell: bash
+        run: |
+          if [ -f build/runner.pid ]; then kill "$(cat build/runner.pid)" 2>/dev/null || true; fi
+          xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || true
+
+      - name: Upload logs, xcresult and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-open-server-device-artifacts
+          path: |
+            build/build-sim.log
+            build/build-device.log
+            build/runner.log
+            build/runner.xcresult
+            build/shots
+          if-no-files-found: warn
