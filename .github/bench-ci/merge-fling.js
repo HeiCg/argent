@@ -1,17 +1,24 @@
 // CI variant of the phase-3f run-fling-merge.js. Assembles the fling A/B from the
 // per-config block files (ON-uiautomation vs ON-scrcpy fling-distance fidelity;
 // each ON config vs the OFF proprietary reference when present). Reports the
-// per-cell median ratio; a "reliable" cell is one that did not saturate.
+// per-cell median ratio; an "informative" cell is one the gate can grade.
 //
-// Phase 3k. The gate is scrcpy(drift)/uiautomation within ±0.15 on INFORMATIVE
-// cells, PER-CELL and BLOCKING, with NO whitelist (review A.3 — the value-bounded
-// whitelist is retired; a cell that is out of tolerance now fails, full stop). The
-// floor-pinned exclusion is KEPT (review F9): a cell where both arms sit at the
-// ~0.175 scroll floor carries no fling signal and is not gated. Two transparency
-// arms are added: the scrcpy/off and uia/off ratios per cell (the proprietary
-// reference the deficit is measured against), and — when the fling ran the pre-3k
-// `ON-scrcpy-legacy` pacing in the same run — the before/after (legacy vs drift)
-// scrcpy/uia and scrcpy/off per cell, so the pacing fix is shown in-run, not gated.
+// Phase 3k.1 — PRE-REGISTERED gate rule (docs/open-server/2026-09-14-review-3k-findings.md
+// "Gate recommendation", fixed before the reference run). The gate is scrcpy(drift)
+// vs the reference within ±0.15, PER-CELL and BLOCKING, with NO whitelist, and three
+// changes over 3k:
+//   (1) REFERENCE-BIMODALITY exclusion, keyed on the REFERENCE arms only, never on
+//       scrcpy: a cell is non-informative when q25(uia) <= SCROLL_FLOOR + eps (and,
+//       when `off` is used as a denominator, when q25(off) <= SCROLL_FLOOR + eps). A
+//       scrcpy defect can never exempt its own cell. This replaces the 3k
+//       "both arms pinned at the floor" rule (its degenerate case).
+//   (2) POWER FLOOR n >= 10 on EVERY arm entering a gated ratio, `off` included —
+//       otherwise the cell is non-informative, not passed.
+//   (3) TWO-SIDED reference on surviving cells: both |scrcpy/uia - 1| <= 0.15 AND
+//       |scrcpy/off - 1| <= 0.15 when the OFF arm is present (one-sided scrcpy/uia
+//       only when OFF is absent, e.g. a runner with no executable proprietary).
+// Transparency rows scrcpy/off, uia/off and the legacy→drift before/after are still
+// printed, never gated.
 const fs = require("fs");
 const path = require("path");
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
@@ -41,6 +48,18 @@ const U = map(uia),
 const r3 = (n) => (Number.isFinite(n) ? Number(n.toFixed(3)) : n);
 const ratio = (a, b) => (a && b && b.median > 0 && a.median >= 0 ? r3(a.median / b.median) : NaN);
 
+// Scroll metric floor: the anchor-displacement metric bottoms out at ~0.175. The
+// pre-registered rule keys bimodality on the REFERENCE arm's lower quartile (q25 =
+// iqr[0]): a reference whose q25 sits at the floor straddles it (a swipe that either
+// catches a fling or floors), so its median ratio is a coin-flip and the cell carries
+// no gradable fling signal — NEVER keyed on the scrcpy arm.
+const SCROLL_FLOOR = 0.175;
+const FLOOR_EPS = 0.001;
+const q25 = (c) => (c && Array.isArray(c.iqr) ? c.iqr[0] : NaN);
+const refStraddlesFloor = (c) => !(Number.isFinite(q25(c)) && q25(c) > SCROLL_FLOOR + FLOOR_EPS);
+const underpowered = (c) => !(c && Number.isFinite(c.n) && c.n >= 10);
+const TOL = 0.15;
+
 const grid = uia.cells.map((c) => {
   const k = key(c);
   const u = U[k],
@@ -52,16 +71,26 @@ const grid = uia.cells.map((c) => {
   const uiaOverOff = ratio(u, o);
   const scrcpyLegacyOverUia = ratio(sl, u);
   const scrcpyLegacyOverOff = ratio(sl, o);
-  const reliable = !!(
-    u &&
-    s &&
-    u.median > 0 &&
-    u.median < 1 &&
-    s.median > 0 &&
-    s.median < 1 &&
-    u.n >= 10 &&
-    s.n >= 10
-  );
+  const offPresent = !!o;
+
+  // Non-informative reasons (pre-registered rule). Keyed on the references only.
+  const reasons = [];
+  if (!(u && s && Number.isFinite(scrcpyOverUia))) reasons.push("missing arm / no scrcpy-uia ratio");
+  else {
+    if (refStraddlesFloor(u)) reasons.push(`uia reference q25=${q25(u)} at the ${SCROLL_FLOOR} floor`);
+    if (underpowered(u)) reasons.push(`uia n=${u && u.n} < 10`);
+    if (underpowered(s)) reasons.push(`scrcpy n=${s && s.n} < 10`);
+    if (offPresent) {
+      // OFF enters the two-sided ratio as a denominator, so its bimodality/power
+      // gate the cell too (change 1 + change 2) — a floored/underpowered proprietary
+      // reference cannot silently drop to a one-sided scrcpy/uia pass.
+      if (!Number.isFinite(scrcpyOverOff)) reasons.push("no scrcpy-off ratio");
+      if (refStraddlesFloor(o)) reasons.push(`off reference q25=${q25(o)} at the ${SCROLL_FLOOR} floor`);
+      if (underpowered(o)) reasons.push(`off n=${o && o.n} < 10`);
+    }
+  }
+  const informative = reasons.length === 0;
+
   return {
     durationMs: c.durationMs,
     distance: c.distance,
@@ -74,66 +103,61 @@ const grid = uia.cells.map((c) => {
     uiaOverOff,
     scrcpyLegacyOverUia,
     scrcpyLegacyOverOff,
-    reliable,
+    offPresent,
+    informative,
+    nonInformativeReasons: reasons,
   };
 });
 
-// Fling parity gate (phase 3k, review A.3). scrcpy(drift) and uiautomation drive
-// swipes through DIFFERENT injection backends; the gate asserts their median scroll
-// distance agrees within ±0.15 on every INFORMATIVE cell, PER-CELL and BLOCKING,
-// with NO whitelist. An informative cell out of tolerance fails the job — there is
-// no per-key exemption any more.
-const TOL = 0.15;
-// Scroll metric floor: the anchor-displacement metric bottoms out at ~0.175. A cell
-// where BOTH arms sit at that floor carries NO fling signal — its ratio is 1.000 by
-// construction — so it is NOT informative and must not count toward the gate/aggregate
-// (review F9). This exclusion is KEPT.
-const SCROLL_FLOOR = 0.175;
-const FLOOR_EPS = 0.001;
-const atFloor = (c) => !!c && c.median <= SCROLL_FLOOR + FLOOR_EPS;
-const floorPinned = (g) => atFloor(g.uiautomation) && atFloor(g.scrcpy);
-const clamped = (c) => !c || !(c.median > 0 && c.median < 1);
-const informative = grid.filter(
-  (g) =>
-    g.reliable &&
-    Number.isFinite(g.scrcpyOverUia) &&
-    !clamped(g.uiautomation) &&
-    !clamped(g.scrcpy) &&
-    !floorPinned(g)
-);
+const informativeCells = grid.filter((g) => g.informative);
 const median = (xs) => {
   if (!xs.length) return NaN;
   const s = xs.slice().sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
-const aggRatio = median(informative.map((g) => g.scrcpyOverUia));
-const perCell = informative.map((g) => {
-  const deviation = Number(Math.abs(g.scrcpyOverUia - 1).toFixed(3));
-  const withinTol = Math.abs(g.scrcpyOverUia - 1) <= TOL;
+const aggRatio = median(informativeCells.map((g) => g.scrcpyOverUia));
+
+// Per-cell TWO-SIDED verdict (change 3): both scrcpy/uia AND scrcpy/off within ±0.15
+// when OFF is present; scrcpy/uia only when OFF is absent.
+const perCell = informativeCells.map((g) => {
+  const devUia = Number(Math.abs(g.scrcpyOverUia - 1).toFixed(3));
+  const withinUia = Math.abs(g.scrcpyOverUia - 1) <= TOL;
+  const devOff = g.offPresent ? Number(Math.abs(g.scrcpyOverOff - 1).toFixed(3)) : null;
+  const withinOff = g.offPresent ? Math.abs(g.scrcpyOverOff - 1) <= TOL : true;
+  const ok = withinUia && withinOff;
+  const failSides = [];
+  if (!withinUia) failSides.push(`scrcpy/uia ${g.scrcpyOverUia} dev ${devUia}`);
+  if (!withinOff) failSides.push(`scrcpy/off ${g.scrcpyOverOff} dev ${devOff}`);
   return {
     durationMs: g.durationMs,
     distance: g.distance,
-    ratio: g.scrcpyOverUia,
-    deviation,
-    withinTol,
-    ok: withinTol,
+    ratioUia: g.scrcpyOverUia,
+    ratioOff: g.offPresent ? g.scrcpyOverOff : null,
+    devUia,
+    devOff,
+    withinUia,
+    withinOff,
+    ok,
+    failSides,
   };
 });
-// Cells that fail the gate: informative and out of tolerance (no whitelist).
 const offenders = perCell.filter((c) => !c.ok);
+const totalCells = grid.length;
+const nonInformativeCount = totalCells - informativeCells.length;
+
+// Pre-registered verdict string (docs/open-server/2026-09-14-...-phase3k1...md Decisions):
+// `PASS|FAIL (per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist, over k
+//  informative cell(s); m of 6 non-informative at the metric floor)`.
+const RULE = "per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist";
 let verdict;
-if (informative.length === 0) {
-  verdict = "INCONCLUSIVE (no informative cells — all saturated/underpowered)";
-} else if (offenders.length === 0) {
-  verdict =
-    `PASS (per-cell ±${TOL}, NO whitelist, over ${informative.length} informative cell(s)` +
-    `; aggregate ratio ${Number.isFinite(aggRatio) ? aggRatio.toFixed(3) : "n/a"})`;
+if (informativeCells.length === 0) {
+  verdict = `INCONCLUSIVE (${RULE}, 0 informative cells; ${nonInformativeCount} of ${totalCells} non-informative at the metric floor)`;
 } else {
+  const head = offenders.length === 0 ? "PASS" : "FAIL";
   verdict =
-    `FAIL (${offenders.length} informative cell(s) outside ±${TOL}: ` +
-    offenders.map((c) => `${c.durationMs}ms/${c.distance}=${c.ratio}`).join(", ") +
-    ")";
+    `${head} (${RULE}, over ${informativeCells.length} informative cell(s); ` +
+    `${nonInformativeCount} of ${totalCells} non-informative at the metric floor)`;
 }
 
 const result = {
@@ -145,9 +169,12 @@ const result = {
   grid,
   flingGate: {
     tolerance: TOL,
-    mode: "per-cell (blocking), no whitelist",
+    mode: "per-cell (blocking), no whitelist, two-sided scrcpy/uia AND scrcpy/off",
     scrcpyArm: "drift",
-    informativeCells: informative.length,
+    rule: RULE,
+    informativeCells: informativeCells.length,
+    nonInformativeCells: nonInformativeCount,
+    totalCells,
     aggregateRatio: Number.isFinite(aggRatio) ? Number(aggRatio.toFixed(3)) : null,
     perCell,
     offenders,
@@ -162,12 +189,11 @@ console.log("\n=== FLING A/B (scrcpy[drift] vs uiautomation median scroll + IQR,
 for (const g of grid) {
   console.log(
     `d=${g.durationMs}ms dist=${g.distance}: ` +
-      `uia ${g.uiautomation && g.uiautomation.median} iqr${iqrStr(g.uiautomation)} ` +
-      `scrcpy ${g.scrcpy && g.scrcpy.median} iqr${iqrStr(g.scrcpy)} ` +
+      `uia ${g.uiautomation && g.uiautomation.median} iqr${iqrStr(g.uiautomation)} n=${(g.uiautomation && g.uiautomation.n) || "?"} ` +
+      `scrcpy ${g.scrcpy && g.scrcpy.median} iqr${iqrStr(g.scrcpy)} n=${(g.scrcpy && g.scrcpy.n) || "?"} ` +
       `→ ratio ${g.scrcpyOverUia}` +
-      (g.off ? ` (off ${g.off.median})` : "") +
-      ` n=${(g.scrcpy && g.scrcpy.n) || "?"}` +
-      (g.reliable ? "  [reliable]" : "  [saturated]")
+      (g.off ? ` (off ${g.off.median} n=${g.off.n})` : "") +
+      (g.informative ? "  [informative]" : "  [non-informative]")
   );
 }
 // Transparency: the proprietary reference the deficit is measured against (review
@@ -182,9 +208,11 @@ if (off) {
     );
   }
 }
-// Before/after: the pre-3k legacy pacing vs the drift fix, same run (review A / F2).
+// Before/after: the pre-3k legacy pacing vs the drift arm, same run (review A / F2).
+// NOTE (3k.1): legacy is now the DEFAULT and drift is opt-in; this row is reported,
+// never gated (the same-run paired test governs whether the default may change).
 if (scrLegacy) {
-  console.log("\n=== FLING PACING before(legacy) → after(drift), same run (scrcpy/uia; scrcpy/off) ===");
+  console.log("\n=== FLING PACING legacy(default) → drift(opt-in), same run (scrcpy/uia; scrcpy/off) ===");
   for (const g of grid) {
     console.log(
       `  d=${g.durationMs}ms dist=${g.distance}: ` +
@@ -194,41 +222,44 @@ if (scrLegacy) {
     );
   }
 } else {
-  console.log("\n(no ON-scrcpy-legacy before arm this run — before/after pacing comparison skipped)");
+  console.log("\n(no ON-scrcpy-legacy arm this run — legacy/drift before/after skipped)");
 }
-// Clamped / excluded cells (run-5 review: list them, don't silently drop).
-const excluded = grid.filter((g) => !informative.includes(g));
+// Non-informative cells (pre-registered exclusion): list them with the reason.
+const excluded = grid.filter((g) => !g.informative);
 if (excluded.length) {
-  console.log("\n=== EXCLUDED cells (clamped/saturated/underpowered — not gated) ===");
+  console.log("\n=== NON-INFORMATIVE cells (reference-bimodality / power floor — not gated) ===");
   for (const g of excluded) {
-    const why = !g.reliable
-      ? "not reliable (median saturated 0/1 or n<10)"
-      : floorPinned(g)
-        ? `floor-pinned (both arms at the ${SCROLL_FLOOR} scroll floor — no fling signal)`
-        : clamped(g.uiautomation) || clamped(g.scrcpy)
-          ? "clamped at scroll floor/ceiling"
-          : "no finite ratio";
     console.log(
       `  d=${g.durationMs}ms dist=${g.distance}: uia ${g.uiautomation && g.uiautomation.median} ` +
-        `scrcpy ${g.scrcpy && g.scrcpy.median} — ${why}`
+        `iqr${iqrStr(g.uiautomation)} scrcpy ${g.scrcpy && g.scrcpy.median} ` +
+        (g.off ? `off ${g.off.median} iqr${iqrStr(g.off)} ` : "") +
+        `— ${g.nonInformativeReasons.join("; ")}`
     );
   }
 }
-console.log(`\n=== FLING PARITY GATE (per-cell scrcpy[drift]/uia ±${TOL}, NO whitelist, BLOCKING) ===`);
+console.log(`\n=== FLING PARITY GATE (${RULE}, BLOCKING) ===`);
 for (const c of perCell) {
-  const g = grid.find((x) => x.durationMs === c.durationMs && x.distance === c.distance);
   console.log(
-    `  d=${c.durationMs}ms dist=${c.distance}: ratio ${c.ratio} dev ${c.deviation} ` +
-      `(uia ${g && g.uiautomation && g.uiautomation.median} iqr${iqrStr(g && g.uiautomation)}, ` +
-      `scrcpy ${g && g.scrcpy && g.scrcpy.median} iqr${iqrStr(g && g.scrcpy)}) ` +
-      (c.withinTol ? "OK" : "OUT — FAIL")
+    `  d=${c.durationMs}ms dist=${c.distance}: scrcpy/uia ${c.ratioUia} dev ${c.devUia}` +
+      (c.ratioOff !== null ? ` | scrcpy/off ${c.ratioOff} dev ${c.devOff}` : "") +
+      (c.ok ? "  OK" : `  OUT — FAIL (${c.failSides.join(", ")})`)
   );
 }
 console.log(`FLING VERDICT: ${verdict}`);
 console.log("FLING_AB_JSON=" + outPath);
-// BLOCKING: an out-of-tolerance informative cell fails the job. INCONCLUSIVE (all
-// cells saturated) is not a failure — it is reported, not gated.
+// BLOCKING: an informative cell out of tolerance fails the job. INCONCLUSIVE (zero
+// informative cells — every reference floored/underpowered, or an arm that lost its
+// samples) ALSO fails the job (3K1-M3): the run cannot certify fling parity when
+// there is no gradable cell, so it must not exit green as a silent no-op.
 if (verdict.startsWith("FAIL")) {
-  console.error("::error::fling parity gate FAILED (per-cell, no whitelist) — " + verdict);
+  console.error("::error::fling parity gate FAILED (two-sided, per-cell, no whitelist) — " + verdict);
+  process.exit(1);
+}
+if (verdict.startsWith("INCONCLUSIVE")) {
+  console.error(
+    "::error::fling parity gate INCONCLUSIVE — no informative cell to grade (3K1-M3): " +
+      "the run cannot certify fling parity, so it fails rather than passing silently — " +
+      verdict
+  );
   process.exit(1);
 }

@@ -67,6 +67,81 @@ function deliveredSpanMs(logcat: string): { spanMs: number | null; events: numbe
   return { spanMs: Math.max(...ts) - Math.min(...ts), events: ts.length };
 }
 
+/**
+ * Phase 3k.1 (review 3K-H3) — device-side MotionEvent cadence from
+ * `adb shell dumpsys input`. `InputDispatcher VERBOSE` logs nothing on this image, so
+ * the logcat DOWN→UP span is only the two Launcher `TaplEvents` endpoints (no MOVE
+ * cadence — the very thing a fling depends on). `dumpsys input` keeps a
+ * RecentQueue / "recent events" list whose entries carry a per-event time (either
+ * `age=NNNms` relative to the dump, or an absolute `eventTime=<ns>`) and INCLUDE the
+ * MOVE frames, so the intermediate cadence is recoverable. Parse best-effort (the
+ * format varies by image); return the source label, the number of MotionEvent time
+ * samples, the delivered span (max−min) in ms, and the sorted inter-event deltas (the
+ * MOVE cadence). Never throws — MEASUREMENT only, read immediately after each swipe.
+ */
+function dumpsysMotionEventTimes(dump: string): {
+  source: string;
+  n: number;
+  spanMs: number | null;
+  cadenceMs: number[];
+} {
+  // Prefer the RecentQueue / recent-events region if present (bounds the parse to the
+  // just-injected burst rather than the whole global dump).
+  const regionMatch = dump.match(/(RecentQueue|recent events|InboundQueue)[\s\S]{0,6000}/i);
+  const region = regionMatch ? regionMatch[0] : dump;
+  const round1 = (x: number): number => Number(x.toFixed(1));
+  // 3K1-M8: filter to MotionEvent entries so the parsed times are the gesture's touch
+  // frames (DOWN/MOVE/UP), not arbitrary input events sharing the queue — the event
+  // class is now ESTABLISHED by the parser, not inferred from the arithmetic. On
+  // images that label each entry (`MotionEvent(...) age=NNms`) the per-line filter
+  // holds; if the image does not label event classes we fall back to the whole region
+  // and SAY so in the source label, rather than claiming a MotionEvent read we cannot
+  // back.
+  const motionScope = region
+    .split("\n")
+    .filter((l) => /MotionEvent/i.test(l))
+    .join("\n");
+  const filtered = motionScope.length > 0;
+  const classNote = (usedFilter: boolean): string =>
+    usedFilter ? "MotionEvent-filtered" : "event class NOT filtered";
+  // (a) `age=NNNms` relative to dump time (larger age = earlier event).
+  const parseAges = (text: string): number[] =>
+    [...text.matchAll(/\bage=(\d+(?:\.\d+)?)ms\b/g)].map((m) => Number(m[1]));
+  let ages = filtered ? parseAges(motionScope) : [];
+  const ageFiltered = ages.length >= 2;
+  if (!ageFiltered) ages = parseAges(region); // fall back to the unfiltered region
+  if (ages.length >= 2) {
+    const sorted = ages.slice().sort((a, b) => b - a); // oldest → newest
+    const cadence: number[] = [];
+    for (let i = 1; i < sorted.length; i++) cadence.push(round1(sorted[i - 1]! - sorted[i]!));
+    return {
+      source: `dumpsys input RecentQueue age=…ms (${classNote(ageFiltered)})`,
+      n: ages.length,
+      spanMs: round1(Math.max(...ages) - Math.min(...ages)),
+      cadenceMs: cadence,
+    };
+  }
+  // (b) absolute `eventTime=<ns|ms>` (newer format); normalise to ms by magnitude.
+  const parseEvt = (text: string): number[] =>
+    [...text.matchAll(/\beventTime=(\d{4,})\b/g)].map((m) => Number(m[1]));
+  let evt = filtered ? parseEvt(motionScope) : [];
+  const evtFiltered = evt.length >= 2;
+  if (!evtFiltered) evt = parseEvt(region);
+  if (evt.length >= 2) {
+    const toMs = (v: number): number => (v > 1e9 ? v / 1e6 : v); // ns → ms heuristic
+    const ms = evt.map(toMs).sort((a, b) => a - b);
+    const cadence: number[] = [];
+    for (let i = 1; i < ms.length; i++) cadence.push(round1(ms[i]! - ms[i - 1]!));
+    return {
+      source: `dumpsys input eventTime=… (${classNote(evtFiltered)})`,
+      n: evt.length,
+      spanMs: round1(ms[ms.length - 1]! - ms[0]!),
+      cadenceMs: cadence,
+    };
+  }
+  return { source: "dumpsys input (no MotionEvent times parsed)", n: 0, spanMs: null, cadenceMs: [] };
+}
+
 /** Fraction of pixels that differ (per-channel tolerance 24) between two PNGs. */
 function pngDiffRatio(a: Buffer, b: Buffer): number {
   const pa = PNG.sync.read(a);
@@ -468,31 +543,47 @@ suite("android open-device-server on-device", () => {
 
   it("3k pacing — UiAutomation delivered swipe duration from logcat MotionEvents", async () => {
     // Phase 3k measurement (option i), UiAutomation arm (the default open path here).
-    // Same 26-frame long swipe as the scrcpy arm; read the delivered MotionEvent span
-    // from logcat. MEASUREMENT only (records delivered-vs-requested, asserts the
-    // backend stayed live) so a logcat-parse miss never fails the enforced suite.
+    // Same long swipe as the scrcpy arm — 26 REQUESTED steps, which the momentum
+    // builder emits as an 8-FRAME wire gesture (2 head + 5 tail + DOWN/UP endpoints,
+    // ~416 ms). Read the delivered MotionEvent span from logcat. MEASUREMENT only
+    // (records delivered-vs-requested, asserts the backend stayed live) so a
+    // logcat-parse miss never fails the enforced suite.
     const info = await freshSettings();
     const cx = Math.round(info.screenWidth / 2);
     const y0 = Math.round(info.screenHeight * 0.72);
     const y1 = Math.round(info.screenHeight * 0.32);
-    const steps = 26;
+    const steps = 26; // 26 requested steps → 8 wire frames (~416 ms)
     const requestedMs = steps * 16;
-    let evidence = `UNMEASURED requested=${requestedMs}ms`;
+    const wireNote = "26 requested steps → 8 wire frames";
+    let evidence = `UNMEASURED requested=${requestedMs}ms (${wireNote})`;
     try {
       await runAdb(["-s", serial, "logcat", "-c"]).catch(() => undefined);
       await api.swipe(cx, y0, cx, y1, steps, 0);
+      // 3K-H3: read the device-side MotionEvent cadence from `dumpsys input`
+      // IMMEDIATELY (the RecentQueue ages relative to the dump time, so it must be
+      // read before the burst rolls out of the queue), then the logcat endpoints.
+      const di = await runAdb(["-s", serial, "shell", "dumpsys", "input"], { timeoutMs: 20_000 }).catch(
+        () => ({ stdout: "" })
+      );
+      const dv = dumpsysMotionEventTimes(di.stdout);
       await sleep(600);
       const dump = await runAdb(["-s", serial, "logcat", "-d", "-v", "threadtime"], {
         timeoutMs: 20_000,
       }).catch(() => ({ stdout: "" }));
       const { spanMs, events } = deliveredSpanMs(dump.stdout);
-      evidence =
+      const logRow =
         spanMs === null
-          ? `delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
-          : `delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+          ? `logcat endpoints=UNMEASURED (no MotionEvent lines; ${events} ts)`
+          : `logcat DOWN→UP endpoints=${spanMs}ms (${events} events, Launcher TaplEvents — endpoints only)`;
+      const cad = dv.cadenceMs.length ? ` cadence=[${dv.cadenceMs.join(",")}]ms` : "";
+      const diRow =
+        dv.n >= 2
+          ? `${dv.source}: delivered=${dv.spanMs}ms n=${dv.n}${cad}`
+          : `${dv.source}: UNMEASURED (n=${dv.n})`;
+      evidence = `requested=${requestedMs}ms (${wireNote}); ${logRow}; ${diRow}`;
     } catch (e) {
       // MEASUREMENT only — must not fail the enforced suite on a swipe/logcat hiccup.
-      evidence = `UNMEASURED (${e instanceof Error ? e.message : String(e)}) requested=${requestedMs}ms`;
+      evidence = `UNMEASURED (${e instanceof Error ? e.message : String(e)}) requested=${requestedMs}ms (${wireNote})`;
     }
     // eslint-disable-next-line no-console
     console.log(`  3k pacing uiautomation ${evidence}`);
@@ -1374,35 +1465,48 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
   }, 240_000);
 
   it("3k pacing — scrcpy delivered swipe duration (drift vs legacy) from logcat MotionEvents", async () => {
-    // Phase 3k measurement (option i), scrcpy arm. Inject a long (26-frame ~416 ms)
-    // plain swipe under BOTH pacing modes and read the delivered MotionEvent span
-    // from logcat, so the host pacing trace ([open-server-fast-inject] `pacing …`)
+    // Phase 3k measurement (option i), scrcpy arm. Inject a long plain swipe — 26
+    // REQUESTED steps, emitted as an 8-FRAME wire gesture (~416 ms) — under BOTH
+    // pacing modes and read the delivered MotionEvent span from logcat, so the host
+    // pacing trace ([open-server-fast-inject] `pacing …`, which reports `frames=8`)
     // can be checked against what the OS actually received. MEASUREMENT: it records
     // delivered-vs-requested and asserts only that the swipe was injected (the
     // fling scroll A/B is the graded before/after) so a logcat-parse miss on some
     // emulator image never fails the enforced device suite.
-    const info = await fiHome();
+    await fiHome();
+    const info = await fiApi.getInfo();
     const cx = Math.round(info.screenWidth / 2);
     const y0 = Math.round(info.screenHeight * 0.72);
     const y1 = Math.round(info.screenHeight * 0.32);
-    const steps = 26; // ~416 ms at 16 ms/frame — the long-duration cell that under-scrolls
+    const steps = 26; // 26 requested steps → 8 wire frames (~416 ms), the long-duration cell that under-scrolls
     const requestedMs = steps * 16;
+    const wireNote = "26 requested steps → 8 wire frames";
     const measureArm = async (pacing: "drift" | "legacy"): Promise<string> => {
-      if (pacing === "legacy") process.env.ARGENT_SCRCPY_PACING = "legacy";
-      else delete process.env.ARGENT_SCRCPY_PACING;
+      // Phase 3k.1: `drift` is now OPT-IN, so it must be selected explicitly; the
+      // default (unset) is `legacy`. Set the env for the arm under measurement.
+      process.env.ARGENT_SCRCPY_PACING = pacing;
       try {
         await fiHome();
         await runAdb([`-s`, fiSerial, "logcat", "-c"]).catch(() => undefined);
         await fiApi.swipe(cx, y0, cx, y1, steps, 0);
+        // 3K-H3: device-side MotionEvent cadence from dumpsys input, read IMMEDIATELY.
+        const di = await runAdb([`-s`, fiSerial, "shell", "dumpsys", "input"], { timeoutMs: 20_000 }).catch(
+          () => ({ stdout: "" })
+        );
+        const dv = dumpsysMotionEventTimes(di.stdout);
         await sleep(600);
         const dump = await runAdb([`-s`, fiSerial, "logcat", "-d", "-v", "threadtime"], {
           timeoutMs: 20_000,
         }).catch(() => ({ stdout: "" }));
         const { spanMs, events } = deliveredSpanMs(dump.stdout);
-        const line =
+        const logRow =
           spanMs === null
-            ? `${pacing}: delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
-            : `${pacing}: delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+            ? `logcat endpoints=UNMEASURED (${events} ts)`
+            : `logcat DOWN→UP endpoints=${spanMs}ms (${events} events, endpoints only)`;
+        const cad = dv.cadenceMs.length ? ` cadence=[${dv.cadenceMs.join(",")}]ms` : "";
+        const diRow =
+          dv.n >= 2 ? `${dv.source}: delivered=${dv.spanMs}ms n=${dv.n}${cad}` : `${dv.source}: UNMEASURED (n=${dv.n})`;
+        const line = `${pacing}: requested=${requestedMs}ms (${wireNote}); ${logRow}; ${diRow}`;
         // eslint-disable-next-line no-console
         console.log(`  3k pacing scrcpy ${line}`);
         return line;
