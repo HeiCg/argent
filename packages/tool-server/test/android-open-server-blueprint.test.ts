@@ -209,6 +209,67 @@ describe("androidOpenServerBlueprint.factory", () => {
     await instance.dispose!();
   });
 
+  // Phase 3m: fingerprints are opt-in on the read RPCs. The plain describe /
+  // latency path must send NO `fingerprints` (so the device never forces a hash
+  // rebuild), and the screen-graph path must send `fingerprints: true`.
+  it("getState/getNestedState send `fingerprints` ONLY when the caller opts in", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startFakeDeviceServer((line, s) => {
+      const req = JSON.parse(line) as {
+        id: number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      seen.push({ method: req.method, params: req.params ?? {} });
+      // getState (flat + nested) both hit the "getState" RPC; a minimal well-formed
+      // reply is enough — the test only inspects the request params.
+      const result =
+        req.method === "getState"
+          ? { tree: [], info: { screenWidth: 1080, screenHeight: 1920 }, screenshot: "", waitedMs: 0, captureMs: 0, version: 0 }
+          : req.method === "ping"
+            ? { status: "ok" }
+            : {};
+      s.write(JSON.stringify({ id: req.id, result }) + "\n");
+    });
+    wireSpawnAndForward();
+
+    const instance = await androidOpenServerBlueprint.factory(
+      {} as never,
+      undefined as never,
+      { device: DEVICE } as never
+    );
+    const api = instance.api as OpenDeviceServerApi;
+
+    // Plain describe / latency shape: no fingerprints requested.
+    await api.getState({ includeScreenshot: false });
+    await api.getNestedState({});
+    // Screen-graph / navigate-to shape: fingerprints requested.
+    await api.getState({ includeScreenshot: false, fingerprints: true });
+    await api.getNestedState({ fingerprints: true });
+
+    const getStateReqs = seen.filter((r) => r.method === "getState");
+    // 4 getState RPCs (getNestedState also dispatches "getState" with nested:true).
+    expect(getStateReqs.length).toBe(4);
+
+    // The plain flat getState (nested absent) with no opt-in: no `fingerprints`.
+    const plainFlat = getStateReqs.find((r) => !r.params.nested && !r.params.fingerprints);
+    expect(plainFlat).toBeTruthy();
+    expect("fingerprints" in plainFlat!.params).toBe(false);
+
+    // The plain nested getState (the describe path): no `fingerprints`.
+    const plainNested = getStateReqs.find((r) => r.params.nested === true && !r.params.fingerprints);
+    expect(plainNested).toBeTruthy();
+    expect("fingerprints" in plainNested!.params).toBe(false);
+
+    // The screen-graph flat + nested reads: `fingerprints: true` on the wire.
+    const fpReqs = getStateReqs.filter((r) => r.params.fingerprints === true);
+    expect(fpReqs.length).toBe(2);
+    expect(fpReqs.some((r) => !r.params.nested)).toBe(true); // flat (tiered / navigate-to)
+    expect(fpReqs.some((r) => r.params.nested === true)).toBe(true); // nested (preflight)
+
+    await instance.dispose!();
+  });
+
   it("emits terminated when the helper process exits unexpectedly", async () => {
     await startFakeDeviceServer((line, s) => {
       const req = JSON.parse(line) as { id: number };

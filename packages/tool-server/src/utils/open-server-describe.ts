@@ -33,20 +33,33 @@ export function describeAndroidViaOpenState(
  * As [describeAndroidViaOpenState], but also returns the AX version clock at
  * capture. `await-ui-element`'s open path (Phase A.1) needs the version to arm
  * `awaitChange({ fromVersion })` after an immediate trusted read, so it blocks
- * on the device's AX clock instead of host-polling describe. `version` is 0 on a
- * pre-0.2.0 server that doesn't report it — the caller then just waits for the
- * next event, which is still correct.
+ * on the device's AX clock instead of host-polling describe.
+ *
+ * Phase 3m.1 (3M-H5): pass `fingerprints: true` on that FIRST read. Since 3m the
+ * device AX event listener is armed lazily (on the first fingerprints /
+ * awaitChange / outcome request), so a plain `getNestedState` leaves the clock
+ * unarmed and `version` absent; an event landing between this read and the first
+ * `awaitChange` (which arms the clock itself) would then be invisible and the
+ * wait would block to the full timeout. Requesting fingerprints here registers
+ * the listener and returns a live `version`, exactly like
+ * `awaitScreenIdleViaOpenServer`. The re-read helpers keep the fingerprint-free
+ * default so the plain describe latency path never arms the listener (C2). On a
+ * pre-0.2.0 server `version` is 0 and the caller just waits for the next event —
+ * still correct.
  */
 export function readAndroidOpenState(
   registry: Registry,
-  device: DeviceInfo
+  device: DeviceInfo,
+  opts: { fingerprints?: boolean } = {}
 ): Promise<{ data: DescribeTreeData; version: number }> {
   const ref = openDeviceServerRef(device);
   // Serialize against describe / input on the same device, exactly as the
   // describe and gesture open paths do.
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const state = await server.getNestedState();
+    const state = await server.getNestedState(
+      opts.fingerprints ? { fingerprints: true } : {}
+    );
     const tree = openServerNestedToDescribeNode(
       state.tree,
       state.info.screenWidth,

@@ -127,6 +127,9 @@ export interface DescribeStageTimings {
   rootsMs: number[];
   serializeMs: number;
   encodeMs: number;
+  // Fingerprint (hash) build cost (phase 3m). 0 / absent when fingerprints were
+  // not requested — the plain describe path never computes them.
+  fingerprintMs?: number;
   // Which path produced the active root (phase 3g-b): "windows" =
   // `windows.firstOrNull { it.isActive }?.root` (the fast, mid-transition-safe
   // path), "activeWindow" = `rootInActiveWindow` fallback. Absent on older servers.

@@ -465,7 +465,11 @@ export async function awaitScreenIdleViaOpenServer(
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     let polls = 0;
-    let state = await server.getState({ includeScreenshot: false });
+    // Phase 3m: request fingerprints so this first read ARMS the device AX clock
+    // and returns a live `version` before the awaitChange loop below keys off it
+    // (with the lazy listener the clock is otherwise 0 until first armed, and an
+    // event between this read and the first awaitChange could be missed).
+    let state = await server.getState({ includeScreenshot: false, fingerprints: true });
     polls += 1;
     let version = state.version ?? 0;
 

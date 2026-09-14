@@ -207,6 +207,10 @@ class JsonRpcHandler(
      */
     private fun runAction(params: JSONObject, action: () -> JSONObject): JSONObject {
         val outcome = params.optJSONObject("outcome") ?: return action()
+        // An outcome-bearing action reads before/after fingerprints and settles on
+        // the AX clock — arm it (phase 3m lazy-arm; the plain no-outcome action
+        // above returns without arming, keeping the tap latency path listener-free).
+        TreeStore.armClock()
         val firstEventTimeoutMs = outcome.optLong("firstEventTimeoutMs", 600L)
         val quietMs = outcome.optLong("quietMs", 80L)
         val idleTimeoutMs = outcome.optLong("idleTimeoutMs", 1500L)
@@ -222,7 +226,9 @@ class JsonRpcHandler(
             before
         } else {
             var a = TreeStore.ensure()
-            if (a.roots.isEmpty() || a.hash == TreeStore.EMPTY_TREE_HASH) {
+            // Phase 3m.1 (3M-H1): an empty forest now has a null hash; guard on
+            // isEmpty (EMPTY_TREE_HASH kept for a legacy build).
+            if (a.isEmpty || a.hash == null || a.hash == TreeStore.EMPTY_TREE_HASH) {
                 a = TreeStore.awaitNonEmptyTree(idleTimeoutMs)
             }
             a

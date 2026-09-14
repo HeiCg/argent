@@ -127,6 +127,11 @@ export interface OpenServerTimings {
   rootsMs: number[];
   serializeMs: number;
   encodeMs: number;
+  // Fingerprint (hash) build cost (phase 3m), a first-class stage so no fingerprint
+  // work hides in the capture residual. 0 (or absent) when fingerprints were not
+  // requested — the plain describe / latency path never computes them. Absent on
+  // servers before versionCode 26.
+  fingerprintMs?: number;
   // Which path produced the active root (phase 3g-b): "windows" = read from the
   // interactive-windows snapshot (fast, coherent mid-transition), "activeWindow" =
   // `rootInActiveWindow` fallback. Absent on servers before versionCode 22.
@@ -351,6 +356,13 @@ export interface OpenDeviceServerApi {
     _benchLegacyEncode?: boolean;
     /** Bench diagnostic (phase 3j): pad the reply to a multiple of this many bytes. */
     _padTo?: number;
+    /**
+     * Phase 3m: request the screen fingerprints (`hash` / `stateHash` / `idHash`).
+     * OPT-IN — default off, so the plain describe / latency path never forces a
+     * device-side fingerprint rebuild. Screen-graph consumers pass `true`; `version`
+     * is returned regardless. An absent hash means "not requested", never "empty".
+     */
+    fingerprints?: boolean;
   }): Promise<{
     tree: OpenServerNestedElement[];
     info: OpenServerInfo;
@@ -456,6 +468,12 @@ export interface OpenDeviceServerApi {
     flush?: boolean;
     /** Screen-graph Phase A: caller's last-seen version; flags `unchanged`. */
     sinceVersion?: number;
+    /**
+     * Phase 3m: request the screen fingerprints (`hash` / `stateHash` / `idHash` /
+     * `unchanged`). OPT-IN — default off. `sinceVersion` implies it. `version` is
+     * always returned. Screen-graph / navigate-to consumers pass `true`.
+     */
+    fingerprints?: boolean;
   }): Promise<OpenServerStateResult>;
   /**
    * Ports the phase 3j transport experiment needs to set up an emulator-console
@@ -961,6 +979,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           maxElements: stateOpts.maxElements ?? 3000,
           waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
           ...(stateOpts.flush ? { flush: true } : {}),
+          ...(stateOpts.fingerprints ? { fingerprints: true } : {}),
           ...(stateOpts._benchLegacyEncode ? { _benchLegacyEncode: true } : {}),
           ...(stateOpts._padTo && stateOpts._padTo > 0 ? { _padTo: stateOpts._padTo } : {}),
         });
@@ -1033,6 +1052,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
             ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
             ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
             ...(stateOpts.sinceVersion !== undefined ? { sinceVersion: stateOpts.sinceVersion } : {}),
+            ...(stateOpts.fingerprints ? { fingerprints: true } : {}),
           });
         return {
           ...result,
