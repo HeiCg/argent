@@ -333,13 +333,27 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
    * Phase 3k — the long-duration fling deficit. The DEFAULT loop (`legacy`) AWAITS
    * one `injectTouch` per frame: `injectTouch` resolves only once the control
    * message has been `consumed` (serialized + written to and drained by the scrcpy
-   * socket), so a per-frame consume cost W stretches a K-frame swipe to
-   * ~K·max(16, W) instead of K·16 ms. The scrcpy server stamps each MotionEvent
-   * with `SystemClock.uptimeMillis()` at READ time, so a stretched write cadence
-   * feeds the OS VelocityTracker a lower release velocity and the fling under-
-   * scrolls (the deficit reported at 400 ms in review F2). The legacy branch is
-   * BYTE-EQUAL to `690e66bc`'s loop (no per-frame instrumentation on this path), so
-   * the default gesture wire behaviour is exactly the pre-3k code path.
+   * socket).
+   *
+   * HYPOTHESIS, NOT OBSERVED on the CI runner (reviewed status, 3k/3k.1). The
+   * original theory was that a per-frame consume cost W stretches a K-frame swipe to
+   * ~K·max(16, W) instead of K·16 ms, and that — since the scrcpy server stamps each
+   * MotionEvent with `SystemClock.uptimeMillis()` at READ time — a stretched write
+   * cadence feeds the OS VelocityTracker a lower release velocity so the fling
+   * under-scrolls (the deficit reported at 400 ms in review F2). CI does NOT bear
+   * this out as the host-pacing cause: on run 34813849446 the deficit reproduced,
+   * but host pacing was NEUTRAL — the `drift` fix (below) is statistically
+   * indistinguishable from `legacy` (same-run paired legacy→drift permutation
+   * p ≥ 0.13 in every cell), and the host dispatch span already equals the requested
+   * duration on the drift arm (median worst-frame drift 2.1 ms). What WAS observed is
+   * device-side: `dumpsys input` shows both scrcpy arms delivering ~439–452 ms for a
+   * 416 ms request with a 35–46 ms final MOVE→UP gap, vs 417/17 ms for UiAutomation
+   * — an arrival-time stretch on the last frames, cause OPEN. The 8-frame schedule
+   * alone is ruled out: the UiAutomation arm sends the identical 8 wire frames and
+   * reaches `uia/off` 1.037 at 400/0.3. So this per-frame-consume story stays a
+   * hypothesis; do not treat it as the mechanism. The legacy branch is BYTE-EQUAL to
+   * `690e66bc`'s loop (no per-frame instrumentation on this path), so the default
+   * gesture wire behaviour is exactly the pre-3k code path.
    *
    * `drift` (OPT-IN, `ARGENT_SCRCPY_PACING=drift`) decouples the write from the
    * frame clock: it sleeps to each frame's drift-corrected slot (`anchor + tMs`,
@@ -423,8 +437,15 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
         let writeErr: unknown = null;
         const pending: Promise<void>[] = [];
         for (const f of frames) {
+          // 3K-L4: once any write has rejected, STOP the frame loop — do not sleep
+          // through the rest of the timeline (which delayed the Kotlin fallback by a
+          // whole gesture duration) and do not queue further writes. The `throw
+          // writeErr` after the loop runs the loud fallback (lift pointers + drop
+          // client) immediately instead of a gesture-duration later.
+          if (writeErr !== null) break;
           const wait = anchor + f.tMs - performance.now();
           if (wait > 0) await sleep(wait);
+          if (writeErr !== null) break; // a rejection surfaced while sleeping to this slot
           const dispatchMs = performance.now() - anchor;
           applyDown(f); // synchronous, so a mid-gesture failure lifts the right pointers
           const rec: FrameTrace = { tMs: f.tMs, action: f.action, dispatchMs, writeMs: NaN };

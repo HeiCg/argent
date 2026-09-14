@@ -255,7 +255,8 @@ test("merge-fling: NO whitelist — a cell that used to be whitelisted (400|0.5)
 test("merge-fling: a cell whose uia REFERENCE q25 sits at the floor is NON-INFORMATIVE (change 1)", () => {
   const out = freshOut();
   // uia iqr[0] at the 0.175 floor (bimodal reference) → non-informative, keyed on the
-  // reference, never on scrcpy. Only cell → 0 informative → INCONCLUSIVE, not pass/fail.
+  // reference, never on scrcpy. Only cell → 0 informative → INCONCLUSIVE, which now
+  // FAILS the step (3K1-M3): a run with no gradable cell must not exit green.
   const uia = [{ durationMs: 150, distance: 0.3, n: 12, median: 0.45, iqr: [0.175, 0.51] }];
   const scr = [{ durationMs: 150, distance: 0.3, n: 12, median: 0.46, iqr: [0.4, 0.5] }];
   const off = [{ durationMs: 150, distance: 0.3, n: 12, median: 0.46, iqr: [0.44, 0.5] }];
@@ -263,7 +264,7 @@ test("merge-fling: a cell whose uia REFERENCE q25 sits at the floor is NON-INFOR
   fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy.json"), JSON.stringify(flingBlock("ON-scrcpy", scr, { pacing: "drift" })));
   fs.writeFileSync(path.join(out, "fling-block-OFF.json"), JSON.stringify(flingBlock("OFF", off)));
   const r = run(MERGE_FLING, out);
-  assert.strictEqual(r.code, 0);
+  assert.strictEqual(r.code, 1, r.stdout);
   assert.match(r.stdout, /INCONCLUSIVE/);
   assert.match(r.stdout, /uia reference q25=0.175 at the 0.175 floor/);
 });
@@ -277,9 +278,35 @@ test("merge-fling: POWER FLOOR — an OFF arm with n<10 makes the cell NON-INFOR
   fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy.json"), JSON.stringify(flingBlock("ON-scrcpy", scr, { pacing: "drift" })));
   fs.writeFileSync(path.join(out, "fling-block-OFF.json"), JSON.stringify(flingBlock("OFF", off)));
   const r = run(MERGE_FLING, out);
-  assert.strictEqual(r.code, 0);
+  assert.strictEqual(r.code, 1, r.stdout); // 3K1-M3: INCONCLUSIVE now fails
   assert.match(r.stdout, /INCONCLUSIVE/);
   assert.match(r.stdout, /off n=8 < 10/);
+});
+
+test("merge-fling: 3K1-M3 — INCONCLUSIVE (zero informative cells) EXITS NON-ZERO, not a silent green", () => {
+  const out = freshOut();
+  // Every cell non-informative: one cell with a floored uia reference, one with a
+  // floored off reference — so no cell is gradable and the verdict is INCONCLUSIVE.
+  // Before 3K1-M3 this exited 0 (a silent no-op gate); it must now fail the step.
+  const uia = [
+    { durationMs: 150, distance: 0.3, n: 12, median: 0.45, iqr: [0.175, 0.51] }, // uia floored
+    { durationMs: 250, distance: 0.3, n: 12, median: 0.45, iqr: [0.42, 0.48] },
+  ];
+  const scr = [
+    { durationMs: 150, distance: 0.3, n: 12, median: 0.46, iqr: [0.4, 0.5] },
+    { durationMs: 250, distance: 0.3, n: 12, median: 0.46, iqr: [0.43, 0.49] },
+  ];
+  const off = [
+    { durationMs: 150, distance: 0.3, n: 12, median: 0.46, iqr: [0.44, 0.5] },
+    { durationMs: 250, distance: 0.3, n: 12, median: 0.46, iqr: [0.175, 0.49] }, // off floored
+  ];
+  fs.writeFileSync(path.join(out, "fling-block-ON-uiautomation.json"), JSON.stringify(flingBlock("ON-uiautomation", uia)));
+  fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy.json"), JSON.stringify(flingBlock("ON-scrcpy", scr, { pacing: "drift" })));
+  fs.writeFileSync(path.join(out, "fling-block-OFF.json"), JSON.stringify(flingBlock("OFF", off)));
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 1, r.stdout);
+  assert.match(r.stdout, /FLING VERDICT: INCONCLUSIVE/);
+  assert.match(r.stderr, /::error::fling parity gate INCONCLUSIVE.*3K1-M3/);
 });
 
 test("merge-fling: scrcpy/off and uia/off transparency + legacy→drift before/after are printed", () => {

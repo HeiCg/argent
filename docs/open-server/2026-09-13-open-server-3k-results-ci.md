@@ -172,14 +172,21 @@ F7 identities to print. Device suite: **17/17 enforced + 2 measurement-only reco
 two 3k pacing tests `record(…, "PASS", …)` unconditionally and assert only `isReady()`),
 not "19/19" comparable to run 7's 17/17.
 
-## Open items — resolved by phase 3k.1
+## Open items — carried into / addressed by phase 3k.1
 
 1. **Fling gate design** → pre-registered rule (findings "Gate recommendation"),
    implemented in 3k.1 `merge-fling.js`.
 2. **Base ON tap/swipe latency regression** → root-caused and fixed in
    `fix/open-server-outcome-default-off` (merged).
-3. **Host pacing trace in CI** → routed to a file (3k.1); device-side MOVE cadence read
-   from `dumpsys input`.
+3. **Host pacing trace in CI** → routed to a file (3k.1); device-side MotionEvent cadence
+   read from `dumpsys input`. What 3k.1 then FOUND: the deficit is **not** resolved. The
+   host dispatch span equals the requested duration on the traced (`drift`) arm, but the
+   device-side `dumpsys` read shows **both** scrcpy arms delivering a stretched tail
+   (452/439 ms for a 416 ms request, final MOVE→UP gap 46/35 ms vs uia's 417/17 ms). The
+   mechanism is **OPEN**, and the 8-frame-schedule explanation is **ruled out** — the uia
+   arm sends the identical 8 wire frames and reads `uia/off` 1.037 at 400/0.3
+   (`2026-09-05-open-server-phase3k-fling-pacing-and-gates.md` "Result (3k.1)",
+   review 3K1-H1/H2).
 4. **Pacing default** → `legacy` (byte-equal pre-3k) with `drift` opt-in; the A/B keeps
    both arms so every run adds a paired sample, and no default changes until a same-run
    paired effect clears p < 0.05 with the pre-registered gate green.

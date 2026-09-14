@@ -211,6 +211,26 @@ describe("scrcpy fast-inject pacing (phase 3k)", () => {
     expect(h.client.close).toHaveBeenCalledTimes(1); // client dropped
   });
 
+  it("3K-L4: drift BREAKS the frame loop on a write error (does not queue the rest of the timeline)", async () => {
+    // Before 3K-L4 the drift loop kept sleeping to each remaining frame's slot and
+    // queueing its write after the first rejection, so the loud fallback (lift
+    // pointers + drop client) arrived a whole gesture duration late. With the break,
+    // a DOWN-write failure stops the loop almost immediately: only a couple of the
+    // eight wire frames are ever dispatched before it throws.
+    process.env.ARGENT_SCRCPY_PACING = "drift";
+    h.failAtIndex = 0; // fail the DOWN write
+    const { backend } = makeBackend();
+    // steps=8 → an 8-frame momentum swipe (2 head + 5 tail + DOWN/UP).
+    await expect(backend.swipe(0.5, 0.72, 0.5, 0.32, 8, 0)).rejects.toThrow(/scrcpy|write failure/);
+    // The loop broke early: far fewer than the 8 timeline frames were dispatched.
+    const nonCancel = h.injectTouchCalls.filter((m) => m.action !== 3).length;
+    expect(nonCancel).toBeLessThanOrEqual(3); // without the break this is 8
+    expect(nonCancel).toBeLessThan(8);
+    // …and it still fell back LOUDLY: still-down pointers cancelled + client dropped.
+    expect(h.injectTouchCalls.some((m) => m.action === 3)).toBe(true); // CANCEL emitted
+    expect(h.client.close).toHaveBeenCalledTimes(1); // client dropped
+  });
+
   it("legacy (default) also lifts still-down pointers (CANCEL) and drops the client on a write failure", async () => {
     // The byte-equal default path keeps the pre-3k recovery: a mid-gesture MOVE
     // failure (the DOWN already recorded) still cancels the down pointer and drops

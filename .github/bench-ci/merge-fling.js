@@ -247,9 +247,19 @@ for (const c of perCell) {
 }
 console.log(`FLING VERDICT: ${verdict}`);
 console.log("FLING_AB_JSON=" + outPath);
-// BLOCKING: an informative cell out of tolerance fails the job. INCONCLUSIVE (no
-// informative cells) is reported, not gated.
+// BLOCKING: an informative cell out of tolerance fails the job. INCONCLUSIVE (zero
+// informative cells — every reference floored/underpowered, or an arm that lost its
+// samples) ALSO fails the job (3K1-M3): the run cannot certify fling parity when
+// there is no gradable cell, so it must not exit green as a silent no-op.
 if (verdict.startsWith("FAIL")) {
   console.error("::error::fling parity gate FAILED (two-sided, per-cell, no whitelist) — " + verdict);
+  process.exit(1);
+}
+if (verdict.startsWith("INCONCLUSIVE")) {
+  console.error(
+    "::error::fling parity gate INCONCLUSIVE — no informative cell to grade (3K1-M3): " +
+      "the run cannot certify fling parity, so it fails rather than passing silently — " +
+      verdict
+  );
   process.exit(1);
 }

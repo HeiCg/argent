@@ -333,6 +333,12 @@ async function runInterleaved(): Promise<void> {
     acc[a] = new Map(CELLS.map((c) => [cellKey(c.durationMs, c.distance), { samples: [], drops: [] }]));
   }
   const evidence: InterleaveSampleEvent[] = [];
+  // 3K1-M3: a warm/whole-arm-round failure must FAIL the step, not degrade to
+  // "non-informative". We still record the per-cell drop reasons and write the block
+  // files (for diagnosis), but any arm-round failure is collected here and rethrown
+  // after the artifacts are written, so `main()` exits non-zero instead of the gate
+  // silently reading a short arm as floored.
+  const armRoundFailures: string[] = [];
   const t0 = Date.now();
   let produced = 0; // total samples produced this run so far (cap at N per arm-cell)
 
@@ -381,8 +387,11 @@ async function runInterleaved(): Promise<void> {
           }
         }
       } catch (e) {
-        // Warm/whole-arm failure this round: record a drop for every cell it owed.
+        // Warm/whole-arm failure this round: record a drop for every cell it owed AND
+        // remember it so the run fails loudly (3K1-M3) — an arm that dies must not
+        // degrade to "non-informative" and let the gate exit green.
         const reason = `arm ${group} round ${round} failed: ${e instanceof Error ? e.message : String(e)}`;
+        armRoundFailures.push(reason);
         const owed: FlingConfigName[] =
           group === "scrcpy" ? ["ON-scrcpy", "ON-scrcpy-legacy"] : group === "uia" ? ["ON-uiautomation"] : ["OFF"];
         for (const arm of owed) {
@@ -457,6 +466,16 @@ async function runInterleaved(): Promise<void> {
     }
   }
   process.stdout.write(`INTERLEAVE_EVIDENCE_JSON=${evPath}\n`);
+
+  // 3K1-M3: fail loudly if any arm-round died. The block files + evidence are already
+  // written for diagnosis, but the process must exit non-zero so the CI step fails and
+  // the fling gate never grades a run where an arm silently lost its samples.
+  if (armRoundFailures.length) {
+    throw new Error(
+      `${armRoundFailures.length} arm-round failure(s) — the fling run is not gradable: ` +
+        armRoundFailures.join(" ; ")
+    );
+  }
 }
 
 async function main(): Promise<void> {
