@@ -55,3 +55,32 @@ One CI latency run; results appended as "v12 / phase 3k" to
 `2026-09-02-open-vs-proprietary-results-v4.md` (working tree; no device-farm commits):
 the per-frame pacing measurement before/after, the six fling cells before/after with
 IQR, and the unchanged verbs vs run 33975063607 within their drift floors. Push; report.
+
+## Addendum 2026-09-13 — refreshed base, decisions, what already landed
+
+- Base: `open/main` AFTER the merge of `feat/screen-graph-d` (ticket
+  `2026-09-13-merge-screen-graph-d-into-open-main.md`). One branch `feat/open-server-3k`
+  off `open/main`; code and CI live in the same tree now (no separate CI branch).
+  Worktree under the parent dir (`../argent-fork-wt-3k`), never /tmp — the previous 3k
+  WIP (pacing measurement, drift-corrected writes, `gates.test.js`) was lost there on
+  2026-09-10 and must be redone from this ticket.
+- Decision (owner, 2026-09-05): option (i) — measure delivered-vs-requested duration and
+  distance for ALL THREE arms (scrcpy, UiAutomation, proprietary) from logcat; fix scrcpy
+  pacing with drift-corrected writes without per-frame socket await, else a device-side
+  timeline; gate scrcpy/uia at ±0.15 with NO whitelist; add transparency rows scrcpy/off
+  and uia/off. NO velocity tuning toward the proprietary curve (A.2(c) is dropped).
+- Code pointers on `open/main` (verify after the merge): host pacing loop
+  `packages/tool-server/src/utils/scrcpy-inject-backend.ts` (`await controller.injectTouch`
+  per frame near lines 320 and 352); `MOMENTUM_STEP_MS = 16` and `durationMs` in
+  `scrcpy-inject-timeline.ts:109-154`; frame count `Math.round(duration / 16)` in
+  `tools/gesture-swipe/index.ts:147`.
+- Part B already on `open/main` (`f76f5d24`, `8e968298`): F3 tap verdict "at parity"
+  at the OFF-1/OFF-2 drift floor (`scoreboard.js`), F4/F9 value-bound whitelist plus
+  floor-pinned cell exclusion (`merge-fling.js`), symmetric >=95 % first-attempt
+  landing-rate gate (`merge-blocks.js`). Still open: A.3 whitelist removal (replaces the
+  value bound), F7, F5/F6, F12/F13, F19, the gate unit tests (redo `gates.test.js` under
+  `.github/bench-ci/`), device-test enforcement evidence.
+- Output location: results go to a new file `docs/open-server/2026-09-13-open-server-3k-results-ci.md`
+  in this repo (not device-farm; the v4 results file referenced above now lives in
+  `docs/open-server/` as read-only history). Scoreboard rows only after adversarial
+  review.
