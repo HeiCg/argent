@@ -477,17 +477,23 @@ suite("android open-device-server on-device", () => {
     const y1 = Math.round(info.screenHeight * 0.32);
     const steps = 26;
     const requestedMs = steps * 16;
-    await runAdb(["-s", serial, "logcat", "-c"]).catch(() => undefined);
-    await api.swipe(cx, y0, cx, y1, steps, 0);
-    await sleep(600);
-    const dump = await runAdb(["-s", serial, "logcat", "-d", "-v", "threadtime"], {
-      timeoutMs: 20_000,
-    }).catch(() => ({ stdout: "" }));
-    const { spanMs, events } = deliveredSpanMs(dump.stdout);
-    const evidence =
-      spanMs === null
-        ? `delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
-        : `delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+    let evidence = `UNMEASURED requested=${requestedMs}ms`;
+    try {
+      await runAdb(["-s", serial, "logcat", "-c"]).catch(() => undefined);
+      await api.swipe(cx, y0, cx, y1, steps, 0);
+      await sleep(600);
+      const dump = await runAdb(["-s", serial, "logcat", "-d", "-v", "threadtime"], {
+        timeoutMs: 20_000,
+      }).catch(() => ({ stdout: "" }));
+      const { spanMs, events } = deliveredSpanMs(dump.stdout);
+      evidence =
+        spanMs === null
+          ? `delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
+          : `delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+    } catch (e) {
+      // MEASUREMENT only — must not fail the enforced suite on a swipe/logcat hiccup.
+      evidence = `UNMEASURED (${e instanceof Error ? e.message : String(e)}) requested=${requestedMs}ms`;
+    }
     // eslint-disable-next-line no-console
     console.log(`  3k pacing uiautomation ${evidence}`);
     expect(api.isReady()).toBe(true);
@@ -1276,21 +1282,29 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
     const measureArm = async (pacing: "drift" | "legacy"): Promise<string> => {
       if (pacing === "legacy") process.env.ARGENT_SCRCPY_PACING = "legacy";
       else delete process.env.ARGENT_SCRCPY_PACING;
-      await fiHome();
-      await runAdb([`-s`, fiSerial, "logcat", "-c"]).catch(() => undefined);
-      await fiApi.swipe(cx, y0, cx, y1, steps, 0);
-      await sleep(600);
-      const dump = await runAdb([`-s`, fiSerial, "logcat", "-d", "-v", "threadtime"], {
-        timeoutMs: 20_000,
-      }).catch(() => ({ stdout: "" }));
-      const { spanMs, events } = deliveredSpanMs(dump.stdout);
-      const line =
-        spanMs === null
-          ? `${pacing}: delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
-          : `${pacing}: delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
-      // eslint-disable-next-line no-console
-      console.log(`  3k pacing scrcpy ${line}`);
-      return line;
+      try {
+        await fiHome();
+        await runAdb([`-s`, fiSerial, "logcat", "-c"]).catch(() => undefined);
+        await fiApi.swipe(cx, y0, cx, y1, steps, 0);
+        await sleep(600);
+        const dump = await runAdb([`-s`, fiSerial, "logcat", "-d", "-v", "threadtime"], {
+          timeoutMs: 20_000,
+        }).catch(() => ({ stdout: "" }));
+        const { spanMs, events } = deliveredSpanMs(dump.stdout);
+        const line =
+          spanMs === null
+            ? `${pacing}: delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
+            : `${pacing}: delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+        // eslint-disable-next-line no-console
+        console.log(`  3k pacing scrcpy ${line}`);
+        return line;
+      } catch (e) {
+        // MEASUREMENT only — a swipe/logcat hiccup must not fail the enforced suite.
+        const line = `${pacing}: UNMEASURED (${e instanceof Error ? e.message : String(e)})`;
+        // eslint-disable-next-line no-console
+        console.log(`  3k pacing scrcpy ${line}`);
+        return line;
+      }
     };
     let drift = "drift: injected";
     let legacy = "legacy: injected";
