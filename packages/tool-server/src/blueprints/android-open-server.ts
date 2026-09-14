@@ -11,9 +11,7 @@ import {
   type ServiceEvents,
 } from "@argent/registry";
 import { serverManifest } from "@argent/android-device-server";
-import { isFlagEnabled } from "@argent/configuration-core";
 import { runAdb } from "../utils/adb";
-import type { ScrcpyInjectBackend } from "../utils/scrcpy-inject-backend";
 import { resolveAndroidBinary } from "../utils/android-binary";
 import { ensureOpenDeviceServerInstalled } from "../utils/android-helper-install";
 import { AndroidOpenServerClient } from "../utils/android-open-server-client";
@@ -37,21 +35,13 @@ import type {
 const OPEN_DEVICE_SERVER_NAMESPACE = "OpenDeviceServer";
 
 /**
- * Backend for tap/swipe/gesture touch injection (phase 3f):
- * - `'off'`   — inject via the Kotlin `android-device-server` (UiAutomation).
- * - `'scrcpy'`— inject over the scrcpy control channel, skipping the
- *   instrumentation hop; describe/state/screenshot/etc. stay on the Kotlin
- *   channel. Gated by the `open-device-server-fast-inject` flag when the option
- *   is omitted.
- */
-export type FastInjectBackend = "off" | "scrcpy";
-
-/**
  * On-device touch-injection strategy for a single tap/swipe/gesture RPC (phase
- * 3n), threaded on the `inject` param. Omit for today's behaviour (a tap's async
- * UP, a swipe/gesture's blocking UP). See the `open-device-server-inject-strategy`
- * flag; the value is carried by `ARGENT_OPEN_INJECT_STRATEGY`. Independent of
- * [FastInjectBackend] — the scrcpy backend is the control arm and ignores this.
+ * 3n). Threaded on the `inject` param and carried per-block by
+ * `ARGENT_OPEN_INJECT_STRATEGY` (see the `open-device-server-inject-strategy`
+ * flag). Phase 3n.1: the DEFAULT is `input-manager` (the host sends it on every
+ * gesture); the `default`/`uia` sentinel selects the pre-3n.1 Kotlin DEFAULT path
+ * (a tap's async UP, a swipe/gesture's blocking UP), which the `ON-uiautomation`
+ * control block runs.
  */
 export type OpenInjectStrategy = "uia-sync" | "uia-async" | "input-manager";
 
@@ -69,7 +59,6 @@ export interface OpenInjectReport {
 
 type OpenDeviceServerFactoryOptions = Record<string, unknown> & {
   device: DeviceInfo;
-  fastInject?: FastInjectBackend;
 };
 
 export function openDeviceServerRef(device: DeviceInfo): {
@@ -89,13 +78,6 @@ export interface OpenServerInfo {
   currentActivity?: string;
   keyboardVisible: boolean;
   displayRotation: number;
-  /**
-   * Phase 3f: count of fast-inject (scrcpy) actions this session that failed and
-   * fell back to the Kotlin UiAutomation channel. Absent (undefined) when
-   * fast-inject is off; a healthy fast-inject session keeps this at 0. Surfaced
-   * here so a caller (and the bench) can assert zero silent degrades.
-   */
-  fastInjectFallbacks?: number;
   /**
    * Phase 3n.1 P7: per-strategy injection counts over this server process
    * (`default` / `uia-sync` / `uia-async` / `input-manager` / `unavailable` →
@@ -331,10 +313,11 @@ export interface OpenDeviceServerApi {
     waitTimeoutMs?: number;
     /**
      * Phase 3f: when true the server runs one synchronous input-flush no-op inline
-     * before capture (same slot as the tap async-UP drain), so a read that follows
-     * a scrcpy fast-inject observes the settled, finger-up tree without a separate
-     * `flushInput` round-trip. The blueprint sets it automatically when a
-     * fast-inject is pending.
+     * before capture (same slot as the tap async-UP drain), so a read that follows an
+     * out-of-band injection observes the settled, finger-up tree without a separate
+     * `flushInput` round-trip. Generic plumbing to the Kotlin FlushInputHandler; since
+     * the scrcpy fast-inject seam was removed (phase 3n.2) nothing on the host sets it,
+     * but it is retained for callers that inject from a separate process.
      */
     flush?: boolean;
   }): Promise<OpenServerTreeResult>;
@@ -471,10 +454,11 @@ export interface OpenDeviceServerApi {
   ): Promise<{ success: boolean } & OpenInjectReport>;
   /**
    * Synchronously drain the on-device input dispatcher's touch queue (phase 3f).
-   * Called after a fast-inject (scrcpy) tap/swipe/gesture so a following
-   * `getNestedState`/describe on this channel observes the settled, finger-up
-   * tree rather than the mid-press state — scrcpy injects from a separate process
-   * this server's async-UP bookkeeping cannot see. A cheap no-op on its own.
+   * Retained generic plumbing to the Kotlin FlushInputHandler: a following
+   * `getNestedState`/describe on this channel then observes the settled, finger-up
+   * tree rather than the mid-press state. Historically called after a scrcpy
+   * fast-inject (removed in phase 3n.2) which injected from a separate process this
+   * server's async-UP bookkeeping could not see. A cheap no-op on its own.
    */
   flushInput(): Promise<{ success: boolean }>;
   typeText(text: string): Promise<{ success: boolean; charsTyped: number }>;
@@ -1168,130 +1152,19 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }),
     };
 
-    // Fast-inject seam (phase 3f). When enabled, replace ONLY the tap/swipe/gesture
-    // closures with the scrcpy control-channel backend; every other verb stays on
-    // the Kotlin NDJSON client. The `@yume-chan` deps are pulled in lazily so the
-    // default path (and the pure-timeline unit tests) never load them.
-    //
-    // Ordering (critical). scrcpy injects from a separate process, so this server's
-    // async-UP bookkeeping never sees those events. Rather than a separate
-    // `flushInput` RPC after every action — an extra Kotlin round-trip that erased
-    // the injection win — we set a host-side `fastInjectPending` flag and fold the
-    // synchronous flush INTO the next state/hierarchy capture: the read closures are
-    // wrapped to pass `flush:true` (and clear the flag) whenever a fast-inject is
-    // pending. The Kotlin StateHandler/HierarchyHandler run the sync no-op inline
-    // before capturing, in the same slot as the tap async-UP drain, so a following
-    // `getNestedState`/describe (and any before/after outcome capture) observes the
-    // settled, finger-up tree at NO extra round-trip.
-    //
-    // Loud failure. On any scrcpy error the closure falls back to the Kotlin
-    // `tap`/`swipe`/`gesture` RPC for that one action (logged at warn + counted,
-    // surfaced via getInfo.fastInjectFallbacks) — it must NEVER reach the tool-level
-    // proprietary fallback, and the bench asserts this counter is 0 for ON-scrcpy.
-    const fastInject: FastInjectBackend =
-      opts.fastInject ?? (isFlagEnabled("open-device-server-fast-inject") ? "scrcpy" : "off");
-    let scrcpyBackend: ScrcpyInjectBackend | null = null;
-    let fastInjectPending = false;
-    let fastInjectFallbacks = 0;
-    if (fastInject === "scrcpy") {
-      const { createScrcpyInjectBackend } = await import("../utils/scrcpy-inject-backend");
-      scrcpyBackend = createScrcpyInjectBackend({
-        serial,
-        getScreenSize: () => api.getScreenSize(),
-        log: (msg) => {
-          // eslint-disable-next-line no-console
-          console.debug(`[open-server-fast-inject] ${msg}`);
-        },
-      });
-      const backend = scrcpyBackend;
-
-      const onFallback = (verb: string, err: unknown): void => {
-        fastInjectFallbacks++;
-        const detail = err instanceof Error ? err.message : String(err);
-        const msg =
-          `[open-server-fast-inject] scrcpy ${verb} failed; falling back to the ` +
-          `Kotlin UiAutomation channel for this action (fallbacks=${fastInjectFallbacks}): ${detail}`;
-        // warn is the operator signal; console.debug keeps it visible to the bench's
-        // fallback capture so a degraded ON-scrcpy run cannot be scored as healthy.
-        // eslint-disable-next-line no-console
-        console.warn(msg);
-        // eslint-disable-next-line no-console
-        console.debug(msg);
-      };
-
-      // Kotlin closures captured BEFORE the swap, so a fallback re-enters the
-      // UiAutomation path (not itself). Either way a read must order after the UP,
-      // so mark pending in both the scrcpy and the fallback case.
-      const kotlinTap = api.tap;
-      const kotlinSwipe = api.swipe;
-      const kotlinGesture = api.gesture;
-
-      api.tap = async (x, y, tapOpts = {}) => {
-        try {
-          await backend.tap(x, y, tapOpts);
-          fastInjectPending = true;
-          return { success: true };
-        } catch (err) {
-          onFallback("tap", err);
-          fastInjectPending = true;
-          return kotlinTap(x, y, tapOpts);
-        }
-      };
-      api.swipe = async (startX, startY, endX, endY, steps, holdEndMs) => {
-        try {
-          await backend.swipe(startX, startY, endX, endY, steps ?? 10, holdEndMs ?? 0);
-          fastInjectPending = true;
-          return { success: true };
-        } catch (err) {
-          onFallback("swipe", err);
-          fastInjectPending = true;
-          return kotlinSwipe(startX, startY, endX, endY, steps, holdEndMs);
-        }
-      };
-      api.gesture = async (pointers) => {
-        try {
-          await backend.gesture(pointers);
-          fastInjectPending = true;
-          return { success: true };
-        } catch (err) {
-          onFallback("gesture", err);
-          fastInjectPending = true;
-          return kotlinGesture(pointers);
-        }
-      };
-
-      // Fold the synchronous flush into the next read: when a fast-inject is
-      // pending, force `flush:true` (once) so the capture drains the input queue
-      // inline. Wraps every read that could observe post-injection state.
-      const withFlush = <O extends { flush?: boolean }, R>(
-        orig: (opts?: O) => Promise<R>
-      ): ((opts?: O) => Promise<R>) => {
-        return (readOpts?: O): Promise<R> => {
-          if (!fastInjectPending) return orig(readOpts);
-          fastInjectPending = false;
-          return orig({ ...(readOpts ?? {}), flush: true } as O);
-        };
-      };
-      api.getState = withFlush(api.getState);
-      api.getNestedState = withFlush(api.getNestedState);
-      api.getAccessibilityTree = withFlush(api.getAccessibilityTree);
-      api.getNestedAccessibilityTree = withFlush(api.getNestedAccessibilityTree);
-
-      // Surface the fallback counter on getInfo so callers/tests can assert 0.
-      const kotlinGetInfo = api.getInfo;
-      api.getInfo = async () => {
-        const info = await kotlinGetInfo();
-        return { ...info, fastInjectFallbacks };
-      };
-    }
+    // Phase 3n.2: the scrcpy fast-inject seam was REMOVED. tap/swipe/gesture stay on
+    // the Kotlin `android-device-server`, where the per-RPC `inject` strategy
+    // (input-manager default, uia-async fallback, the `default`/`uia` sentinel for the
+    // UiAutomation control) is selected on-device. The former host-side scrcpy backend,
+    // its `fastInjectFallbacks` counter, and the `withFlush` read-wrapper are gone; the
+    // generic `flush`/`flushInput` plumbing to the Kotlin FlushInputHandler is retained
+    // but no longer set from here.
 
     const instance: ServiceInstance<OpenDeviceServerApi> = {
       api,
       dispose: async () => {
         disposed = true;
         ready = false;
-        // Tear down the scrcpy control channel (F3f) before the Kotlin server.
-        if (scrcpyBackend) await scrcpyBackend.dispose().catch(() => undefined);
         // Drop this device's cached screen geometry (F21) so a later session on
         // the same serial re-reads it rather than trusting a stale orientation.
         invalidateScreenSize(serial);

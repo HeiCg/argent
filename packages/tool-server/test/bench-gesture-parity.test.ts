@@ -5,7 +5,9 @@ import {
   describeInjectedTapTimeline,
   assertTapTimelineParity,
 } from "../src/utils/bench-gesture-parity";
-import { TouchAction } from "../src/utils/scrcpy-inject-timeline";
+// Phase 3n.2: scrcpy-inject-timeline was removed; the MotionEvent action codes are
+// inlined for the assertions below.
+const TouchAction = { Down: 0, Up: 1, Move: 2 } as const;
 
 // The open-vs-proprietary bench (scripts/bench-open-vs-proprietary.ts) records
 // these params per block and calls assertIdenticalGestureParams(blocks) before
@@ -49,11 +51,11 @@ describe("bench gesture-param parity assertion (P3c fix 5)", () => {
 });
 
 // Phase 3h: the injected tap timeline is recorded per block so the merge can prove
-// tap parity from the real shape. The scrcpy tap carries a same-point MOVE (the
-// tap-landing fix); UiAutomation/proprietary inject a bare DOWN→UP.
+// tap parity from the real shape. Every backend (UiAutomation / proprietary) injects a
+// bare DOWN→UP with no MOVE. (Phase 3n.2: the scrcpy arm was removed.)
 describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
   it("every backend's tap timeline is a bare two-frame DOWN → UP (no MOVE)", () => {
-    for (const backend of ["scrcpy", "uiautomation", "proprietary"] as const) {
+    for (const backend of ["uiautomation", "proprietary"] as const) {
       const tl = describeInjectedTapTimeline(backend, 50);
       expect(tl.frameCount).toBe(2);
       expect(tl.hasMoveFrame).toBe(false);
@@ -64,10 +66,10 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
 
   it("parity passes across the 4 blocks: same holdMs, identical two-frame tap, no MOVE", () => {
     const blocks = [
-      { block: "OFF-1", fastInject: false, injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
-      { block: "ON-uiautomation", fastInject: false, injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
-      { block: "ON-scrcpy", fastInject: true, injectedTapTimeline: describeInjectedTapTimeline("scrcpy", 50) },
-      { block: "OFF-2", fastInject: false, injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
+      { block: "OFF-1", injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
+      { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
+      { block: "ON-input-manager", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
+      { block: "OFF-2", injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
     ];
     expect(() => assertTapTimelineParity(blocks)).not.toThrow();
   });
@@ -75,13 +77,13 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
   it("throws when holdMs drifts across blocks", () => {
     const blocks = [
       { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
-      { block: "ON-scrcpy", injectedTapTimeline: describeInjectedTapTimeline("scrcpy", 80) },
+      { block: "ON-input-manager", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 80) },
     ];
     expect(() => assertTapTimelineParity(blocks)).toThrow(/parity violated/);
   });
 
   it("throws if any block carries a MOVE / is not a clean two-frame tap", () => {
-    const clean = describeInjectedTapTimeline("scrcpy", 50);
+    const clean = describeInjectedTapTimeline("uiautomation", 50);
     const withMove = {
       ...clean,
       frameCount: 3,
@@ -94,7 +96,7 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
     };
     const blocks = [
       { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
-      { block: "ON-scrcpy", injectedTapTimeline: withMove },
+      { block: "ON-input-manager", injectedTapTimeline: withMove },
     ];
     expect(() => assertTapTimelineParity(blocks)).toThrow(/parity violated/);
   });

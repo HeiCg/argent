@@ -10,7 +10,10 @@
  * asserts exactly that from the recorded per-block params, turning "we used the
  * same numbers" from a claim into a checked invariant.
  */
-import { buildTapTimeline, TouchAction } from "./scrcpy-inject-timeline";
+// Phase 3n.2: the scrcpy fast-inject path was removed, so this no longer imports the
+// scrcpy timeline. The MotionEvent action codes are inlined for the parity shape check
+// (DOWN then UP, no MOVE) — every remaining backend injects a bare two-frame tap.
+const TouchAction = { Down: 0, Up: 1, Move: 2 } as const;
 
 export interface BenchGestureParams {
   /** gesture-swipe authored duration (ms). */
@@ -22,46 +25,35 @@ export interface BenchGestureParams {
 }
 
 /** Which injector a block actually drove tap/swipe/gesture through. */
-export type InjectBackend = "scrcpy" | "uiautomation" | "proprietary";
+export type InjectBackend = "uiautomation" | "proprietary";
 
 /**
  * The tap frame timeline a block actually injected — frame count, per-frame `tMs`,
  * and the authored `holdMs` — recorded per block so the merge can prove parity
  * from the REAL shape rather than from re-reading the same source constant (which
  * is meaningless per block under BENCH_ONLY). Phase 3h: every backend injects the
- * IDENTICAL two-frame DOWN→UP tap (the scrcpy tap needs no MOVE — it lands as-is,
- * proven once the effect oracle stopped reading too early). Parity is exact: same
+ * IDENTICAL two-frame DOWN→UP tap (no MOVE — it lands as-is). Parity is exact: same
  * holdMs, same two frames, no MOVE anywhere.
  */
 export interface InjectedTapTimeline {
   backend: InjectBackend;
   holdMs: number;
   frameCount: number;
-  /** [action, tMs] per frame, in order (action uses the scrcpy wire values). */
+  /** [action, tMs] per frame, in order (action uses MotionEvent action codes). */
   frames: Array<{ action: number; tMs: number }>;
   hasMoveFrame: boolean;
 }
 
 /**
- * The tap timeline the given backend injects for a single tap held `holdMs`. The
- * scrcpy shape comes straight from {@link buildTapTimeline} (single source of
- * truth for what the fast-inject backend sends); the UiAutomation / proprietary
- * shape is the bare DOWN→UP their on-device injectors emit.
+ * The tap timeline the given backend injects for a single tap held `holdMs`. Every
+ * backend (UiAutomation / proprietary) emits the bare DOWN→UP its on-device injector
+ * sends — a clean two-frame tap, no MOVE. (Phase 3n.2: the scrcpy backend and its
+ * timeline builder were removed.)
  */
 export function describeInjectedTapTimeline(
   backend: InjectBackend,
   holdMs: number
 ): InjectedTapTimeline {
-  if (backend === "scrcpy") {
-    const frames = buildTapTimeline(0, 0, { clickCount: 1, holdMs, gapMs: 100 });
-    return {
-      backend,
-      holdMs,
-      frameCount: frames.length,
-      frames: frames.map((f) => ({ action: f.action, tMs: f.tMs })),
-      hasMoveFrame: frames.some((f) => f.action === TouchAction.Move),
-    };
-  }
   return {
     backend,
     holdMs,
@@ -77,8 +69,8 @@ export function describeInjectedTapTimeline(
 /**
  * Cross-block tap-timeline parity (phase 3h). Throws unless every block injected the
  * IDENTICAL tap: same authored `holdMs`, exactly two frames (DOWN then UP), and NO
- * MOVE on any backend. scrcpy is at parity by shape with UiAutomation/proprietary,
- * not merely by holdMs.
+ * MOVE on any backend — every backend (UiAutomation/proprietary) is at parity by
+ * shape, not merely by holdMs.
  */
 export function assertTapTimelineParity(
   blocks: Array<{ block: string; fastInject?: boolean; injectedTapTimeline?: InjectedTapTimeline }>

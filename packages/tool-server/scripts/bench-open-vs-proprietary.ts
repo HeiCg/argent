@@ -132,12 +132,12 @@ const realDebug = console.debug.bind(console);
 console.debug = (...a: unknown[]): void => {
   debugLines.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
 };
-// Count ONLY fast-inject (scrcpy → Kotlin) fallbacks, i.e. the blueprint's
-// "[open-server-fast-inject] scrcpy <verb> failed; falling back to the Kotlin ..."
-// line — the ON-scrcpy gate's concern. It must NOT count the describe path's own
-// "[describe.android] ... falling back to uiautomator" (an empty-tree retry that
-// happens on every ON block during rapid effect-check describes) — conflating the
-// two failed a clean scrcpy arm on benign describe retries.
+// Host-side inject-fallback log counter. Phase 3n.2: the host-side fast-inject
+// backend was removed, so no `[open-server-fast-inject] … falling back` line is
+// emitted any more and this reads 0. The AUTHORITATIVE fallback signal is now
+// on-device — the `unavailable→uia-async` split in `injectStrategyReported`
+// (injectStrategyCounts). It must still NOT count the describe path's own
+// "[describe.android] … falling back to uiautomator" (a benign empty-tree retry).
 function fallbackCountSince(mark: number): { count: number; samples: string[] } {
   const slice = debugLines.slice(mark);
   const hits = slice.filter((l) => /\[open-server-fast-inject\].*falling back/i.test(l));
@@ -424,7 +424,7 @@ interface VerbResult {
   fallbacks: number;
   fallbackSamples: string[];
   // Phase 3h review A9/d: the messages of the iterations counted in `errors`, so a
-  // discarded iteration (e.g. the ON-scrcpy 0/59 tap) is explicable from the JSON
+  // discarded iteration (e.g. a 0/59 tap on a benign retry) is explicable from the JSON
   // rather than swallowed by a bare catch. Capped to the first few.
   errorSamples: string[];
   // Effect-check (phase 3h), only on the tap verbs measured by `timeTapEffect`:
@@ -1738,11 +1738,8 @@ async function deriveNavTarget(
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
-  // Phase 3f: whether tap/swipe/gesture ran on the scrcpy fast-inject backend
-  // (true only for the ON-scrcpy block); describe/state/etc. stay on Kotlin.
-  fastInject: boolean;
   // Phase 3n: the on-device injection strategy this ON block requested (uia-sync /
-  // uia-async / input-manager), or undefined for the DEFAULT / scrcpy / OFF arms.
+  // uia-async / input-manager), or undefined for the DEFAULT / OFF arms.
   injectStrategy?: OpenInjectStrategy | "default";
   // Phase 3n: the strategy the on-device server reported it actually ran, read
   // from a raw `tap` echo — "unavailable" iff an input-manager arm hit the
@@ -1760,10 +1757,6 @@ interface BlockResult {
   // `stages.fingerprintMs` is the REAL opt-in `TreeStore.ensure(rootNode)` cost, not
   // the tautological 0 of the opt-out plain describe. ON arms only; absent on OFF.
   describeSplitAfterTapFingerprints?: DescribeSplit;
-  // Phase 3m.1 (3M-H2): the scrcpy host pacing PINNED for this arm ("legacy" is the
-  // shipped default the latency reference ran; "drift" only if explicitly forced;
-  // "n/a" on non-fast-inject arms). Recorded so no run's pacing is silent.
-  scrcpyPacing: "legacy" | "drift" | "n/a";
   // Raw RPC round-trip floor (phase 3i): `getState`-free `ping` p50/p95 over
   // `adb forward`. ~1 ms confirms the transport itself is cheap and the idle
   // describe residual is payload/serialize, not the socket. null on OFF blocks
@@ -1870,11 +1863,10 @@ async function coldStart(config: "OFF" | "ON"): Promise<number[]> {
 async function runBlock(
   block: string,
   config: "OFF" | "ON",
-  fastInject: boolean,
   // Phase 3n: the on-device injection strategy this ON block carries (uia-sync /
   // uia-async / input-manager). undefined = the DEFAULT path (today's behaviour),
-  // used by OFF blocks and ON-scrcpy. Threaded to the host via the env var the
-  // blueprint reads per gesture, so one bench run carries every arm.
+  // used by the OFF blocks. Threaded to the host via the env var the blueprint reads
+  // per gesture, so one bench run carries every arm.
   injectStrategy?: OpenInjectStrategy | "default"
 ): Promise<BlockResult> {
   const notes: string[] = [];
@@ -1882,34 +1874,11 @@ async function runBlock(
   if (config === "ON") setFlag("open-device-server", true, "project");
   else unsetFlag("open-device-server", "project");
   // Phase 3n: select the Kotlin injection strategy for this block. Cleared for the
-  // DEFAULT/scrcpy/OFF arms so their path is unchanged.
+  // DEFAULT / OFF arms so their path is unchanged. (Phase 3n.2: the scrcpy
+  // fast-inject backend and its host pacing were removed; every ON block runs the
+  // on-device Kotlin injector, differing only in the `inject` strategy.)
   if (injectStrategy) process.env.ARGENT_OPEN_INJECT_STRATEGY = injectStrategy;
   else delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
-  // Phase 3f: the scrcpy control-channel touch backend is gated by this flag; the
-  // blueprint reads it when the factory `fastInject` option is omitted (which is
-  // the case for the registry-created instances the bench drives). Only the
-  // ON-scrcpy block sets it — ON-uiautomation and both OFF blocks leave it off so
-  // tap/swipe/gesture stay on the UiAutomation (or proprietary) path.
-  if (fastInject) setFlag("open-device-server-fast-inject", true, "project");
-  else unsetFlag("open-device-server-fast-inject", "project");
-
-  // Phase 3m.1 (3M-H2): PIN the scrcpy host pacing per arm so no block silently
-  // inherits a different process default. Run 34827025184 was not like-for-like
-  // with reference run 34813849446 precisely because it predated the 3k.1 default
-  // flip and ran `drift` while the reference ran the shipped `legacy`. The
-  // ON-scrcpy latency arm pins the shipped default `legacy` (an operator can still
-  // force a paired `drift` probe by exporting ARGENT_SCRCPY_PACING=drift before the
-  // run); non-fast-inject arms clear the var so a stray default can't be misread as
-  // this arm's pacing. The effective mode rides the block JSON (`scrcpyPacing`).
-  let scrcpyPacing: "legacy" | "drift" | "n/a";
-  if (fastInject) {
-    scrcpyPacing = process.env.ARGENT_SCRCPY_PACING === "drift" ? "drift" : "legacy";
-    process.env.ARGENT_SCRCPY_PACING = scrcpyPacing;
-  } else {
-    delete process.env.ARGENT_SCRCPY_PACING;
-    scrcpyPacing = "n/a";
-  }
-  realDebug(`[bench] ${block} scrcpyPacing=${scrcpyPacing} (fastInject=${fastInject})`);
 
   const coldStartMs = await coldStart(config);
 
@@ -2008,8 +1977,8 @@ async function runBlock(
     }
     // Capture ONE real nested reply into the artifact (phase 3i #7), in the exact
     // HostBenchFixture shape, so the next phase can commit a real fixture in place
-    // of the synthetic one. ON-uiautomation only (the plain describe path).
-    if (!fastInject) {
+    // of the synthetic one. ON blocks only (the plain describe path).
+    if (config === "ON") {
       try {
         const device = resolveDevice(SERIAL);
         const ref = openDeviceServerRef(device);
@@ -2111,7 +2080,7 @@ async function runBlock(
   await ensureSettings(reg);
 
   // TIMED coordinate tap at a per-iteration LOCATED (x, y) — identical call in every
-  // block (ON UiAutomation, ON scrcpy, OFF proprietary all tap by x,y; no element
+  // block (ON UiAutomation, OFF proprietary all tap by x,y; no element
   // re-resolution inside the timed call). The `_i` keeps the timedTapAt signature.
   const target = nav ? nav.target : "";
   const timedTapAt = async (x: number, y: number, _i: number): Promise<void> => {
@@ -2370,7 +2339,7 @@ async function runBlock(
 
   // The tap timeline this block's backend injected, and the total no-effect tap
   // iterations across the effect-checked tap verbs (phase 3h).
-  const injectBackend = fastInject ? "scrcpy" : config === "ON" ? "uiautomation" : "proprietary";
+  const injectBackend = config === "ON" ? "uiautomation" : "proprietary";
   const injectedTapTimeline = describeInjectedTapTimeline(injectBackend, BENCH_GESTURE_PARAMS.tapHoldMs);
   const effectZeroTotal = verbs.reduce((s, v) => s + (v.effectZero ?? 0), 0);
   const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
@@ -2403,15 +2372,15 @@ async function runBlock(
       `target=${nav ? nav.target : "none"}); tap backend=${injectBackend}` +
       `${injectStrategy ? ` inject-strategy=${injectStrategy}` : ""}`
   );
-  // flushInput asymmetry (fix c, review A2): only the scrcpy branch defers the input
-  // drain to the next read; the UiAutomation/proprietary tap RPC drains inline. So
-  // gesture-tap (the tap-RPC row) is NOT like-for-like across backends — the
-  // like-for-like tap row is tap+describe(settle:false), which pays the drain in
-  // every block. The fold itself is unchanged in this ticket.
+  // flushInput asymmetry (fix c, review A2): an async-UP inject (input-manager, and
+  // the uia-async strategy) defers the input drain to the next read, while a bare
+  // UiAutomation/proprietary tap RPC drains inline. So gesture-tap (the tap-RPC row)
+  // is NOT strictly like-for-like across arms — the like-for-like tap row is
+  // tap+describe(settle:false), which pays the drain in every block.
   notes.push(
-    "tap-RPC row (gesture-tap) carries the flushInput asymmetry: scrcpy defers the input " +
-      "drain to the next read, UiAutomation/proprietary drain inline — headline like-for-like " +
-      "tap row is tap+describe(settle:false)"
+    "tap-RPC row (gesture-tap) carries the async-UP drain asymmetry: an async-UP inject " +
+      "defers the drain to the next read, a bare UiAutomation/proprietary tap drains inline — " +
+      "headline like-for-like tap row is tap+describe(settle:false)"
   );
 
   // Degraded-arm detection (fix b, review A1): a block whose await-screen-idle /
@@ -2487,7 +2456,6 @@ async function runBlock(
   return {
     block,
     config,
-    fastInject,
     injectStrategy,
     injectStrategyReported,
     coldStartMs,
@@ -2511,8 +2479,6 @@ async function runBlock(
     describeSplitAfterTap,
     // Phase 3m.1 (3M-M4): opt-in fingerprint cost probe (ON only; null on OFF).
     ...(describeSplitAfterTapFp ? { describeSplitAfterTapFingerprints: describeSplitAfterTapFp } : {}),
-    // Phase 3m.1 (3M-H2): the pinned scrcpy host pacing for this arm.
-    scrcpyPacing,
     pingP50: ping.p50,
     pingP95: ping.p95,
     pingN: ping.n,
@@ -2561,48 +2527,44 @@ async function main(): Promise<void> {
   // assembles the four into the same combined result + fidelity. No env → the
   // original single-process full run.
   //
-  // Phase 3n.1 (run 2): FIVE blocks (P0). Every ON block shares the open Kotlin
-  // describe/state path; they differ only in the tap/swipe/gesture injection path.
-  // `ON-uiautomation` is the mandatory CONTROL block (P0) — the pre-3n.1 Kotlin
-  // DEFAULT path, selected by the `default` sentinel (host sends no `inject`).
-  // `ON-input-manager` is the promotion candidate. `ON-scrcpy` is the scrcpy control
-  // arm (fast-inject). OFF-1/OFF-2 are the PROPRIETARY blocks every gate is graded
-  // against (P1). Tuple: [name, config, fastInject, injectStrategy?] where
+  // Phase 3n.2 (scrcpy removed): FOUR blocks (P0). Every ON block shares the open
+  // Kotlin describe/state path; they differ only in the tap/swipe/gesture injection
+  // strategy. `ON-uiautomation` is the mandatory CONTROL block (P0) — the pre-3n.1
+  // Kotlin DEFAULT path, selected by the `default` sentinel (host sends no `inject`).
+  // `ON-input-manager` is the shipped default. OFF-1/OFF-2 are the PROPRIETARY blocks
+  // every gate is graded against (P1). Tuple: [name, config, injectStrategy?] where
   // injectStrategy is the `ARGENT_OPEN_INJECT_STRATEGY` value ("default" = the
-  // sentinel for the old Kotlin DEFAULT).
-  const ALL_BLOCKS: Array<[string, "OFF" | "ON", boolean, (OpenInjectStrategy | "default")?]> = [
-    ["OFF-1", "OFF", false],
-    ["ON-uiautomation", "ON", false, "default"],
-    ["ON-input-manager", "ON", false, "input-manager"],
-    ["ON-scrcpy", "ON", true],
-    ["OFF-2", "OFF", false],
+  // sentinel for the old Kotlin DEFAULT). The scrcpy fast-inject arm was removed.
+  const ALL_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
+    ["OFF-1", "OFF"],
+    ["ON-uiautomation", "ON", "default"],
+    ["ON-input-manager", "ON", "input-manager"],
+    ["OFF-2", "OFF"],
   ];
   const only = process.env.BENCH_ONLY;
+  // Phase 3n.2 (Q7): refuse a scrcpy arm name outright — the ON-scrcpy block and its
+  // fast-inject backend no longer exist.
+  if (only && /scrcpy/i.test(only))
+    throw new Error(`BENCH_ONLY="${only}" names a removed scrcpy arm (removed in phase 3n.2)`);
   const toRun = only ? ALL_BLOCKS.filter(([b]) => b === only) : ALL_BLOCKS;
   if (only && toRun.length === 0)
     throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.map(([b]) => b).join("|")}`);
 
   const blocks: BlockResult[] = [];
-  for (const [block, config, fastInject, injectStrategy] of toRun) {
+  for (const [block, config, injectStrategy] of toRun) {
     realDebug(
-      `[bench] === block ${block} (${config}${fastInject ? ", scrcpy fast-inject" : ""}` +
+      `[bench] === block ${block} (${config}` +
         `${injectStrategy ? `, inject=${injectStrategy}` : ""}) ===`
     );
-    const dbgMark = debugLines.length;
-    const r = await runBlock(block, config, fastInject, injectStrategy);
+    const r = await runBlock(block, config, injectStrategy);
     blocks.push(r);
-    // Surface the scrcpy server start line + scid + control-channel line to REAL
-    // stdout (not only the captured console.debug), plus this block's fast-inject
-    // fallback count and effect-check count — so bench-log-<block>.txt shows the
-    // scrcpy session was real and clean without digging into the JSON (item: print
-    // the scrcpy server start line, scid, and fastInjectFallbacks per block).
-    const scrcpyLines = debugLines
-      .slice(dbgMark)
-      .filter((l) => /scrcpy (server starting|control channel)|scid=/.test(l));
-    for (const l of [...new Set(scrcpyLines)]) realDebug(`[bench][${block}] ${l}`);
+    // Per-block summary: the strategy fallback count (input-manager→uia-async is
+    // reported on-device via injectStrategyReported; this host-side counter reads 0
+    // now that injection runs on-device) plus effect-check counts, so
+    // bench-log-<block>.txt shows the block ran clean without digging into the JSON.
     const fbTotal = (r.verbs || []).reduce((s, v) => s + (v.fallbacks || 0), 0);
     realDebug(
-      `[bench][${block}] fastInject=${fastInject} fastInjectFallbacks=${fbTotal} ` +
+      `[bench][${block}] strategyFallbacks=${fbTotal} ` +
         `oracleSelfTest=${r.oracleSelfTestPassed ? "pass" : "FAILED"} ` +
         `firstTapNoEffect=${r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
         `locateFailed=${r.locateFailedTotal} coordMoved=${r.coordMovedTotal} ` +
@@ -2616,9 +2578,8 @@ async function main(): Promise<void> {
     );
   }
 
-  // reset flags to default OFF
+  // reset flag to default OFF
   unsetFlag("open-device-server", "project");
-  unsetFlag("open-device-server-fast-inject", "project");
 
   if (only) {
     const blockPath = join(OUT_DIR, `bench-block-${only}.json`);
@@ -2628,15 +2589,15 @@ async function main(): Promise<void> {
     // NOTE: under BENCH_ONLY the block does NOT throw on effectZero > 0 — every
     // block must run and write its JSON so the merge can report ALL four per-block
     // counts and fail at the END (ON fatal, OFF tolerated). A per-block throw here
-    // aborted the CI step at the first failing block and hid the ON-scrcpy A/B.
+    // aborted the CI step at the first failing block and hid a later block's result.
     return;
   }
 
   // Parity gate: every block must have driven the identical gesture timeline, so
   // the OFF/ON latency comparison is genuinely like-for-like (throws otherwise).
   assertIdenticalGestureParams(blocks);
-  // Tap-timeline parity (phase 3h): same authored holdMs everywhere; the same-point
-  // MOVE present in exactly the scrcpy block. Recorded from the real injected shape.
+  // Tap-timeline parity (phase 3h): same authored holdMs everywhere; a clean
+  // two-frame DOWN→UP with NO MOVE on any arm. Recorded from the real injected shape.
   assertTapTimelineParity(blocks);
   // Effect gate across blocks: no block may have a no-effect tap iteration.
   const effectZeroByBlock = blocks
