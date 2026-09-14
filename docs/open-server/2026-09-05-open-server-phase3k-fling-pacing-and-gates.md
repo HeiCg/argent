@@ -136,3 +136,127 @@ gate-design decision left to the planner (see results file "Open items"); device
 timeline 2(b) not needed for the resolved 400 ms cells; the base ON tap/swipe latency
 regression is out of scope. CI budget (2 latency runs) exhausted; `open/main` NOT
 fast-forwarded.
+
+## Result (3k.1, 2026-09-14)
+
+Branch `feat/open-server-3k1` off the consolidated `open/main` @ `8cbd3902` (3k Part B +
+outcome-regression fix + D.4.1). Reference CI run **34813849446** (`suite=both`,
+`sg_mode=matrix`, on `6f7e2a6f`). Commits: `edc677c2` (pacing default→legacy, byte-equal),
+`06bc0768` (pre-registered two-sided gate + tests), `8a969963` (interleaved fling +
+drop reasons + trace file), `db19a966` (dumpsys MotionEvent cadence), `6f7e2a6f`
+(run-fling.js drives the interleave — the push token lacked the `workflow` OAuth scope,
+so the workflow file itself is unchanged from `open/main`), `f5b6e8ad` (3k results
+rewrite). **The run is red solely on the blocking fling parity gate; everything else is
+green.** N=20 per verb; fling N=12 per cell-arm (3 rounds × 4 samples; job budget did
+not allow 24).
+
+**Fling status: OPEN, not resolved.** The pre-registered two-sided gate is **RED** and
+the same-run paired legacy→drift test is **not significant in any cell**, so neither
+acceptance condition is met. On this run the scrcpy under-scroll vs proprietary *did*
+reproduce (unlike run 34800933407) and is significant — but drift does not remove it, and
+the host trace shows the gesture is delivered on time, so the deficit is **not** host
+pacing.
+
+### Pacing default byte-equal to pre-3k
+`scrcpyPacingMode()` defaults to `legacy`; `drift` is opt-in (`ARGENT_SCRCPY_PACING=drift`).
+The legacy branch of `injectTimeline` is byte-equal to `690e66bc` (whitespace-normalized
+diff of the loop body is empty, 18 lines each). The drift branch alone carries the trace.
+
+### Gate rule tests (pre-registered, on real artifacts)
+`node --test .github/bench-ci/gates.test.js` → 21 passed. Fixtures are the downloaded
+`fling-block-*.json` of each run: run 7 (33975063607) → **FAIL**, 3 informative cells
+(250/0.3, 400/0.3, 400/0.5) all red, 3 non-informative; run 34800933407 → **3 PASS**
+(250/0.3, 400/0.3, 400/0.5) / **3 non-informative**, reproducing the reviewer's per-cell
+table exactly.
+
+### Verb table — new run vs run 7 (33975063607) vs run 34806342684 (p50/p95 ms)
+| verb | run | OFF-1 | ON-uia | ON-scrcpy | OFF-2 | within drift floor? |
+|---|---|---|---|---|---|---|
+| gesture-tap | **34813849446** | 53/60 | **78/116** | **51/53** | 54/56 | vs 34806 (83/51) ✓; vs run 7 (77/51) ✓ — base fixed |
+| gesture-swipe | **34813849446** | 300/312 | **292/309** | **259/261** | 296/305 | vs 34806 (294/258) ✓; vs run 7 (296/257) ✓ |
+| await-screen-idle | **34813849446** | 501/507 | 294/297 | 294/308 | 501/511 | vs 34806 (292/293) ✓; vs run 7 (463/461) ✗ — screen-graph-d base, not 3k.1 |
+| await-ui-element | **34813849446** | 80/84 | 45/51 | 47/53 | 80/81 | vs 34806 (43/43) ✓; vs run 7 (32/31) ✗ — base |
+| describe (idle) | **34813849446** | 52/56 | 53/74 | 53/73 | 52/59 | ON≈OFF (F1 direction only; magnitude non-reproducible) |
+| paste | **34813849446** | 804/1122 | 291/1086 | 385/990 | 662/1057 | within the 142 ms OFF drift floor |
+| gesture-pinch | **34813849446** | 358/373 | 346/372 | 307/311 | 346/365 | vs 34806 (307) ✓; vs run 7 (307) ✓ |
+| tap+describe(settle:false) | **34813849446** | — | 505/728 | 529/1029 | — | vs 34806 (518/548) ✓ |
+| tap+describe(settle:true) | **34813849446** | — | 843/981 | 842/990 | — | vs 34806 (878/839) ✓; > run 7 (788/774) — base, now in 34806 range |
+
+The tap/swipe outcome-path regression is **gone** on this base (tap ON-uia p50 78, back to
+run 7's 77; swipe ON-uia 292 vs 296; ON-scrcpy 259 vs 257). Every verb reproduces run
+**34806342684** within its OFF-1↔OFF-2 drift floor; the `await-*`/`settle:true` gaps vs
+run 7 are the screen-graph-d tree already on `open/main`, matching 34806342684, not a
+3k.1 change.
+
+### Fling A/B — per-cell median + IQR + n per arm (interleaved, N=12)
+| cell | uia (IQR, n) | scrcpy drift (IQR, n) | scrcpy legacy (IQR, n) | off (IQR, n) | scrcpy/uia | scrcpy/off | gate |
+|---|---|---|---|---|---|---|---|
+| 150/0.3 | 0.464 [0.298,0.464] (12) | 0.299 [0.175,0.464] (12) | 0.319 [0.175,0.464] (12) | 0.581 [0.567,0.657] (12) | 0.644 | 0.515 | **FAIL** |
+| 150/0.5 | 0.175 [floor] (11) | 0.175 [floor] (12) | 0.175 (12) | 0.175 [floor] (12) | 1.000 | 1.000 | non-informative |
+| 250/0.3 | 0.442 [0.346,0.456] (12) | 0.402 [0.313,0.515] (12) | 0.456 [0.35,0.493] (12) | 0.447 [0.401,0.464] (12) | 0.910 | 0.899 | **PASS** |
+| 250/0.5 | 0.175 [floor] (12) | 0.175 [0.175,0.355] (12) | 0.441 [0.175,0.593] (12) | 0.175 [floor] (12) | 1.000 | 1.000 | non-informative (uia+off floored) |
+| 400/0.3 | 0.369 [0.349,0.408] (12) | 0.249 [0.227,0.314] (12) | 0.287 [0.257,0.409] (12) | 0.356 [0.35,0.367] (12) | 0.675 | 0.699 | **FAIL** |
+| 400/0.5 | 0.579 [0.352,0.595] (12) | 0.471 [0.357,0.52] (12) | 0.356 [0.175,0.501] (12) | 0.657 [0.643,0.657] (12) | 0.813 | 0.717 | **FAIL** |
+
+n per cell-arm is 11–12 (one uia drop at 150/0.5, reason recorded: `[Tool:describe] Failed
+to parse uiautomator dump output`). **Interleaving evidence** (`fling-interleave-evidence.json`):
+every arm's 12 samples for every cell are spread across rounds 0,1,2 over the full
+~27-min window (e.g. uia 400/0.3 span [28.8s..1374.6s], scrcpy 400/0.3 [181.8s..1620.4s],
+off 400/0.3 [421.5s..1240.9s]) — arm is no longer confounded with a contiguous 7-min block.
+
+### Paired legacy→drift permutation p per cell (20 000 draws) + scrcpy/off
+| cell | Δ(drift−legacy) | paired legacy→drift p | scrcpy(drift)/off p |
+|---|---|---|---|
+| 150/0.3 | −0.020 | 1.00 | **0.010** |
+| 250/0.3 | −0.053 | 0.63 | 0.43 |
+| 250/0.5 | −0.266 | 0.13 | 1.00 |
+| 400/0.3 | −0.038 | 0.31 | **0.001** |
+| 400/0.5 | +0.115 | 0.33 | **0.000** |
+**No cell shows a distinguishable legacy→drift effect (all p ≥ 0.13)** — drift is neutral,
+even on a run where the deficit reproduced. The scrcpy under-scroll vs proprietary is real
+and significant at 150/0.3, 400/0.3 and 400/0.5.
+
+### Gate verdict string
+`FAIL (per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist, over 4 informative
+cell(s); 2 of 6 non-informative at the metric floor)` — offenders 150/0.3 (0.644/0.515),
+400/0.3 (0.675/0.699), 400/0.5 (0.813/0.717); 250/0.3 passes (0.910/0.899).
+
+### Device pacing evidence (3K-H3) — dumpsys input MotionEvent cadence, N per arm
+Device suite **19 passed** (17 enforced + 2 measurement-only). Requested 416 ms
+(26-frame) swipe; source = `dumpsys input RecentQueue age=…ms`, N=10 MotionEvent times
+including MOVE frames:
+- uia: logcat endpoints 397 ms (2 events, Launcher TaplEvents); dumpsys n=10, dense-tail
+  MOVE cadence ≈ 15–19 ms.
+- scrcpy drift: logcat endpoints 452 ms; dumpsys n=10, tail cadence ≈ 14–46 ms.
+- scrcpy legacy: logcat endpoints 438 ms; dumpsys n=10, tail cadence ≈ 8–35 ms.
+The dumpsys RecentQueue holds global recent events, so the raw age SPAN overstates the
+gesture (the leading large gaps are pre-swipe events); the dense-tail deltas are the
+intra-swipe MOVE cadence — more than the endpoints-only logcat, honestly caveated,
+measurement-only. **Host per-frame trace reached the artifact** (`pacing-trace.txt`, 72
+drift lines): for a 400 ms swipe `downUpDispatchMs ≈ writeSpanMs ≈ intendedDurMs`
+(e.g. 400.9 / 401.0 / 400, maxDispatchDrift < 1 ms) — the host delivers on time with no
+stretch to remove, corroborating the neutral paired test.
+
+### Screen-graph per-config success vs run 34801849653 (Wilson 95%, n=100)
+| config | run 34813849446 | run 34801849653 (ref) |
+|---|---|---|
+| B1 | 100/100 [96,100] | 100/100 [96,100] |
+| B2 | 100/100 [96,100] | 100/100 [96,100] |
+| O1 | 100/100 [96,100] | 100/100 [96,100] |
+| O2 | 100/100 [96,100] | 99/100 [95,100] |
+| O3 | 100/100 [96,100] | 100/100 [96,100] |
+| O4 | 100/100 [96,100] | 100/100 [96,100] |
+| O5 | 100/100 [96,100] | 100/100 [96,100] |
+Screen-graph job **success**; every config at-or-above the reference with overlapping
+Wilson intervals — unchanged within noise by the 3k.1 pacing/gate/harness changes.
+
+### Not done / open
+- Scoreboard **not** edited; `open/main` **not** fast-forwarded.
+- Fling deficit stays **OPEN**: gate RED and paired legacy→drift not significant. The
+  evidence points away from host pacing (on-time host delivery, drift ≈ legacy) toward
+  the OS VelocityTracker's reading of an 8-frame scrcpy gesture vs the uia/proprietary
+  injectors — a candidate for the device-side timeline (3k 2(b)) or the metric, not more
+  host-pacing work.
+- The CI **workflow file could not be updated** (push token lacks the `workflow` OAuth
+  scope); the interleave is driven from `run-fling.js` instead. If a future run wants the
+  cleaner single-INTERLEAVE workflow step, a token with `workflow` scope is needed.
