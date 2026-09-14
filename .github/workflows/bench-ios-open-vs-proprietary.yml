@@ -1,0 +1,261 @@
+# iOS-2 like-for-like bench — OFF (closed simulator-server + ax-service) vs
+# ON-xcuitest (open XCUITest runner, input via XCUITest) vs ON-siminput (same
+# XCUITest tree, input via the sim-input HID digitizer), on a hosted macOS runner.
+#
+# COST: macOS runners bill at 10x Linux minutes. `timeout-minutes: 90`. Manual
+# trigger only. The closed binaries (simulator-server + ax-service) are fetched at
+# RUN TIME (their LICENSE forbids redistribution) and never committed — the same
+# recipe e2e-device-smoke.yml already uses on macos-latest.
+#
+# Only OFF vs ON WITHIN a single run is like-for-like; the OFF arm drives the
+# closed server through the tool-server registry (ack = acceptance, host-paced
+# gestures), the ON arms drive the open runner directly — a report-only phase (G2).
+name: bench-ios-open-vs-proprietary
+
+on:
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: "Blocks to run (comma list)"
+        required: false
+        default: "OFF-1,ON-xcuitest,ON-siminput,OFF-2"
+      n:
+        description: "Iterations per verb (BENCH_N)"
+        required: false
+        default: "20"
+  # TEMPORARY branch-scoped push trigger — workflow_dispatch cannot fire from a
+  # feature branch, so bring-up dispatches from a push to this branch. REMOVED in
+  # the last commit of the ticket (see the iOS-1 Result for the same pattern).
+  push:
+    branches:
+      - feat/ios-open-server-2-bench
+
+permissions:
+  contents: read
+
+jobs:
+  ios-bench:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      BENCH_N: ${{ github.event.inputs.n || '20' }}
+      BENCH_BLOCKS: ${{ github.event.inputs.blocks || 'OFF-1,ON-xcuitest,ON-siminput,OFF-2' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Pin Xcode and print the version (part of the build cache key)
+        shell: bash
+        run: |
+          ls /Applications | grep -i '^Xcode' || true
+          XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then echo "::error::no Xcode found under /Applications"; exit 1; fi
+          echo "Selecting $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Install deps
+        shell: bash
+        run: |
+          # npm install (not ci): this branch adds new workspaces; the committed
+          # lockfile is not yet in sync (regenerated in the main checkout before merge).
+          npm install --no-audit --no-fund
+          npm install @rollup/rollup-darwin-arm64 --no-save
+
+      - name: Build the workspace TypeScript
+        shell: bash
+        run: npx tsc --build
+
+      - name: Download the closed simulator-server + ax-service (OFF arm; run-time only)
+        # Reuses the e2e-device-smoke.yml recipe. Their LICENSE forbids
+        # redistribution, so fetch at run time, never commit.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/download-simulator-server.sh || echo "::warning::simulator-server download failed — OFF arm may be unavailable"
+          bash scripts/download-native-binaries.sh || echo "::warning::native binaries (ax-service) download failed — OFF arm may be unavailable"
+          echo "=== native-devtools-ios inventory ==="
+          ls -la packages/native-devtools-ios/bin/darwin 2>/dev/null || true
+          ls -la packages/native-devtools-ios/dylibs 2>/dev/null || true
+
+      - name: Build sim-input (ON-siminput arm)
+        shell: bash
+        run: |
+          set -o pipefail
+          bash packages/ios-sim-input/scripts/build-sim-input.sh 2>&1 | tee build-sim-input.log
+          ls -la packages/ios-sim-input/bin/
+          echo "IOS_SIM_INPUT_BINARY=$PWD/packages/ios-sim-input/bin/sim-input" >> "$GITHUB_ENV"
+
+      - name: Create and boot an iPhone simulator
+        shell: bash
+        run: |
+          RUNTIME=$(xcrun simctl list runtimes -j \
+            | jq -r '[.runtimes[] | select(.platform=="iOS" and .isAvailable)]
+                     | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')
+          echo "runtime=$RUNTIME"
+          CANDIDATES=$(xcrun simctl list devicetypes -j \
+            | jq -r '[.devicetypes[] | select(.name | test("^iPhone [0-9]+"))]
+                     | map(. + {n: (.name | capture("iPhone (?<x>[0-9]+)").x | tonumber)})
+                     | sort_by(.n) | reverse | .[].identifier')
+          UDID=""
+          for DT in $CANDIDATES; do
+            if UDID=$(xcrun simctl create "argent-ios-bench" "$DT" "$RUNTIME" 2>/dev/null); then
+              echo "created simulator with $DT"; break
+            fi
+            UDID=""
+          done
+          if [ -z "$UDID" ]; then echo "::error::no iPhone device type is compatible with $RUNTIME"; exit 1; fi
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          # Launch Settings once so the first block starts from a warm root.
+          xcrun simctl launch "$UDID" com.apple.Preferences || true
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build the runner for the simulator (build-for-testing)
+        shell: bash
+        run: |
+          mkdir -p build
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project packages/ios-device-server/ArgentRunner/ArgentRunner.xcodeproj \
+            -scheme ArgentRunner \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/ios-open-derived \
+            ONLY_ACTIVE_ARCH=YES ENABLE_CODE_COVERAGE=NO \
+            2>&1 | tee build/build-sim.log
+
+      - name: Launch the runner and run the four bench blocks + merge + scoreboard
+        shell: bash
+        env:
+          NODE_OPTIONS: "--max-old-space-size=3072"
+        run: |
+          set -uo pipefail
+          export BENCH_OUT="$PWD/.bench-results"
+          mkdir -p "$BENCH_OUT" build/shots
+          export TMPDIR="$PWD/build/shots"
+
+          XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun 2>/dev/null | grep -i simulator | head -1)
+          [ -z "$XCTESTRUN" ] && XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun | head -1)
+          echo "xctestrun=$XCTESTRUN"
+          PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+          echo "runner port=$PORT"
+
+          # Launch the runner in the BACKGROUND OF THIS STEP (the iOS-1 lesson: a
+          # detached xcodebuild test does not survive the step boundary; keep it a
+          # child of the shell that runs the bench).
+          TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT xcodebuild test-without-building \
+            -xctestrun "$XCTESTRUN" \
+            -only-testing:ArgentRunnerUITests/ArgentRunnerSession/testServeCommands \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -test-timeouts-enabled NO \
+            -resultBundlePath build/runner.xcresult \
+            > build/runner.log 2>&1 &
+          RUNNER_PID=$!
+          echo "$RUNNER_PID" > build/runner.pid
+
+          READY=""
+          for i in $(seq 1 120); do
+            if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
+              echo "::error::runner exited before answering"; tail -120 build/runner.log || true; exit 1
+            fi
+            if node -e "
+              const net=require('net');
+              const s=net.connect($PORT,'127.0.0.1');
+              s.on('connect',()=>s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping'})+'\n'));
+              s.on('data',()=>process.exit(0));
+              s.on('error',()=>process.exit(1));
+              setTimeout(()=>process.exit(1),1500);
+            " 2>/dev/null; then READY=1; echo "runner ready after ${i}s"; break; fi
+            sleep 1
+          done
+          if [ -z "$READY" ]; then
+            echo "::error::runner did not answer ping within 120s"; tail -120 build/runner.log || true
+            kill "$RUNNER_PID" 2>/dev/null || true; exit 1
+          fi
+
+          export IOS_OPEN_SERVER_PORT=$PORT
+          export IOS_OPEN_SERVER_UDID=$SIM_UDID
+          export BENCH_UDID=$SIM_UDID
+
+          run_block () {
+            local b="$1"
+            echo "########## BLOCK $b ##########"
+            BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench-ios.js \
+              2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
+            return "${PIPESTATUS[0]}"
+          }
+
+          set +e
+          STATUS=0
+          IFS=',' read -ra BLKS <<< "$BENCH_BLOCKS"
+          for b in "${BLKS[@]}"; do
+            run_block "$b" || { echo "::warning::block $b exited non-zero"; STATUS=1; }
+          done
+          echo "########## MERGE ##########"
+          node .github/bench-ci/merge-blocks-ios.js 2>&1 | tee "$BENCH_OUT/merge.log"
+          MERGE_RC=${PIPESTATUS[0]}
+          set -e
+
+          kill "$RUNNER_PID" 2>/dev/null || true
+          # The merge enforces the FATAL gates (G0/G1/G3) — its non-zero exit fails
+          # the run. A non-zero block exit that the merge did not already catch also
+          # fails the run.
+          if [ "$MERGE_RC" != "0" ]; then exit "$MERGE_RC"; fi
+          exit "$STATUS"
+
+      - name: Scoreboard → job summary
+        if: always()
+        shell: bash
+        run: |
+          export BENCH_OUT="$PWD/.bench-results"
+          if node .github/bench-ci/scoreboard-ios.js > "$BENCH_OUT/scoreboard-ios.md" 2>/tmp/sb.err; then
+            cat "$BENCH_OUT/scoreboard-ios.md" >> "$GITHUB_STEP_SUMMARY"
+            cat "$BENCH_OUT/scoreboard-ios.md"
+          else
+            echo "iOS scoreboard generation failed" | tee -a "$GITHUB_STEP_SUMMARY"
+            cat /tmp/sb.err || true
+          fi
+
+      - name: Stop the runner and simulator
+        if: always()
+        shell: bash
+        run: |
+          if [ -f build/runner.pid ]; then kill "$(cat build/runner.pid)" 2>/dev/null || true; fi
+          xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || true
+
+      - name: Stamp artifacts with the run id
+        if: always()
+        shell: bash
+        run: |
+          export BENCH_OUT="$PWD/.bench-results"
+          mkdir -p "$BENCH_OUT"
+          echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }} sha=${{ github.sha }}" > "$BENCH_OUT/RUN_ID.txt"
+          # Stamp each results file with the run id (G5: every artifact file stamped).
+          for f in "$BENCH_OUT"/*.json "$BENCH_OUT"/*.md "$BENCH_OUT"/*.txt; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.json) ;; # JSON already carries env.runId
+              *) sed -i '' "1s;^;<!-- run_id=${{ github.run_id }} -->\n;" "$f" 2>/dev/null || true ;;
+            esac
+          done
+
+      - name: Upload bench artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-ios-open-vs-proprietary
+          path: |
+            .bench-results
+            build/build-sim.log
+            build/runner.log
+            build/runner.xcresult
+            build/shots
+            build-sim-input.log
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
