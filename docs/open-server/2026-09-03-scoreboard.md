@@ -2,21 +2,149 @@
 
 ## Goal status
 
-Owner's goal — "our driver beats theirs" — on the consolidated base, reference run
-**34813849446** (`feat/open-server-3k1` @ `6f7e2a6f`, `open/main` @ `8cbd3902`,
-ubuntu-latest KVM, Android 14 / SDK 34, N=20 per verb per block, p50/p95 ms, judged at the
-within-run OFF-1↔OFF-2 drift floor): open **WINS** gesture-swipe (scrcpy −37…−41 ms),
-gesture-pinch (−39…−51), await-screen-idle (−207), await-ui-element (−33…−35), and
-tokens/agent-step (3–30× fewer at 100/100 task success across all seven screen-graph
-configs). **PARITY**: describe idle at p50 (but 14–18 ms slower at p95 — the run-7 describe
-win did not reproduce), gesture-tap (scrcpy; UiAutomation is +25 ms slower). paste is
-directional only. The **two open losses** are (1) the scrcpy **fling** under-scroll at long
-durations — gate RED, same-run paired legacy→drift null, mechanism OPEN — and (2) the
-headline **tap+describe(settle:false)**, where open is +150…+230 ms slower ON vs OFF at a
-57 ms floor; both reproduce in run 34806342684, so tap+describe is a property of the
-screen-graph-d base, not phase 3k/3k.1.
+Owner's goal — "our driver beats theirs" — on the consolidated base with **`input-manager`
+the shipped default injector** (phase 3n.1 flip; scrcpy removed in 3n.2). Reference run for
+latency / landing / availability / screen-graph / process is **34870686468**
+(`feat/open-server-3n-kotlin-injector` @ `bb3fbddf`, ubuntu-latest KVM, Android 14 / SDK 34,
+N=20 per verb per block, judged at the within-run OFF-1↔OFF-2 drift floor); the scrcpy
+removal was confirmed on the fully-green run **34888577404**
+(`feat/open-server-3n2-remove-scrcpy` @ `377c0197`). On the reference run open **WINS**
+gesture-swipe (`input-manager` −40…−41 ms vs proprietary, CI clear of the floor),
+gesture-pinch (−35), await-screen-idle (−193…−194), await-ui-element (−35), and
+tokens/agent-step (3–30× fewer at 100/100 task success across the screen-graph configs).
+**PARITY**: gesture-tap — `input-manager` is **+1 ms** vs the proprietary driver on a
+measured floor of 0; the pre-registered P2 inequality fails by 1 ms and was accepted by the
+planner as parity in practice (the current UiAutomation default reads +32 ms slower). The
+headline **tap+describe(settle:false)** ratio is ≤ 1.15 (gate PASS) but is a within-run
+ratio, **not** a capability claim — its OFF comparator drifts run-to-run (3N1-H4). **No
+durable "beats the proprietary driver" wording**: one image, one emulator; the swipe/pinch
+wins enter as this run's numbers with CIs. **Fling stays OPEN** (pinned to run
+34813849446): the metric does not reproduce itself and its repair is ticket 3o; the scrcpy
+arm that used to carry the fling row is gone.
 
-## FINAL (2026-09-14) — consolidated CI run 34813849446, adversarially reviewed
+## FINAL (2026-09-14) — reference run 34870686468 (`input-manager` default) + 3n.2 removal-confirmation run 34888577404
+
+Reference for **latency, landing, availability, screen-graph and process** on the
+consolidated base with `input-manager` the shipped default (phase 3n.1 flip). Source:
+`2026-09-14-open-server-phase3n-kotlin-injector-replaces-scrcpy.md` "Result (3n.1) — run 2"
+and its adversarial review `2026-09-14-review-3n1-findings.md` (accept the run + promotion;
+P2 corrected to a 1 ms miss, fling arms void). `system-images;android-34;google_apis;
+x86_64`, ubuntu-latest KVM, head `bb3fbddf`, attempt 1, N = 20 per verb per block, five
+blocks `OFF-1 / ON-uiautomation / ON-input-manager / ON-scrcpy / OFF-2`. **Fling is
+excluded from this reference by name** (its arms were mislabelled, 3N1-H1) — the fling
+status row stays pinned to 34813849446. Each row supersedes the same-named 34813849446 row
+below.
+
+### Latency verbs (run 34870686468, N=20, p50/p95 ms)
+
+| verb | OFF-1 | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2 | measured OFF↔OFF floor |
+|---|---|---|---|---|---|---|
+| describe | 51/? | 48/? | 51/? | ? | 52/? | 0 |
+| gesture-tap | 53/60 | 86/134 | **54/55** | 52/53 | 53/60 | **0** |
+| gesture-swipe | 305/322 | 306/345 | **263/285** | 258/259 | 303/315 | **2** |
+| gesture-pinch | 353/364 | 346/404 | **318/357** | 307/312 | 354/367 | **1** |
+| await-screen-idle | 499/505 | 304/307 | 305/310 | 304/308 | 498/506 | 1 |
+| await-ui-element | 76/84 | 41/46 | 41/43 | 42/47 | 76/80 | 0 |
+| paste | — | — | 370 | — | — | 89 |
+| tap+describe(settle:false) | — | 480/831 | **372/616** | 349/655 | — | **78** |
+
+- **gesture-tap vs proprietary** — `input-manager` **54** vs proprietary 53/53 at a measured
+  floor of **0**: Δ +1 ms, bootstrap 95 % CI on the p50 difference **[0, +1]** vs pooled OFF.
+  Parity in practice; the pre-registered P2 inequality (`≤ max(OFF) + floor`) fails by 1 ms
+  and was accepted by the planner. The current UiAutomation default reads **86** on the same
+  run.
+- **gesture-swipe vs proprietary** — `input-manager` **263** vs proprietary 305/303, floor
+  ±2: Δ **−41** ms, CI **[−45, −34]** — **win**, CI clear of the floor. Control
+  `ON-uiautomation` 306 (parity with proprietary).
+- **gesture-pinch vs proprietary** — `input-manager` **318** vs proprietary 353/354, floor
+  ±1: Δ **−35.5** ms, CI **[−43.5, −34]** — **win**, CI clear of the floor. Control
+  `ON-uiautomation` 346.
+- **Headline `tap+describe(settle:false)`** — `input-manager` **372** ÷ OFF `tap+describe` =
+  0.91 (OFF-1 408) / 0.77 (OFF-2 486) / 0.83 (pooled 447) — all ≤ 1.15, gate P5 PASS.
+  **Within-run OFF↔OFF drift on this row is 78 ms**, and the OFF comparator moved 325 → 447
+  pooled since 34813849446 while `ON-scrcpy` moved 529 → 349 with no scrcpy change; this is a
+  within-run ratio, **not** a claim that the open stack got faster on the headline.
+- **No-regression vs the current default (P6)** — `input-manager` is faster than the
+  `ON-uiautomation` control on every gated verb in the same run: tap −32, swipe −43, pinch
+  −28, headline −108 ms.
+
+### Landing / availability / device / screen-graph / process (run 34870686468)
+
+- **First-attempt landing** — OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60,
+  ON-scrcpy 60/60, OFF-2 40/40 — **100 % on every block**; oracle self-test passed on every
+  block; first-attempt no-effect 0 everywhere. No "more reliable than scrcpy" wording —
+  scrcpy did not miss a tap this run.
+- **Strategy echo / fallbacks** — `ON-input-manager` reported `input-manager: 161/161` and
+  `ON-uiautomation` reported `default: 161/161` from the on-device per-RPC counter
+  (`InjectStrategyCounter`, one record per `inject`/`injectTaps` call); **0** `unavailable`
+  fallbacks. 161 is the process-wide injection count for the block (measured RPCs + warmups +
+  oracle + restore taps), identical across the two ON blocks. `ON-scrcpy` recorded 0 Kotlin
+  injections, confirming it ran entirely on the scrcpy channel.
+- **`input-manager` availability** — the reflective `InputManager.injectInputEvent(InputEvent,
+  int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on the image with **no**
+  `hidden_api_policy` change and no `-e disable-hidden-api-checks`. On this image
+  `InputManagerGlobal.getInstance()` is **denied** by hiddenapi policy; the pipe resolves
+  through the legacy `InputManager.getInstance()` holder. Availability is a property of this
+  image and this holder, not of Android devices in general.
+- **Forced-fallback (P9)** — `input-manager` forced unavailable on-device: `strategy ==
+  "unavailable"`, `fellBackTo == "uia-async"`, tap still navigated (+/−42 labels), next
+  request resolved back to `input-manager`. Exercised on the `tap` RPC only (extended to
+  swipe/gesture in run 34888577404 — see the 3n.2 row).
+- **Device-test outcome** — all six 3n strategy cases PASS with `ranAs` == requested; the
+  3n.1 P9 case PASSES. **The 3m.1 stage-accounting gate `|captureMs − Σ(stages)| ≤ 10` FAILED
+  at an after-tap 20-sample median of 11 ms** (idle passed); diagnosed as unaccounted work
+  inside `captureMs` (second window enumeration in `isKeyboardVisible`, `DisplayReader.read`,
+  forest `recycle`), not a 3n regression. **(Repaired in 3n.2 — see the 3n.2 row.)**
+- **Screen-graph** — success 100/100 on all seven configs (B1/B2/O1/O2/O3/O4/O5); tokens
+  o200k p50 B1 657 · B2 651 · O1 179 · O2 54 · O3 627 · O4 22 · O5 22; H1 0.275× PASS, H2 0
+  FAIL / same-screen n=50 = 1 PASS, H3 0.035× PASS, H4 every Δ +0 pp [0, 0] vs both
+  baselines; O5 one-step routed **60/60**, hash-mismatch 0; store invariants OK (0 duplicate
+  screens, 0 multi-destination edges), `com.android.settings` **10 nodes / 9 edges**, three
+  stores; **`skippedNoIdHash` 0** (34813849446: 0; 34853156073: 2; 34840929610: still
+  unrecorded). Back at the reference. **Run with `input-manager` as the injector** — the open
+  configs inject through the flipped default.
+- **Process** — run 34870686468, attempt **1**, head `bb3fbddf`, `workflow_dispatch`,
+  `suite=both`, `sg_mode=matrix`. Conclusion `failure`: the sole failing step is **#20
+  `Enforce device-test result`** (the 3m.1 residual gate); step #14 reports success despite
+  one failed test, so a device-test failure is only visible through step 20. Screen-graph job
+  success. Five latency blocks, three self-orchestrated by `run-bench.js` (no `workflow` OAuth
+  scope); per-block logs staged for every arm. `gates.test.js` 26/26.
+
+### 3n.2 removal-confirmation row (run 34888577404, head `377c0197`, Q1–Q7)
+
+> **Scrcpy removed; four blocks `OFF-1 / ON-uiautomation / ON-input-manager / OFF-2`, no
+> scrcpy arm, fling not run. Run conclusion `success` — the FIRST fully green run on this
+> base (the 3m.1 residual gate, red at 11 ms on 34870686468, is repaired to 1 ms).**
+> **Q3** vs proprietary: swipe **−30.5** CI [−37,−25] WIN, pinch **−24.5** CI [−30,−19] WIN,
+> headline P5 PASS (1.09/1.00/1.04), P6 PASS; tap **FAIL by 2** (Δ +2, CI [1, 2.5]) — parity
+> in practice, planner-accepted. **Q4** landing 100 % every block, oracle passed, **0**
+> `unavailable` fallbacks, echo `input-manager: 161/161` / control `default: 161/161` (measured
+> gated RPCs a subset of the 161 process-wide). **Q5** device suite green: all 22 cases PASS,
+> 3n cases `ranAs==requested`, **residual gate `|captureMs − Σ(stages)|` after-tap median 1 ms
+> / idle 0 ms** with new stages infoMs 2 / recycleMs 0 / otherMs 1 and the 20 residuals
+> printed, **P9 forced-fallback on tap, swipe AND gesture** (each uia-async). **Q6**
+> screen-graph green: 100/100 on six configs, O1 **99/100**, tokens B1 657·B2 651·O1 138·O2
+> 54·O3 627·O4 21·O5 21, H1 0.212× / H2 0 FAIL,same-screen 1 / H3 0.033× / H4 non-inferior,
+> O5 60/60, settings 10/9, invariants OK, **`skippedNoIdHash` 1** (vs 0/0 on the reference
+> runs). **Q7** no scrcpy: four blocks (no ON-scrcpy), CI `npm install` regenerated the
+> lockfile with `@yume-chan/*` dropped, grep returns only historical/removal notes. **Q1/Q2**
+> (reproduction of 34870686468 within the measured band): pinch reproduces (318 = 318); tap
+> (55 vs 54), swipe (267 vs 263) and the headline (279 vs 372, faster) exceed a near-zero band
+> by cross-run emulator variance, NOT a behaviour change — the ON-input-manager and
+> ON-uiautomation paths never used the scrcpy seam and are byte-identical. Planner reviews
+> before merge; `open/main` not fast-forwarded.
+
+### Fling status row — pinned to run 34813849446, status OPEN (no new numbers)
+
+> **Fling stays OPEN, pinned to run 34813849446** (its "open loses fling" numbers below).
+> Runs 34870686468 and 34888577404 add **no** fling numbers: on 34870686468 a pre-registered
+> same-code A/B instrument control was run; it did not reproduce itself within ±0.15 on one of
+> four informative cells (0.509 vs 0.361 at 400 ms/0.5, permutation p = 0.19), so no arm was
+> graded — and the control arms were subsequently found to be mislabelled (they ran
+> `input-manager`, 3N1-H1). On 34888577404 the fling job was removed with scrcpy. Metric
+> repair is ticket 3o.
+
+## Superseded — consolidated CI run 34813849446 (scrcpy; latency/landing/screen-graph/process superseded by 34870686468; fling still referenced here), adversarially reviewed
 
 Source: `2026-09-05-open-server-phase3k-fling-pacing-and-gates.md` "Result (3k.1)" and
 `2026-09-13-open-server-3k-results-ci.md`, review `2026-09-14-review-3k1-findings.md`
@@ -227,6 +355,24 @@ gates and are not comparable. **Superseded on run 34813849446:** the run-7
 describe win and the tap+describe(scrcpy) parity did NOT reproduce — describe is
 parity/loss and tap+describe is an open loss on the consolidated base (see "Goal
 status" and the run-34813849446 latency table above).
+
+## Retractions added 2026-09-14 (run 34870686468 / 34888577404, phase 3n.1 flip + 3n.2 scrcpy removal)
+- "open wins swipe/pinch **via scrcpy**" — superseded: the shipped default is now
+  `input-manager` (Kotlin on-device), and scrcpy was **removed** in 3n.2. The swipe/pinch
+  wins are `input-manager`'s: swipe −41 / pinch −35.5 (34870686468), swipe −30.5 / pinch
+  −24.5 (34888577404), each CI clear of the floor. Any "scrcpy" latency/fling row is
+  historical (see the Superseded section).
+- "gesture-tap **at parity** (scrcpy −2…−3)" — superseded: `input-manager` tap is **+1 ms**
+  vs the proprietary driver at a 0 floor; the pre-registered P2 inequality **fails by 1 ms**
+  and was planner-accepted as parity in practice — NOT a clean gate PASS (3N1-H2). The old
+  `CI lo ≤ floor` scoreboard rule was retired for the pre-registered point inequality.
+- "the fling is a scrcpy property" / any scrcpy fling row as current — the scrcpy fling arm
+  is **removed**; fling stays **OPEN pinned to 34813849446**, no new numbers, metric repair
+  is ticket 3o. Run 34870686468's fling arms were mislabelled (ran `input-manager`, 3N1-H1)
+  and are excluded from the reference by name.
+- "the 3m.1 residual gate is a standing red" — **repaired in 3n.2** (run 34888577404):
+  after-tap `|captureMs − Σ(stages)|` median **1 ms** (was 11 ms) once `infoMs` / `recycleMs`
+  / `otherMs` are measured and the stage clocks are unified on `SystemClock.uptimeMillis()`.
 
 ## Retractions added 2026-09-14 (run 34813849446, review 3k1)
 - "open describe idle never slower in 3 same-code runs / faster in 2 of 3" — falsified on run 34813849446: describe is at parity at p50 and **14–18 ms slower at p95**; the run-7 ON win (39/36 vs 52) did not reproduce (34806342684 reads the same). Direction-only claim retired.
