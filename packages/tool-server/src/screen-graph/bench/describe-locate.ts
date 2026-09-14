@@ -6,7 +6,10 @@
  *
  * Phase D.4: B1 and the open configs now share ONE resolution policy. This parses
  * each describe line into a `QueryNodeLite` (label→text, value→cd, id, frame→
- * bounds) and runs the SAME `pickUniqueNode` the open path uses on its query
+ * bounds) — and, phase D.4.1 (D4-H3), splits a collapsed `"<title> / <summary>"`
+ * label into `text`/`cd` so the EXACT-text/EXACT-cd tiers are reachable for B1's
+ * collapsed rows exactly as they are for the open title/summary nodes — and runs
+ * the SAME `pickUniqueNode` the open path uses on its query
  * nodes: whole-field EXACT id → EXACT text → EXACT contentDescription → a CONTAINS
  * match ONLY when exactly one candidate matches; an ambiguous set is refused
  * (`found:false`, `ambiguous:true`), never tapped as `nodes[0]`. The only
@@ -53,6 +56,25 @@ export function describeLinesToNodes(describeText: string): QueryNodeLite[] {
     if (idM?.[1]) node.id = idM[1];
     if (quoted[0] !== undefined) node.text = quoted[0];
     if (quoted[1] !== undefined) node.cd = quoted[1];
+    // Phase D.4.1 (D4-H3): a Settings list row is rendered by the proprietary
+    // describe as ONE quoted string `"<title> / <summary>"` (e.g.
+    // `"Display / Dark theme, font size, brightness"`), whereas the open tree
+    // carries the title and summary as two separate nodes (`{id:"title",…}` and
+    // `{id:"summary",…}`). With the whole label in `text`, the EXACT-text and
+    // EXACT-contentDescription tiers of `pickUniqueNode` are unreachable for
+    // every collapsed B1 row, so `t("Display")` could only ever hit the
+    // contains tier (and refuse as ambiguous when a second row also contained
+    // it). Split the collapsed label on the FIRST `" / "` into `text` (before) /
+    // `cd` (after), mirroring the open title/summary split, so both renderings
+    // feed `pickUniqueNode` the same fields. A row with no `" / "`, or one that
+    // already carried two quoted strings, is left unchanged.
+    if (node.cd === undefined && node.text !== undefined) {
+      const sep = node.text.indexOf(" / ");
+      if (sep !== -1) {
+        node.cd = node.text.slice(sep + 3).trim();
+        node.text = node.text.slice(0, sep).trim();
+      }
+    }
     nodes.push(node);
   }
   return nodes;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pickUniqueNode, normLc, type QueryNodeLite } from "../src/screen-graph/bench/locate";
-import { parseDescribeLocate } from "../src/screen-graph/bench/describe-locate";
+import { parseDescribeLocate, describeLinesToNodes } from "../src/screen-graph/bench/describe-locate";
 import { isPreActionInfraError } from "../src/screen-graph/bench/oracle";
 
 const b = (y: number) => ({ x1: 0, y1: y, x2: 500, y2: y + 60 });
@@ -85,116 +85,114 @@ describe("phase D.3 (D2-M6) — isPreActionInfraError", () => {
   });
 });
 
-describe("phase D.4 — ONE resolver policy for both renderings (B1 describe vs open query)", () => {
-  // The Network & internet screen as logical nodes (normalized bounds).
-  type N = { id?: string; text?: string; cd?: string; bounds: { x1: number; y1: number; x2: number; y2: number } };
-  const box = (y: number) => ({ x1: 0.0, y1: y, x2: 1.0, y2: y + 0.06 });
-  const screen: N[] = [
-    { id: "collapsing_toolbar", text: "Network & internet", bounds: box(0.03) },
-    { id: "title", text: "Internet", cd: "Internet", bounds: box(0.20) },
-    { id: "title", text: "Calls & SMS", bounds: box(0.28) },
-    { id: "title", text: "SIMs", bounds: box(0.36) },
-    { id: "title", text: "Airplane mode", bounds: box(0.44) },
-  ];
-  // Render the SAME nodes as a describe payload (format-tree line shape).
-  const describeText = screen
-    .map((n) => {
-      const label = n.text ? ` "${n.text}"` : "";
-      const value = n.cd && n.cd !== n.text ? ` "${n.cd}"` : "";
-      const id = n.id ? ` id="${n.id}"` : "";
-      const b = n.bounds;
-      return `  AXButton${label}${value}${id}  (${b.x1.toFixed(3)}, ${b.y1.toFixed(3)}, ${(b.x2 - b.x1).toFixed(3)}, ${(b.y2 - b.y1).toFixed(3)})`;
-    })
-    .join("\n");
 
-  const centreOf = (n: N) => ({ x: (n.bounds.x1 + n.bounds.x2) / 2, y: (n.bounds.y1 + n.bounds.y2) / 2 });
+/* --------------------------------------------------------------------------
+ * Phase D.4.1 (D4-H3) — the collapsed describe row is split into text/cd.
+ *
+ * B1's proprietary `describe` renders a Settings list row as ONE quoted string
+ * "<title> / <summary>". Before the split, `describeLinesToNodes` left `cd`
+ * undefined and put the whole label in `text`, so the EXACT-text and EXACT-cd
+ * tiers of `pickUniqueNode` were unreachable for every collapsed row and
+ * t("Display") could only reach the contains tier — where a SECOND row also
+ * contained "display" ("Accessibility / Display, interaction, audio"), so B1
+ * refused AMBIGUOUS (see run 34794414764 logs/sg-matrix.log line 25). The open
+ * tree carries title and summary as SEPARATE nodes and got the EXACT-text hit
+ * for free. The split feeds `pickUniqueNode` the same title/summary fields in
+ * both renderings. All rows below are quoted verbatim from the artifact.
+ * -------------------------------------------------------------------------- */
+describe("phase D.4.1 (D4-H3) — collapsed describe rows split into text/cd", () => {
+  // Verbatim from run 34794414764 logs/sg-matrix.log line 27 (settings-network-internet step 1).
+  const rowNetwork = `  LinearLayout "Network & internet / Mobile, Wi‑Fi, hotspot" [clickable]  (0.000, 0.321, 1.000, 0.096)`;
+  // Verbatim from run 34794414764 logs/sg-matrix.log line 25 (settings-display step 2, both rows).
+  const rowDisplay = `  LinearLayout "Display / Dark theme, font size, brightness" [clickable]  (0.000, 0.457, 1.000, 0.096)`;
+  const rowAccessibility = `  LinearLayout "Accessibility / Display, interaction, audio" [clickable]  (0.000, 0.650, 1.000, 0.096)`;
+  // Verbatim from run 34794414764 logs/sg-matrix.log line 38 (same-settings-search step 1) — no " / ".
+  const rowSearch = `  ViewGroup "Search settings" id="com.android.settings:id/search_action_bar" [clickable]  (0.039, 0.246, 0.922, 0.057)`;
 
-  for (const want of ["Internet", "Calls & SMS", "Airplane mode"]) {
-    it(`both renderings resolve t(${JSON.stringify(want)}) to the same node`, () => {
-      const open = pickUniqueNode(screen, { text: want });
-      const b1 = parseDescribeLocate(describeText, { text: want });
-      const expected = centreOf(screen.find((n) => n.text === want)!);
-      // open path
-      expect(open.node?.text).toBe(want);
-      expect((open.node!.bounds.x1 + open.node!.bounds.x2) / 2).toBeCloseTo(expected.x, 3);
-      // describe path — SAME node's centre
-      expect(b1.found).toBe(true);
-      expect(b1.xNorm).toBeCloseTo(expected.x, 3);
-      expect(b1.yNorm).toBeCloseTo(expected.y, 3);
-    });
-  }
-
-  it("D2-H3 the exact 'Internet' row wins over the 'Network & internet' toolbar in BOTH renderings", () => {
-    expect(pickUniqueNode(screen, { text: "Internet" }).node?.text).toBe("Internet");
-    expect(parseDescribeLocate(describeText, { text: "Internet" }).yNorm).toBeCloseTo(0.23, 3);
+  it("splits '<title> / <summary>' into text=title, cd=summary", () => {
+    const [n] = describeLinesToNodes(rowNetwork);
+    expect(n?.text).toBe("Network & internet");
+    expect(n?.cd).toBe("Mobile, Wi‑Fi, hotspot");
+    const [d] = describeLinesToNodes(rowDisplay);
+    expect(d?.text).toBe("Display");
+    expect(d?.cd).toBe("Dark theme, font size, brightness");
   });
 
-  it("BOTH renderings REFUSE an ambiguous selector (no exact, >1 contains) — no nodes[0] tap", () => {
-    // "title" as text is shared by 4 rows; "network" contains both toolbar and none exactly.
-    const openAmb = pickUniqueNode(screen, { text: "network" }); // "Network & internet" only → unique
-    expect(openAmb.node?.text).toBe("Network & internet");
-    // Build a genuinely ambiguous case: two rows with identical text.
-    const dup: N[] = [
-      { id: "title", text: "Wi‑Fi", bounds: box(0.1) },
-      { id: "title", text: "Wi‑Fi", bounds: box(0.2) },
-    ];
-    const dupDescribe = dup
-      .map((n) => `  AXButton "${n.text}" id="${n.id}"  (${n.bounds.x1.toFixed(3)}, ${n.bounds.y1.toFixed(3)}, ${(n.bounds.x2 - n.bounds.x1).toFixed(3)}, ${(n.bounds.y2 - n.bounds.y1).toFixed(3)})`)
-      .join("\n");
-    expect(pickUniqueNode(dup, { text: "Wi‑Fi" }).ambiguous).toBe(true);
-    expect(pickUniqueNode(dup, { text: "Wi‑Fi" }).node).toBeUndefined();
-    const b1 = parseDescribeLocate(dupDescribe, { text: "Wi‑Fi" });
-    expect(b1.found).toBe(false);
-    expect(b1.ambiguous).toBe(true);
+  it("a row with no ' / ' is left unchanged — its whole label stays in text, no title/summary split", () => {
+    const [s] = describeLinesToNodes(rowSearch);
+    // No " / " in the label, so the split does NOT fire: text is the full label,
+    // not a truncated prefix.
+    expect(s?.text).toBe("Search settings");
+    expect(s?.id).toBe("com.android.settings:id/search_action_bar");
+  });
+
+  it("after the split t('Display') hits EXACT text and RESOLVES the Display row (was AMBIGUOUS pre-split, log line 25)", () => {
+    const describeText = [rowDisplay, rowAccessibility].join("\n");
+    const nodes = describeLinesToNodes(describeText);
+    // Two rows still both CONTAIN "display" (the contains tier is ambiguous),
+    // but the split gives the first row EXACT text "Display" → tier 2 resolves it.
+    const picked = pickUniqueNode(nodes, { text: "Display" });
+    expect(picked.ambiguous).toBe(false);
+    expect(picked.node?.text).toBe("Display");
+    const b1 = parseDescribeLocate(describeText, { text: "Display" });
+    expect(b1.found).toBe(true);
+    // Centre of the Display row: 0.457 + 0.096/2 = 0.505.
+    expect(b1.yNorm).toBeCloseTo(0.505, 3);
   });
 });
 
-describe("phase D.4 — CAPTURED Network & internet screen (run 34794414764)", () => {
-  // The proprietary describe of the Network & internet screen, quoted verbatim from
-  // run 34794414764 (logs/sg-matrix.log line 28): the ONLY node whose text contains
-  // "internet" is the COLLAPSED combined summary — there is no discrete "Internet"
-  // list row. The open `query` (below) surfaces that discrete row. Same resolver,
-  // different rendering: this is exactly why B1 fails settings-network-internet NNNNN
-  // (taps the combined summary FOUND-UNIQUE, never reaches "Add network") while every
-  // open config resolves the clean "Internet" row and passes.
-  const b1Describe = [
+/* --------------------------------------------------------------------------
+ * Phase D.4.1 (D4-H2) — the ROOT Settings screen in BOTH renderings, every row
+ * taken verbatim from the artifacts of run 34794414764. No hand-built or invented
+ * rows. Open tree: preflight-launch-screens.json `settingsRoot` (discrete
+ * title/summary nodes). Proprietary text: the [D4] describe rows from
+ * logs/sg-matrix.log. With the D4-H3 split in place, the ONE `pickUniqueNode`
+ * policy resolves the SAME logical node in both renderings.
+ * -------------------------------------------------------------------------- */
+describe("phase D.4.1 (D4-H2) — root Settings screen, both renderings (verbatim artifact rows)", () => {
+  // Open query nodes — verbatim from run 34794414764 preflight-launch-screens.json
+  // `settingsRoot.nodes` (pixel bounds as captured; the resolver ignores bounds for
+  // matching and only returns the winner's centre).
+  const openRoot: QueryNodeLite[] = [
+    { id: "title", text: "Network & internet", bounds: { x1: 189, y1: 824, x2: 625, y2: 895 } },
+    { id: "summary", text: "Mobile, Wi‑Fi, hotspot", bounds: { x1: 189, y1: 895, x2: 540, y2: 946 } },
+    { id: "title", text: "Display", bounds: { x1: 189, y1: 2441, x2: 361, y2: 2512 } },
+    { id: "summary", text: "Dark theme, font size, brightness", bounds: { x1: 189, y1: 2512, x2: 725, y2: 2583 } },
+    { id: "title", text: "Accessibility", bounds: { x1: 189, y1: 2903, x2: 486, y2: 2974 } },
+    { id: "summary", text: "Display, interaction, audio", bounds: { x1: 189, y1: 2974, x2: 605, y2: 3025 } },
+  ];
+  // Proprietary describe — verbatim [D4] rows: the root list (log lines 27/2, top of
+  // the unscrolled root) plus the two "display"-bearing rows (log line 25, scrolled).
+  const b1RootTop = [
     `  LinearLayout "Network & internet / Mobile, Wi‑Fi, hotspot" [clickable]  (0.000, 0.321, 1.000, 0.096)`,
     `  LinearLayout "Connected devices / Bluetooth, pairing" [clickable]  (0.000, 0.417, 1.000, 0.096)`,
-    `  LinearLayout "Airplane mode" id="airplane" [clickable]  (0.000, 0.700, 1.000, 0.060)`,
+  ].join("\n");
+  const b1DisplayRows = [
+    `  LinearLayout "Display / Dark theme, font size, brightness" [clickable]  (0.000, 0.457, 1.000, 0.096)`,
+    `  LinearLayout "Accessibility / Display, interaction, audio" [clickable]  (0.000, 0.650, 1.000, 0.096)`,
   ].join("\n");
 
-  // The open query of the SAME screen: discrete rows, "Internet" a clean whole-field label.
-  const openNodes = [
-    { id: "collapsing_toolbar", text: "Network & internet", bounds: { x1: 0, y1: 0.03, x2: 1, y2: 0.09 } },
-    { id: "title", text: "Internet", cd: "Internet", bounds: { x1: 0, y1: 0.2, x2: 1, y2: 0.26 } },
-    { id: "title", text: "Calls & SMS", bounds: { x1: 0, y1: 0.28, x2: 1, y2: 0.34 } },
-    { id: "title", text: "Airplane mode", bounds: { x1: 0, y1: 0.44, x2: 1, y2: 0.5 } },
-  ];
-
-  it("open query resolves the discrete 'Internet' row; B1 describe has only the collapsed 'Network & internet' summary", () => {
-    // Open: the clean discrete row wins on exact whole-field text.
-    const open = pickUniqueNode(openNodes, { text: "Internet" });
-    expect(open.node?.text).toBe("Internet");
+  it("t('Network & internet') resolves to the SAME node in both renderings", () => {
+    const open = pickUniqueNode(openRoot, { text: "Network & internet" });
+    expect(open.node?.text).toBe("Network & internet");
     expect(open.node?.id).toBe("title");
-
-    // B1 describe: no discrete "Internet" row exists; the sole "internet"-bearing node
-    // is the collapsed combined summary, which the SAME policy resolves FOUND-UNIQUE
-    // via the unique-contains tier — a different (wrong) target than the open row.
-    const b1 = parseDescribeLocate(b1Describe, { text: "Internet" });
+    const b1Node = pickUniqueNode(describeLinesToNodes(b1RootTop), { text: "Network & internet" });
+    expect(b1Node.node?.text).toBe("Network & internet");
+    expect(b1Node.ambiguous).toBe(false);
+    // Same logical row → same normalized-x centre band (left-aligned list row).
+    const b1 = parseDescribeLocate(b1RootTop, { text: "Network & internet" });
     expect(b1.found).toBe(true);
-    // Centre of the collapsed summary row (0.321 + 0.096/2 = 0.369), NOT a discrete row.
-    expect(b1.yNorm).toBeCloseTo(0.369, 3);
-
-    // The two renderings pick DIFFERENT y-centres: the policy is identical, the rendering
-    // is not — this is the documented describe-vs-query gap, not a relaxed resolver.
-    const openY = (open.node!.bounds.y1 + open.node!.bounds.y2) / 2;
-    expect(Math.abs(b1.yNorm - openY)).toBeGreaterThan(0.1);
   });
 
-  it("'Airplane mode' (settings-network navTarget) resolves cleanly in BOTH renderings", () => {
-    expect(pickUniqueNode(openNodes, { text: "Airplane mode" }).node?.text).toBe("Airplane mode");
-    const b1 = parseDescribeLocate(b1Describe, { text: "Airplane mode" });
-    expect(b1.found).toBe(true);
-    expect(b1.yNorm).toBeCloseTo(0.73, 3);
+  it("t('Display') resolves to the SAME 'Display' node in both renderings (after the D4-H3 split)", () => {
+    // Open: EXACT text "Display" over the "Display" title; the "Accessibility"
+    // summary "Display, interaction, audio" only CONTAINS it, so tier 2 is unique.
+    const open = pickUniqueNode(openRoot, { text: "Display" });
+    expect(open.node?.text).toBe("Display");
+    expect(open.node?.id).toBe("title");
+    // B1: after the split the collapsed "Display / …" row has EXACT text "Display".
+    const b1Node = pickUniqueNode(describeLinesToNodes(b1DisplayRows), { text: "Display" });
+    expect(b1Node.node?.text).toBe("Display");
+    expect(b1Node.ambiguous).toBe(false);
   });
 });

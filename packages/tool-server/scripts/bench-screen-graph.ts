@@ -136,6 +136,38 @@ const REPORT_ORDER: BenchConfigId[] = [...BENCH_CONFIG_IDS];
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Phase D.4.1 (D4-H1) — symmetric post-action settle budget.
+ *
+ * The open configs get an idle wait for free: their tap goes through the open
+ * server, whose settled `getState`/`awaitChange` inside the tap RPC blocks until
+ * the screen has changed and gone quiet (B2's step-1 tap `actionRttMs` ≈ 1.6 s vs
+ * B1's ≈ 55 ms). B1 (proprietary describe+tap) paid NO such wait, so its
+ * next-step describe read the SOURCE screen (the two-level "Internet" step read
+ * 657 tok / the root row, never the Network & internet destination).
+ *
+ * `settleScreen` gives EVERY config the same wait AFTER each non-launch action,
+ * before the next observation: a short fixed delay so the transition has begun
+ * (a proprietary describe poll cannot wait-for-change the way the open
+ * `awaitChange` does, so a pure idle poll could latch onto the pre-transition
+ * source screen), then `await-screen-idle` — which on B1 falls back to the
+ * describe-tree poll and on the open configs uses `awaitChange` — to confirm the
+ * screen is still. The elapsed ms are recorded per step as `settleMs` (NOT folded
+ * into the observation or action RTT of either arm) so the report can show the
+ * settle policy is identical across configs.
+ */
+const BENCH_SETTLE_FIXED_MS = Number(process.env.BENCH_SETTLE_FIXED_MS ?? 700);
+const BENCH_SETTLE_IDLE_TIMEOUT_MS = Number(process.env.BENCH_SETTLE_IDLE_TIMEOUT_MS ?? 3000);
+
+async function settleScreen(reg: Reg): Promise<number> {
+  const t0 = Date.now();
+  if (BENCH_SETTLE_FIXED_MS > 0) await sleep(BENCH_SETTLE_FIXED_MS);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: BENCH_SETTLE_IDLE_TIMEOUT_MS })
+    .catch(() => undefined);
+  return Date.now() - t0;
+}
+
 /* -------------------------------------------------------------------------- */
 /* adb (always explicit -s SERIAL; never the physical device)                 */
 /* -------------------------------------------------------------------------- */
@@ -663,6 +695,14 @@ interface StepRecord {
    */
   recordMs: number;
   /**
+   * Phase D.4.1 (D4-H1): the symmetric post-action settle wait (ms) this step
+   * paid via `settleScreen` before the next observation — identical policy for
+   * every config, so the report can show B1 now pays the same idle wait the open
+   * tap RPC gives the open configs for free. NOT counted inside `rttMs`
+   * (observation) or `actionRttMs`.
+   */
+  settleMs: number;
+  /**
    * Phase D.2 HIGH-2: measured device RPCs for a routed known-target tap — the
    * navigate-to RPCs plus the bench's arrival verify (queryPresent + idle). Only
    * set on O5 known-target taps that routed; undefined otherwise.
@@ -1167,16 +1207,18 @@ async function runTask(
       b1Obs = await runObservation(reg, config, "describe", {});
       const tapSel = (step.action as { selector: BenchSelector }).selector;
       located = parseDescribeLocate(b1Obs.text, tapSel);
-      // Phase D.4 (ticket §2): quote B1's proprietary describe rendering of the rows
-      // that mention the selector, so B1's outcome on a task is explained by the
-      // RENDERING, not the resolver. Dumped once per (task, selector) at rep 0 into
-      // the teed matrix log for EVERY B1 tap step — including the steps where the
-      // symmetric resolver DID find a unique node (outcome FOUND-UNIQUE) but the tap
-      // still did not reach the destination. The earlier gate only fired on a
-      // locate-fail, so a row like the two-level "Internet" step (rep 0 resolves a
-      // unique-but-wrong node → oracle-unmet, not locate-fail) was never captured
-      // and item §2's excerpt was missing from the artifact. This is a log line only:
-      // it changes no tap, route, oracle read or success count.
+      // Phase D.4 (ticket §2) / D.4.1 (D4-H1, item 4): quote B1's proprietary
+      // describe rendering of the rows that mention the selector, so B1's outcome
+      // on a task is explained by the RENDERING, not the resolver. B1's tap-step
+      // describe is now taken AFTER the symmetric post-action settle of the
+      // PREVIOUS step (D4-H1), so on a two-level task step 2's describe reads the
+      // DESTINATION screen (Network & internet), not the source root it read
+      // before — the excerpt below is the real destination rendering. Dumped once
+      // per (task, selector) at rep 0 for EVERY B1 tap step — including the steps
+      // where the symmetric resolver DID find a unique node (FOUND-UNIQUE) but the
+      // tap did not reach the destination. The describe token count is logged too
+      // so the report can quote the destination-screen observation size. This is a
+      // log line only: it changes no tap, route, oracle read or success count.
       if (rep === 0) {
         const needle = (tapSel.text ?? tapSel.id ?? "").toLowerCase();
         const rows = b1Obs.text
@@ -1187,7 +1229,8 @@ async function runTask(
         const outcome = located.found ? "FOUND-UNIQUE" : located.ambiguous ? "AMBIGUOUS" : "MISS";
         realDebug(
           `[bench-sg][D4] B1 locate ${outcome} for ${JSON.stringify(tapSel)} ` +
-            `on ${task.id} step ${i}; describe rows containing "${needle}": ${rows.join(" || ") || "(none)"}`
+            `on ${task.id} step ${i} (describe ${b1Obs.tokensTiktoken} tok o200k, post-settle); ` +
+            `describe rows containing "${needle}": ${rows.join(" || ") || "(none)"}`
         );
       }
     } else if (isTap && usesOpenServer(config)) {
@@ -1203,6 +1246,14 @@ async function runTask(
     const action: ActionResult = isLaunch
       ? { rttMs: 0, usedNavigate: false, strategy: "none", navFallback: false, locateFailed: false, actionFailed: false }
       : await runAction(reg, config, step, useNavigate, located, navSel);
+
+    // Phase D.4.1 (D4-H1): symmetric post-action settle. The open configs got an
+    // idle wait for free inside the tap RPC's settled getState; B1 (proprietary
+    // describe) paid none, so its NEXT-step describe read the source screen. Give
+    // every config the same settle after every non-launch action, before the
+    // resulting-screen read and the next observation. The launch step already
+    // settles inside `launchApp`, so it is skipped here (its `settleMs` is 0).
+    const settleMs = isLaunch ? 0 : await settleScreen(reg);
 
     // Resulting screen hash → known/revisited bookkeeping.
     const hash = await currentHash(reg, config);
@@ -1277,6 +1328,7 @@ async function runTask(
       actionFailed: action.actionFailed,
       sameScreen: step.sameScreen === true,
       recordMs,
+      settleMs,
       ...(measuredRpc !== undefined ? { measuredRpc } : {}),
     });
 
@@ -1404,6 +1456,8 @@ interface ConfigAgg {
    *  measured RPCs on routed known-target taps. */
   actionRttMs: ReturnType<typeof summarize>;
   recordMs: ReturnType<typeof summarize>;
+  /** Phase D.4.1 (D4-H1): symmetric post-action settle wait, non-launch steps. */
+  settleMs: ReturnType<typeof summarize>;
   measuredRpc: ReturnType<typeof summarize>;
   rttCountPerStep: ReturnType<typeof summarize>;
   /** RTT count/step over SAME-SCREEN steps only (H2 subset; review addendum). */
@@ -1487,6 +1541,7 @@ function aggregate(
   // Phase D.2 HIGH-2 / L4: measured wall + RPC accounting.
   const actionRtt: number[] = [];
   const recordMsArr: number[] = [];
+  const settleMsArr: number[] = [];
   const measuredRpc: number[] = [];
   let plumbingMs = extraPlumbingMs;
   let knownTargetSteps = 0;
@@ -1560,6 +1615,7 @@ function aggregate(
       if (s.sameScreen) rttCountSS.push(eff);
       if (typeof s.actionRttMs === "number") actionRtt.push(s.actionRttMs);
       if (typeof s.recordMs === "number") recordMsArr.push(s.recordMs);
+      if (typeof s.settleMs === "number") settleMsArr.push(s.settleMs);
       if (typeof s.measuredRpc === "number") measuredRpc.push(s.measuredRpc);
       // A step reaching a screen already in the graph is warm; a novel screen is
       // cold. In O3 (cold store) most steps are cold; in O4/O5 (preloaded) warm.
@@ -1586,6 +1642,7 @@ function aggregate(
     perStepRtt: summarize(stepRtt),
     actionRttMs: summarize(actionRtt),
     recordMs: summarize(recordMsArr),
+    settleMs: summarize(settleMsArr),
     measuredRpc: summarize(measuredRpc),
     rttCountPerStep: summarize(rttCount),
     rttCountSameScreen: summarize(rttCountSS),
@@ -2432,6 +2489,11 @@ async function main(): Promise<void> {
   // Phase D.2 M1: persist the bootstrap resample count so the doc reads it from
   // the JSON instead of hand-typing it.
   env.bootstrapB = BOOTSTRAP_B;
+  // Phase D.4.1 (D4-M6): persist the fixed bootstrap RNG seed so the report can
+  // publish it and the cluster intervals are reproducible to the digit. Written
+  // as an unsigned 32-bit int and its hex form.
+  env.bootstrapSeed = BOOTSTRAP_SEED >>> 0;
+  env.bootstrapSeedHex = `0x${(BOOTSTRAP_SEED >>> 0).toString(16)}`;
   // Phase D.2 M2: persist the settings graph shape (out-degree) so H3 can be read
   // alongside it — the warm summary lists ≤6 outgoing edges, so the token ratio
   // tracks graph density.
