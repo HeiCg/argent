@@ -313,11 +313,15 @@ jobs:
           set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
           mkdir -p "$BENCH_OUT"
-          # F7: capture verbose-input logcat ACROSS the bench blocks (not only the
-          # device-test step) so a first-attempt no-effect tap is diagnosable against
-          # the injected MotionEvents. Stopped before the merge; staged as an artifact.
-          adb -s emulator-5554 shell setprop log.tag.InputDispatcher VERBOSE || true
-          adb -s emulator-5554 shell setprop log.tag.InputReader VERBOSE || true
+          # F7: capture logcat ACROSS the bench blocks (not only the device-test
+          # step) so a first-attempt no-effect tap is diagnosable (ANR / crash /
+          # activity context around the miss the bench code logs with fingerprints).
+          # NB: do NOT enable InputDispatcher/InputReader VERBOSE here — verbose input
+          # logging perturbs the ON path's synced UiAutomation inject and inflated the
+          # ON gesture-tap/gesture-swipe latency ~10x in the first 3k run (OFF, which
+          # injects via the emulator gRPC console, was unaffected), contaminating the
+          # "unchanged verbs vs run 7" comparison. Plain threadtime only. The delivered
+          # MotionEvent-duration measurement lives in the isolated device-test 3k step.
           adb -s emulator-5554 logcat -c || true
           adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-bench.txt" 2>&1 &
           BENCH_LOGCAT_PID=$!
@@ -392,14 +396,13 @@ jobs:
           # run failure must be caught by the `if …; else exit 1` below.
           set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
-          # Phase 3k measurement (option i): capture verbose-input logcat PER ARM so the
-          # delivered gesture duration (MotionEvent DOWN→UP eventTime deltas) can be read
-          # for all three arms — uiautomation, scrcpy(drift), scrcpy(legacy) — and the
-          # proprietary OFF reference. One file per arm; staged as artifacts. Paired with
-          # the host per-frame pacing trace ([scrcpy-server]/[open-server-fast-inject]
-          # `pacing …` lines) that the backend emits into each fling-log.
-          adb -s emulator-5554 shell setprop log.tag.InputDispatcher VERBOSE || true
-          adb -s emulator-5554 shell setprop log.tag.InputReader VERBOSE || true
+          # Phase 3k measurement (option i): capture logcat PER ARM for crash/ANR
+          # context. Plain threadtime only — NOT InputDispatcher/InputReader VERBOSE:
+          # verbose input logging perturbs injection and would alter the very fling
+          # scroll distances this A/B grades (and inflated ON latency ~10x in the first
+          # 3k run). The delivered MotionEvent-duration per arm is measured in the
+          # isolated device-test 3k step; the host per-frame pacing trace
+          # ([open-server-fast-inject] `pacing …`) is captured in each fling-log.
           # Phase 3k: ON-scrcpy runs the drift-corrected pacing fix (after arm) and
           # ON-scrcpy-legacy the pre-3k await-per-frame pacing (before arm) — both in
           # THIS run so the pacing fix is a same-run before/after. The harness sets

@@ -192,6 +192,10 @@ async function runConfig(cfg: FlingConfig): Promise<Cell[]> {
   // backend from this env var; set before the registry (hence the backend) exists.
   if (cfg.fastInject && cfg.pacing) process.env.ARGENT_SCRCPY_PACING = cfg.pacing;
   else delete process.env.ARGENT_SCRCPY_PACING;
+  // Emit the per-frame host pacing trace to stdout (→ the fling-log artifact) so the
+  // measured intended-vs-actual dispatch/write spans are captured for both arms.
+  if (cfg.fastInject) process.env.ARGENT_SCRCPY_PACING_TRACE = "1";
+  else delete process.env.ARGENT_SCRCPY_PACING_TRACE;
   const reg = createRegistry();
   const cells: Cell[] = [];
   for (const durationMs of DURATIONS) {

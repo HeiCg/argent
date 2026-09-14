@@ -469,11 +469,18 @@ class ScrcpyInjectBackendImpl implements ScrcpyInjectBackend {
       if (d > maxDispatchDriftMs) maxDispatchDriftMs = d;
     }
     const f1 = (n: number) => (Number.isFinite(n) ? n.toFixed(1) : "nan");
-    this.log(
+    const line =
       `pacing mode=${mode} frames=${trace.length} intendedDurMs=${intendedDurMs} ` +
-        `downUpDispatchMs=${f1(downUpDispatchMs)} writeSpanMs=${f1(writeSpanMs)} ` +
-        `maxDispatchDriftMs=${f1(maxDispatchDriftMs)} totalMs=${f1(totalMs)}`
-    );
+      `downUpDispatchMs=${f1(downUpDispatchMs)} writeSpanMs=${f1(writeSpanMs)} ` +
+      `maxDispatchDriftMs=${f1(maxDispatchDriftMs)} totalMs=${f1(totalMs)}`;
+    this.log(line);
+    // The bench routes the log callback through a captured/filtered console.debug,
+    // so also emit straight to stdout when the pacing trace is explicitly requested
+    // (ARGENT_SCRCPY_PACING_TRACE=1) — this is how the per-frame host measurement
+    // reaches the fling-log artifact for the phase-3k before/after.
+    if (process.env.ARGENT_SCRCPY_PACING_TRACE === "1") {
+      process.stdout.write(`[pacing-trace] ${line}\n`);
+    }
   }
 
   /** Best-effort lift of every still-down pointer after an inject failure. */
