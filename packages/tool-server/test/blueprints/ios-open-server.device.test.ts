@@ -13,8 +13,9 @@ import {
  * Device suite for the open iOS server, run ONLY in CI on a booted simulator
  * (`OPEN_IOS_SERVER_DEVICE_TESTS=1`). The CI workflow builds the runner, launches
  * it against `com.apple.Preferences`, and hands this test the runner port
- * (`ARGENT_IOS_OPEN_SERVER_PORT`) and the simulator UDID
- * (`ARGENT_IOS_OPEN_SERVER_UDID`).
+ * (`IOS_OPEN_SERVER_PORT`) and the simulator UDID (`IOS_OPEN_SERVER_UDID`). These
+ * names avoid the `ARGENT_` prefix, which the `clear-argent-env` vitest setup
+ * strips before the test module loads.
  *
  * The tap/swipe effect oracle is NEUTRAL PIXELS: `xcrun simctl io <udid>
  * screenshot` before and after, compared as an optical diff ratio (via a small
@@ -25,8 +26,10 @@ import {
 const execFileAsync = promisify(execFile);
 
 const enabled = process.env.OPEN_IOS_SERVER_DEVICE_TESTS === "1";
-const PORT = Number(process.env.ARGENT_IOS_OPEN_SERVER_PORT ?? "0");
-const UDID = process.env.ARGENT_IOS_OPEN_SERVER_UDID ?? "";
+// NOTE: these must NOT start with `ARGENT_` — the `clear-argent-env` vitest setup
+// deletes every ARGENT_*-prefixed var before this module loads.
+const PORT = Number(process.env.IOS_OPEN_SERVER_PORT ?? "0");
+const UDID = process.env.IOS_OPEN_SERVER_UDID ?? "";
 const SETTINGS = "com.apple.Preferences";
 
 // ---- neutral-pixel diff (BMP, no image lib) -------------------------------
@@ -134,8 +137,8 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
   let client: IosOpenServerClient;
 
   beforeAll(async () => {
-    expect(PORT, "ARGENT_IOS_OPEN_SERVER_PORT must be set").toBeGreaterThan(0);
-    expect(UDID, "ARGENT_IOS_OPEN_SERVER_UDID must be set").not.toBe("");
+    expect(PORT, "IOS_OPEN_SERVER_PORT must be set").toBeGreaterThan(0);
+    expect(UDID, "IOS_OPEN_SERVER_UDID must be set").not.toBe("");
     client = new IosOpenServerClient({ port: PORT, timeoutMs: 90_000 });
     await client.launchApp(SETTINGS);
     await sleep(1500);
