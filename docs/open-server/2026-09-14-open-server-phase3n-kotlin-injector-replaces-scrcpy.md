@@ -351,3 +351,28 @@ noise before deciding, or (b) the hybrid default (Kotlin `input-manager` for tap
 it already beats scrcpy on reliability and is within a few ms — keeping scrcpy only if the
 fling deficit proves real and Kotlin-unfixable). Promotion/removal (item 5) is deferred for
 review.
+
+### Screen-graph (run 34853156073, job SUCCEEDED — green)
+
+The screen-graph matrix job passed on the same run — 3n's injection-path changes and the
+3m.1 merge did not disturb the outcome path the graph records from.
+
+- **Success (ok/total, exclusions-as-failures)**: B1 100/100 · B2 97/100 · O1 99/100 ·
+  **O2 100/100** · O3 99/100 · O4 98/100 · O5 98/100.
+- **Tokens/agent-step, o200k p50 (n=155 non-launch steps)**: B1 657 · B2 646 · O1 138 ·
+  **O2 54** · O3 627 · O4 21 · O5 22.
+- **Hypotheses**: H1 O1/B2 = **0.214×** (≤0.5, PASS) · H2 all-steps 0 (FAIL, structural) /
+  same-screen n=50 = 1 (PASS) · H3 O4/O3 = **0.033×** (≤0.2, PASS).
+- **O5 routing**: one-step routed **58/60**; O5-mixed 98/100, O5-pure 48/48 = 100%.
+- **Invariants**: `store invariants OK: 0 duplicate screens, 0 multi-destination edges`
+  (`sg-matrix.log:200`); **skippedNoIdHash = 2**.
+
+### Run 1 close-out
+
+Overall run conclusion: **failure** — driven solely by the pre-registered BLOCKING scrcpy
+fling gate (the known scrcpy under-scroll), with the screen-graph job green and every other
+latency step green. All item 1–4 code is proven on-device: Kotlin strategies compile and run
+in CI, the host threading works, all six latency arms + the input-manager fling arm are
+produced, the device suite (incl. the 20-sample residual gate) passes, and input-manager is
+available on this emulator. The measurement stands; the promotion/removal decision (item 5)
+is the planner's.
