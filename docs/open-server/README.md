@@ -72,6 +72,15 @@ scrcpy removed), "tap at parity via scrcpy" (input-manager +1 ms), "fling resolv
    doc + related work exist: `2026-09-02-screen-graph-architecture.md`,
    `2026-09-02-screen-graph-related-work.md`).
 
+## iOS (2026-09-14)
+Owner approved an open iOS driver. Spec `2026-09-14-ios-open-driver-spec.md`; research
+`2026-09-14-ios-open-driver-research.md`. iOS-1 MERGED (607ddb80): `packages/ios-device-server`
+(XCUITest runner on the Android NDJSON contract, from upstream `feat/ios-physical-devices`),
+host blueprint behind flag `open-ios-device-server` (off), workflow
+`ios-open-server-device-test.yml` (run 34904275293 green, 9/9 cases, Xcode 26.6 / iOS 26.5).
+Next: iOS-2 bench (`2026-09-14-ios-phase2-bench.md`), iOS-3 screen graph on iOS, iOS-4
+sim-input depth + physical CI. Android fling: `2026-09-14-open-server-phase3o-fling-metric.md`.
+
 ## Rules that paid for themselves
 - One worktree per agent, under this clone (`git worktree add ../argent-fork-wt-<name>`),
   never under /tmp (wiped between sessions; the 3k WIP was lost that way). Commit early.
