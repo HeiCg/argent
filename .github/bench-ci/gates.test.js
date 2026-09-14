@@ -210,17 +210,32 @@ function flingSet(out, spec, opts = {}) {
   if (leg.length) fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy-legacy.json"), JSON.stringify(flingBlock("ON-scrcpy-legacy", leg, { pacing: "legacy" })));
 }
 
-test("merge-fling: passes when every informative cell is within ±0.15", () => {
+test("merge-fling: passes when every informative cell is within ±0.15 on BOTH sides", () => {
   const out = freshOut();
+  // Two-sided rule (change 3): scrcpy within ±0.15 of uia AND of off in every cell.
   flingSet(out, {
     "150|0.3": [0.45, 0.46, 0.46],
-    "250|0.3": [0.36, 0.34, 0.45],
-    "400|0.3": [0.34, 0.33, 0.36],
+    "250|0.3": [0.44, 0.45, 0.46],
+    "400|0.3": [0.50, 0.52, 0.51],
     "400|0.5": [0.60, 0.58, 0.62],
   });
   const r = run(MERGE_FLING, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /FLING VERDICT: PASS/);
+  assert.match(r.stdout, /FLING VERDICT: PASS \(per-cell ±0.15 on scrcpy\/uia AND scrcpy\/off/);
+});
+
+test("merge-fling: TWO-SIDED — scrcpy at parity with uia but NOT with off FAILS (change 3)", () => {
+  const out = freshOut();
+  // 250|0.3: scrcpy/uia = 0.34/0.36 = 0.944 (inside), scrcpy/off = 0.34/0.46 = 0.739
+  // (outside) — a scrcpy under-scroll the one-sided uia gate would have missed.
+  flingSet(out, {
+    "150|0.3": [0.45, 0.46, 0.46],
+    "250|0.3": [0.36, 0.34, 0.46],
+  });
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /fling parity gate FAILED/);
+  assert.match(r.stdout, /scrcpy\/off .* dev/);
 });
 
 test("merge-fling: NO whitelist — a cell that used to be whitelisted (400|0.5) now FAILS", () => {
@@ -228,7 +243,7 @@ test("merge-fling: NO whitelist — a cell that used to be whitelisted (400|0.5)
   // 400|0.5 scrcpy/uia = 0.36/0.50 = 0.72 — outside ±0.15 and formerly whitelisted.
   flingSet(out, {
     "150|0.3": [0.45, 0.46, 0.46],
-    "250|0.3": [0.36, 0.34, 0.45],
+    "250|0.3": [0.44, 0.45, 0.46],
     "400|0.5": [0.50, 0.36, 0.62],
   });
   const r = run(MERGE_FLING, out);
@@ -237,27 +252,87 @@ test("merge-fling: NO whitelist — a cell that used to be whitelisted (400|0.5)
   assert.match(r.stdout, /FLING VERDICT: FAIL/);
 });
 
-test("merge-fling: a floor-pinned cell (both arms at 0.175) is EXCLUDED, not counted", () => {
+test("merge-fling: a cell whose uia REFERENCE q25 sits at the floor is NON-INFORMATIVE (change 1)", () => {
   const out = freshOut();
-  // Only cell is floor-pinned → no informative cells → INCONCLUSIVE, not a pass/fail.
-  flingSet(out, { "150|0.5": [0.175, 0.175, 0.175] });
+  // uia iqr[0] at the 0.175 floor (bimodal reference) → non-informative, keyed on the
+  // reference, never on scrcpy. Only cell → 0 informative → INCONCLUSIVE, not pass/fail.
+  const uia = [{ durationMs: 150, distance: 0.3, n: 12, median: 0.45, iqr: [0.175, 0.51] }];
+  const scr = [{ durationMs: 150, distance: 0.3, n: 12, median: 0.46, iqr: [0.4, 0.5] }];
+  const off = [{ durationMs: 150, distance: 0.3, n: 12, median: 0.46, iqr: [0.44, 0.5] }];
+  fs.writeFileSync(path.join(out, "fling-block-ON-uiautomation.json"), JSON.stringify(flingBlock("ON-uiautomation", uia)));
+  fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy.json"), JSON.stringify(flingBlock("ON-scrcpy", scr, { pacing: "drift" })));
+  fs.writeFileSync(path.join(out, "fling-block-OFF.json"), JSON.stringify(flingBlock("OFF", off)));
   const r = run(MERGE_FLING, out);
   assert.strictEqual(r.code, 0);
   assert.match(r.stdout, /INCONCLUSIVE/);
-  assert.match(r.stdout, /floor-pinned/);
+  assert.match(r.stdout, /uia reference q25=0.175 at the 0.175 floor/);
 });
 
-test("merge-fling: scrcpy/off and uia/off transparency + before/after legacy arm are printed", () => {
+test("merge-fling: POWER FLOOR — an OFF arm with n<10 makes the cell NON-INFORMATIVE (change 2)", () => {
+  const out = freshOut();
+  const uia = [{ durationMs: 250, distance: 0.3, n: 12, median: 0.45, iqr: [0.42, 0.48] }];
+  const scr = [{ durationMs: 250, distance: 0.3, n: 12, median: 0.46, iqr: [0.43, 0.49] }];
+  const off = [{ durationMs: 250, distance: 0.3, n: 8, median: 0.46, iqr: [0.43, 0.49] }]; // off underpowered
+  fs.writeFileSync(path.join(out, "fling-block-ON-uiautomation.json"), JSON.stringify(flingBlock("ON-uiautomation", uia)));
+  fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy.json"), JSON.stringify(flingBlock("ON-scrcpy", scr, { pacing: "drift" })));
+  fs.writeFileSync(path.join(out, "fling-block-OFF.json"), JSON.stringify(flingBlock("OFF", off)));
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.stdout, /INCONCLUSIVE/);
+  assert.match(r.stdout, /off n=8 < 10/);
+});
+
+test("merge-fling: scrcpy/off and uia/off transparency + legacy→drift before/after are printed", () => {
   const out = freshOut();
   flingSet(out, {
     "150|0.3": [0.45, 0.46, 0.46, 0.47],
-    "400|0.3": [0.34, 0.33, 0.36, 0.23], // legacy scrcpy under-scrolls (0.23) vs drift 0.33
+    "400|0.3": [0.50, 0.52, 0.51, 0.40], // legacy scrcpy under-scrolls (0.40) vs drift 0.52
   });
   const r = run(MERGE_FLING, out);
   assert.strictEqual(r.code, 0, r.stderr);
   assert.match(r.stdout, /scrcpy\/off/);
   assert.match(r.stdout, /uia\/off/);
-  assert.match(r.stdout, /before\(legacy\) → after\(drift\)/);
+  assert.match(r.stdout, /legacy\(default\) → drift\(opt-in\)/);
+});
+
+/* -- Pre-registered rule validated on the REAL artifacts of run 7 & 34800933407 -- */
+
+const FIX = path.join(HERE, "fixtures");
+function copyFixture(out, run) {
+  const dir = path.join(FIX, run);
+  for (const f of fs.readdirSync(dir)) fs.copyFileSync(path.join(dir, f), path.join(out, f));
+}
+
+test("merge-fling: PRE-REGISTERED rule stays RED on run 7 (33975063607) — 3 informative cells all FAIL", () => {
+  const out = freshOut();
+  copyFixture(out, "fling-run-33975063607");
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 1, r.stdout);
+  // 3 red cells: 250/0.3, 400/0.3, 400/0.5 (each fails ≥1 side); 3 non-informative.
+  assert.match(
+    r.stdout,
+    /FLING VERDICT: FAIL \(per-cell ±0.15 on scrcpy\/uia AND scrcpy\/off, NO whitelist, over 3 informative cell\(s\); 3 of 6 non-informative at the metric floor\)/
+  );
+  assert.match(r.stdout, /d=250ms dist=0.3: scrcpy\/uia 0.908 dev 0.092 \| scrcpy\/off 0.712 dev 0.288 {2}OUT — FAIL/);
+  assert.match(r.stdout, /d=400ms dist=0.3: scrcpy\/uia 0.717 dev 0.283/);
+  assert.match(r.stdout, /d=400ms dist=0.5: scrcpy\/uia 0.71 dev 0.29/);
+});
+
+test("merge-fling: PRE-REGISTERED rule yields 3 PASS / 3 non-informative on run 34800933407", () => {
+  const out = freshOut();
+  copyFixture(out, "fling-run-34800933407");
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(
+    r.stdout,
+    /FLING VERDICT: PASS \(per-cell ±0.15 on scrcpy\/uia AND scrcpy\/off, NO whitelist, over 3 informative cell\(s\); 3 of 6 non-informative at the metric floor\)/
+  );
+  // The reviewer's per-cell table (findings "Gate recommendation").
+  assert.match(r.stdout, /d=250ms dist=0.3: scrcpy\/uia 0.97 dev 0.03 \| scrcpy\/off 0.983 dev 0.017 {2}OK/);
+  assert.match(r.stdout, /d=400ms dist=0.3: scrcpy\/uia 1.019 dev 0.019 \| scrcpy\/off 0.886 dev 0.114 {2}OK/);
+  assert.match(r.stdout, /d=400ms dist=0.5: scrcpy\/uia 1.085 dev 0.085 \| scrcpy\/off 0.967 dev 0.033 {2}OK/);
+  // 150/0.3 non-informative on the reference bimodality AND the off power floor.
+  assert.match(r.stdout, /d=150ms dist=0.3:.*off n=8 < 10/);
 });
 
 test("merge-fling: missing the drift arm FIRES (hard requirement)", () => {

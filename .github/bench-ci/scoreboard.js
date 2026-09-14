@@ -261,26 +261,28 @@ if (fling) {
   L.push("### Fling A/B (scrcpy[drift] vs uiautomation median scroll)");
   L.push("");
   L.push(`OFF reference present: ${fling.offReferencePresent ? "yes" : "no"}` +
-    ` · scrcpy pacing: **${fling.scrcpyPacing || "drift"}**` +
-    ` · before(legacy) arm present: ${fling.legacyArmPresent ? "yes" : "no"}`);
+    ` · scrcpy gate arm pacing: **${fling.scrcpyPacing || "drift"}**` +
+    ` · legacy arm present: ${fling.legacyArmPresent ? "yes" : "no"}`);
   if (fling.flingGate) {
     L.push("");
-    L.push(`Fling parity gate (scrcpy[drift]/uia ±${fling.flingGate.tolerance}, **no whitelist**, per-cell blocking): **${fling.flingGate.verdict}**`);
+    L.push(`Fling parity gate (${fling.flingGate.rule || `scrcpy[drift]/uia ±${fling.flingGate.tolerance}, per-cell`}, blocking): **${fling.flingGate.verdict}**`);
   }
   L.push("");
   // scrcpy/off and uia/off are the proprietary-reference transparency (review F2/F4).
-  L.push("| dur(ms) | dist | uia med | scrcpy med | scrcpy/uia | off med | scrcpy/off | uia/off | reliable |");
+  // Per-arm n is shown so the power floor (n≥10 on every gated arm) is auditable.
+  L.push("| dur(ms) | dist | uia med (n) | scrcpy med (n) | scrcpy/uia | off med (n) | scrcpy/off | uia/off | gradable |");
   L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const g of fling.grid || []) {
+    const withN = (m) => (m ? `${m.median} (${m.n})` : "-");
     L.push(
-      `| ${g.durationMs} | ${g.distance} | ${g.uiautomation?.median ?? "-"} | ${g.scrcpy?.median ?? "-"} | ${g.scrcpyOverUia} | ` +
-        `${g.off?.median ?? "-"} | ${g.scrcpyOverOff ?? "-"} | ${g.uiaOverOff ?? "-"} | ${g.reliable ? "✓" : "saturated"} |`
+      `| ${g.durationMs} | ${g.distance} | ${withN(g.uiautomation)} | ${withN(g.scrcpy)} | ${g.scrcpyOverUia} | ` +
+        `${withN(g.off)} | ${g.scrcpyOverOff ?? "-"} | ${g.uiaOverOff ?? "-"} | ${g.informative ? "informative" : "non-informative"} |`
     );
   }
   L.push("");
-  // Same-run before/after pacing (legacy → drift), when the before arm ran.
+  // Same-run before/after pacing (legacy default → drift opt-in), when the arm ran.
   if (fling.legacyArmPresent) {
-    L.push("**Pacing before(legacy) → after(drift), same run**");
+    L.push("**Pacing legacy(default) → drift(opt-in), same run — reported, not gated**");
     L.push("");
     L.push("| dur(ms) | dist | legacy med | drift med | scrcpy/uia legacy→drift | scrcpy/off legacy→drift |");
     L.push("| --- | --- | --- | --- | --- | --- |");
