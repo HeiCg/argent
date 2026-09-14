@@ -67,3 +67,95 @@ accepted run before a merge is accepted.
   p50/p95) side by side with run 7 and run 34788497583, screen-graph per-config
   success, and which fix shape (flag vs per-call param) was chosen and why. Do not
   edit the scoreboard; do not fast-forward `open/main`.
+
+## Result
+
+Fix landed on `fix/open-server-outcome-default-off` (off `open/main` @ `e52c1db5`;
+the header's `6106f9a6` is stale — `e52c1db5` is current HEAD). Commits:
+`23bbc477` (src) and `ed5e844d` (tests). CI run **34806342684** (`suite=both`,
+`sg_mode=matrix`, on `ed5e844d`).
+
+### Fix shape: a flag check on the EXISTING `screenGraphRecordingEnabled()` — not a per-call param
+
+`gesture-tap` / `gesture-swipe` / `paste` (android) now take the plain
+`openServerTap` / `openServerSwipe` / `openServerTypeText` path (no `outcome`
+request → `runAction` is the pass-through, no `settleAfterAction`) UNLESS
+`screenGraphRecordingEnabled()` is true, in which case the `*WithOutcome` path is
+used exactly as before. The result shape keeps `outcome` optional (absent on the
+default path).
+
+Item 3's per-call `outcome?` param was NOT needed. `screenGraphRecordingEnabled()`
+= `isFlagEnabled("screen-graph") || process.env.ARGENT_SG_RECORD === "1"` already
+separates the only two tool-driven callers that matter: the latency bench
+(`bench-open-vs-proprietary.ts`) sets neither, so it gets the plain path and the
+regression is fixed; the screen-graph harness (`bench-screen-graph.ts`) sets
+`ARGENT_SG_RECORD=1` process-wide for EVERY open config incl. the graph-off
+baselines B2/O1/O2 (`bench-screen-graph.ts:2322`), so its tool-driven taps still
+record selector edges and per-config success is unchanged. `navigate-to`,
+`bench-preflight.ts` and the harness's own reset/setup taps call `*WithOutcome`
+(or `tapWithOutcome`) directly through the blueprint and are untouched. A single
+flag check per call was therefore NOT too coarse, and it keeps the CI
+screen-graph job green without touching its results.
+
+### Latency verb table (p50/p95 ms) — my run 34806342684 vs run 7 (33975063607) vs run 34788497583 (regression)
+
+gesture-tap and gesture-swipe, all four blocks; N=20 per cell.
+
+| verb | metric | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 |
+|---|---|---|---|---|---|
+| gesture-tap | run 34806342684 (fix) | 52/54 | **83/131** | **51/52** | 53/62 |
+| gesture-tap | run 7 (33975063607, baseline) | 52/54 | 77/91 | 51/52 | 52/53 |
+| gesture-tap | run 34788497583 (regression) | 54/61 | 852/1048 | 965/1049 | 54/62 |
+| gesture-swipe | run 34806342684 (fix) | 297/308 | **294/319** | **258/261** | 295/319 |
+| gesture-swipe | run 7 (33975063607, baseline) | 290/308 | 296/359 | 257/262 | 294/303 |
+| gesture-swipe | run 34788497583 (regression) | 294/311 | 1267/1376 | 1237/1649 | 299/310 |
+
+The +800–1000 ms tap/swipe cost on BOTH ON arms is gone: tap ON p50 back to 83
+(uia) / 51 (scrcpy) — run-7 range 77 / 51; swipe ON p50 back to 294 (uia) / 258
+(scrcpy) — run-7 296 / 257. ON-uia tap p50 83 is 6 ms over run 7's 77, inside the
+~21 ms ON-path noise floor; OFF-1↔OFF-2 drift is 1 ms (tap) / 2 ms (swipe). Every
+other verb is within its documented drift/noise and shows no settle signature
+(describe idle ON 55/53 vs OFF 52 — 3i target ON≤OFF+10 met, magnitude documented
+as non-reproducible; await-screen-idle / await-ui-element / paste / gesture-pinch
+all in run-7 ballpark or faster; the await/describe deltas vs run 7 come from the
+screen-graph-d tree already on `open/main`, not from this gate). scrcpyFallbacks 0;
+describe fidelity OFF↔ON Jaccard 0.889 (sole diff a "5.08 GB"→"5.07 GB" free-space
+string).
+
+### Screen-graph per-config success — my run 34806342684 vs run 34794414764 (Wilson n=100)
+
+| Config | run 34806342684 (fix) | run 34794414764 (ref) |
+|---|---|---|
+| B1 (proprietary) | 82/100 [73, 88] | 82/100 [73, 88] |
+| B2 (open, no graph) | 100/100 [96, 100] | 98/100 [93, 99] |
+| O1 (+ query/diff) | 100/100 [96, 100] | 98/100 [93, 99] |
+| O2 (+ outcomes) | 99/100 [95, 100] | 99/100 [95, 100] |
+| O3 (+ graph, blind) | 99/100 [95, 100] | 98/100 [93, 99] |
+| O4 (graph, warm) | 100/100 [96, 100] | 100/100 [96, 100] |
+| O5 (+ navigate-to) | 100/100 [96, 100] | 95/100 [89, 98] |
+
+Screen-graph job **completed/success**. Every config is at-or-above the reference
+with overlapping Wilson intervals — unchanged within noise. B1 (no open server) is
+identical 82/100; B2/O1–O5 (which use the harness's own outcome calls under
+`ARGENT_SG_RECORD`) are all ≥ reference, confirming the gate did not reduce the
+harness's outcome-driven recording.
+
+### Fling A/B (reported, NOT gated — 3k owns the gate)
+
+Fling parity gate FAIL: 150ms/0.3=0.642, 400ms/0.3=0.844, 400ms/0.5=0.821 outside
+±0.15 — the same structurally-red, "not establishable on x86_64 KVM" scrcpy
+long-duration under-scroll seen on run 7 and the merge run (offending cells vary
+with emulator scroll-physics noise). The latency JOB is red solely on this step;
+the 4-block bench, scoreboard, device test (on-device suite passed) and artifact
+upload all succeeded. The fling bench sends no `outcome` param, so this gate is
+untouched by the fix.
+
+### Not done / caveats
+
+- Did not edit the scoreboard; did not fast-forward `open/main`. No PR opened
+  (task did not ask). No user-facing MCP/CLI/config/flow change, so no
+  `packages/docs` update is warranted (the `screen-graph` flag already documents
+  "Off by default").
+- Pre-existing repo state left as-is: `scripts/bench-describe-host.ts` has two
+  `import.meta` TS1343 errors under `tsc -p tsconfig.test.json` (`module: commonjs`)
+  on the base — out of scope (scripts), not touched.
