@@ -148,3 +148,53 @@ describe("phase D.4 — ONE resolver policy for both renderings (B1 describe vs 
     expect(b1.ambiguous).toBe(true);
   });
 });
+
+describe("phase D.4 — CAPTURED Network & internet screen (run 34794414764)", () => {
+  // The proprietary describe of the Network & internet screen, quoted verbatim from
+  // run 34794414764 (logs/sg-matrix.log line 28): the ONLY node whose text contains
+  // "internet" is the COLLAPSED combined summary — there is no discrete "Internet"
+  // list row. The open `query` (below) surfaces that discrete row. Same resolver,
+  // different rendering: this is exactly why B1 fails settings-network-internet NNNNN
+  // (taps the combined summary FOUND-UNIQUE, never reaches "Add network") while every
+  // open config resolves the clean "Internet" row and passes.
+  const b1Describe = [
+    `  LinearLayout "Network & internet / Mobile, Wi‑Fi, hotspot" [clickable]  (0.000, 0.321, 1.000, 0.096)`,
+    `  LinearLayout "Connected devices / Bluetooth, pairing" [clickable]  (0.000, 0.417, 1.000, 0.096)`,
+    `  LinearLayout "Airplane mode" id="airplane" [clickable]  (0.000, 0.700, 1.000, 0.060)`,
+  ].join("\n");
+
+  // The open query of the SAME screen: discrete rows, "Internet" a clean whole-field label.
+  const openNodes = [
+    { id: "collapsing_toolbar", text: "Network & internet", bounds: { x1: 0, y1: 0.03, x2: 1, y2: 0.09 } },
+    { id: "title", text: "Internet", cd: "Internet", bounds: { x1: 0, y1: 0.2, x2: 1, y2: 0.26 } },
+    { id: "title", text: "Calls & SMS", bounds: { x1: 0, y1: 0.28, x2: 1, y2: 0.34 } },
+    { id: "title", text: "Airplane mode", bounds: { x1: 0, y1: 0.44, x2: 1, y2: 0.5 } },
+  ];
+
+  it("open query resolves the discrete 'Internet' row; B1 describe has only the collapsed 'Network & internet' summary", () => {
+    // Open: the clean discrete row wins on exact whole-field text.
+    const open = pickUniqueNode(openNodes, { text: "Internet" });
+    expect(open.node?.text).toBe("Internet");
+    expect(open.node?.id).toBe("title");
+
+    // B1 describe: no discrete "Internet" row exists; the sole "internet"-bearing node
+    // is the collapsed combined summary, which the SAME policy resolves FOUND-UNIQUE
+    // via the unique-contains tier — a different (wrong) target than the open row.
+    const b1 = parseDescribeLocate(b1Describe, { text: "Internet" });
+    expect(b1.found).toBe(true);
+    // Centre of the collapsed summary row (0.321 + 0.096/2 = 0.369), NOT a discrete row.
+    expect(b1.yNorm).toBeCloseTo(0.369, 3);
+
+    // The two renderings pick DIFFERENT y-centres: the policy is identical, the rendering
+    // is not — this is the documented describe-vs-query gap, not a relaxed resolver.
+    const openY = (open.node!.bounds.y1 + open.node!.bounds.y2) / 2;
+    expect(Math.abs(b1.yNorm - openY)).toBeGreaterThan(0.1);
+  });
+
+  it("'Airplane mode' (settings-network navTarget) resolves cleanly in BOTH renderings", () => {
+    expect(pickUniqueNode(openNodes, { text: "Airplane mode" }).node?.text).toBe("Airplane mode");
+    const b1 = parseDescribeLocate(b1Describe, { text: "Airplane mode" });
+    expect(b1.found).toBe(true);
+    expect(b1.yNorm).toBeCloseTo(0.73, 3);
+  });
+});

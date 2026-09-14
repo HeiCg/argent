@@ -72,3 +72,34 @@ run green with the invariants gate.
 - Housekeeping in the same branch: move the root shims `run-bench-sg.cjs` and
   `run-preflight.cjs` under `packages/tool-server/scripts/` (or delete them if the
   workflow no longer references them — grep the yml first) and fix references.
+
+## Result (2026-09-13, feat/screen-graph-d4)
+
+Done. Authoritative run **34794414764** (`suite=screen-graph`, `sg_mode=matrix`, job
+success), branch `feat/screen-graph-d4` @ `13388c19`, base `open/main` @ `690e66bc`.
+Full report: `docs/open-server/2026-09-13-screen-graph-phase-d4-results-ci.md`.
+
+- **Item 1 (verified, already in `68f2d26f`).** `describe-locate.ts` (`parseDescribeLocate`)
+  and `locateNorm` both call the one `pickUniqueNode` (exact id → exact text → exact cd →
+  unique-contains → refuse). `test/screen-graph-bench-locate.test.ts` feeds the SAME screen
+  through both renderings AND a captured-screen test (added this phase); 15/15 green.
+- **Item 2.** B1 fails `settings-network-internet` **NNNNN**. Captured excerpt (verbatim,
+  run artifact `logs/sg-matrix.log` line 28): `B1 locate FOUND-UNIQUE for {"text":"Internet"}
+  on settings-network-internet step 2; describe rows containing "internet": LinearLayout
+  "Network & internet / Mobile, Wi‑Fi, hotspot" [clickable]  (0.000, 0.321, 1.000, 0.096)`.
+  The proprietary describe collapses the entry into one combined summary; there is no
+  discrete "Internet" row, so the SAME policy taps the summary (wrong target). Rendering
+  property, not a relaxed resolver. Assertion: B1 matched (none) vs B2 "Add network".
+- **Item 3 (verified, `68f2d26f`).** `settings-network` navTarget `t("Airplane mode")`.
+  **O5 no-route on `settings-network` = 0** (settings-network YYYYY for O5).
+- **Item 4.** One new run (see below); D.4 report regenerated from JSON, D.3 marked
+  superseded with reasons. Invariants gate green. Scoreboard left untouched.
+- **Harness capture + housekeeping.** `[bench-sg][D4]` diagnostic now fires at rep 0 for
+  every B1 tap step (log-only). Root shims `run-bench-sg.cjs` / `run-preflight.cjs` moved
+  under `packages/tool-server/scripts/` (workflow never referenced them), `__dirname`-relative;
+  `.bench-results/` gitignored.
+
+One new run WAS needed: run 34794414764. The B1 "Internet" describe excerpt was not in the
+reference run 34788497583's artifact (the `[D4]` diagnostic was gated to `!found && rep===0`
+and the two-level step resolves a unique-but-wrong node at rep 0), the exact case the
+addendum names — so the capture was added first, then one run.
