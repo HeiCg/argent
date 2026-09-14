@@ -82,3 +82,52 @@ you parametrise by platform, do it in NEW files and leave the Android ones alone
 One run with all four blocks complete, G0/G1/G3/G5 green, G2 and G4 reported with CIs
 and floors, optical scroll offsets per arm, results file + Result written; adversarial
 review before any iOS row enters the scoreboard.
+
+## Result (2026-09-14) — pre-registered gates (written BEFORE the run)
+
+Branch `feat/ios-open-server-2-bench` off `open/main` @ 881fc69b, worktree
+`../argent-fork-wt-ios2`. Deliverables landed: bench script
+`packages/tool-server/scripts/bench-ios-open-vs-proprietary.ts`; iOS merge/gates
+`.github/bench-ci/merge-blocks-ios.js` + scoreboard `.github/bench-ci/scoreboard-ios.js`
+(NEW files — the Android `merge-blocks.js`/`scoreboard.js`/`bench-open-vs-proprietary.{ts,yml}`
+are untouched; the shared `2026-09-03-scoreboard.md` is untouched, planner adds the
+iOS section after adversarial review); ts-node loader `.github/bench-ci/run-bench-ios.js`;
+workflow `.github/workflows/bench-ios-open-vs-proprietary.yml` (`workflow_dispatch`,
+`macos-latest`, `timeout-minutes: 90`, 10× minutes note, default blocks
+`OFF-1,ON-xcuitest,ON-siminput,OFF-2`); `packages/ios-sim-input/` (sim-input Swift
+copied verbatim with its Apache-2.0 provenance banners + `Package.swift` + build
+script) + host driver `packages/tool-server/src/utils/ios-sim-input-service.ts` +
+unit tests `packages/tool-server/test/utils/ios-sim-input-service.test.ts` (framing +
+ack queue, green locally); results file `docs/open-server/2026-09-14-ios-bench-results-ci.md`.
+
+**Arms**: OFF-1/OFF-2 = closed `simulator-server ios` + `ax-service` via the
+tool-server registry (flag `open-ios-device-server` OFF; fetched at run time,
+never committed). ON-xcuitest = iOS-1 runner direct (tree from `app.snapshot()`,
+input via XCUITest). ON-siminput = same XCUITest tree, input via `sim-input` HID.
+Describe scored per TREE backend (ax-service vs XCUITest snapshot), never per input
+arm — ON-xcuitest and ON-siminput share the one XCUITest describe row.
+
+**Pre-registered gates (vs the proprietary blocks; floors from OFF-1↔OFF-2; bootstrap 95 % CI on the p50 Δ):**
+
+- **G0 control** — all four blocks (both OFF, both ON) present; tap effect oracle
+  self-test passed per block (one detected+restored navigation before the timed
+  loop: navDiff ≥ 0.02 AND rootDiff < navDiff after BACK). FATAL.
+- **G1 landing** — first-attempt landing ≥ 95 % on every block; 0 runner crashes;
+  0 `sim-input` acks timed out. FATAL.
+- **G2 report-only** — tap / swipe / await-* / describe Δ vs pooled OFF with a
+  bootstrap 95 % CI on the p50 Δ and a verdict at the drift floor (win / parity /
+  loss). No promotion decision this phase.
+- **G3 stage sums** — `Σ(stages) ≈ captureMs` for the open tree (≤ 10 ms on 20
+  samples per ON block). FATAL on the XCUITest blocks; N/A on ax-service.
+- **G4 tokens** — describe o200k tokens per TREE backend at an equal element cap
+  (default 400); the cap and the per-backend element denominator are stated.
+  Reported, not gated.
+- **G5 process** — run id, `xcodebuild -version`, runtime, device type, minutes
+  used in the artifact + results-file header; each artifact file stamped with the
+  run id.
+
+**Acceptance** requires one run with all four blocks complete, G0/G1/G3/G5 green,
+G2/G4 reported with CIs/floors, optical scroll offsets per arm, results file +
+Result written, adversarial review before any iOS row enters the scoreboard. The
+measured numbers, run ids, and per-run fixes are in
+`docs/open-server/2026-09-14-ios-bench-results-ci.md`.
