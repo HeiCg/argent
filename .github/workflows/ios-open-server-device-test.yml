@@ -60,6 +60,14 @@ jobs:
           # vite/rollup native binary that npm can skip (npm/cli#4828).
           npm install @rollup/rollup-darwin-arm64 --no-save
 
+      - name: Build the workspace TypeScript
+        shell: bash
+        run: |
+          # vitest resolves bare `@argent/*` imports to each package's built
+          # `dist/` (its package.json main/exports), so the workspace must be
+          # compiled first — same as the repo's start-tool-server action.
+          npx tsc --build packages/tool-server
+
       - name: Create and boot an iPhone simulator
         shell: bash
         run: |
