@@ -247,6 +247,77 @@ for (const c of perCell) {
 }
 console.log(`FLING VERDICT: ${verdict}`);
 console.log("FLING_AB_JSON=" + outPath);
+
+// Phase 3n: the input-manager injection arm, graded under the SAME pre-registered
+// rule but two-sided on input-manager/uia AND input-manager/off (uia|off are the
+// references; the bimodality/power exclusions key on them, never on input-manager).
+// The other two 3n strategies (uia-sync / uia-async) inject the byte-identical
+// momentum-swipe timeline as the ON-uiautomation arm — their fling result IS the
+// uia arm's, so only input-manager is measured here. This section is INFORMATIONAL
+// on the measurement run (it never changes this job's exit code); the pre-registered
+// blocking condition — input-manager fling PASS on every informative cell — is
+// applied when a strategy is promoted to default (3n ticket §3 / §5).
+const im = readOpt("ON-input-manager");
+if (im) {
+  const IM = map(im);
+  const imGrid = uia.cells.map((c) => {
+    const k = key(c);
+    const u = U[k],
+      o = O[k],
+      x = IM[k];
+    const imOverUia = ratio(x, u);
+    const imOverOff = ratio(x, o);
+    const offPresent = !!o;
+    const reasons = [];
+    if (!(u && x && Number.isFinite(imOverUia))) reasons.push("missing arm / no im-uia ratio");
+    else {
+      if (refStraddlesFloor(u)) reasons.push(`uia reference q25=${q25(u)} at the ${SCROLL_FLOOR} floor`);
+      if (underpowered(u)) reasons.push(`uia n=${u && u.n} < 10`);
+      if (underpowered(x)) reasons.push(`input-manager n=${x && x.n} < 10`);
+      if (offPresent) {
+        if (!Number.isFinite(imOverOff)) reasons.push("no im-off ratio");
+        if (refStraddlesFloor(o)) reasons.push(`off reference q25=${q25(o)} at the ${SCROLL_FLOOR} floor`);
+        if (underpowered(o)) reasons.push(`off n=${o && o.n} < 10`);
+      }
+    }
+    const informative = reasons.length === 0;
+    const devUia = Number.isFinite(imOverUia) ? Number(Math.abs(imOverUia - 1).toFixed(3)) : null;
+    const devOff = offPresent && Number.isFinite(imOverOff) ? Number(Math.abs(imOverOff - 1).toFixed(3)) : null;
+    const withinUia = Number.isFinite(imOverUia) && Math.abs(imOverUia - 1) <= TOL;
+    const withinOff = offPresent ? Number.isFinite(imOverOff) && Math.abs(imOverOff - 1) <= TOL : true;
+    return {
+      durationMs: c.durationMs,
+      distance: c.distance,
+      imOverUia,
+      imOverOff: offPresent ? imOverOff : null,
+      devUia,
+      devOff,
+      informative,
+      ok: informative && withinUia && withinOff,
+      reasons,
+    };
+  });
+  const imInformative = imGrid.filter((g) => g.informative);
+  const imOffenders = imInformative.filter((g) => !g.ok);
+  const imNonInf = imGrid.length - imInformative.length;
+  let imVerdict;
+  if (imInformative.length === 0) {
+    imVerdict = `INCONCLUSIVE (${RULE.replace(/scrcpy/g, "input-manager")}, 0 informative cells; ${imNonInf} of ${imGrid.length} non-informative)`;
+  } else {
+    imVerdict = `${imOffenders.length === 0 ? "PASS" : "FAIL"} (${RULE.replace(/scrcpy/g, "input-manager")}, over ${imInformative.length} informative cell(s); ${imNonInf} of ${imGrid.length} non-informative)`;
+  }
+  console.log(`\n=== FLING PARITY (phase 3n input-manager arm; ${RULE.replace(/scrcpy/g, "input-manager")}) — INFORMATIONAL on this run ===`);
+  for (const g of imGrid) {
+    console.log(
+      `  d=${g.durationMs}ms dist=${g.distance}: input-manager/uia ${g.imOverUia} dev ${g.devUia}` +
+        (g.imOverOff !== null ? ` | input-manager/off ${g.imOverOff} dev ${g.devOff}` : "") +
+        (g.informative ? (g.ok ? "  OK" : "  OUT") : `  [non-informative: ${g.reasons.join("; ")}]`)
+    );
+  }
+  console.log(`INPUT-MANAGER FLING VERDICT (informational; blocking only at promotion): ${imVerdict}`);
+} else {
+  console.log("\n(no ON-input-manager fling arm this run — phase 3n input-manager fling section skipped)");
+}
 // BLOCKING: an informative cell out of tolerance fails the job. INCONCLUSIVE (zero
 // informative cells — every reference floored/underpowered, or an arm that lost its
 // samples) ALSO fails the job (3K1-M3): the run cannot certify fling parity when
