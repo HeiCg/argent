@@ -43,6 +43,17 @@ if (missingOn.length) {
   throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
 }
 
+// P0 (phase 3n.1): the ON-uiautomation control arm is mandatory whenever the
+// input-manager candidate ran — without the current default as a same-run control,
+// no "no regression of the default" (P6) or default-path claim is possible. A 3n.1
+// run with ON-input-manager but no ON-uiautomation is VOID.
+if (files["ON-input-manager"] && !files["ON-uiautomation"]) {
+  throw new Error(
+    "P0 VOID: ON-input-manager ran but the ON-uiautomation control block is absent — " +
+      "the run cannot grade the promotion candidate against the current default (P6)."
+  );
+}
+
 const blocks = present.map((n) => files[n].block);
 
 // Gesture-param drift gate across the blocks that ran.
