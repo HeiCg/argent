@@ -44,14 +44,14 @@ const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 // run carries both. The pacing mode is read per-process from ARGENT_SCRCPY_PACING,
 // set here from the config, since the touch backend flag is read once at factory
 // time and each config already runs in its own process (item 9).
-// Phase 3n: `ON-input-manager` is the reflective-InputManager injection arm. The
-// other two 3n strategies (uia-sync / uia-async) inject the byte-identical
-// momentum-swipe timeline as the default `ON-uiautomation` arm — only the final-UP
-// dispatch mode differs, which is post-lift and cannot change the pre-lift velocity
-// the OS fling reads — so their fling fidelity IS the ON-uiautomation arm's result
-// and they need no separate fling arm. input-manager routes through a different
-// pipe whose MOVE delivery cadence could differ, so it is measured on its own.
-type FlingConfigName = "OFF" | "ON-uiautomation" | "ON-scrcpy" | "ON-scrcpy-legacy" | "ON-input-manager";
+// Phase 3n.1 (P8, review 3N-H3): instrument FIRST. `ON-uia-A` and `ON-uia-B` are two
+// INDEPENDENT same-code arms (both the pre-3n.1 Kotlin DEFAULT path, no strategy env),
+// interleaved per sample, so the merge can bound the metric's own reproducibility
+// (`|A/B − 1|`) before grading any real arm. `ON-input-manager` is the reflective pipe;
+// `ON-scrcpy` the scrcpy control (drift pacing). The legacy scrcpy arm is dropped — the
+// pacing A/B is settled; this run is a fling-instrument A/B. Fling is REPORTED, never
+// gating (the default path fails it too, so it cannot select between arms).
+type FlingConfigName = "OFF" | "ON-uia-A" | "ON-uia-B" | "ON-scrcpy" | "ON-input-manager";
 type ScrcpyPacing = "drift" | "legacy";
 interface FlingConfig {
   name: FlingConfigName;
@@ -61,9 +61,9 @@ interface FlingConfig {
 }
 const CONFIGS: Record<FlingConfigName, FlingConfig> = {
   OFF: { name: "OFF", openServer: false, fastInject: false },
-  "ON-uiautomation": { name: "ON-uiautomation", openServer: true, fastInject: false },
+  "ON-uia-A": { name: "ON-uia-A", openServer: true, fastInject: false },
+  "ON-uia-B": { name: "ON-uia-B", openServer: true, fastInject: false },
   "ON-scrcpy": { name: "ON-scrcpy", openServer: true, fastInject: true, pacing: "drift" },
-  "ON-scrcpy-legacy": { name: "ON-scrcpy-legacy", openServer: true, fastInject: true, pacing: "legacy" },
   "ON-input-manager": { name: "ON-input-manager", openServer: true, fastInject: false },
 };
 const PHYSICAL_DENY = "ZF524RZBHD";
@@ -289,7 +289,15 @@ async function runConfig(cfg: FlingConfig): Promise<Cell[]> {
 // samples for a cell are spread across the whole run. The scrcpy visit interleaves
 // the drift and legacy pacing arms per sample (they share one backend; pacing is read
 // per gesture from ARGENT_SCRCPY_PACING). Arm order rotates per round.
-type ArmGroup = "uia" | "scrcpy" | "off" | "input-manager";
+type ArmGroup = "uia-A" | "uia-B" | "scrcpy" | "off" | "input-manager";
+// The arm each group produces (uia-A/uia-B are the two same-code instrument arms).
+const GROUP_ARM: Record<ArmGroup, FlingConfigName> = {
+  "uia-A": "ON-uia-A",
+  "uia-B": "ON-uia-B",
+  "input-manager": "ON-input-manager",
+  scrcpy: "ON-scrcpy",
+  off: "OFF",
+};
 interface ArmAccum {
   samples: number[];
   drops: Drop[];
@@ -342,18 +350,12 @@ async function runInterleaved(): Promise<void> {
   const includeOff = process.env.FLING_INCLUDE_OFF !== "0";
   const rounds = Math.max(1, Number(process.env.FLING_ROUNDS ?? 3));
   const perRound = Math.ceil(N / rounds); // samples per cell per arm per round
-  // Arm groups present this run. drift+legacy both live in the "scrcpy" group.
+  // Phase 3n.1 P8 arms: two same-code instrument arms (uia-A/uia-B), input-manager,
+  // scrcpy, off — one arm per group, interleaved per sample.
   const groups: ArmGroup[] = includeOff
-    ? ["uia", "input-manager", "scrcpy", "off"]
-    : ["uia", "input-manager", "scrcpy"];
-  // Per-arm accumulators keyed by cell. The scrcpy group feeds TWO arms.
-  const armNames: FlingConfigName[] = [
-    "ON-uiautomation",
-    "ON-input-manager",
-    "ON-scrcpy",
-    "ON-scrcpy-legacy",
-    "OFF",
-  ];
+    ? ["uia-A", "uia-B", "input-manager", "scrcpy", "off"]
+    : ["uia-A", "uia-B", "input-manager", "scrcpy"];
+  const armNames: FlingConfigName[] = ["ON-uia-A", "ON-uia-B", "ON-input-manager", "ON-scrcpy", "OFF"];
   const acc: Record<FlingConfigName, Map<string, ArmAccum>> = {} as never;
   for (const a of armNames) {
     acc[a] = new Map(CELLS.map((c) => [cellKey(c.durationMs, c.distance), { samples: [], drops: [] }]));
@@ -400,18 +402,9 @@ async function runInterleaved(): Promise<void> {
         await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
         for (let j = 0; j < perRound; j++) {
           for (const c of CELLS) {
-            if (group === "scrcpy") {
-              // Interleave drift/legacy per sample (shared backend, per-gesture env).
-              process.env.ARGENT_SCRCPY_PACING = "drift";
-              await takeInto(reg, "ON-scrcpy", c.durationMs, c.distance, round);
-              process.env.ARGENT_SCRCPY_PACING = "legacy";
-              await takeInto(reg, "ON-scrcpy-legacy", c.durationMs, c.distance, round);
-              delete process.env.ARGENT_SCRCPY_PACING;
-            } else {
-              const arm: FlingConfigName =
-                group === "uia" ? "ON-uiautomation" : group === "input-manager" ? "ON-input-manager" : "OFF";
-              await takeInto(reg, arm, c.durationMs, c.distance, round);
-            }
+            if (group === "scrcpy") process.env.ARGENT_SCRCPY_PACING = "drift";
+            await takeInto(reg, GROUP_ARM[group], c.durationMs, c.distance, round);
+            if (group === "scrcpy") delete process.env.ARGENT_SCRCPY_PACING;
           }
         }
       } catch (e) {
@@ -420,14 +413,7 @@ async function runInterleaved(): Promise<void> {
         // degrade to "non-informative" and let the gate exit green.
         const reason = `arm ${group} round ${round} failed: ${e instanceof Error ? e.message : String(e)}`;
         armRoundFailures.push(reason);
-        const owed: FlingConfigName[] =
-          group === "scrcpy"
-            ? ["ON-scrcpy", "ON-scrcpy-legacy"]
-            : group === "uia"
-              ? ["ON-uiautomation"]
-              : group === "input-manager"
-                ? ["ON-input-manager"]
-                : ["OFF"];
+        const owed: FlingConfigName[] = [GROUP_ARM[group]];
         for (const arm of owed) {
           for (const c of CELLS) {
             const cell = acc[arm].get(cellKey(c.durationMs, c.distance))!;

@@ -415,6 +415,11 @@ async function ensureChrome(reg: Reg): Promise<boolean> {
 interface VerbResult {
   verb: string;
   latency: ReturnType<typeof summarize>;
+  // Phase 3n.1 (review 3N-H5): the raw per-sample latencies (ms) behind `latency`,
+  // so the scoreboard can bootstrap a 95 % CI on the p50 difference vs the OFF blocks
+  // instead of deciding a gate at ±1 ms with no interval. For the tap-effect verbs
+  // this is the effect-checked (landed) subset, matching `latency`.
+  latencySamples: number[];
   errors: number;
   fallbacks: number;
   fallbackSamples: string[];
@@ -468,6 +473,7 @@ async function timeCalls(
   return {
     verb: label,
     latency: summarize(lat),
+    latencySamples: lat.slice(),
     errors,
     errorSamples,
     fallbacks: fb.count,
@@ -637,6 +643,7 @@ async function timeTapEffect(
   return {
     verb: label,
     latency: summarize(lat),
+    latencySamples: lat.slice(),
     errors,
     errorSamples,
     fallbacks: fb.count,
@@ -995,6 +1002,7 @@ async function describeIdleLatencyWithStages(
     verb: {
       verb: label,
       latency: summarize(lat),
+      latencySamples: lat.slice(),
       errors,
       errorSamples,
       fallbacks: fb.count,
