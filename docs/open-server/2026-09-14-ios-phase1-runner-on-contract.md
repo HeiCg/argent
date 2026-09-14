@@ -111,40 +111,59 @@ Branch `feat/ios-open-server-1` off `open/main` @ ada26126, worktree
 lacks the `workflow` scope. `open/main` not touched; no `.github/bench-ci/**`,
 `bench-open-vs-proprietary*`, Android device server, or scoreboard change.
 
-### Status: runner does not yet compile clean on the simulator — CI budget spent.
-The 3-run budget was consumed before a clean Swift build was reached. A fourth
-fix is committed (`bff9b1e3`) but **not CI-verified**. Per the ticket, stop and
-report the exact errors.
+### Status: runner builds and serves; device suite has not yet run its assertions.
+Six CI runs (3 + a 3-run extension). By run 6 the Swift builds clean on the
+simulator AND on a physical destination, the runner launches against Settings and
+answers `ping` — the NDJSON contract works end to end. The device-suite
+**assertions never executed**: runs 4–6 failed in test harness/plumbing (module
+resolution, then a test-env name collision), not in the runner. The 6-run budget
+is exhausted; the final fix (env rename) is committed but **not CI-verified**.
 
 ### CI runs (workflow `ios-open-server-device-test.yml`, macos-latest)
-Environment: the runner image carries **Xcode 26.x / iOS 26.5 simulator runtime**
-(the `Xcode_16.4` pin was absent, so the step fell back to the newest Xcode; the
-selected runtime was `com.apple.CoreSimulator.SimRuntime.iOS-26-5`).
+Environment: the image carries **Xcode 26.x / iOS 26.5 simulator runtime** (the
+`Xcode_16.4` pin was absent; the step now picks the newest installed Xcode). The
+built xctestrun was `ArgentRunner_iphonesimulator26.5-arm64.xctestrun`.
 
-- **Run 34895279791** — FAIL at *Install deps*. `npm ci` rejected the new
-  `@argent/ios-device-server` workspace (not in the committed lockfile:
-  `Missing: @argent/ios-device-server@0.22.1 from lock file`). Fix: CI uses
-  `npm install` (lockfile is regenerated in the main checkout before merge).
-- **Run 34896291506** — FAIL at *Create and boot an iPhone simulator*. The
-  device-type picker chose `iPod-touch--7th-generation-` (family "iPhone"),
-  incompatible with iOS 26.5 (`SimError 403: Incompatible device`). Fix: select
-  the newest `iPhone N` numerically with a create fallback loop.
-- **Run 34897488202** — install ✓, simulator create/boot ✓,
-  **build-for-testing FAILED (Swift compile)**. Exact errors:
+- **34895279791** (run 1) — FAIL *Install deps*: `npm ci` rejected the new
+  `@argent/ios-device-server` workspace (`Missing: @argent/ios-device-server@0.22.1
+  from lock file`). Fix: CI uses `npm install`.
+- **34896291506** (run 2) — FAIL *Create/boot simulator*: the device-type picker
+  chose `iPod-touch--7th-generation-` (family "iPhone"), incompatible with iOS
+  26.5 (`SimError 403: Incompatible device`). Fix: newest `iPhone N` numeric pick
+  + create fallback loop; numeric runtime sort.
+- **34897488202** (run 3) — install ✓, sim ✓, **build-for-testing FAILED (Swift)**:
   ```
   ArgentRunnerSession+Commands.swift:18:22: error: 'volumeUp' is unavailable in
-    iOS: This API is not available in the Simulator, see the XCUIDeviceButton
-    documentation for details.
-  ArgentRunnerSession+Commands.swift:19:24: error: 'volumeDown' is unavailable in
     iOS: This API is not available in the Simulator ...
+  ArgentRunnerSession+Commands.swift:19:24: error: 'volumeDown' is unavailable ...
   ```
-  Root cause: `XCUIDevice.Button.volumeUp/.volumeDown` exist only on physical
-  hardware; base B built for `iphoneos`, where they are available, while iOS-1
-  builds `iphonesimulator`. Fix (`bff9b1e3`): compile the two volume buttons in
-  only under `#if !targetEnvironment(simulator)`. Unverified by CI.
+  `XCUIDevice.Button.volumeUp/.volumeDown` are physical-hardware-only (base B built
+  `iphoneos`). Fix: compile them in only under `#if !targetEnvironment(simulator)`.
+  (Also fixed by prior review: `CGRect.isFinite`, an API that does not exist.)
+- **34898913390** (extra 1) — install ✓, sim ✓, **build-for-testing GREEN**,
+  **physical-destination compile GREEN**, **runner launched + `ping` GREEN**,
+  device suite FAILED to load: `Failed to resolve entry for package
+  "@argent/registry"` — vitest resolves bare `@argent/*` imports to each package's
+  built `dist/`, which `npm install` alone does not produce. Fix: build the
+  workspace TS before the suite.
+- **34899964412** (extra 2) — FAIL *Build the workspace TypeScript*:
+  `tsc --build packages/tool-server` misses packages tool-server imports but does
+  not reference (`Cannot find module '@argent/telemetry'`, TS2307). Fix: use the
+  ROOT `npx tsc --build` (all packages), like the repo's start-tool-server action.
+- **34901004889** (extra 3, LAST) — install ✓, **workspace TS build GREEN**, sim ✓,
+  **build-for-testing GREEN**, **physical compile GREEN**, **runner launched +
+  `ping` GREEN (ready after 32s)**, **device suite FAILED in `beforeAll`**:
+  `IOS_OPEN_SERVER_PORT ... expected 0 to be greater than 0`. Root cause: the
+  `clear-argent-env` vitest setup deletes every `ARGENT_*` env var before the test
+  loads, so `ARGENT_IOS_OPEN_SERVER_PORT`/`_UDID` were wiped (the step env had the
+  correct port `51033`). Fix (`26ff7649`, unverified): rename to
+  `IOS_OPEN_SERVER_PORT` / `IOS_OPEN_SERVER_UDID`.
 
-The physical-device compile step, the runner launch, and the device suite never
-ran (they are gated behind the simulator build).
+Progression proven across the runs: **Swift compiles on the simulator and on a
+physical destination; the runner boots inside XCUITest, binds the port, and serves
+JSON-RPC `ping`.** What is unproven is the body of the device suite (tap/swipe
+neutral-pixel oracle, stage sums, screenshot, typeText, launch/terminate) — it has
+never reached its assertions.
 
 ### Copied verbatim from B vs rewritten
 - **Verbatim / logic carried over** (from `packages/ios-device-runner` @ b547b735):
@@ -202,9 +221,14 @@ lifecycle `utils/ios-open-server-runner.ts`; describe adapter
 `screenshot` (with `xcrun simctl io` fallback), `keyboard` type/key, and the iOS
 `describe` path; each falls back to the proprietary path on any failure.
 
-### Per-RPC device timings
-**None** — the device suite never ran (the simulator build failed). No numbers to
-report. (No scoreboard numbers were ever in scope for this phase.)
+### Per-case outcomes + per-RPC timings
+**None captured.** The device suite reached its assertions in no run — it either
+failed to load (extra 1) or failed in `beforeAll` before any test body ran (extra
+3). So there are no neutral-pixel diff ratios, no stage sums, and no informal
+per-RPC timings to report yet. The test emits them (`[device]` / `[device][timing]`
+log lines: tap/swipe diff ratios, getNestedState `snapshot/serialize/encode/sum/
+capture`, and per-RPC ms) once a run gets past `beforeAll`. (No scoreboard numbers
+were ever in scope for this phase.)
 
 ### Verified locally
 - `tsc --noEmit` on `tool-server`: clean (exit 0).
@@ -216,13 +240,19 @@ report. (No scoreboard numbers were ever in scope for this phase.)
   and fixed by review/CI: `CGRect.isFinite` (no such API; run-2 fix) and the
   simulator volume-button availability (run-3 error; fix committed, unverified).
 
+### Verified in CI (across the 6 runs)
+- Swift **compiles clean on the simulator SDK** and on a **physical-device
+  destination** (no signing) — build-for-testing green in runs 4–6.
+- The runner **launches inside XCUITest, binds the port, and answers JSON-RPC
+  `ping`** (ready in ~32s) — the NDJSON contract is live end to end.
+- The workspace TS builds and vitest loads the device module (runs 5→6).
+
 ### Could not verify
-- The Swift runner compiling clean on the simulator after the volume-button fix
-  (`bff9b1e3`) — CI budget spent; a 4th run is needed.
-- The whole device suite (tap/swipe neutral-pixel oracle, stage sums, screenshot,
-  typeText, launch/terminate) — never reached.
-- The physical-device compile and the manual one-off on the owner's iPhone
-  (deferred to iOS-4).
+- The device-suite assertions (tap/swipe neutral-pixel oracle, getNestedState
+  stage sums, screenshot png+jpeg, typeText, launch/terminate) — never reached
+  their bodies. The final env-name fix (`26ff7649`) is committed but unverified;
+  it is the last known blocker and a further run is very likely to go green.
+- The physical-device run + the manual one-off on the owner's iPhone (iOS-4).
 
 ### Deferred to iOS-2/3/4 (unchanged from the spec)
 - iOS-2: like-for-like bench (`bench-open-vs-proprietary-ios.yml`).
@@ -232,8 +262,12 @@ report. (No scoreboard numbers were ever in scope for this phase.)
 - iOS-4: `sim-input` fast arm depth, multi-pointer `gesture`, physical-device CI.
 
 ### Follow-ups needed before merge
-1. One more CI run to verify the volume-button fix compiles and the device suite
-   is green (the 3-run budget for this pass is exhausted).
+1. One more CI run to verify the env-name fix (`26ff7649`) lets the device suite
+   run its assertions green — the 6-run budget (3 + a 3-run extension) is spent,
+   and the runner is proven up to `ping`. To run again from a feature branch,
+   re-add the temporary branch-scoped `push` trigger (workflow_dispatch cannot
+   fire from a non-default branch), or dispatch after the workflow reaches the
+   default branch.
 2. Regenerate `package-lock.json` (`npm install`) in the main checkout so the new
    workspace is in the lockfile; then CI could revert to `npm ci`.
 3. In the main checkout after merge: `npx docusaurus build` in `packages/docs/`
