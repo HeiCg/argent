@@ -7,12 +7,18 @@ numbers that survive adversarial review. The scrcpy fast-inject backend was remo
 phase 3n.2. The fork is the only home of this work from 2026-09-13 on.
 
 ## Where things are (2026-09-14)
-- Working branch: `open/main` @ 775ae6fc = driver (3h+3i, 3j disabled) + screen-graph
+- Working branch: `open/main` @ 00c10536 = driver (3h+3i, 3j disabled) + screen-graph
   (D→D.4.1) + bench workflow with all gates + 3k/3k.1 + 3m/3m.1 (fingerprints opt-in) +
   **3n/3n.1 Kotlin injection strategies, `input-manager` the shipped default** (merge
-  11fcfdf4). Phase **3n.2** (branch `feat/open-server-3n2-remove-scrcpy`, under review)
-  **removes scrcpy** — the `@yume-chan/*` deps, the fast-inject backend + flag, the fling
-  A/B stack — and repairs the 3m.1 residual gate; `open/main` NOT yet fast-forwarded.
+  11fcfdf4). Phase **3n.2** is **merged** (merge 86fe554b; lockfile regenerated d9df0f34) —
+  scrcpy removed (the `@yume-chan/*` deps, the fast-inject backend + flag, the fling A/B
+  stack) and the 3m.1 residual gate repaired. Phase **3n.3** (branch
+  `fix/open-server-3n3-post-merge`, under review) applies the 3n.2-review post-merge fixes:
+  a real on-device fallback gate (3N2-H1), `npm ci` restored on the regenerated lock
+  (3N2-H2), screen-graph artifact hygiene + run-id stamping (3N2-H4), and the docs
+  corrections. Also on `open/main`: the **iOS-1** open-iOS-server docs
+  (`2026-09-14-ios-phase1-runner-on-contract.md` + spec + research; branch
+  `feat/ios-open-server-1`, in flight).
 - CI: `.github/workflows/bench-open-vs-proprietary.yml` (`workflow_dispatch`, inputs
   `blocks` (default `OFF-1,ON-uiautomation,ON-input-manager,OFF-2`), `n`,
   `suite=latency|screen-graph|both`, `sg_mode`); proprietary package fetched from npm at
@@ -51,24 +57,30 @@ gate (1 ms, was 11 ms)** and P9 on tap/swipe/gesture, screen-graph green (O1 99/
 scrcpy removed), "tap at parity via scrcpy" (input-manager +1 ms), "fling resolved".
 
 ## Execution order (next)
-1. **3n.2 review + merge** — the scrcpy removal + residual-gate repair (branch
-   `feat/open-server-3n2-remove-scrcpy`, run 34888577404 green). On merge, regenerate
-   `package-lock.json` in the main checkout (`npm install`, drops `@yume-chan/*`) and run
-   `npx docusaurus build` in `packages/docs/` + `npm run format` (no docs-site content
-   changed this phase). 34870686468 stays the numeric reference; the planner may promote
-   the green 34888577404.
-2. **3o — fling metric repair** — the anchor-displacement fling metric does not reproduce
-   itself between identical runs (the old scrcpy A/B is gone). Build a metric that does,
-   then one ticket, one run, review. Fling stays OPEN until then.
-3. Artemis-derived driver items (see `2026-09-13` note below): verified tap
+1. **3n.2 merged; 3n.3 post-merge fixes review + merge** — 3n.2 (scrcpy removal +
+   residual-gate repair, run 34888577404 green) is merged. 3n.3
+   (`fix/open-server-3n3-post-merge`) applies the review's post-merge fixes: the real
+   on-device fallback gate (3N2-H1), the `npm install` → `npm ci` revert on both bench jobs
+   over the regenerated lock (3N2-H2), screen-graph artifact hygiene + run-id stamping
+   (3N2-H4), and the docs corrections. `package-lock.json` was regenerated in the main
+   checkout (d9df0f34). No docs-site content changed this phase (`npx docusaurus build` +
+   `npm run format` run in the main checkout only). 34870686468 stays the numeric reference.
+2. **iOS-1 — open iOS server on the Android contract** (`2026-09-14-ios-phase1-runner-on-contract.md`,
+   spec `2026-09-14-ios-open-driver-spec.md`, research `2026-09-14-ios-open-driver-research.md`);
+   simulator CI first. Branch `feat/ios-open-server-1`, in flight.
+3. **3o — fling metric repair** — the anchor-displacement fling metric does not reproduce
+   itself between identical runs (the old scrcpy A/B is gone; the fling harness + 12 gate
+   tests + 7 fixtures were deleted with scrcpy in 3n.2, so 3o starts from `775ae6fc` in git
+   history). Build a metric that does, then one ticket, one run, review. Fling stays OPEN.
+4. Artemis-derived driver items (see `2026-09-13` note below): verified tap
    (`verify: {selector}` resolved on the live tree before injecting), execution incident
    persisted across steps, `gesture-sequence` for transient UI, index-based describe tier
    (measure tokens first).
-4. Phase E — screen graph under dynamic content (Netflix-like): template edges per
+5. Phase E — screen graph under dynamic content (Netflix-like): template edges per
    scrollable container, TTL/pruning, churn experiment on a real app. Not ticketed yet.
-5. AndroidWorld with a fixed agent (Artemis Flash profile) swapping only the driver /
+6. AndroidWorld with a fixed agent (Artemis Flash profile) swapping only the driver /
    observation tier: success, tokens/step, s/step. Needs a runner with an emulator.
-6. Release: `open/main` distribution, package name, nightly device test; paper (design
+7. Release: `open/main` distribution, package name, nightly device test; paper (design
    doc + related work exist: `2026-09-02-screen-graph-architecture.md`,
    `2026-09-02-screen-graph-related-work.md`).
 

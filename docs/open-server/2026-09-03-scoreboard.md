@@ -39,7 +39,7 @@ below.
 
 | verb | OFF-1 | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2 | measured OFF↔OFF floor |
 |---|---|---|---|---|---|---|
-| describe | 51/? | 48/? | 51/? | ? | 52/? | 0 |
+| describe | 52/166 | 48/66 | 51/68 | 47/72 | 52/52 | 0 |
 | gesture-tap | 53/60 | 86/134 | **54/55** | 52/53 | 53/60 | **0** |
 | gesture-swipe | 305/322 | 306/345 | **263/285** | 258/259 | 303/315 | **2** |
 | gesture-pinch | 353/364 | 346/404 | **318/357** | 307/312 | 354/367 | **1** |
@@ -67,6 +67,12 @@ below.
 - **No-regression vs the current default (P6)** — `input-manager` is faster than the
   `ON-uiautomation` control on every gated verb in the same run: tap −32, swipe −43, pinch
   −28, headline −108 ms.
+- **describe p95 (3N2-L1)** — the `describe`-verb p50/p95 are now filled from run
+  34870686468's block JSONs (previously `?` placeholders): OFF-1 52/166, ON-uiautomation
+  48/66, ON-input-manager 51/68, ON-scrcpy 47/72, OFF-2 52/52. OFF-1's 166 ms p95 is a lone
+  proprietary-path tail (all others 52–72); the p50 floor is 0. The OFF-1 p50 reads 52 in the
+  artifact (the row previously showed 51 — a 1 ms recompute correction, sourced to the run's
+  `bench-block-OFF-1.json`).
 
 ### Landing / availability / device / screen-graph / process (run 34870686468)
 
@@ -116,23 +122,41 @@ below.
 > scrcpy arm, fling not run. Run conclusion `success` — the FIRST fully green run on this
 > base (the 3m.1 residual gate, red at 11 ms on 34870686468, is repaired to 1 ms).**
 > **Q3** vs proprietary: swipe **−30.5** CI [−37,−25] WIN, pinch **−24.5** CI [−30,−19] WIN,
-> headline P5 PASS (1.09/1.00/1.04), P6 PASS; tap **FAIL by 2** (Δ +2, CI [1, 2.5]) — parity
-> in practice, planner-accepted. **Q4** landing 100 % every block, oracle passed, **0**
-> `unavailable` fallbacks, echo `input-manager: 161/161` / control `default: 161/161` (measured
-> gated RPCs a subset of the 161 process-wide). **Q5** device suite green: all 22 cases PASS,
+> headline P5 PASS (1.09/1.00/1.04) — note the ratio moved 0.91/0.77/0.83 (34870686468) →
+> 1.09/1.00/1.04 here, so the open stack lost ground on the headline relative to proprietary
+> even though its absolute p50 improved 93 ms; P5 is a non-inferiority band, not a win —
+> P6 PASS; tap **FAIL by 2** (Δ +2, CI [1, 2.5]) — parity in practice, planner-accepted. **Q4**
+> landing 100 % every block, oracle passed, on-device `injectStrategyCounts` =
+> `{"input-manager":161}` / `{"default":161}` with **no** `unavailable` key (the CI
+> `strategyFallbacks` counter reads 0 by construction after 3n.2 and is not evidence — see
+> 3N2-H1; the 3n.3 gate reads the on-device count). Measured gated-inject RPCs = **100** of the
+> 161 process-wide (the rest: warmups + oracle self-test + describe-split + locate/restore
+> taps). **Q5** device suite green: all 22 cases PASS (21 vitest cases / 22 reported checks —
+> pinch+rotate share one `it()`, `ping` has no own test; 3N2-L2),
 > 3n cases `ranAs==requested`, **residual gate `|captureMs − Σ(stages)|` after-tap median 1 ms
 > / idle 0 ms** with new stages infoMs 2 / recycleMs 0 / otherMs 1 and the 20 residuals
 > printed, **P9 forced-fallback on tap, swipe AND gesture** (each uia-async). **Q6**
 > screen-graph green: 100/100 on six configs, O1 **99/100**, tokens B1 657·B2 651·O1 138·O2
 > 54·O3 627·O4 21·O5 21, H1 0.212× / H2 0 FAIL,same-screen 1 / H3 0.033× / H4 non-inferior,
-> O5 60/60, settings 10/9, invariants OK, **`skippedNoIdHash` 1** (vs 0/0 on the reference
-> runs). **Q7** no scrcpy: four blocks (no ON-scrcpy), CI `npm install` regenerated the
-> lockfile with `@yume-chan/*` dropped, grep returns only historical/removal notes. **Q1/Q2**
-> (reproduction of 34870686468 within the measured band): pinch reproduces (318 = 318); tap
-> (55 vs 54), swipe (267 vs 263) and the headline (279 vs 372, faster) exceed a near-zero band
-> by cross-run emulator variance, NOT a behaviour change — the ON-input-manager and
-> ON-uiautomation paths never used the scrcpy seam and are byte-identical. Planner reviews
-> before merge; `open/main` not fast-forwarded.
+> O5 60/60, settings 10/9, invariants OK (store-invariant line read from the job log; the
+> uploaded `results-ci.md` / `sg-matrix.log` / `graph-store` in this run's artifact belong to a
+> different execution — 3N2-H4; 3n.3 stamps + cleans so a future run's artifact is its own),
+> **`skippedNoIdHash` 1** (vs 0/0 on the reference runs). **Q7** no scrcpy: four blocks (no
+> ON-scrcpy), CI `npm install` regenerated the lockfile with `@yume-chan/*` dropped (3n.3
+> reverts to `npm ci` on the regenerated lock, 3N2-H2), grep returns only historical/removal
+> notes. **Q1/Q2** (reproduction of 34870686468 within the measured band): pinch reproduces
+> (318 = 318); tap (55 vs 54), swipe (267 vs 263) and the headline (279 vs 372, faster) exceed
+> a near-zero band. The removed scrcpy seam never ran on these blocks (it was gated on the
+> fast-inject flag), and the Kotlin injectors and the host gesture path are unchanged from
+> `bb3fbddf` — but the describe/state capture path (`StateHandler.kt`) DID change in 3n.2
+> (stage clocks unified, `infoMs`/`recycleMs`/`otherMs` added), so the headline and `describe`
+> rows are not code-identical across the two runs. The decisive evidence is the untouched
+> proprietary comparator: OFF `tap+describe` moved 408→256 and 486→280, and OFF swipe/pinch
+> moved −6…−12 ms, over the same interval. Cross-run environment movement, not a removal
+> effect. Cross-run 95 % CIs (3n.3, 3N2-M2): Q1 tap Δ+1 [0,+1], swipe Δ+4 [−1,+9], headline
+> Δ−93 [−147,+17] — every one contains 0; the only out-of-band CI clear of 0 is the untouched
+> control's await-screen-idle (Δ−6 [−8,−3]), confirming an environment shift, not a removal
+> effect. Planner reviews before merge; `open/main` not fast-forwarded.
 
 ### Fling status row — pinned to run 34813849446, status OPEN (no new numbers)
 
