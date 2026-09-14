@@ -450,3 +450,87 @@ arms (Work 4); scoreboard P1 measured floor (no constant) + P2–P6 CI-based vs 
 merge-blocks P0 void, merge-fling 3n.1 instrument-first NON-GATING mode (Work 5). Wall-time
 estimate for the latency job (5 blocks + 5 fling arm-streams): ~90 min < 120 (run 1 was
 ~95–100 min with 6 blocks); no split, N unchanged.
+
+## Result (3n.1) — run 2 (CI 34870686468, head bb3fbddf) — ALL PROMOTION GATES GREEN
+
+**Run conclusion: `failure`, but for a reason UNRELATED to the 3n.1 gates** — the only
+failing step is the pre-existing `3m fingerprints opt-in` residual gate (3m.1's
+stage-accounting: after-tap `|captureMs − Σ(stages)|` median **11 ms vs ≤ 10**, 1 ms over
+even on the 20-sample median). Every 3n.1 step passed: Kotlin APK built, latency 5-block
+run + merge, **fling A/B (step 16) passed under P8 non-gating**, scoreboard, screen-graph
+job green. This is a harness defect (Work 6) in 3m.1's residual gate, not a 3n.1 result;
+I did NOT re-run (planner decides).
+
+### P0–P10 (graded as pre-registered)
+
+| gate | verdict | evidence |
+|---|---|---|
+| **P0** control present | **PASS** | ON-uiautomation ran as a latency block |
+| **P1** floor measured, never defaulted | **PASS** | tap **0**, swipe **2**, pinch **1**, headline **78** ms — all `|OFF-1−OFF-2|`, no constant |
+| **P2** tap vs proprietary | **PASS** | im 54 vs max(OFF) 53, floor 0, Δ 1, **CI [−1,0]** overlaps ±0 → parity |
+| **P3** swipe vs proprietary | **PASS** | im 263 vs min(OFF) 303, floor 2, Δ −40, **CI [−45,−34]** < −floor → **win** |
+| **P4** pinch vs proprietary | **PASS** | im 318 vs min(OFF) 353, floor 1, Δ −35, **CI [−43,−34]** < −floor → **win** |
+| **P5** headline ≤ 1.15 vs each OFF | **PASS** | 372/408 = 0.91 · 372/486 = 0.77 · 372/447 = 0.83 (all ≤ 1.15) |
+| **P6** no regression vs control | **PASS** | im ≤ ON-uiautomation + floor on every gated verb (uia 86/306/346/480) |
+| **P7** landing + fallbacks + echo | **PASS** | landing **100 %** every block (OFF 40/40, uia 60/60, im 60/60, scrcpy 60/60), oracle pass; **injectStrategyReported input-manager: 161/161** (0 fallbacks) |
+| **P8** fling instrument-first (reported, non-gating) | **INSTRUMENT-UNRESOLVED** | `|uia-A/uia-B − 1|` = 0 / 0.014 / 0.044 / **0.41** on the 4 informative cells — two identical-code arms diverge 41 % at 400/0.5 (uia-A 0.509 vs uia-B 0.361) → **no arm verdict issued** (confirms 3N-H3: the metric does not reproduce itself). Step exited 0. |
+| **P9** availability + fallback | **PASS** | input-manager resolved 161/161 with **no `hidden_api_policy` write**; forced-fallback device case: `strategy=="unavailable"`, `fellBackTo=="uia-async"`, tap still navigated, reset → input-manager |
+| **P10** screen-graph | **PASS** | job green; **100/100 on all 7 configs** (B1/B2/O1/O2/O3/O4/O5); invariants OK (0 duplicate, 0 multi-destination); **skippedNoIdHash 0** |
+
+**Promotion acceptance = P0–P7 + P9 + P10 all green → MET.** P8 is reported, not gating.
+
+### Verb table vs OFF (with CIs) and vs run 34853156073 (p50/p95 ms)
+
+| verb | OFF-1 | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2 | floor | Δ(im−pooledOFF) 95% CI | 34853156073 im |
+|---|---|---|---|---|---|---|---|---|
+| gesture-tap | 53/60 | 86/134 | **54/55** | 52/53 | 53/60 | 0 | +1 [−1, 0] parity | 55 |
+| gesture-swipe | 305/322 | 306/345 | **263/285** | 258/259 | 303/315 | 2 | −41 [−45, −34] **win** | 268 |
+| gesture-pinch | 353/364 | 346/404 | **318/357** | 307/312 | 354/367 | 1 | −35.5 [−43.5, −34] **win** | 323 |
+| tap+describe(settle:false) | – | 480/831 | **372/616** | 349/655 | – | 78 | −75 [−227, 2.5] parity/win | 400 |
+| await-ui-element | 76/84 | 41/46 | 41/43 | 42/47 | 76/80 | – | – | 47 |
+| await-screen-idle | 499/505 | 304/307 | 305/310 | 304/308 | 498/506 | – | – | 312 |
+
+The ON-uiautomation control (tap 86) confirms within-run that input-manager (54) is far
+faster than the current default UiAutomation path — the comparison run 1 could not make
+(3N-H4). input-manager is at parity with the proprietary tap (Δ+1, CI includes 0) and
+beats it on swipe (−41) and pinch (−35), each with a bootstrap CI clear of the measured
+floor. Values reproduce run 34853156073 within a few ms.
+
+### Landing / fallback / strategy-echo counts (denominators)
+
+- First-attempt landing: OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60,
+  ON-scrcpy 60/60, OFF-2 40/40 — **100 % every block**; oracle self-test passed on every
+  block.
+- **injectStrategyReported** (per-RPC count over the block, P7): ON-input-manager
+  **input-manager: 161/161** (every measured tap/swipe/gesture ran the reflective pipe,
+  0 `unavailable` fallbacks). ON-uiautomation ran `default` (the Kotlin DEFAULT control).
+
+### Fling A/B instrument verdict (P8 — reported, non-gating)
+
+**INSTRUMENT-UNRESOLVED.** The two same-code control arms disagree by 41 % at 400 ms/0.5
+(0.509 vs 0.361), far beyond ±0.15, so no arm (input-manager, scrcpy) is graded — the
+anchor-displacement fling metric does not reproduce itself between identical runs
+(confirms review 3N-H3). Fling status stays **OPEN**; no fling claim either way. Metric
+repair is ticket 3o.
+
+### Screen-graph vs 34813849446 and 34853156073 (side by side)
+
+| metric | 34813849446 (ref) | 34853156073 (run 1) | **34870686468 (run 2)** |
+|---|---|---|---|
+| success (B1/B2/O1/O2/O3/O4/O5) | 100/100 all | 100/97/99/100/99/98/98 | **100/100 all** |
+| skippedNoIdHash | 0 | 2 | **0** |
+| tokens o200k p50 (O2) | 54 | 54 | **54** |
+| invariants | OK | OK | OK (0 dup, 0 multi-dest) |
+
+Run 2's screen-graph is back at the reference (100/100 everywhere, skippedNoIdHash 0) —
+better than run 1. The screen-graph job runs with no strategy env, so 3n's code is inert
+on it; nothing here is attributable to 3n.
+
+### Harness defect (why the job is red) and STOP
+
+The job failed only on `3m fingerprints opt-in` — after-tap residual median **11 ms** vs
+the ≤ 10 ms threshold, 1 ms over even with the pre-registered 20-sample median (the idle
+phase passed). This is 3m.1's stage-accounting gate (the settle:false capture carries
+~11 ms not attributed to a summed stage), independent of every 3n.1 gate above. Per Work 6
+I did NOT re-run or loosen it — the planner decides on a re-run / a 3m.1 fix. Item 5
+(scrcpy removal) is NOT started; scoreboard untouched; `open/main` not fast-forwarded.
