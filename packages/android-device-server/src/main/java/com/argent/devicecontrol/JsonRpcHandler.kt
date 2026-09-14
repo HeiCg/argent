@@ -119,23 +119,31 @@ class JsonRpcHandler(
 
         Log.d(TAG, "method=$method id=$id")
 
+        // Phase 3n.1 P9 / 3n.2 (review 3N1-L1): the forced-unavailable seam wraps
+        // tap, swipe AND gesture, so the `uia-async` fallback can be exercised on all
+        // three inject RPCs — after scrcpy removal the fallback is the only remaining
+        // safety net. Request-scoped: sets the override before the handler and clears
+        // it in `finally`. No-op in production (forceInjectUnavail is false unless the
+        // server was started with `-e benchDebug true` AND the request set the param).
+        fun <T> withForcedInjectUnavail(block: () -> T): T {
+            if (forceInjectUnavail) {
+                InputManagerInjector.forceUnavailableForTest(
+                    "forced unavailable (benchDebug _forceInjectUnavailable)"
+                )
+            }
+            return try {
+                block()
+            } finally {
+                if (forceInjectUnavail) InputManagerInjector.forceUnavailableForTest(null)
+            }
+        }
+
         val bodyLine = try {
             val result: Any = when (method) {
-                "tap" -> runAction(params) {
-                    if (forceInjectUnavail) {
-                        InputManagerInjector.forceUnavailableForTest(
-                            "forced unavailable (benchDebug _forceInjectUnavailable)"
-                        )
-                    }
-                    try {
-                        tapHandler.execute(params)
-                    } finally {
-                        if (forceInjectUnavail) InputManagerInjector.forceUnavailableForTest(null)
-                    }
-                }
+                "tap" -> runAction(params) { withForcedInjectUnavail { tapHandler.execute(params) } }
                 "longPress" -> runAction(params) { longPressHandler.execute(params) }
-                "swipe" -> runAction(params) { swipeHandler.execute(params) }
-                "gesture" -> runAction(params) { gestureHandler.execute(params) }
+                "swipe" -> runAction(params) { withForcedInjectUnavail { swipeHandler.execute(params) } }
+                "gesture" -> runAction(params) { withForcedInjectUnavail { gestureHandler.execute(params) } }
                 "flushInput" -> runAction(params) { flushInputHandler.execute(params) }
                 "typeText" -> runAction(params) { typeHandler.execute(params) }
                 "setClipboard" -> clipboardHandler.execute(params)

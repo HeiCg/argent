@@ -192,7 +192,7 @@ object MotionInjector {
         // uia-sync) already drained the dispatcher FIFO — including any tap async UP
         // still in flight — so clear the flag. An async final UP (uia-async /
         // input-manager) leaves the UP queued; record it at the end point so the
-        // next state/hierarchy read folds the drain in (the scrcpy-flushInput
+        // next state/hierarchy read folds the drain in (an async-UP
         // asymmetry, on this channel).
         val finalUpWasSync = effective.strategy != InjectStrategy.INPUT_MANAGER && finalUpSync
         if (finalUpWasSync) {
@@ -342,12 +342,12 @@ object MotionInjector {
     /**
      * Flush the input dispatcher's touch queue synchronously (phase 3f).
      *
-     * The fast-inject backend delivers tap/swipe/gesture events over the scrcpy
-     * control channel (a separate `app_process`, not this UiAutomation), so this
-     * process's own async-UP bookkeeping does NOT see them and [drainAsyncUp]
-     * would no-op. Yet a following `getNestedState` on THIS channel must still
-     * observe the post-UP tree, never the mid-press state. Both scrcpy's injected
-     * events and the event below funnel through the one system InputDispatcher
+     * Historically the (now-removed, phase 3n.2) scrcpy fast-inject backend delivered
+     * tap/swipe/gesture events over a separate `app_process` (not this UiAutomation),
+     * so this process's own async-UP bookkeeping did NOT see them and [drainAsyncUp]
+     * would no-op. This remains generic plumbing: a following `getNestedState` on THIS
+     * channel must still observe the post-UP tree, never the mid-press state. Any such
+     * out-of-band event and the event below funnel through the one system InputDispatcher
      * FIFO, so injecting a single no-op MotionEvent SYNCHRONOUSLY blocks until it —
      * and therefore every touch event enqueued ahead of it — has been delivered.
      * Also clears any stale outstanding flag AFTER the inject returns (R1).

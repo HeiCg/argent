@@ -24,7 +24,7 @@ class InjectStrategyTest {
         assertEquals(InjectStrategy.DEFAULT, InjectStrategy.fromWire(null))
         assertEquals(InjectStrategy.DEFAULT, InjectStrategy.fromWire(""))
         assertEquals(InjectStrategy.DEFAULT, InjectStrategy.fromWire("default"))
-        assertEquals(InjectStrategy.DEFAULT, InjectStrategy.fromWire("scrcpy"))
+        assertEquals(InjectStrategy.DEFAULT, InjectStrategy.fromWire("bogus"))
         assertEquals(InjectStrategy.DEFAULT, InjectStrategy.fromWire("UIA-SYNC"))
     }
 

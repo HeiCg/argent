@@ -6,8 +6,8 @@ import java.lang.reflect.Method
 /**
  * Reflective bridge to the hidden framework input pipe
  * `android.hardware.input.InputManager.injectInputEvent(InputEvent, int)` with
- * `INJECT_INPUT_EVENT_MODE_ASYNC` — the same call the scrcpy server makes to
- * inject a device-timestamped touch timeline without going through the
+ * `INJECT_INPUT_EVENT_MODE_ASYNC`, injecting a device-timestamped touch timeline
+ * without going through the
  * UiAutomation instrumentation hop (phase 3n).
  *
  * This process runs with shell uid (instrumentation), so the hidden API is
@@ -126,6 +126,16 @@ object InputManagerInjector {
      * `InputManagerGlobal.getInstance()`; earlier images expose
      * `InputManager.getInstance()`. Try the newer holder first, then the legacy
      * one; both are static no-arg factories reachable via the hidden API.
+     *
+     * Phase 3n.2 (review 3N1-M5): availability is a property of the IMAGE AND THE
+     * HOLDER, not of Android in general. On `system-images;android-34;google_apis;
+     * x86_64` (the CI image) `InputManagerGlobal.getInstance()` is DENIED by
+     * hiddenapi policy ("blocked, reflection, denied" in logcat), so this loop always
+     * falls through its first candidate and the pipe resolves through the LEGACY
+     * `InputManager.getInstance()` holder — which AOSP hollowed out at API 34 and
+     * which greylist policy can drop at any release. That is exactly why the
+     * `uia-async` fallback (and its reporting) is kept: the risk after scrcpy removal
+     * is degradation to `uia-async`, not breakage.
      */
     private fun resolveInstance(): Any {
         val candidates = listOf(

@@ -32,8 +32,8 @@ const MULTI_TAP_GAP_MS = 100;
  * Phase 3n: the on-device injection strategy threaded onto every tap/swipe/gesture
  * RPC. The `open-device-server-inject-strategy` flag documents the capability, but
  * the boolean flag store cannot hold a value, so the active strategy is carried by
- * the `ARGENT_OPEN_INJECT_STRATEGY` env var — the same shape as `ARGENT_SCRCPY_PACING`,
- * so the bench flips it per block within one CI run. Unset / unknown → undefined =
+ * the `ARGENT_OPEN_INJECT_STRATEGY` env var, so the bench flips it per block within
+ * one CI run. Unset / unknown → undefined =
  * today's behaviour (a tap's async UP, a swipe/gesture's blocking UP), and the
  * `inject` param is omitted so the on-device DEFAULT path is byte-for-byte unchanged.
  */

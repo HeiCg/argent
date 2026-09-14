@@ -1,53 +1,65 @@
 # Open Android driver + screen-graph — planning index (moved here 2026-09-13)
 
 This directory holds every spec, ticket, adversarial review and result of the effort to
-make the open Android driver (Kotlin UiAutomation server + scrcpy fast-inject backend)
-beat argent's proprietary backend, with like-for-like numbers that survive adversarial
-review. The fork is the only home of this work from 2026-09-13 on.
+make the open Android driver (Kotlin `android-device-server` with an on-device
+`input-manager` touch injector) beat argent's proprietary backend, with like-for-like
+numbers that survive adversarial review. The scrcpy fast-inject backend was removed in
+phase 3n.2. The fork is the only home of this work from 2026-09-13 on.
 
 ## Where things are (2026-09-14)
-- Working branch: `open/main` @ 61556ee5+ = driver (3h+3i, 3j disabled) + screen-graph
-  (D→D.4.1, merged 2026-09-14) + bench workflow with all gates + 3k part B + 3k.1
-  (pacing default = pre-3k legacy, drift opt-in via `ARGENT_SCRCPY_PACING=drift`,
-  pre-registered fling gate, interleaved A/B) + outcome-path fix (tap/swipe/paste send
-  `outcome` only when the screen graph records). `feat/bench-ci-d` superseded, never
-  merged. `feat/run-script` = upstream PR #995.
+- Working branch: `open/main` @ 775ae6fc = driver (3h+3i, 3j disabled) + screen-graph
+  (D→D.4.1) + bench workflow with all gates + 3k/3k.1 + 3m/3m.1 (fingerprints opt-in) +
+  **3n/3n.1 Kotlin injection strategies, `input-manager` the shipped default** (merge
+  11fcfdf4). Phase **3n.2** (branch `feat/open-server-3n2-remove-scrcpy`, under review)
+  **removes scrcpy** — the `@yume-chan/*` deps, the fast-inject backend + flag, the fling
+  A/B stack — and repairs the 3m.1 residual gate; `open/main` NOT yet fast-forwarded.
 - CI: `.github/workflows/bench-open-vs-proprietary.yml` (`workflow_dispatch`, inputs
+  `blocks` (default `OFF-1,ON-uiautomation,ON-input-manager,OFF-2`), `n`,
   `suite=latency|screen-graph|both`, `sg_mode`); proprietary package fetched from npm at
   run time, never committed (its LICENSE forbids redistribution and reverse-engineering).
-- Scoreboard (review-accepted numbers only): `2026-09-03-scoreboard.md`. Single
-  reference run: **34813849446** (consolidated base, `suite=both`).
-- Results: `2026-09-13-open-server-3k-results-ci.md` (latency + fling),
-  `2026-09-13-screen-graph-phase-d4-results-ci.md` (screen-graph). Older:
-  `2026-09-03-*-results-*.md`.
-- Reviews: `2026-09-03-review-*` (3h, 3i, 3j, c3, c4, d1, d2, final),
-  `2026-09-13-review-d4-findings.md` (REJECT), `2026-09-14-review-d4-1-findings.md`
-  (ACCEPT-WITH-CAVEATS), `2026-09-14-review-3k-findings.md` (REJECT part A),
-  `2026-09-14-review-3k1-findings.md` (ACCEPT-WITH-CAVEATS).
-- Tickets in flight: `2026-09-14-open-server-phase3m-fingerprints-opt-in.md` (describe
-  after tap). Decision pending with the owner:
+- Scoreboard (review-accepted numbers only): `2026-09-03-scoreboard.md`. Reference run
+  for **latency / landing / availability / screen-graph / process**: **34870686468**
+  (`input-manager` default, `suite=both`); scrcpy removal confirmed on the fully-green
+  run **34888577404** (3n.2). **Fling stays OPEN, pinned to 34813849446** (metric repair
+  = ticket 3o).
+- Results: `2026-09-14-open-server-phase3n-kotlin-injector-replaces-scrcpy.md`
+  ("Result (3n.1)" run 34870686468; "Result (3n.2)" run 34888577404),
+  `2026-09-13-open-server-3k-results-ci.md`, `2026-09-13-screen-graph-phase-d4-results-ci.md`.
+- Reviews: `2026-09-03-review-*`, `2026-09-14-review-3k1-findings.md`,
+  `2026-09-14-review-3n1-findings.md` (accept run + promotion; P2 a 1 ms miss; fling arms
+  void; conditions for 3n.2).
+- Tickets: `2026-09-14-open-server-phase3n2-remove-scrcpy.md` (this phase, under review).
+  Next up: ticket **3o** (fling metric repair). Decision doc:
   `2026-09-14-decision-fling-next-phase.md`.
 
-## Verdict so far (run 34813849446, CI x86_64/KVM, N=20, p50 ms, within-run drift floor)
-Wins: swipe 259 vs 296–300, pinch 307 vs 346–358, await-screen-idle 294 vs 501,
-await-ui-element 45–47 vs 80, tokens/agent-step 21–179 vs 651–657 at 100/100 task
-success in all seven screen-graph configs (success is at parity; tokens are the
-differentiator). Parity: describe idle at p50 (14–18 ms slower at p95; the run-7 describe
-win did not reproduce), tap RPC scrcpy 51 vs 53 (UiAutomation +25). Paste directional
-only. First-attempt landing 100 % every block. Two open losses: (1) scrcpy fling
-under-scroll at 150/0.3, 400/0.3, 400/0.5 (scrcpy/off 0.52 / 0.70 / 0.72, p <= 0.009),
-present in the byte-equal pre-3k path, host pacing neutral, UiAutomation sends the same
-8 frames and scrolls correctly, device-side arrival timing is the open lead; (2)
-tap+describe(settle:false) ON 505/529 vs OFF 354/297 — root cause `TreeStore.ensure()`
-inside the timed capture (ticket 3m in flight). Retired claims: "describe never slower",
-"fling resolved by drift pacing", "B1 82 % is a rendering property".
+## Verdict so far (reference run 34870686468, `input-manager` default; CI x86_64/KVM, N=20, p50 ms, within-run drift floor)
+Wins: swipe 263 vs 303–305 (Δ −41, CI [−45,−34]), pinch 318 vs 353–354 (Δ −35.5, CI
+[−43.5,−34]), await-screen-idle 305 vs ~498, await-ui-element 41 vs 76, tokens/agent-step
+21–179 vs 651–657 at 100/100 task success in all seven screen-graph configs (success is at
+parity; tokens are the differentiator). Parity: gesture-tap `input-manager` **54 vs 53**
+(Δ +1 at a 0 floor — the pre-registered P2 inequality fails by 1 ms, planner-accepted as
+parity; UiAutomation default +32). Headline `tap+describe(settle:false)` ratio ≤ 1.15
+(within-run only; its OFF comparator drifts run-to-run — not a capability claim). First-
+attempt landing 100 % every block; 0 `unavailable` fallbacks; `input-manager` availability
+is per image/holder (the legacy `InputManager.getInstance()` holder, `InputManagerGlobal`
+denied). No durable "beats the proprietary driver" wording — one image, one emulator.
+**Fling stays OPEN** (metric does not reproduce itself; scrcpy arm removed; ticket 3o).
+**3n.2 confirmation (run 34888577404, fully green):** scrcpy removed, four blocks; swipe
+−30.5 / pinch −24.5 WIN, tap +2 (parity), device suite green with the **repaired residual
+gate (1 ms, was 11 ms)** and P9 on tap/swipe/gesture, screen-graph green (O1 99/100,
+`skippedNoIdHash` 1). Retired: "open wins swipe/pinch via scrcpy" (now `input-manager`;
+scrcpy removed), "tap at parity via scrcpy" (input-manager +1 ms), "fling resolved".
 
 ## Execution order (next)
-1. **3m** — fingerprints opt-in / no rebuild on the capture path (in flight); review;
-   merge; the run becomes the new reference if its six gates pass.
-2. **Fling decision** — owner picks A (hybrid: swipe via Kotlin, scrcpy tap/pinch) or B
-   (device-stamped timeline through a forked scrcpy-server); see the decision doc. Then
-   one ticket, one run, review.
+1. **3n.2 review + merge** — the scrcpy removal + residual-gate repair (branch
+   `feat/open-server-3n2-remove-scrcpy`, run 34888577404 green). On merge, regenerate
+   `package-lock.json` in the main checkout (`npm install`, drops `@yume-chan/*`) and run
+   `npx docusaurus build` in `packages/docs/` + `npm run format` (no docs-site content
+   changed this phase). 34870686468 stays the numeric reference; the planner may promote
+   the green 34888577404.
+2. **3o — fling metric repair** — the anchor-displacement fling metric does not reproduce
+   itself between identical runs (the old scrcpy A/B is gone). Build a metric that does,
+   then one ticket, one run, review. Fling stays OPEN until then.
 3. Artemis-derived driver items (see `2026-09-13` note below): verified tap
    (`verify: {selector}` resolved on the live tree before injecting), execution incident
    persisted across steps, `gesture-sequence` for transient UI, index-based describe tier

@@ -130,6 +130,13 @@ export interface DescribeStageTimings {
   // Fingerprint (hash) build cost (phase 3m). 0 / absent when fingerprints were
   // not requested — the plain describe path never computes them.
   fingerprintMs?: number;
+  // Phase 3n.2 (residual gate): `infoMs` = the `info` block (DisplayReader.read +
+  // isKeyboardVisible's window enumeration), `recycleMs` = the forest recycle, both
+  // previously unaccounted inside captureMs; `otherMs` = server-computed leftover
+  // (captureMs − Σ(named stages)). Absent on older servers.
+  infoMs?: number;
+  recycleMs?: number;
+  otherMs?: number;
   // Which path produced the active root (phase 3g-b): "windows" =
   // `windows.firstOrNull { it.isActive }?.root` (the fast, mid-transition-safe
   // path), "activeWindow" = `rootInActiveWindow` fallback. Absent on older servers.

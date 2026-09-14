@@ -1,5 +1,5 @@
 // Render the latency-bench scoreboard as Markdown from the merged bench JSON
-// (and the fling A/B JSON when present). Written to stdout; the workflow tees it
+// Written to stdout; the workflow tees it
 // into $GITHUB_STEP_SUMMARY and uploads it as an artifact. This is x86_64/KVM on
 // a hosted runner — NOT comparable to the local arm64/HVF numbers; only OFF vs ON
 // within THIS run is like-for-like.
@@ -21,8 +21,6 @@ if (!mergedPath) {
   process.exit(0);
 }
 const merged = JSON.parse(fs.readFileSync(mergedPath, "utf8"));
-const flingPath = latest("^fling-ab-.*\\.json$");
-const fling = flingPath ? JSON.parse(fs.readFileSync(flingPath, "utf8")) : null;
 
 const env = merged.env || {};
 const ci = env.ci || {};
@@ -186,13 +184,12 @@ if (off1 && off2) {
 }
 
 // Phase 3n.1 promotion gates P2–P6 — `ON-input-manager` graded against the PROPRIETARY
-// OFF blocks (never against ON-scrcpy — review 3N-H1/H6) at the MEASURED drift floor
-// (P1: |OFF-1 − OFF-2| per verb, never a constant), each Δ carrying a 10 000-draw
-// bootstrap 95% CI on the p50 difference (3N-H5). ON-uiautomation is the control (P6),
-// ON-scrcpy is shown for context only.
+// OFF blocks at the MEASURED drift floor (P1: |OFF-1 − OFF-2| per verb, never a
+// constant), each Δ carrying a 10 000-draw bootstrap 95% CI on the p50 difference
+// (3N-H5). ON-uiautomation is the control (P6). (Phase 3n.2: the ON-scrcpy arm was
+// removed.)
 const onUia = blocks.find((b) => b.block === "ON-uiautomation");
 const onIm = blocks.find((b) => b.block === "ON-input-manager");
-const onScr = blocks.find((b) => b.block === "ON-scrcpy");
 if (onIm && off1Blk && off2Blk) {
   // comparator verb name in the OFF blocks (tap+describe(settle:false) → tap+describe).
   const offVerb = (vn) => (vn === "tap+describe(settle:false)" ? "tap+describe" : vn);
@@ -243,11 +240,13 @@ if (onIm && off1Blk && off2Blk) {
   }
   L.push("");
 
-  // Explicit P2–P6 PASS/FAIL/N/A — CI-based non-inferiority (review 3N-H5): the gate
-  // PASSES unless the bootstrap CI ESTABLISHES input-manager is more than the measured
-  // floor slower than the proprietary bound (parity or win → PASS; a distinguishable
-  // regression beyond floor → FAIL). Falls back to the point p50 only when a block has
-  // no per-sample array.
+  // Explicit P2–P6 PASS/FAIL/N/A. Phase 3n.2 (review 3N1-H2 / Conditions item 3): the
+  // DECISION RULE is the PRE-REGISTERED POINT INEQUALITY `im p50 ≤ bound.p + floor`.
+  // The bootstrap 95% CI on the p50 difference (same comparator, 3N1-M1) is REPORTED
+  // for context — it is NEVER substituted for the gate. The retired `CI lo ≤ floor`
+  // rule was the wrong tail (an arm with Δ +292 and a wide CI passed) and, on the
+  // headline row's floor, could never fail. A planner's acceptance of a sub-floor miss
+  // (e.g. tap +1 ms) is a scoreboard NOTE, printed alongside — never rendered as PASS.
   const pline = (id, text, verdict) => L.push(`- **${id}** — ${text}: **${verdict}**`);
   const offBound = (vn, kind) => {
     const a = p50Of(off1Blk, vn), b = p50Of(off2Blk, vn);
@@ -260,9 +259,12 @@ if (onIm && off1Blk && off2Blk) {
     const bound = offBound(vn, kind);
     const floor = measuredFloor(vn);
     if (im == null || bound == null || floor == null) return "N/A";
+    const delta = im - bound.p;
     const ci = bootstrapDiffCI(samplesOf(onIm, vn), samplesOf(bound.blk, vn));
-    if (ci) return ci[0] <= floor ? `PASS (Δ ${im - bound.p}, CI lo ${ci[0]} ≤ floor ${floor})` : `FAIL (CI lo ${ci[0]} > floor ${floor})`;
-    return im <= bound.p + floor ? `PASS (Δ ${im - bound.p} ≤ floor ${floor}, no CI)` : `FAIL (+${im - bound.p - floor}, no CI)`;
+    const ciStr = ci ? `CI [${ci[0]}, ${ci[1]}]` : "no CI";
+    // The pre-registered point inequality is the gate; the CI is reported, not the gate.
+    if (im <= bound.p + floor) return `PASS (Δ ${delta} ≤ floor ${floor}, ${ciStr})`;
+    return `FAIL by ${im - bound.p - floor} (Δ ${delta} > floor ${floor}, ${ciStr})`;
   };
   pline("P2", "tap RPC non-inferior to max(OFF) + floor", niGate("gesture-tap", "max"));
   pline("P3", "swipe RPC non-inferior to min(OFF) + floor", niGate("gesture-swipe", "min"));
@@ -296,8 +298,11 @@ if (onIm && off1Blk && off2Blk) {
           continue;
         }
         const ci = bootstrapDiffCI(samplesOf(onIm, vn), samplesOf(onUia, vn));
-        const fail = ci ? ci[0] > f : im > u + f;
-        if (fail) bad.push(`${vn} +${im - u}`);
+        // Point inequality (3N1-H2): FAIL only if input-manager is more than the floor
+        // slower than the control; the CI is reported in the failure text, never used
+        // as the gate (the old `CI lo > floor` rule could never fail on a wide row).
+        const fail = im > u + f;
+        if (fail) bad.push(`${vn} +${im - u}${ci ? ` (CI [${ci[0]}, ${ci[1]}])` : ""}`);
       }
       pline("P6", "not slower than ON-uiautomation (control) by more than the floor on any gated verb", na && !bad.length ? "N/A (missing samples)" : bad.length ? `FAIL (${bad.join(", ")})` : "PASS");
     }
@@ -405,45 +410,9 @@ for (const b of blocks) {
   }
 }
 
-// Fling A/B
-if (fling) {
-  L.push("### Fling A/B (scrcpy[drift] vs uiautomation median scroll)");
-  L.push("");
-  L.push(`OFF reference present: ${fling.offReferencePresent ? "yes" : "no"}` +
-    ` · scrcpy gate arm pacing: **${fling.scrcpyPacing || "drift"}**` +
-    ` · legacy arm present: ${fling.legacyArmPresent ? "yes" : "no"}`);
-  if (fling.flingGate) {
-    L.push("");
-    L.push(`Fling parity gate (${fling.flingGate.rule || `scrcpy[drift]/uia ±${fling.flingGate.tolerance}, per-cell`}, blocking): **${fling.flingGate.verdict}**`);
-  }
-  L.push("");
-  // scrcpy/off and uia/off are the proprietary-reference transparency (review F2/F4).
-  // Per-arm n is shown so the power floor (n≥10 on every gated arm) is auditable.
-  L.push("| dur(ms) | dist | uia med (n) | scrcpy med (n) | scrcpy/uia | off med (n) | scrcpy/off | uia/off | gradable |");
-  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  for (const g of fling.grid || []) {
-    const withN = (m) => (m ? `${m.median} (${m.n})` : "-");
-    L.push(
-      `| ${g.durationMs} | ${g.distance} | ${withN(g.uiautomation)} | ${withN(g.scrcpy)} | ${g.scrcpyOverUia} | ` +
-        `${withN(g.off)} | ${g.scrcpyOverOff ?? "-"} | ${g.uiaOverOff ?? "-"} | ${g.informative ? "informative" : "non-informative"} |`
-    );
-  }
-  L.push("");
-  // Same-run before/after pacing (legacy default → drift opt-in), when the arm ran.
-  if (fling.legacyArmPresent) {
-    L.push("**Pacing legacy(default) → drift(opt-in), same run — reported, not gated**");
-    L.push("");
-    L.push("| dur(ms) | dist | legacy med | drift med | scrcpy/uia legacy→drift | scrcpy/off legacy→drift |");
-    L.push("| --- | --- | --- | --- | --- | --- |");
-    for (const g of fling.grid || []) {
-      L.push(
-        `| ${g.durationMs} | ${g.distance} | ${g.scrcpyLegacy?.median ?? "-"} | ${g.scrcpy?.median ?? "-"} | ` +
-          `${g.scrcpyLegacyOverUia ?? "-"} → ${g.scrcpyOverUia ?? "-"} | ${g.scrcpyLegacyOverOff ?? "-"} → ${g.scrcpyOverOff ?? "-"} |`
-      );
-    }
-    L.push("");
-  }
-}
+// Phase 3n.2: the Fling A/B section was removed with scrcpy. The fling metric is
+// instrument-unresolved and deferred to ticket 3o (metric repair); no fling artifact
+// is produced by this run and none is rendered here.
 
 // Phase 3j: serialize-once + compact in-run A/B and the transport experiment.
 // Defensive — only rendered for ON blocks that carry a `phase3j` object.
@@ -478,6 +447,6 @@ if (on3j.length) {
   }
 }
 
-L.push(`_merged: ${path.basename(mergedPath)}${fling ? `, fling: ${path.basename(flingPath)}` : ""}_`);
+L.push(`_merged: ${path.basename(mergedPath)}_`);
 
 process.stdout.write(L.join("\n") + "\n");
