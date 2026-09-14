@@ -2590,6 +2590,10 @@ async function main(): Promise<void> {
   // is set by the CI workflow; local runs that intentionally reuse a store leave it off.
   const runId = process.env.BENCH_RUN_ID ?? process.env.GITHUB_RUN_ID ?? "local";
   const jobStartedAt = process.env.BENCH_JOB_STARTED ?? "(unset)";
+  // Phase 3n.3 (3N2-L5): pin the injection strategy EXPLICITLY instead of relying on
+  // "env unset ⇒ the default" (the same assumption that produced 3N1-H1). The open
+  // configs (B2/O1–O5) inject through this; a caller can still override it.
+  process.env.ARGENT_OPEN_INJECT_STRATEGY = process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "input-manager";
   if (process.env.BENCH_FRESH_STORE) {
     rmSync(OUT_DIR, { recursive: true, force: true });
     rmSync(graphDir(), { recursive: true, force: true });
@@ -2607,6 +2611,9 @@ async function main(): Promise<void> {
     startedAt: started,
     runId,
     jobStartedAt,
+    // Phase 3n.3 (3N2-L5): the resolved injection strategy the open configs ran, recorded
+    // in the run env block so it is never an unstated assumption.
+    injectStrategy: process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "(default)",
   };
 
   const allRecords: TaskRecord[] = [];

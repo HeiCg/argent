@@ -73,7 +73,9 @@ export function describeInjectedTapTimeline(
  * shape, not merely by holdMs.
  */
 export function assertTapTimelineParity(
-  blocks: Array<{ block: string; fastInject?: boolean; injectedTapTimeline?: InjectedTapTimeline }>
+  // Phase 3n.3 (3N2-L4): the vestigial `fastInject?: boolean` was dropped — nothing set
+  // it after the scrcpy removal.
+  blocks: Array<{ block: string; injectedTapTimeline?: InjectedTapTimeline }>
 ): void {
   const withTl = blocks.filter((b) => b.injectedTapTimeline);
   const first = withTl[0];
