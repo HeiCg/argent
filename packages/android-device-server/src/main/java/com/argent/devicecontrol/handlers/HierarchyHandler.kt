@@ -117,11 +117,8 @@ class HierarchyHandler(
             // NodeSerializer stops only when it hits `maxElements`.
             if (!nested) {
                 // Phase 3m.1 (3M-H4): version from one source, absent while unarmed.
-                val reportedVersion: Long? = when {
-                    !clockArmedAtCapture -> null
-                    fpSnap != null -> fpSnap.version
-                    else -> versionAtCapture
-                }
+                val reportedVersion: Long? =
+                    if (!clockArmedAtCapture) null else (fpSnap?.version ?: versionAtCapture)
                 reportedVersion?.let { response.put("version", it) }
                 response.put("truncated", tree.length() >= maxElements)
                 // Phase 3m.1 (3M-H1): omit the hash for an empty forest.

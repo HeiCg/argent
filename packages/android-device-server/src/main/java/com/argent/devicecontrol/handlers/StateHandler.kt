@@ -279,11 +279,8 @@ class StateHandler(
             // Phase 3m.1 (3M-H4): the reported version comes from ONE source,
             // consistent with the hash — the snapshot's when we built one, else the
             // single pre-capture read. ABSENT while the clock is unarmed (see above).
-            val reportedVersion: Long? = when {
-                !clockArmedAtCapture -> null
-                fpSnap != null -> fpSnap.version
-                else -> versionAtCapture
-            }
+            val reportedVersion: Long? =
+                if (!clockArmedAtCapture) null else (fpSnap?.version ?: versionAtCapture)
             reportedVersion?.let { put("version", it) }
             // Phase 3m: fingerprints + `unchanged` ONLY when requested
             // (`fingerprints: true` or `sinceVersion`). Absent ⇒ not computed, never
