@@ -581,6 +581,9 @@ jobs:
           # whose parent dir does not exist on the runner; only OUT_DIR is mkdir'd.
           # Point BENCH_REPORT under OUT_DIR (created before the write, and staged
           # by the artifact step) so writeFileSync does not ENOENT at run end.
+          # BENCH_OUT is set explicitly here (the script defaults to the same path, but
+          # the run block's `rm -rf "$BENCH_OUT"` needs it defined under `set -u`).
+          BENCH_OUT: ${{ github.workspace }}/.bench-results/screen-graph
           BENCH_REPORT: ${{ github.workspace }}/.bench-results/screen-graph/results-ci.md
           # Phase 3n.3 (3N2-H4): start from an empty output dir + empty persisted graph
           # store, and stamp the run id / job start time into the report, the store meta
