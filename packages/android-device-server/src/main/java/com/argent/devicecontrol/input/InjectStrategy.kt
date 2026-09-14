@@ -7,7 +7,7 @@ package com.argent.devicecontrol.input
  *
  * The three explicit strategies exist so the bench can carry each as its own arm
  * in one CI run and compare RPC latency and scroll fidelity like-for-like against
- * the scrcpy control arm:
+ * the UiAutomation control arm:
  *
  *  - [UIA_SYNC]: every frame through `UiAutomation.injectInputEvent`, the final
  *    ACTION_UP injected SYNCHRONOUSLY — the RPC returns only after the whole
@@ -17,12 +17,12 @@ package com.argent.devicecontrol.input
  *    `UiAutomation.injectInputEvent(ev, sync=false)`; the RPC returns after the
  *    last injection call and the dispatcher drain is folded into the next read
  *    (the same async-UP tracker a default tap uses, drained by the next
- *    state/hierarchy capture) — exactly like scrcpy's `flushInput` asymmetry, so
- *    the row is like-for-like with the scrcpy row.
+ *    state/hierarchy capture) — an async-UP asymmetry that folds the drain into
+ *    the next read, so the row stays like-for-like across arms.
  *  - [INPUT_MANAGER]: every frame through a reflective
  *    `android.hardware.input.InputManager.injectInputEvent(InputEvent, int)` with
  *    `INJECT_INPUT_EVENT_MODE_ASYNC`, carrying device timestamps from the
- *    timeline, the same call the scrcpy server makes. When the hidden API is
+ *    timeline, carrying device timestamps. When the hidden API is
  *    blocked in this instrumentation process (hiddenapi policy) the RPC falls
  *    back to [UIA_ASYNC] and reports `strategy: "unavailable"` with the exception
  *    text; it NEVER silently changes `hidden_api_policy`.

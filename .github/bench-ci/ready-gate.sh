@@ -9,8 +9,8 @@
 # for N consecutive clean reads. Each read first dismisses any system/ANR dialog
 # (CLOSE_SYSTEM_DIALOGS + BACK) and returns HOME, then inspects `dumpsys window`.
 # STRICT (4th arg) decides what a timeout means (review F12). STRICT=0 (advisory,
-# the device-test step): warn and proceed — the tests still run and the scrcpy/
-# logcat evidence is captured, and the wait is logged so a degraded run is visible.
+# the device-test step): warn and proceed — the tests still run and the logcat
+# evidence is captured, and the wait is logged so a degraded run is visible.
 # STRICT=1 (BLOCKING, each bench block): a screen that never settles poisons the
 # block's effect check, so exit non-zero and let the caller fail the block rather
 # than score taps that may have landed on an ANR dialog.

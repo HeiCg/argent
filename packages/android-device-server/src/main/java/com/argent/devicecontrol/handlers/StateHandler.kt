@@ -73,10 +73,10 @@ class StateHandler(
         // skipping the capture makes getState a strict latency win for them
         // instead of paying a full-frame JPEG encode on every poll.
         val includeScreenshot = !nested && params.optBoolean("includeScreenshot", true)
-        // `flush` (phase 3f): the caller injected a scrcpy fast-inject touch from a
+        // `flush` (phase 3f): the caller injected an out-of-band touch from a
         // separate process this UiAutomation cannot see, so `drainAsyncUp` would
         // no-op. When set, run the full synchronous input-queue flush inline here
-        // instead — it orders every touch enqueued ahead of it (scrcpy's included)
+        // instead — it orders every touch enqueued ahead of it
         // before the capture below, so the tree is never the mid-press state. Folded
         // into this read so fast-inject costs no extra `flushInput` round-trip.
         val flush = params.optBoolean("flush", false)

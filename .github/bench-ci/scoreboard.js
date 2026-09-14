@@ -1,5 +1,5 @@
 // Render the latency-bench scoreboard as Markdown from the merged bench JSON
-// (and the fling A/B JSON when present). Written to stdout; the workflow tees it
+// Written to stdout; the workflow tees it
 // into $GITHUB_STEP_SUMMARY and uploads it as an artifact. This is x86_64/KVM on
 // a hosted runner — NOT comparable to the local arm64/HVF numbers; only OFF vs ON
 // within THIS run is like-for-like.
@@ -21,8 +21,6 @@ if (!mergedPath) {
   process.exit(0);
 }
 const merged = JSON.parse(fs.readFileSync(mergedPath, "utf8"));
-const flingPath = latest("^fling-ab-.*\\.json$");
-const fling = flingPath ? JSON.parse(fs.readFileSync(flingPath, "utf8")) : null;
 
 const env = merged.env || {};
 const ci = env.ci || {};
@@ -186,13 +184,12 @@ if (off1 && off2) {
 }
 
 // Phase 3n.1 promotion gates P2–P6 — `ON-input-manager` graded against the PROPRIETARY
-// OFF blocks (never against ON-scrcpy — review 3N-H1/H6) at the MEASURED drift floor
-// (P1: |OFF-1 − OFF-2| per verb, never a constant), each Δ carrying a 10 000-draw
-// bootstrap 95% CI on the p50 difference (3N-H5). ON-uiautomation is the control (P6),
-// ON-scrcpy is shown for context only.
+// OFF blocks at the MEASURED drift floor (P1: |OFF-1 − OFF-2| per verb, never a
+// constant), each Δ carrying a 10 000-draw bootstrap 95% CI on the p50 difference
+// (3N-H5). ON-uiautomation is the control (P6). (Phase 3n.2: the ON-scrcpy arm was
+// removed.)
 const onUia = blocks.find((b) => b.block === "ON-uiautomation");
 const onIm = blocks.find((b) => b.block === "ON-input-manager");
-const onScr = blocks.find((b) => b.block === "ON-scrcpy");
 if (onIm && off1Blk && off2Blk) {
   // comparator verb name in the OFF blocks (tap+describe(settle:false) → tap+describe).
   const offVerb = (vn) => (vn === "tap+describe(settle:false)" ? "tap+describe" : vn);
@@ -413,45 +410,9 @@ for (const b of blocks) {
   }
 }
 
-// Fling A/B
-if (fling) {
-  L.push("### Fling A/B (scrcpy[drift] vs uiautomation median scroll)");
-  L.push("");
-  L.push(`OFF reference present: ${fling.offReferencePresent ? "yes" : "no"}` +
-    ` · scrcpy gate arm pacing: **${fling.scrcpyPacing || "drift"}**` +
-    ` · legacy arm present: ${fling.legacyArmPresent ? "yes" : "no"}`);
-  if (fling.flingGate) {
-    L.push("");
-    L.push(`Fling parity gate (${fling.flingGate.rule || `scrcpy[drift]/uia ±${fling.flingGate.tolerance}, per-cell`}, blocking): **${fling.flingGate.verdict}**`);
-  }
-  L.push("");
-  // scrcpy/off and uia/off are the proprietary-reference transparency (review F2/F4).
-  // Per-arm n is shown so the power floor (n≥10 on every gated arm) is auditable.
-  L.push("| dur(ms) | dist | uia med (n) | scrcpy med (n) | scrcpy/uia | off med (n) | scrcpy/off | uia/off | gradable |");
-  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  for (const g of fling.grid || []) {
-    const withN = (m) => (m ? `${m.median} (${m.n})` : "-");
-    L.push(
-      `| ${g.durationMs} | ${g.distance} | ${withN(g.uiautomation)} | ${withN(g.scrcpy)} | ${g.scrcpyOverUia} | ` +
-        `${withN(g.off)} | ${g.scrcpyOverOff ?? "-"} | ${g.uiaOverOff ?? "-"} | ${g.informative ? "informative" : "non-informative"} |`
-    );
-  }
-  L.push("");
-  // Same-run before/after pacing (legacy default → drift opt-in), when the arm ran.
-  if (fling.legacyArmPresent) {
-    L.push("**Pacing legacy(default) → drift(opt-in), same run — reported, not gated**");
-    L.push("");
-    L.push("| dur(ms) | dist | legacy med | drift med | scrcpy/uia legacy→drift | scrcpy/off legacy→drift |");
-    L.push("| --- | --- | --- | --- | --- | --- |");
-    for (const g of fling.grid || []) {
-      L.push(
-        `| ${g.durationMs} | ${g.distance} | ${g.scrcpyLegacy?.median ?? "-"} | ${g.scrcpy?.median ?? "-"} | ` +
-          `${g.scrcpyLegacyOverUia ?? "-"} → ${g.scrcpyOverUia ?? "-"} | ${g.scrcpyLegacyOverOff ?? "-"} → ${g.scrcpyOverOff ?? "-"} |`
-      );
-    }
-    L.push("");
-  }
-}
+// Phase 3n.2: the Fling A/B section was removed with scrcpy. The fling metric is
+// instrument-unresolved and deferred to ticket 3o (metric repair); no fling artifact
+// is produced by this run and none is rendered here.
 
 // Phase 3j: serialize-once + compact in-run A/B and the transport experiment.
 // Defensive — only rendered for ON blocks that carry a `phase3j` object.
@@ -486,6 +447,6 @@ if (on3j.length) {
   }
 }
 
-L.push(`_merged: ${path.basename(mergedPath)}${fling ? `, fling: ${path.basename(flingPath)}` : ""}_`);
+L.push(`_merged: ${path.basename(mergedPath)}_`);
 
 process.stdout.write(L.join("\n") + "\n");

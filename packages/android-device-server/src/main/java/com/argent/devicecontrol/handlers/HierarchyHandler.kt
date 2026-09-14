@@ -24,7 +24,7 @@ class HierarchyHandler(
         // match its token count. The default (flat, compressed list) is unchanged
         // for the flow / await consumers.
         val nested = params.optBoolean("nested", false)
-        // `flush` (phase 3f): a preceding scrcpy fast-inject touch came from another
+        // `flush` (phase 3f): a preceding out-of-band touch came from another
         // process this UiAutomation cannot see, so `drainAsyncUp` would no-op.
         val flush = params.optBoolean("flush", false)
         // Phase 3m: fingerprints are OPT-IN here too (`fingerprints: true` or a

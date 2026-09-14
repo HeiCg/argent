@@ -36,7 +36,7 @@ describe("open-server inject strategy (phase 3n)", () => {
     it("defaults to input-manager when unset/unknown (phase 3n.1 flip)", () => {
       delete process.env[ENV_KEY];
       expect(resolveInjectStrategy()).toBe("input-manager");
-      process.env[ENV_KEY] = "scrcpy";
+      process.env[ENV_KEY] = "bogus";
       expect(resolveInjectStrategy()).toBe("input-manager");
       process.env[ENV_KEY] = "";
       expect(resolveInjectStrategy()).toBe("input-manager");

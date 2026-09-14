@@ -2,11 +2,11 @@
 // the repo root so the flag file + .bench-results resolve there. BENCH_ONLY
 // selects a single block; the merge assembles the per-block files afterwards.
 //
-// Phase 3n self-orchestration. The committed workflow's run_block loop only calls
-// ON-uiautomation and ON-scrcpy; it cannot be updated on this branch because the
-// push credential lacks the GitHub `workflow` OAuth scope (the same limitation
-// run-fling.js documents). So this loader drives the three Kotlin strategy arms
-// ITSELF: on the FIRST invocation, for each strategy arm named in BENCH_BLOCKS it
+// Phase 3n self-orchestration. The workflow's run_block loop drives the OFF baselines
+// and ON-uiautomation directly; the Kotlin injection-STRATEGY arms (ON-uia-sync /
+// ON-uia-async / ON-input-manager) are self-orchestrated here so a dispatch can add a
+// strategy arm via the `blocks` input without a workflow edit. On the FIRST invocation,
+// for each strategy arm named in BENCH_BLOCKS this loader
 // spawns an isolated child `node run-bench.js` with BENCH_ONLY=<arm> (per-block
 // process isolation preserved — the memory-frugal design), gated by a lock so the
 // workflow's later block calls don't re-run them. A dispatch whose `blocks` input

@@ -6,8 +6,8 @@ import java.lang.reflect.Method
 /**
  * Reflective bridge to the hidden framework input pipe
  * `android.hardware.input.InputManager.injectInputEvent(InputEvent, int)` with
- * `INJECT_INPUT_EVENT_MODE_ASYNC` — the same call the scrcpy server makes to
- * inject a device-timestamped touch timeline without going through the
+ * `INJECT_INPUT_EVENT_MODE_ASYNC`, injecting a device-timestamped touch timeline
+ * without going through the
  * UiAutomation instrumentation hop (phase 3n).
  *
  * This process runs with shell uid (instrumentation), so the hidden API is
