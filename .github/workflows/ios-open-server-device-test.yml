@@ -12,13 +12,6 @@ name: iOS open server device test
 
 on:
   workflow_dispatch:
-  # TEMPORARY (iOS-1 bring-up): workflow_dispatch cannot be triggered from a
-  # non-default branch, so this branch-scoped push trigger lets the runner be
-  # exercised on feat/ios-open-server-1 without placing the workflow on `main`.
-  # Remove before merge — the delivered workflow is workflow_dispatch only.
-  push:
-    branches:
-      - feat/ios-open-server-1
 
 permissions:
   contents: read

@@ -13,12 +13,21 @@ extension ArgentRunnerSession {
     /// Hardware buttons the `key` method accepts, mapped onto `XCUIDevice.Button`.
     /// The power/lock button has no public API, and `camera` would pin the runner
     /// to a newer Xcode. Carried over from base B's `button` command.
-    static let hardwareButtons: [String: XCUIDevice.Button] = [
-        "home": .home,
-        "volumeUp": .volumeUp,
-        "volumeDown": .volumeDown,
-        "actionButton": .action,
-    ]
+    ///
+    /// `volumeUp` / `volumeDown` are marked unavailable by the iOS Simulator SDK
+    /// (they exist only on physical hardware), so they are compiled in only for a
+    /// device build. On the simulator `key("volumeUp")` returns "unsupported".
+    static let hardwareButtons: [String: XCUIDevice.Button] = {
+        var buttons: [String: XCUIDevice.Button] = [
+            "home": .home,
+            "actionButton": .action,
+        ]
+        #if !targetEnvironment(simulator)
+        buttons["volumeUp"] = .volumeUp
+        buttons["volumeDown"] = .volumeDown
+        #endif
+        return buttons
+    }()
 
     /// The main screen size in POINTS and the backing scale, read from UIKit's
     /// `UIScreen.main` (the same physical screen `XCUIScreen.main` refers to),
