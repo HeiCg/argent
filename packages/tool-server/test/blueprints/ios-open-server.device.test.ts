@@ -121,6 +121,15 @@ function center(n: IosOpenServerNode): { x: number; y: number } {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Time one RPC and log it as an informal observation (NOT a scoreboard number). */
+async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  const r = await fn();
+  // eslint-disable-next-line no-console
+  console.log(`[device][timing] ${label} = ${Date.now() - t0}ms`);
+  return r;
+}
+
 describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => {
   let client: IosOpenServerClient;
 
@@ -160,6 +169,11 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     expect(state.tree.length).toBeGreaterThan(0);
     const t = state.timings;
     const sum = t.snapshotMs + t.serializeMs + t.encodeMs;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[device] getNestedState stages: snapshot=${t.snapshotMs.toFixed(1)} serialize=${t.serializeMs.toFixed(1)} ` +
+        `encode=${t.encodeMs.toFixed(1)} sum=${sum.toFixed(1)} capture=${t.captureMs.toFixed(1)}`
+    );
     // captureMs spans exactly the three stages, so the sum tracks it closely.
     expect(Math.abs(sum - t.captureMs)).toBeLessThanOrEqual(Math.max(5, t.captureMs * 0.3));
   }, 60_000);
@@ -248,4 +262,28 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     // Relaunch so shutdown in afterAll has a clean target.
     await client.launchApp(SETTINGS);
   }, 90_000);
+
+  it("informal per-RPC timings (observations, NOT scoreboard numbers)", async () => {
+    await client.launchApp(SETTINGS);
+    await sleep(1200);
+    await timed("ping", () => client.ping());
+    await timed("getScreenSize", () => client.getScreenSize());
+    await timed("getInfo", () => client.getInfo());
+    const state = await timed("getNestedState", () => client.getNestedState());
+    // eslint-disable-next-line no-console
+    console.log(
+      `[device][timing] getNestedState stages: snapshot=${state.timings.snapshotMs.toFixed(1)} ` +
+        `serialize=${state.timings.serializeMs.toFixed(1)} encode=${state.timings.encodeMs.toFixed(1)} ` +
+        `capture=${state.timings.captureMs.toFixed(1)} nodes=${state.tree.length}`
+    );
+    const root = state.tree[0];
+    const target = root && root.children[0] ? center(root.children[0]) : { x: 40, y: 120 };
+    await timed("tap", () => client.tap(target.x, target.y));
+    await sleep(600);
+    await timed("swipe", () => client.swipe(target.x, 500, target.x, 200, { steps: 10 }));
+    await sleep(600);
+    await timed("screenshot(png)", () => client.screenshot({ format: "png" }));
+    await timed("screenshot(jpeg,0.5)", () => client.screenshot({ format: "jpeg", quality: 60, scale: 0.5 }));
+    expect(true).toBe(true);
+  }, 120_000);
 });
