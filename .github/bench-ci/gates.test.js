@@ -402,7 +402,7 @@ test("merge-fling: missing the drift arm FIRES (hard requirement)", () => {
 
 /* --------------------------------- scoreboard ----------------------------- */
 
-test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap parity, swipe/pinch win) vs proprietary", () => {
+test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap FAILs the inequality by 2, swipe/pinch win) vs proprietary", () => {
   const out = freshOut();
   writeBlocks(out, RUN2());
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
@@ -413,8 +413,12 @@ test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap parity, 
   assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
   assert.match(r.stdout, /gesture-swipe \| 291 \| 268 \| 307 \| 300 \| ±7 \|/);
   assert.match(r.stdout, /gesture-pinch \| 340 \| 323 \| 351 \| 356 \| ±5 \|/);
-  // input-manager: tap parity (CI overlaps floor 0), swipe & pinch win vs proprietary.
-  assert.match(r.stdout, /\*\*P2\*\* — tap RPC non-inferior.*: \*\*PASS/);
+  // Phase 3n.2 (review 3N1-H2): the DECISION RULE is the pre-registered point
+  // inequality, not the retired `CI lo ≤ floor` rule. tap 55 vs max(OFF) 53 at floor
+  // 0 → 55 > 53 → the inequality FAILS by 2 (the CI is reported, not the gate). This
+  // is the honest verdict the review demanded; a planner's acceptance of the sub-floor
+  // miss is a scoreboard note, never a PASS. swipe & pinch still WIN vs proprietary.
+  assert.match(r.stdout, /\*\*P2\*\* — tap RPC non-inferior.*: \*\*FAIL by 2/);
   assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*PASS/);
   assert.match(r.stdout, /\*\*P4\*\* — pinch RPC non-inferior.*: \*\*PASS/);
   // Headline ratio ≤ 1.15 vs each OFF (400/445, 400/548, 400/496.5) → P5 PASS.

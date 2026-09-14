@@ -386,8 +386,13 @@ ON-input-manager, ON-scrcpy, OFF-2`. Fling arms: `ON-uia-A, ON-uia-B, ON-input-m
 ON-scrcpy, OFF` interleaved per sample. N=20 per verb per block; fling N=12 per cell-arm.
 
 Pre-registered gates P0–P10, verbatim from `2026-09-14-review-3n-run1-findings.md`
-"Promotion recommendation (b)":
+"Promotion recommendation (b)" — the preamble restored per **3N1-M4** (it carries the two
+constraints the gate package rests on):
 
+> Every gate below is graded against the PROPRIETARY blocks (OFF-1 / OFF-2), never against
+> ON-scrcpy. Every verb emits its per-sample latency array; every Δ is reported with a
+> 10 000-sample bootstrap 95 % CI on the p50 difference.
+>
 > **P0 — control arm present.** `ON-uiautomation` (the current default, no
 > `ARGENT_OPEN_INJECT_STRATEGY`) runs as a latency block. If it is absent the run is void.
 >
@@ -451,7 +456,17 @@ merge-blocks P0 void, merge-fling 3n.1 instrument-first NON-GATING mode (Work 5)
 estimate for the latency job (5 blocks + 5 fling arm-streams): ~90 min < 120 (run 1 was
 ~95–100 min with 6 blocks); no split, N unchanged.
 
-## Result (3n.1) — run 2 (CI 34870686468, head bb3fbddf) — ALL PROMOTION GATES GREEN
+## Result (3n.1) — run 2 (CI 34870686468, head bb3fbddf) — PROMOTION ACCEPTED ON SUBSTANCE
+
+> **3n.2 bookkeeping correction (2026-09-14):** this Result was written before the 3n.1
+> adversarial review. Three claims below are corrected in place per that review: P2 is a
+> 1 ms miss vs its pre-registered inequality (parity, planner-accepted), NOT a clean PASS
+> (3N1-H2/M1); the fling `ON-uia-A`/`ON-uia-B` arms actually ran `input-manager`, so run
+> 2 has no UiAutomation fling arm (3N1-H1); and the screen-graph job ran WITH
+> `input-manager` as the injector, so it is not inert on 3n (3N1-H3). The verb-table
+> "reproduces run 1" line exempts the headline row (3N1-M9), the 161 echo is the
+> process-wide count (3N1-M2), and the `ON-uiautomation` control regressed vs 34813849446
+> (3N1-M6). Numbers are unchanged; only the interpretation is corrected.
 
 **Run conclusion: `failure`, but for a reason UNRELATED to the 3n.1 gates** — the only
 failing step is the pre-existing `3m fingerprints opt-in` residual gate (3m.1's
@@ -467,17 +482,20 @@ I did NOT re-run (planner decides).
 |---|---|---|
 | **P0** control present | **PASS** | ON-uiautomation ran as a latency block |
 | **P1** floor measured, never defaulted | **PASS** | tap **0**, swipe **2**, pinch **1**, headline **78** ms — all `|OFF-1−OFF-2|`, no constant |
-| **P2** tap vs proprietary | **PASS** | im 54 vs max(OFF) 53, floor 0, Δ 1, **CI [−1,0]** overlaps ±0 → parity |
+| **P2** tap vs proprietary | **FAIL by 1 ms vs the pre-registered inequality — planner-accepted parity (3N1-H2/M1)** | im 54 vs max(OFF)=OFF-1 53 at floor 0: the point inequality `54 ≤ 53 + 0` FAILS by 1 ms. Δ +1, bootstrap 95 % CI **[0, +1] vs pooled OFF** (vs the max(OFF) comparator the gate uses: CI **[−1, +1]**). Parity in practice; accepted by the planner as a scoreboard NOTE, not graded PASS. The scoreboard prints `FAIL by 1`. (The retired `CI lo ≤ floor` rule had reported this as PASS.) |
 | **P3** swipe vs proprietary | **PASS** | im 263 vs min(OFF) 303, floor 2, Δ −40, **CI [−45,−34]** < −floor → **win** |
 | **P4** pinch vs proprietary | **PASS** | im 318 vs min(OFF) 353, floor 1, Δ −35, **CI [−43,−34]** < −floor → **win** |
 | **P5** headline ≤ 1.15 vs each OFF | **PASS** | 372/408 = 0.91 · 372/486 = 0.77 · 372/447 = 0.83 (all ≤ 1.15) |
 | **P6** no regression vs control | **PASS** | im ≤ ON-uiautomation + floor on every gated verb (uia 86/306/346/480) |
 | **P7** landing + fallbacks + echo | **PASS** | landing **100 %** every block (OFF 40/40, uia 60/60, im 60/60, scrcpy 60/60), oracle pass; **injectStrategyReported input-manager: 161/161** (0 fallbacks) |
-| **P8** fling instrument-first (reported, non-gating) | **INSTRUMENT-UNRESOLVED** | `|uia-A/uia-B − 1|` = 0 / 0.014 / 0.044 / **0.41** on the 4 informative cells — two identical-code arms diverge 41 % at 400/0.5 (uia-A 0.509 vs uia-B 0.361) → **no arm verdict issued** (confirms 3N-H3: the metric does not reproduce itself). Step exited 0. |
+| **P8** fling instrument-first (reported, non-gating) | **INSTRUMENT-UNRESOLVED (arms mislabelled — 3N1-H1)** | `|uia-A/uia-B − 1|` = 0 / 0.014 / 0.044 / **0.41** on the 4 informative cells — same-code arms diverge 41 % at 400/0.5 (0.509 vs 0.361; permutation p = 0.19) → **no arm verdict issued**. Step exited 0. **Correction (3N1-H1): the `ON-uia-A`/`ON-uia-B` control arms actually ran `input-manager` — after the 3n.1 flip an unset env resolved to input-manager and the fling harness DELETED it; run 2 contains NO UiAutomation fling arm. The instrument verdict (same-code arms diverging) survives; the arm labels do NOT. Fixed in 3n.2 (the harness now pins `default`).** |
 | **P9** availability + fallback | **PASS** | input-manager resolved 161/161 with **no `hidden_api_policy` write**; forced-fallback device case: `strategy=="unavailable"`, `fellBackTo=="uia-async"`, tap still navigated, reset → input-manager |
 | **P10** screen-graph | **PASS** | job green; **100/100 on all 7 configs** (B1/B2/O1/O2/O3/O4/O5); invariants OK (0 duplicate, 0 multi-destination); **skippedNoIdHash 0** |
 
-**Promotion acceptance = P0–P7 + P9 + P10 all green → MET.** P8 is reported, not gating.
+**Promotion acceptance (P0–P7 + P9 + P10): MET on substance.** P2 fails its
+pre-registered inequality by 1 ms (parity in practice, planner-accepted as a note, not a
+PASS — 3N1-H2); every other gate is green on substance. P8 is reported, not gating, and
+its arm labels are void (3N1-H1).
 
 ### Verb table vs OFF (with CIs) and vs run 34853156073 (p50/p95 ms)
 
@@ -492,18 +510,30 @@ I did NOT re-run (planner decides).
 
 The ON-uiautomation control (tap 86) confirms within-run that input-manager (54) is far
 faster than the current default UiAutomation path — the comparison run 1 could not make
-(3N-H4). input-manager is at parity with the proprietary tap (Δ+1, CI includes 0) and
-beats it on swipe (−41) and pinch (−35), each with a bootstrap CI clear of the measured
-floor. Values reproduce run 34853156073 within a few ms.
+(3N-H4). input-manager is a **1 ms miss** vs the proprietary tap (Δ +1; the pre-registered
+inequality fails by 1 ms — planner-accepted parity, 3N1-H2) and beats it on swipe (−41)
+and pinch (−35), each with a bootstrap CI clear of the measured floor. **The
+`ON-uiautomation` control itself regressed vs reference run 34813849446 at that run's
+floors (3N1-M6): gesture-tap 78→86 (+8, floor 1), gesture-swipe 292→306 (+14, floor 4),
+await-screen-idle 294→304 (+10, floor 0) — a property of the 3m/3m.1 base, not of 3n.1,
+which also inflates the P6 margin.** Values reproduce run 34853156073 within a few ms on
+every gated verb **except the headline** `tap+describe(settle:false)` (400→372, a 28 ms
+move on a row whose within-run floor is 78 — 3N1-M9).
 
 ### Landing / fallback / strategy-echo counts (denominators)
 
 - First-attempt landing: OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60,
   ON-scrcpy 60/60, OFF-2 40/40 — **100 % every block**; oracle self-test passed on every
   block.
-- **injectStrategyReported** (per-RPC count over the block, P7): ON-input-manager
-  **input-manager: 161/161** (every measured tap/swipe/gesture ran the reflective pipe,
-  0 `unavailable` fallbacks). ON-uiautomation ran `default` (the Kotlin DEFAULT control).
+- **injectStrategyReported** (P7): ON-input-manager **input-manager: 161/161**,
+  ON-uiautomation **default: 161/161**, from the on-device `InjectStrategyCounter` (one
+  record per `inject`/`injectTaps` call). **161 is the PROCESS-WIDE injection count for
+  the block — measured gesture RPCs + warmups + oracle self-test + locate/restore taps —
+  identical across the two ON blocks (3N1-M2); the 100 measured gesture RPCs (5 verbs ×
+  20) are a subset.** `161/161` therefore proves every injection this process made ran the
+  block's strategy — stronger than P7's per-reply ask, but not checkable against a
+  published measured-RPC denominator. 0 `unavailable` fallbacks on any block. ON-scrcpy
+  recorded 0 Kotlin injections, confirming it ran entirely on the scrcpy channel.
 
 ### Fling A/B instrument verdict (P8 — reported, non-gating)
 
@@ -519,12 +549,21 @@ repair is ticket 3o.
 |---|---|---|---|
 | success (B1/B2/O1/O2/O3/O4/O5) | 100/100 all | 100/97/99/100/99/98/98 | **100/100 all** |
 | skippedNoIdHash | 0 | 2 | **0** |
-| tokens o200k p50 (O2) | 54 | 54 | **54** |
+| tokens o200k p50 (B1/B2/O1/O2/O3/O4/O5) | – | – | **657 / 651 / 179 / 54 / 627 / 22 / 22** |
+| H1 / H2 / H3 | – | H1 0.214× | **H1 0.275× PASS · H2 0 FAIL / same-screen n=50 1 PASS · H3 0.035× PASS** |
+| H4 paired-cluster Δ (vs both baselines) | – | – | **every Δ +0 pp [0, 0]** |
+| O5 one-step routed | – | – | **60/60, hash-mismatch 0** |
+| store (Settings nodes/edges) | – | – | **10 nodes / 9 edges, three stores** |
 | invariants | OK | OK | OK (0 dup, 0 multi-dest) |
 
 Run 2's screen-graph is back at the reference (100/100 everywhere, skippedNoIdHash 0) —
-better than run 1. The screen-graph job runs with no strategy env, so 3n's code is inert
-on it; nothing here is attributable to 3n.
+better than run 1. **Correction (3N1-H3): the screen-graph job does NOT run "with no
+strategy env" — `bench-screen-graph.ts` invokes the `gesture-tap` tool, which routes
+through `openServerTap → injectOpt()`, and it sets no `ARGENT_OPEN_INJECT_STRATEGY`, so
+after the 3n.1 flip the O1–O5 open configs injected through `input-manager`. The graph is
+100/100 WITH the flipped default — the only place in the run where input-manager runs
+across 500 open task-runs; the earlier "3n's code is inert on it" claim is withdrawn.**
+34840929610's `skippedNoIdHash` is still unrecorded — no trend line may name it.
 
 ### Harness defect (why the job is red) and STOP
 

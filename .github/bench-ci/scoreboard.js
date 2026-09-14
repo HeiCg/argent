@@ -243,11 +243,13 @@ if (onIm && off1Blk && off2Blk) {
   }
   L.push("");
 
-  // Explicit P2–P6 PASS/FAIL/N/A — CI-based non-inferiority (review 3N-H5): the gate
-  // PASSES unless the bootstrap CI ESTABLISHES input-manager is more than the measured
-  // floor slower than the proprietary bound (parity or win → PASS; a distinguishable
-  // regression beyond floor → FAIL). Falls back to the point p50 only when a block has
-  // no per-sample array.
+  // Explicit P2–P6 PASS/FAIL/N/A. Phase 3n.2 (review 3N1-H2 / Conditions item 3): the
+  // DECISION RULE is the PRE-REGISTERED POINT INEQUALITY `im p50 ≤ bound.p + floor`.
+  // The bootstrap 95% CI on the p50 difference (same comparator, 3N1-M1) is REPORTED
+  // for context — it is NEVER substituted for the gate. The retired `CI lo ≤ floor`
+  // rule was the wrong tail (an arm with Δ +292 and a wide CI passed) and, on the
+  // headline row's floor, could never fail. A planner's acceptance of a sub-floor miss
+  // (e.g. tap +1 ms) is a scoreboard NOTE, printed alongside — never rendered as PASS.
   const pline = (id, text, verdict) => L.push(`- **${id}** — ${text}: **${verdict}**`);
   const offBound = (vn, kind) => {
     const a = p50Of(off1Blk, vn), b = p50Of(off2Blk, vn);
@@ -260,9 +262,12 @@ if (onIm && off1Blk && off2Blk) {
     const bound = offBound(vn, kind);
     const floor = measuredFloor(vn);
     if (im == null || bound == null || floor == null) return "N/A";
+    const delta = im - bound.p;
     const ci = bootstrapDiffCI(samplesOf(onIm, vn), samplesOf(bound.blk, vn));
-    if (ci) return ci[0] <= floor ? `PASS (Δ ${im - bound.p}, CI lo ${ci[0]} ≤ floor ${floor})` : `FAIL (CI lo ${ci[0]} > floor ${floor})`;
-    return im <= bound.p + floor ? `PASS (Δ ${im - bound.p} ≤ floor ${floor}, no CI)` : `FAIL (+${im - bound.p - floor}, no CI)`;
+    const ciStr = ci ? `CI [${ci[0]}, ${ci[1]}]` : "no CI";
+    // The pre-registered point inequality is the gate; the CI is reported, not the gate.
+    if (im <= bound.p + floor) return `PASS (Δ ${delta} ≤ floor ${floor}, ${ciStr})`;
+    return `FAIL by ${im - bound.p - floor} (Δ ${delta} > floor ${floor}, ${ciStr})`;
   };
   pline("P2", "tap RPC non-inferior to max(OFF) + floor", niGate("gesture-tap", "max"));
   pline("P3", "swipe RPC non-inferior to min(OFF) + floor", niGate("gesture-swipe", "min"));
@@ -296,8 +301,11 @@ if (onIm && off1Blk && off2Blk) {
           continue;
         }
         const ci = bootstrapDiffCI(samplesOf(onIm, vn), samplesOf(onUia, vn));
-        const fail = ci ? ci[0] > f : im > u + f;
-        if (fail) bad.push(`${vn} +${im - u}`);
+        // Point inequality (3N1-H2): FAIL only if input-manager is more than the floor
+        // slower than the control; the CI is reported in the failure text, never used
+        // as the gate (the old `CI lo > floor` rule could never fail on a wide row).
+        const fail = im > u + f;
+        if (fail) bad.push(`${vn} +${im - u}${ci ? ` (CI [${ci[0]}, ${ci[1]}])` : ""}`);
       }
       pline("P6", "not slower than ON-uiautomation (control) by more than the floor on any gated verb", na && !bad.length ? "N/A (missing samples)" : bad.length ? `FAIL (${bad.join(", ")})` : "PASS");
     }
