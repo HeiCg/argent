@@ -43,7 +43,16 @@ const OUTCOME = {
 
 function makeOpenApi() {
   return {
-    setClipboard: vi.fn(async (text: string) => ({ success: true, text })),
+    setClipboard: vi.fn(
+      async (text: string): Promise<{ success: boolean; text: string; error?: string }> => ({
+        success: true,
+        text,
+      })
+    ),
+    // Default (screen-graph off): the typed-paste fallback uses the plain
+    // `typeText` — no outcome request leaves the host.
+    typeText: vi.fn(async (text: string) => ({ success: true, charsTyped: text.length })),
+    // Screen-graph on: the typed paste reports the before/after fingerprint delta.
     typeTextWithOutcome: vi.fn(async (text: string) => ({
       success: true,
       charsTyped: text.length,
@@ -89,7 +98,8 @@ describe("paste (android) → open-device-server (F20)", () => {
   });
 
   it("clipboard unavailable (API 35), typeable text: falls back to typing on the open server and returns the outcome", async () => {
-    flagEnabledMock = (n) => n === "open-device-server";
+    // The outcome-bearing typed paste is the screen-graph-recording path.
+    flagEnabledMock = (n) => n === "open-device-server" || n === "screen-graph";
     const openApi = makeOpenApi();
     // ClipboardManager silently dropped the background write.
     openApi.setClipboard.mockResolvedValue({ success: false, text: "" });

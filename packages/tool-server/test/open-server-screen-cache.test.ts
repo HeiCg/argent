@@ -33,7 +33,10 @@ function makeTool(openApi: unknown) {
 }
 
 beforeEach(() => {
-  flagEnabledMock = (n) => n === "open-device-server";
+  // The cache is consulted on both the plain and the outcome open paths; this
+  // suite drives it through the outcome path (tapWithOutcome), so declare
+  // `screen-graph` on. (The tool takes the plain `tap` path when it is off.)
+  flagEnabledMock = (n) => n === "open-device-server" || n === "screen-graph";
   __resetOpenServerScreenSizeCache();
   vi.clearAllMocks();
 });
@@ -58,6 +61,7 @@ describe("open-server screen-size cache (F21)", () => {
         newScreen: false,
         idleMs: 0,
       })),
+      getState: vi.fn(async () => ({ tree: [] })),
     };
     const tool = makeTool(openApi);
 
@@ -90,6 +94,7 @@ describe("open-server screen-size cache (F21)", () => {
         newScreen: false,
         idleMs: 0,
       })),
+      getState: vi.fn(async () => ({ tree: [] })),
     };
     const tool = makeTool(openApi);
 
