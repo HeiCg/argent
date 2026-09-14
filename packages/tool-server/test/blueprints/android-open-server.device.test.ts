@@ -1011,7 +1011,10 @@ suite("android open-device-server on-device", () => {
     // ---- (A) Idle describes: residual within tolerance, no fingerprints requested.
     await freshSettings();
     const idleResiduals: number[] = [];
-    for (let i = 0; i < 5; i++) {
+    // Phase 3n pre-registration: 20-sample median (was 5). Run 34840929610 failed the
+    // |captureMs − Σ(stages)| ≤ 10 gate by 1 ms on a 5-sample median — too few samples
+    // for a stable median. The 10 ms threshold is unchanged.
+    for (let i = 0; i < 20; i++) {
       const st = await api.getNestedState({});
       expect(st.timings).toBeTruthy();
       idleResiduals.push(st.captureMs - sumStages(st.timings!));
@@ -1051,7 +1054,8 @@ suite("android open-device-server on-device", () => {
     };
     const afterResiduals: number[] = [];
     let afterRootSource: string | undefined;
-    for (let i = 0; i < 5; i++) {
+    // Phase 3n pre-registration: 20-sample median (was 5); threshold unchanged.
+    for (let i = 0; i < 20; i++) {
       const c = await tapTarget();
       await api.tap(c.x, c.y);
       // settle:false shape — capture mid/just-after transition (waitTimeoutMs 0).
@@ -1107,7 +1111,7 @@ suite("android open-device-server on-device", () => {
         `rootSource=${afterRootSource}; after-tap traversals delta ${tAfter - tBefore} (==1); ` +
         `opt-out hash absent, opt-in hash present`
     );
-  }, 180_000);
+  }, 300_000);
 
   it("3j paste (setClipboard + KEYCODE_PASTE / typeText fallback, F20) — URL lands in an EditText", async () => {
     const KEYCODE_PASTE = 279;

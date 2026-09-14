@@ -235,3 +235,24 @@ For each of `uia-sync` / `uia-async` / `input-manager`
   undocumented-experimental pattern as its sibling `open-device-server-fast-inject` (absent
   from the public flags table); the user-facing docs update belongs to item 5 (scrcpy
   removal changes the user-facing surface).
+
+### Pre-registration addenda (run 1 — written before triggering the CI run)
+
+Base for run 1 is `open/main` @ 8315e396 (3m.1) merged into this branch (clean).
+
+- **(a) Device-test residual gate uses a 20-sample median.** The `3m` residual gate
+  `|captureMs − Σ(stages)| ≤ 10` keeps its 10 ms threshold but now medians over **20
+  samples** per phase (idle and after-tap), not 5 — run **34840929610** failed it by
+  **1 ms on a 5-sample median**, which is too few samples for a stable median. Code:
+  `android-open-server.device.test.ts` (both residual loops `i < 20`; test budget
+  raised to 300 s for the extra navigations).
+- **(b) scrcpy tap path is ~190 ms per-frame write-await — `uia-async` is its
+  like-for-like Kotlin counterpart.** On the previous base, scrcpy
+  `tap+describe(settle:false)` read **262 ms under `drift` pacing vs 449 ms under
+  `legacy`** — so ~190 ms of the scrcpy tap path is per-frame write awaiting, which the
+  default (`legacy`) pacing pays. This is why the phase-3n `uia-async` strategy (async
+  final UP, drain folded into the next read) is the like-for-like counterpart to the
+  scrcpy row, and why the promotion gate compares `tap+describe(settle:false)` against
+  the ON-scrcpy arm. `scrcpyPacing` is recorded per block (3m.1 pins the default arm to
+  `legacy`; `bench-open-vs-proprietary.ts` `scrcpyPacing` on the block JSON), so run 1's
+  scrcpy arm is `legacy` and no pacing is silent.
