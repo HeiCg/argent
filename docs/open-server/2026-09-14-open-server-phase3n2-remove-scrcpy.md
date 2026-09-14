@@ -91,3 +91,53 @@ updated (scrcpy gone, reference runs, next: 3o fling metric, Artemis items, phas
 Append `## Result (3n.2)` here: commits, Part A finding-by-finding, what was removed and
 kept, run id, Q1–Q7 as pre-registered, verb table vs 34870686468, device/SG outcome,
 docs touched, lockfile status. Do not fast-forward `open/main`; adversarial review first.
+
+## Result (3n.2)
+
+### Pre-registered acceptance gates Q1–Q7 (written BEFORE the run was triggered)
+
+> **Phase 3n.2 — pre-registered acceptance. Base: `open/main` @ 775ae6fc with 3n.1
+> merged, branch `feat/open-server-3n2-remove-scrcpy`. Blocks: `OFF-1,
+> ON-uiautomation, ON-input-manager, OFF-2` (no scrcpy arm). `suite=both`,
+> `sg_mode=matrix`, N = 20 per verb per block; FLING NOT run (the step was removed).
+> Every gate is graded against the PROPRIETARY OFF blocks at the measured
+> `|OFF-1 − OFF-2|` floor, with a 10 000-draw bootstrap 95 % CI on the p50 difference
+> reported for every Δ. The decision rule is the point inequality; the CI is reported,
+> not substituted for it (3N1-H2).**
+>
+> **Q1 — nothing changed vs 34870686468.** For `gesture-tap`, `gesture-swipe`,
+> `gesture-pinch` and `tap+describe(settle:false)`, `ON-input-manager`'s p50 is within
+> `max(this run's measured floor, 34870686468's measured floor)` of its 34870686468
+> value (tap 54, swipe 263, pinch 318, headline 372; 34870686468 floors tap 0 / swipe 2
+> / pinch 1 / headline 78). A verb outside that band is reported with its CI and blocks
+> the removal.
+> **Q2 — control unchanged.** `ON-uiautomation` present (else the run is void) and
+> within the same band of its 34870686468 values (tap 86 / swipe 306 / pinch 346 /
+> headline 480; await-screen-idle 304).
+> **Q3 — vs proprietary.** `ON-input-manager` still at-or-better than the OFF blocks on
+> swipe and pinch with the CI clear of the floor, and within 2 ms on tap, under the
+> P2–P5 point inequalities. Report each as PASS or `FAIL by <ms>` honestly (tap is
+> expected to be a ~1 ms miss — planner-accepted parity, not a clean PASS).
+> **Q4 — landing, fallbacks, echo.** First-attempt landing ≥ 95 % with the effect
+> oracle on every block, oracle self-test passed, **0** `unavailable` fallbacks, and the
+> per-RPC counter reports `input-manager: n/n` on the input-manager block and
+> `default: n/n` on the control, with the measured-RPC denominator stated alongside the
+> process-wide one.
+> **Q5 — device suite green, including the repaired 3m.1 residual gate.** All 3n cases,
+> the P9 forced-fallback case (now on tap **and** swipe/gesture), and
+> `|captureMs − Σ(stages)| ≤ 10` on both phases at 20 samples, with the new `infoMs` /
+> `recycleMs` / `otherMs` stages emitted and the 20 per-sample residuals printed.
+> **Q6 — screen-graph green.** Job green, store invariants OK, success and tokens per
+> config with the H4 paired-cluster intervals, `skippedNoIdHash` reported alongside
+> 34813849446 (0) and 34870686468 (0).
+> **Q7 — nothing scrcpy remains.** No `@yume-chan/*` in any `package.json` or the CI-
+> regenerated lockfile, no `scrcpy` postinstall, no scrcpy source/test file, no scrcpy
+> step or block name in the workflow, and the bench refuses a `blocks` input naming a
+> scrcpy arm. `grep -ri scrcpy` over `packages/`, `.github/`, `docs/` (outside
+> `docs/open-server/`) returns only historical/removal notes.
+>
+> **Acceptance is Q1–Q7 all green.** A Q1/Q2 miss means the removal changed behaviour
+> and must be explained before merge. Fling stays OPEN pending ticket 3o.
+
+_Run id, the Q1–Q7 PASS/FAIL table, the verb table vs 34870686468, and the device /
+screen-graph outcomes are filled in below AFTER the single CI run completes._
