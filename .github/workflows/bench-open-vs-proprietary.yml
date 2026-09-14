@@ -392,36 +392,43 @@ jobs:
           FLING_N: "12"
           NODE_OPTIONS: "--max-old-space-size=2048"
         run: |
-          # pipefail so `node run-fling.js | tee` reports node's exit; a fling run
-          # failure must be caught by the `if …; else exit 1` below.
+          # pipefail so `node run-fling.js | tee` reports node's exit; an ON fling
+          # run failure must be caught by the `if …; else exit 1` below.
           set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
-          rm -f "$BENCH_OUT/pacing-trace.txt" || true
-          # Phase 3k.1 (3K-M6): ONE interleaved process runs every arm round-robin per
-          # cell — ON-uiautomation, ON-scrcpy (drift), ON-scrcpy-legacy (the byte-equal
-          # pre-3k default) and OFF (proprietary) — instead of four sequential 7-min
-          # blocks, so arm is no longer confounded with time. FLING_INCLUDE_OFF is set
-          # from PROP_EXECUTABLE. Plain threadtime logcat only — NOT
-          # InputDispatcher/InputReader VERBOSE (it perturbs injection and inflated ON
-          # latency ~10x in the first 3k run); the delivered MotionEvent duration + the
-          # device-side dumpsys-input eventTimes are measured in the isolated
-          # device-test 3k step. The host per-frame pacing trace is written by the
-          # backend to $BENCH_OUT/pacing-trace.txt (stdout is swallowed by the harness,
-          # 3K-H3) and catted into the fling log below.
-          if [ "${PROP_EXECUTABLE:-0}" = "1" ]; then export FLING_INCLUDE_OFF=1; else export FLING_INCLUDE_OFF=0; echo "OFF fling reference skipped (proprietary not executable)"; fi
-          adb -s emulator-5554 logcat -c || true
-          adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-fling.txt" 2>&1 &
-          FLING_LOGCAT_PID=$!
-          if FLING_CONFIG=INTERLEAVE FLING_N="$FLING_N" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-interleave.txt"; then FLING_RC=0; else FLING_RC=1; fi
-          kill "$FLING_LOGCAT_PID" 2>/dev/null || true
-          # Surface the host per-frame pacing trace (drift arm) into an artifact log.
-          if [ -f "$BENCH_OUT/pacing-trace.txt" ]; then
-            echo "########## HOST PACING TRACE (drift arm) ##########" | tee -a "$BENCH_OUT/fling-log-interleave.txt"
-            cat "$BENCH_OUT/pacing-trace.txt" | tee -a "$BENCH_OUT/fling-log-interleave.txt"
-          else
-            echo "::warning::no host pacing-trace.txt produced by the fling harness"
-          fi
-          if [ "$FLING_RC" != "0" ]; then exit 1; fi
+          # Phase 3k measurement (option i): capture logcat PER ARM for crash/ANR
+          # context. Plain threadtime only — NOT InputDispatcher/InputReader VERBOSE:
+          # verbose input logging perturbs injection and would alter the very fling
+          # scroll distances this A/B grades (and inflated ON latency ~10x in the first
+          # 3k run). The delivered MotionEvent-duration per arm is measured in the
+          # isolated device-test 3k step; the host per-frame pacing trace
+          # ([open-server-fast-inject] `pacing …`) is captured in each fling-log.
+          # Phase 3k: ON-scrcpy runs the drift-corrected pacing fix (after arm) and
+          # ON-scrcpy-legacy the pre-3k await-per-frame pacing (before arm) — both in
+          # THIS run so the pacing fix is a same-run before/after. The harness sets
+          # ARGENT_SCRCPY_PACING per config. OFF is the proprietary reference.
+          for cfg in ON-uiautomation ON-scrcpy ON-scrcpy-legacy OFF; do
+            echo "########## FLING $cfg ##########"
+            if [ "$cfg" = "OFF" ] && [ "${PROP_EXECUTABLE:-0}" != "1" ]; then
+              echo "skipping OFF fling reference (proprietary not executable)"; continue
+            fi
+            adb -s emulator-5554 logcat -c || true
+            adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-fling-$cfg.txt" 2>&1 &
+            FLING_LOGCAT_PID=$!
+            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then FLING_RC=0; else FLING_RC=1; fi
+            kill "$FLING_LOGCAT_PID" 2>/dev/null || true
+            if [ "$FLING_RC" != "0" ]; then
+              # OFF reference and the ON-scrcpy-legacy BEFORE arm are transparency,
+              # not gated — a failure there drops that arm with a warning. The gated
+              # arms (ON-uiautomation, ON-scrcpy drift) must succeed.
+              if [ "$cfg" = "OFF" ] || [ "$cfg" = "ON-scrcpy-legacy" ]; then
+                echo "::warning::$cfg fling arm failed — dropping (transparency arm, not gated)"
+              else
+                exit 1
+              fi
+            fi
+            sleep 3
+          done
           node .github/bench-ci/merge-fling.js
 
       # ---- (4) 3g stage-timing table is emitted inline by the bench (captured in
