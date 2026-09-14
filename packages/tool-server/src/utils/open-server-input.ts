@@ -8,6 +8,7 @@ import {
   openDeviceServerRef,
   type GesturePointerPath,
   type OpenDeviceServerApi,
+  type OpenInjectStrategy,
   type OpenServerActionOutcome,
   type OpenServerAwaitChangeResult,
   type OpenServerSelector,
@@ -26,6 +27,35 @@ import type { OpenServerElement } from "../tools/describe/platforms/android/open
 // Kept in sync with the host constants of the same name in `gesture-tap`.
 const TAP_HOLD_MS = 50;
 const MULTI_TAP_GAP_MS = 100;
+
+/**
+ * Phase 3n: the on-device injection strategy threaded onto every tap/swipe/gesture
+ * RPC. The `open-device-server-inject-strategy` flag documents the capability, but
+ * the boolean flag store cannot hold a value, so the active strategy is carried by
+ * the `ARGENT_OPEN_INJECT_STRATEGY` env var — the same shape as `ARGENT_SCRCPY_PACING`,
+ * so the bench flips it per block within one CI run. Unset / unknown → undefined =
+ * today's behaviour (a tap's async UP, a swipe/gesture's blocking UP), and the
+ * `inject` param is omitted so the on-device DEFAULT path is byte-for-byte unchanged.
+ */
+export function resolveInjectStrategy(): OpenInjectStrategy | undefined {
+  const v = process.env.ARGENT_OPEN_INJECT_STRATEGY;
+  if (v === "uia-sync" || v === "uia-async" || v === "input-manager") return v;
+  // Phase 3n.1 (run-1 promotion): the default injector is now `input-manager` — the
+  // host sends `inject:"input-manager"` on every gesture unless overridden, and the
+  // on-device server falls back to `uia-async` by itself on a hiddenapi block. The
+  // `default` (alias `uia`) sentinel selects the PRE-3n.1 Kotlin DEFAULT path — the
+  // host sends NO `inject`, so tap keeps its async UP and swipe/gesture their sync UP;
+  // it is what the `ON-uiautomation` control block (gate P0) runs. Any other value
+  // (unset included) is the new default.
+  if (v === "default" || v === "uia") return undefined;
+  return "input-manager";
+}
+
+/** Spread `{ inject }` only when a strategy is active, so DEFAULT RPCs are unchanged. */
+function injectOpt(): { inject?: OpenInjectStrategy } {
+  const inject = resolveInjectStrategy();
+  return inject ? { inject } : {};
+}
 
 /** 1/16 grid for the edge selector's bounds bucket (mirrors canonical.ts GRID). */
 const EDGE_BUCKET_GRID = 16;
@@ -216,6 +246,7 @@ export function openServerTap(
       clickCount,
       holdMs: TAP_HOLD_MS,
       ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+      ...injectOpt(),
     });
     // R1 (phase 3g): the on-device dispatcher rejected an injected event, so the
     // tap never landed. Throw so the caller fails this action and falls back to the
@@ -293,6 +324,7 @@ export function openServerTapWithOutcome(
         holdMs: TAP_HOLD_MS,
         ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
         ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+        ...injectOpt(),
       })
     );
     await recordOpenServerObservation(
@@ -329,7 +361,7 @@ export function openServerSwipe(
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
-    const res = await server.swipe(from.x, from.y, to.x, to.y, steps, holdEndMs);
+    const res = await server.swipe(from.x, from.y, to.x, to.y, steps, holdEndMs, injectOpt());
     if ((res as { dropped?: boolean }).dropped || res.success === false) {
       throw new Error("open-device-server swipe was dropped by the input dispatcher");
     }
@@ -348,7 +380,10 @@ export function openServerSwipeWithOutcome(
   holdEndMs?: number,
   idleTimeoutMs?: number
 ): Promise<OpenServerActionOutcome> {
-  const opts = idleTimeoutMs !== undefined ? { idleTimeoutMs } : undefined;
+  const opts = {
+    ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+    ...injectOpt(),
+  };
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
@@ -502,7 +537,7 @@ export function openServerGesture(
         return { x, y, tMs: pt.tMs };
       }),
     }));
-    const res = await server.gesture(pixelPointers);
+    const res = await server.gesture(pixelPointers, injectOpt());
     if ((res as { dropped?: boolean }).dropped || res.success === false) {
       throw new Error("open-device-server gesture was dropped by the input dispatcher");
     }

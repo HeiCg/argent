@@ -4,6 +4,7 @@ import android.app.Instrumentation
 import android.app.UiAutomation
 import android.view.accessibility.AccessibilityWindowInfo
 import com.argent.devicecontrol.TreeStore
+import com.argent.devicecontrol.input.InjectStrategyCounter
 import com.argent.devicecontrol.util.DisplayReader
 import org.json.JSONObject
 
@@ -34,6 +35,16 @@ class InfoHandler(
             // across two reads with no UI change).
             put("version", TreeStore.version)
             put("traversals", TreeStore.traversals)
+            // Phase 3n.1 P7: per-strategy injection counts over this block's process,
+            // so the bench reports `injectStrategyReported` as `input-manager: n/n`
+            // from every measured RPC, not one post-hoc probe (review 3N-M1). Absent
+            // when nothing was injected yet.
+            val counts = InjectStrategyCounter.snapshot()
+            if (counts.isNotEmpty()) {
+                val obj = JSONObject()
+                for ((k, v) in counts) obj.put(k, v)
+                put("injectStrategyCounts", obj)
+            }
         }
     }
 

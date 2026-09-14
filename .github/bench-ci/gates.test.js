@@ -86,6 +86,33 @@ function writeBlocks(out, blocks) {
   for (const b of blocks) fs.writeFileSync(path.join(out, `bench-block-${b.block.block}.json`), JSON.stringify(b));
 }
 
+// Phase 3n.1 fixture helpers: a verb with a per-sample array symmetric around p50
+// (median == p50 exactly), so the scoreboard's seeded bootstrap CI is deterministic.
+function mkVerb(verb, p50, over = {}) {
+  const s = [];
+  for (let i = -8; i <= 8; i++) s.push(p50 + i); // 17 samples, median == p50, ±8 spread
+  return { verb, latency: { p50, p95: p50 + 8 }, latencySamples: s, errors: 0, fallbacks: 0, ...over };
+}
+// A 3n.1 latency block with the four gated verbs. v = {tap, swipe, pinch, headline}.
+function block31(name, v, over = {}) {
+  const verbs = [mkVerb("gesture-tap", v.tap), mkVerb("gesture-swipe", v.swipe), mkVerb("gesture-pinch", v.pinch)];
+  if (v.headline != null) {
+    verbs.push(mkVerb(name.startsWith("OFF") ? "tap+describe" : "tap+describe(settle:false)", v.headline));
+  }
+  return block(name, { verbs, ...over });
+}
+// The five run-2 blocks with run-34853156073's measured p50s (input-manager, scrcpy,
+// OFF) plus a plausible ON-uiautomation control — reproduces the review's per-verb
+// table: tap parity, swipe win, pinch win, headline parity/win at floor 103.
+const RUN2 = (over = {}) => [
+  block31("OFF-1", { tap: 53, swipe: 307, pinch: 351, headline: 445 }),
+  block31("ON-uiautomation", { tap: 86, swipe: 291, pinch: 340, headline: 422 }),
+  block31("ON-input-manager", { tap: 55, swipe: 268, pinch: 323, headline: 400 }, over),
+  block31("ON-scrcpy", { tap: 52, swipe: 258, pinch: 307, headline: 340 }),
+  block31("OFF-2", { tap: 53, swipe: 300, pinch: 356, headline: 548 }),
+];
+const RUN2ENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-input-manager,ON-scrcpy,OFF-2" };
+
 const FOUR = () => [block("OFF-1"), block("ON-uiautomation"), block("ON-scrcpy"), block("OFF-2")];
 const ALLENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-scrcpy,OFF-2" };
 
@@ -375,20 +402,72 @@ test("merge-fling: missing the drift arm FIRES (hard requirement)", () => {
 
 /* --------------------------------- scoreboard ----------------------------- */
 
-test("scoreboard: F3 — a 1ms gap at a 0ms drift floor reads 'at parity', not a win", () => {
+test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap parity, swipe/pinch win) vs proprietary", () => {
   const out = freshOut();
-  // ON-scrcpy tap 51 vs OFF 52; OFF-1 == OFF-2 (0ms drift floor). Must say parity.
-  const bs = FOUR();
-  const setTap = (b, p50) => (b.block.verbs = [{ verb: "gesture-tap", latency: { p50, p95: p50 + 2 }, errors: 0, fallbacks: 0 }]);
-  setTap(bs[0], 52);
-  setTap(bs[1], 77);
-  setTap(bs[2], 51);
-  setTap(bs[3], 52);
-  writeBlocks(out, bs);
-  assert.strictEqual(run(MERGE_BLOCKS, out, ALLENV).code, 0);
+  writeBlocks(out, RUN2());
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /ON-scrcpy vs OFF on tap:.*at parity/);
+  // Measured floors (P1), never a constant ±2: tap |53−53|=0, swipe |307−300|=7,
+  // pinch |351−356|=5, headline |445−548|=103.
+  assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
+  assert.match(r.stdout, /gesture-swipe \| 291 \| 268 \| 307 \| 300 \| ±7 \|/);
+  assert.match(r.stdout, /gesture-pinch \| 340 \| 323 \| 351 \| 356 \| ±5 \|/);
+  // input-manager: tap parity (CI overlaps floor 0), swipe & pinch win vs proprietary.
+  assert.match(r.stdout, /\*\*P2\*\* — tap RPC non-inferior.*: \*\*PASS/);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*PASS/);
+  assert.match(r.stdout, /\*\*P4\*\* — pinch RPC non-inferior.*: \*\*PASS/);
+  // Headline ratio ≤ 1.15 vs each OFF (400/445, 400/548, 400/496.5) → P5 PASS.
+  assert.match(r.stdout, /\*\*P5\*\*.*: \*\*PASS/);
+});
+
+test("scoreboard: P1 — a verb with no OFF comparator floors as N/A, never ±2", () => {
+  const out = freshOut();
+  // Drop tap+describe from the OFF blocks so the headline row has no comparator.
+  const bs = RUN2();
+  for (const b of bs) if (b.block.block.startsWith("OFF")) b.block.verbs = b.block.verbs.filter((v) => !/tap\+describe/.test(v.verb));
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /tap\+describe\(settle:false\).*\*\*N\/A\*\*/);
+  assert.match(r.stdout, /\*\*P5\*\*.*: \*\*N\/A/);
+});
+
+test("merge-blocks: P0 — ON-input-manager without the ON-uiautomation control is VOID", () => {
+  const out = freshOut();
+  const bs = RUN2().filter((b) => b.block.block !== "ON-uiautomation");
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, { BENCH_BLOCKS: "OFF-1,ON-input-manager,ON-scrcpy,OFF-2" });
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /P0 VOID/);
+});
+
+test("scoreboard: 3n.1 gate FAILS when input-manager is distinguishably slower beyond the floor", () => {
+  const out = freshOut();
+  // input-manager swipe 340 vs OFF min 300, floor 7 → clearly slower beyond floor.
+  writeBlocks(out, RUN2({ verbs: [mkVerb("gesture-tap", 55), mkVerb("gesture-swipe", 340), mkVerb("gesture-pinch", 323), mkVerb("tap+describe(settle:false)", 400)] }));
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*FAIL/);
+});
+
+test("merge-fling: 3n.1 instrument-first mode is REPORTED, never gating (P8)", () => {
+  const out = freshOut();
+  const flingArm = (name, cells, extra = {}) =>
+    fs.writeFileSync(path.join(out, `fling-block-${name}.json`), JSON.stringify({ serial: "emulator-5554", N: 12, config: name, cells, ...extra }));
+  const cell = (durationMs, distance, median, iqr) => ({ durationMs, distance, n: 12, median, iqr });
+  // uia-A vs uia-B diverge wildly on an informative cell → INSTRUMENT-UNRESOLVED, exit 0.
+  flingArm("ON-uia-A", [cell(250, 0.3, 0.45, [0.4, 0.5])]);
+  flingArm("ON-uia-B", [cell(250, 0.3, 0.9, [0.85, 0.95])]);
+  flingArm("ON-input-manager", [cell(250, 0.3, 0.46, [0.4, 0.5])]);
+  flingArm("ON-scrcpy", [cell(250, 0.3, 0.3, [0.28, 0.32])], { pacing: "drift" });
+  flingArm("OFF", [cell(250, 0.3, 0.46, [0.44, 0.5])]);
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr); // NEVER gating (P8)
+  assert.match(r.stdout, /INSTRUMENT VERDICT: INSTRUMENT-UNRESOLVED/);
+  assert.match(r.stdout, /NEVER gating/);
 });
 
 test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", () => {

@@ -21,6 +21,7 @@ import com.argent.devicecontrol.handlers.SwipeHandler
 import com.argent.devicecontrol.handlers.TapHandler
 import com.argent.devicecontrol.handlers.TypeHandler
 import com.argent.devicecontrol.handlers.WaitHandler
+import com.argent.devicecontrol.input.InputManagerInjector
 import com.argent.devicecontrol.util.JsonRpc
 import org.json.JSONArray
 import org.json.JSONObject
@@ -110,12 +111,28 @@ class JsonRpcHandler(
         // honored only when the server was started with `-e benchDebug true`. Local
         // to this call (finding 14) — TCPServer reads it off the returned HandleResult.
         val padTo = if (benchDebug) params.optInt("_padTo", 0) else 0
+        // Phase 3n.1 P9 (benchDebug only): force the input-manager pipe to report
+        // UNAVAILABLE for this request so a test can exercise the `uia-async` fallback
+        // on a device where the hidden API is reachable. Off in production (benchDebug
+        // false), request-scoped (cleared in the finally below).
+        val forceInjectUnavail = benchDebug && params.optBoolean("_forceInjectUnavailable", false)
 
         Log.d(TAG, "method=$method id=$id")
 
         val bodyLine = try {
             val result: Any = when (method) {
-                "tap" -> runAction(params) { tapHandler.execute(params) }
+                "tap" -> runAction(params) {
+                    if (forceInjectUnavail) {
+                        InputManagerInjector.forceUnavailableForTest(
+                            "forced unavailable (benchDebug _forceInjectUnavailable)"
+                        )
+                    }
+                    try {
+                        tapHandler.execute(params)
+                    } finally {
+                        if (forceInjectUnavail) InputManagerInjector.forceUnavailableForTest(null)
+                    }
+                }
                 "longPress" -> runAction(params) { longPressHandler.execute(params) }
                 "swipe" -> runAction(params) { swipeHandler.execute(params) }
                 "gesture" -> runAction(params) { gestureHandler.execute(params) }

@@ -9,7 +9,20 @@ const fs = require("fs");
 const path = require("path");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
-const ALL = ["OFF-1", "ON-uiautomation", "ON-scrcpy", "OFF-2"];
+// Phase 3n: the block universe now includes the three Kotlin injection-strategy
+// arms alongside the legacy ON-uiautomation name (kept for backward compatibility
+// with older per-block JSONs / fixtures) and the ON-scrcpy control arm. Which of
+// these actually ran is driven by BENCH_BLOCKS (workflow) / present files; a
+// requested ON block that produced no file still fails loudly below.
+const ALL = [
+  "OFF-1",
+  "ON-uiautomation",
+  "ON-uia-sync",
+  "ON-uia-async",
+  "ON-input-manager",
+  "ON-scrcpy",
+  "OFF-2",
+];
 
 const files = {};
 for (const n of ALL) {
@@ -28,6 +41,17 @@ const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
 const missingOn = requested.filter((n) => n.startsWith("ON") && ALL.includes(n) && !files[n]);
 if (missingOn.length) {
   throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
+}
+
+// P0 (phase 3n.1): the ON-uiautomation control arm is mandatory whenever the
+// input-manager candidate ran — without the current default as a same-run control,
+// no "no regression of the default" (P6) or default-path claim is possible. A 3n.1
+// run with ON-input-manager but no ON-uiautomation is VOID.
+if (files["ON-input-manager"] && !files["ON-uiautomation"]) {
+  throw new Error(
+    "P0 VOID: ON-input-manager ran but the ON-uiautomation control block is absent — " +
+      "the run cannot grade the promotion candidate against the current default (P6)."
+  );
 }
 
 const blocks = present.map((n) => files[n].block);
@@ -190,9 +214,13 @@ const jaccard = (a, b) => {
   return uni === 0 ? 1 : Number((inter / uni).toFixed(3));
 };
 let fidelity = null;
-if (files["OFF-1"] && files["ON-uiautomation"]) {
+// The describe tree is identical for every ON block (the injection strategy only
+// changes touch injection), so compare OFF-1 against the first ON block present —
+// ON-uiautomation when it ran, otherwise whichever strategy arm did (phase 3n).
+const firstOnName = present.find((n) => n.startsWith("ON"));
+if (files["OFF-1"] && firstOnName) {
   const off1 = files["OFF-1"].block;
-  const on = files["ON-uiautomation"].block;
+  const on = files[firstOnName].block;
   fidelity = {
     off1_vs_on_jaccard: jaccard(off1.fidelitySet, on.fidelitySet),
     onlyOff: off1.fidelitySet.filter((x) => !on.fidelitySet.includes(x)),

@@ -66,6 +66,57 @@ const blocks = merged.blocks || [];
 const verbNames = [];
 for (const b of blocks) for (const v of b.verbs || []) if (!verbNames.includes(v.verb)) verbNames.push(v.verb);
 
+// Phase 3n.1 P1/P3/H5 helpers: measured drift floor (never a constant), per-sample
+// arrays, and a seeded 10 000-draw bootstrap 95% CI on the p50 difference.
+const verbOf = (b, vn) => b && (b.verbs || []).find((x) => x.verb === vn);
+const p50Of = (b, vn) => {
+  const v = verbOf(b, vn);
+  return v ? v.latency.p50 : null;
+};
+const samplesOf = (b, vn) => {
+  const v = verbOf(b, vn);
+  return v && Array.isArray(v.latencySamples) ? v.latencySamples : null;
+};
+const medianOf = (arr) => {
+  if (!arr || !arr.length) return NaN;
+  const s = arr.slice().sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+function mulberry32(seed) {
+  return function () {
+    let t = (seed += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// 95% CI on p50(a) − p50(b) by paired-independent bootstrap resampling, seeded so the
+// scoreboard is deterministic across re-renders. Returns [lo, hi] or null if a verb
+// has no per-sample array (pre-3n.1 blocks).
+function bootstrapDiffCI(aS, bS, B = 10000, seed = 0x3e1f005) {
+  if (!aS || !bS || aS.length < 2 || bS.length < 2) return null;
+  const rnd = mulberry32(seed);
+  const diffs = new Array(B);
+  const ra = new Array(aS.length);
+  const rb = new Array(bS.length);
+  for (let i = 0; i < B; i++) {
+    for (let j = 0; j < aS.length; j++) ra[j] = aS[(rnd() * aS.length) | 0];
+    for (let j = 0; j < bS.length; j++) rb[j] = bS[(rnd() * bS.length) | 0];
+    diffs[i] = medianOf(ra) - medianOf(rb);
+  }
+  diffs.sort((a, b) => a - b);
+  return [Number(diffs[(0.025 * B) | 0].toFixed(1)), Number(diffs[(0.975 * B) | 0].toFixed(1))];
+}
+// P1: the measured OFF↔OFF drift floor on a verb — |OFF-1 p50 − OFF-2 p50|, NEVER a
+// constant. null (→ rendered N/A) when either OFF block lacks the verb.
+const off1Blk = blocks.find((b) => b.block === "OFF-1");
+const off2Blk = blocks.find((b) => b.block === "OFF-2");
+function measuredFloor(vn) {
+  const a = p50Of(off1Blk, vn), b = p50Of(off2Blk, vn);
+  return a != null && b != null ? Math.abs(a - b) : null;
+}
+
 L.push("### Verb latency p50 / p95 (ms)");
 L.push("");
 L.push("| verb | " + blocks.map((b) => b.block).join(" | ") + " |");
@@ -134,31 +185,129 @@ if (off1 && off2) {
   L.push("");
 }
 
-// ON-scrcpy tap vs OFF/ON-uia — judged AT THE DRIFT FLOOR (review F3): a 1 ms gap on
-// a 0 ms OFF-1-to-OFF-2 floor is PARITY, not a win. gesture-tap is also NOT
-// like-for-like (scrcpy defers the input drain to the next read) — the headline
-// like-for-like tap row is tap+describe(settle:false).
+// Phase 3n.1 promotion gates P2–P6 — `ON-input-manager` graded against the PROPRIETARY
+// OFF blocks (never against ON-scrcpy — review 3N-H1/H6) at the MEASURED drift floor
+// (P1: |OFF-1 − OFF-2| per verb, never a constant), each Δ carrying a 10 000-draw
+// bootstrap 95% CI on the p50 difference (3N-H5). ON-uiautomation is the control (P6),
+// ON-scrcpy is shown for context only.
 const onUia = blocks.find((b) => b.block === "ON-uiautomation");
+const onIm = blocks.find((b) => b.block === "ON-input-manager");
 const onScr = blocks.find((b) => b.block === "ON-scrcpy");
-const off2b = blocks.find((b) => b.block === "OFF-2");
-const tapP50 = (b) => b && (b.verbs || []).find((x) => x.verb === "gesture-tap")?.latency.p50;
-if (onScr) {
-  const s = tapP50(onScr), u = tapP50(onUia), o = tapP50(off1), o2 = tapP50(off2b);
-  // Noise floor = the OFF-1 vs OFF-2 gesture-tap p50 drift (same backend, two blocks),
-  // with a 2 ms minimum. A difference within the floor is parity.
-  const floor = o != null && o2 != null ? Math.max(2, Math.abs(o - o2)) : 2;
-  const verdict = (a, b2) => {
-    if (a == null || b2 == null) return "n/a";
-    const d = a - b2;
-    if (Math.abs(d) <= floor) return `at parity (Δ${d}ms within ±${floor}ms drift floor)`;
-    return d < 0 ? `faster by ${-d}ms (clears floor)` : `slower by ${d}ms (clears floor)`;
+if (onIm && off1Blk && off2Blk) {
+  // comparator verb name in the OFF blocks (tap+describe(settle:false) → tap+describe).
+  const offVerb = (vn) => (vn === "tap+describe(settle:false)" ? "tap+describe" : vn);
+  const pooledOff = (vn) => {
+    const a = p50Of(off1Blk, offVerb(vn)), b = p50Of(off2Blk, offVerb(vn));
+    return a != null && b != null ? (a + b) / 2 : null;
   };
-  L.push("### tap verdict (gesture-tap p50) — judged at the drift floor");
+  const pooledOffSamples = (vn) => {
+    const a = samplesOf(off1Blk, offVerb(vn)), b = samplesOf(off2Blk, offVerb(vn));
+    return a && b ? a.concat(b) : null;
+  };
+  const ciVerdict = (delta, ci, floor) => {
+    if (floor == null) return "N/A (no OFF comparator)";
+    if (!ci) return delta < -floor ? "win (no CI)" : delta > floor ? "loss (no CI)" : "parity (no CI)";
+    if (ci[1] < -floor) return `win (CI [${ci[0]},${ci[1]}] < −floor)`;
+    if (ci[0] > floor) return `loss (CI [${ci[0]},${ci[1]}] > +floor)`;
+    return `parity (CI [${ci[0]},${ci[1]}] overlaps ±${floor})`;
+  };
+
+  L.push("### phase 3n.1 — promotion gates P2–P6 (ON-input-manager vs PROPRIETARY, measured floor + bootstrap CI)");
   L.push("");
-  L.push(`- ON-scrcpy: **${s ?? "-"}ms** · ON-uiautomation: ${u ?? "-"}ms · OFF-1: ${o ?? "-"}ms · OFF-2: ${o2 ?? "-"}ms (floor ±${floor}ms)`);
-  L.push(`- ON-scrcpy vs OFF on tap: **${verdict(s, o)}**`);
-  L.push(`- ON-scrcpy vs ON-uiautomation on tap: **${verdict(s, u)}**`);
-  L.push(`- NOTE: gesture-tap is NOT like-for-like (scrcpy defers the input drain); the headline like-for-like tap row is tap+describe(settle:false).`);
+  L.push("| verb | ON-uiautomation | ON-input-manager | OFF-1 | OFF-2 | floor | Δ(im−pooledOFF) | 95% CI | reading |");
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  const gatedVerbs = ["gesture-tap", "gesture-swipe", "gesture-pinch", "tap+describe(settle:false)"].filter((vn) =>
+    verbNames.includes(vn)
+  );
+  for (const vn of gatedVerbs) {
+    const imP = p50Of(onIm, vn);
+    const po = pooledOff(vn);
+    const floor = measuredFloor(offVerb(vn));
+    const delta = imP != null && po != null ? Number((imP - po).toFixed(1)) : null;
+    const ci = bootstrapDiffCI(samplesOf(onIm, vn), pooledOffSamples(vn));
+    L.push(
+      "| " +
+        [
+          vn,
+          p50Of(onUia, vn) ?? "-",
+          imP ?? "-",
+          p50Of(off1Blk, offVerb(vn)) ?? "-",
+          p50Of(off2Blk, offVerb(vn)) ?? "-",
+          floor == null ? "**N/A**" : `±${floor}`,
+          delta == null ? "-" : delta,
+          ci ? `[${ci[0]}, ${ci[1]}]` : "no samples",
+          delta == null ? "-" : ciVerdict(delta, ci, floor),
+        ].join(" | ") +
+        " |"
+    );
+  }
+  L.push("");
+
+  // Explicit P2–P6 PASS/FAIL/N/A — CI-based non-inferiority (review 3N-H5): the gate
+  // PASSES unless the bootstrap CI ESTABLISHES input-manager is more than the measured
+  // floor slower than the proprietary bound (parity or win → PASS; a distinguishable
+  // regression beyond floor → FAIL). Falls back to the point p50 only when a block has
+  // no per-sample array.
+  const pline = (id, text, verdict) => L.push(`- **${id}** — ${text}: **${verdict}**`);
+  const offBound = (vn, kind) => {
+    const a = p50Of(off1Blk, vn), b = p50Of(off2Blk, vn);
+    if (a == null || b == null) return null;
+    const useA = kind === "max" ? a >= b : a <= b;
+    return { blk: useA ? off1Blk : off2Blk, p: useA ? a : b };
+  };
+  const niGate = (vn, kind) => {
+    const im = p50Of(onIm, vn);
+    const bound = offBound(vn, kind);
+    const floor = measuredFloor(vn);
+    if (im == null || bound == null || floor == null) return "N/A";
+    const ci = bootstrapDiffCI(samplesOf(onIm, vn), samplesOf(bound.blk, vn));
+    if (ci) return ci[0] <= floor ? `PASS (Δ ${im - bound.p}, CI lo ${ci[0]} ≤ floor ${floor})` : `FAIL (CI lo ${ci[0]} > floor ${floor})`;
+    return im <= bound.p + floor ? `PASS (Δ ${im - bound.p} ≤ floor ${floor}, no CI)` : `FAIL (+${im - bound.p - floor}, no CI)`;
+  };
+  pline("P2", "tap RPC non-inferior to max(OFF) + floor", niGate("gesture-tap", "max"));
+  pline("P3", "swipe RPC non-inferior to min(OFF) + floor", niGate("gesture-swipe", "min"));
+  pline("P4", "pinch RPC non-inferior to min(OFF) + floor", niGate("gesture-pinch", "min"));
+  // P5: headline ratio ≤ 1.15 vs each OFF-1, OFF-2, pooled.
+  {
+    const im = p50Of(onIm, "tap+describe(settle:false)");
+    const o1 = p50Of(off1Blk, "tap+describe"), o2 = p50Of(off2Blk, "tap+describe");
+    const po = o1 != null && o2 != null ? (o1 + o2) / 2 : null;
+    const ratios = [o1, o2, po].map((d) => (im != null && d != null && d > 0 ? im / d : null));
+    const ok = ratios.every((r) => r != null && r <= 1.15);
+    const anyNa = ratios.some((r) => r == null);
+    pline(
+      "P5",
+      `headline tap+describe(settle:false) ÷ OFF tap+describe ≤ 1.15 vs each OFF-1/OFF-2/pooled (${ratios.map((r) => (r == null ? "-" : r.toFixed(2))).join(" / ")})`,
+      anyNa ? "N/A" : ok ? "PASS" : "FAIL"
+    );
+  }
+  // P6: input-manager not slower than the ON-uiautomation control by more than the
+  // floor on any gated verb (CI-based, same non-inferiority rule).
+  {
+    if (!onUia) {
+      pline("P6", "not slower than ON-uiautomation (control) by more than the floor on any gated verb", "N/A");
+    } else {
+      const bad = [];
+      let na = false;
+      for (const vn of gatedVerbs) {
+        const im = p50Of(onIm, vn), u = p50Of(onUia, vn), f = measuredFloor(offVerb(vn));
+        if (im == null || u == null || f == null) {
+          na = true;
+          continue;
+        }
+        const ci = bootstrapDiffCI(samplesOf(onIm, vn), samplesOf(onUia, vn));
+        const fail = ci ? ci[0] > f : im > u + f;
+        if (fail) bad.push(`${vn} +${im - u}`);
+      }
+      pline("P6", "not slower than ON-uiautomation (control) by more than the floor on any gated verb", na && !bad.length ? "N/A (missing samples)" : bad.length ? `FAIL (${bad.join(", ")})` : "PASS");
+    }
+  }
+  // P7 fallback count from the block's echo.
+  if (onIm.injectStrategyReported) {
+    L.push(`- **P7 echo** — ON-input-manager \`injectStrategyReported\`: ${onIm.injectStrategyReported}`);
+  }
+  L.push("");
+  L.push("_Gates are graded vs the proprietary OFF blocks at the measured floor (P1); the promotion decision (P0–P7 + P9 + P10 green) is the planner's, from these numbers._");
   L.push("");
 }
 

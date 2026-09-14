@@ -29,6 +29,154 @@ const readOpt = (n) => {
     return null;
   }
 };
+
+// Phase 3n.1 P8 (reported, NEVER gating). When the fling job ran the instrument A/B
+// arms (ON-uia-A / ON-uia-B, two same-code arms interleaved per sample), grade in
+// instrument-first mode: bound the metric's own reproducibility before comparing any
+// real arm, and NEVER exit non-zero (fling cannot select between arms — the default
+// path fails it too). Legacy 3k.1 runs (no uia-A arm) keep the old blocking gate below.
+if (readOpt("ON-uia-A")) {
+  run3n1FlingMode();
+  process.exit(0);
+}
+
+function run3n1FlingMode() {
+  const FLOOR = 0.175;
+  const EPS = 0.001;
+  const TOL = 0.15;
+  const A = readOpt("ON-uia-A");
+  const B = readOpt("ON-uia-B");
+  const IM = readOpt("ON-input-manager");
+  const S = readOpt("ON-scrcpy");
+  const O = readOpt("OFF");
+  const k = (c) => `${c.durationMs}|${c.distance}`;
+  const cellsOf = (b) => (b ? Object.fromEntries(b.cells.map((c) => [k(c), c])) : {});
+  const mA = cellsOf(A), mB = cellsOf(B), mIM = cellsOf(IM), mS = cellsOf(S), mO = cellsOf(O);
+  const q25 = (c) => (c && Array.isArray(c.iqr) ? c.iqr[0] : NaN);
+  const powered = (c) => c && Number.isFinite(c.n) && c.n >= 10;
+  const above = (c) => Number.isFinite(q25(c)) && q25(c) > FLOOR + EPS;
+  const r3 = (n) => (Number.isFinite(n) ? Number(n.toFixed(3)) : n);
+  const ratio = (x, y) => (x && y && y.median > 0 ? r3(x.median / y.median) : NaN);
+  const cellList = (A ? A.cells : []).map((c) => ({ durationMs: c.durationMs, distance: c.distance, key: k(c) }));
+
+  // (1) Instrument control: |uia-A / uia-B − 1| per cell that is informative on EITHER
+  // reference (off OR uia-A above the floor, powered — review 3N-M9). If any such cell
+  // exceeds ±0.15 the metric has not been shown to reproduce itself → INSTRUMENT-UNRESOLVED.
+  const grid = [];
+  let unresolved = false;
+  let instrumentInformative = 0;
+  for (const c of cellList) {
+    const a = mA[c.key], b = mB[c.key], o = mO[c.key];
+    const inf = (above(o) && powered(o)) || (above(a) && powered(a));
+    const ab = a && b && b.median > 0 ? r3(a.median / b.median) : NaN;
+    const abDev = Number.isFinite(ab) ? r3(Math.abs(ab - 1)) : null;
+    if (inf && Number.isFinite(ab)) {
+      instrumentInformative++;
+      if (Math.abs(ab - 1) > TOL) unresolved = true;
+    }
+    grid.push({
+      durationMs: c.durationMs,
+      distance: c.distance,
+      informative: inf,
+      abRatio: ab,
+      abDev,
+      off: o ? { median: o.median, n: o.n, q25: r3(q25(o)) } : null,
+      uiaA: a ? { median: a.median, n: a.n } : null,
+      uiaB: b ? { median: b.median, n: b.n } : null,
+    });
+  }
+
+  // (2) Per-arm grading — only meaningful when the instrument A/B holds. Graded arms:
+  // input-manager and scrcpy, two-sided on arm/off (proprietary) with arm/uia reported.
+  // A cell is graded against whichever reference (off or uia-A) is above the floor.
+  const gradeArm = (mArm, label) => {
+    const cells = cellList.map((c) => {
+      const x = mArm[c.key], o = mO[c.key], u = mA[c.key];
+      const useOff = above(o) && powered(o);
+      const useUia = above(u) && powered(u);
+      const inf = useOff || useUia;
+      const rOff = ratio(x, o), rUia = ratio(x, u);
+      // Grade against the reference that is above the floor; when both are, use off.
+      const ref = useOff ? "off" : useUia ? "uia" : null;
+      const gr = ref === "off" ? rOff : ref === "uia" ? rUia : NaN;
+      const ok = inf && Number.isFinite(gr) && powered(x) ? Math.abs(gr - 1) <= TOL : null;
+      return {
+        durationMs: c.durationMs,
+        distance: c.distance,
+        armMedian: x ? x.median : null,
+        n: x ? x.n : null,
+        ratioOff: rOff,
+        ratioUia: rUia,
+        gradedAgainst: ref,
+        gradedRatio: Number.isFinite(gr) ? gr : null,
+        informative: inf,
+        ok,
+      };
+    });
+    const informative = cells.filter((c) => c.informative && c.ok !== null);
+    const out = informative.filter((c) => c.ok === false);
+    let verdict;
+    if (unresolved) verdict = "INSTRUMENT-UNRESOLVED (no arm verdict)";
+    else if (informative.length === 0) verdict = "INCONCLUSIVE (0 informative cells)";
+    else verdict = `${out.length === 0 ? "PASS" : "FAIL"} (reported, non-gating; ${informative.length} informative, ${out.length} out)`;
+    return { arm: label, verdict, cells };
+  };
+
+  const armGrades = unresolved
+    ? []
+    : [gradeArm(mIM, "ON-input-manager"), gradeArm(mS, "ON-scrcpy")];
+
+  const instrumentVerdict = unresolved
+    ? `INSTRUMENT-UNRESOLVED (|uia-A/uia-B − 1| > ${TOL} on ≥1 informative cell; ${instrumentInformative} informative)`
+    : `INSTRUMENT-OK (|uia-A/uia-B − 1| ≤ ${TOL} on all ${instrumentInformative} informative cell(s))`;
+
+  const result = {
+    mode: "3n.1-instrument-first",
+    gating: false,
+    serial: A ? A.serial : null,
+    N: A ? A.N : null,
+    tolerance: TOL,
+    scrcpyPacing: S ? S.pacing || "drift" : null,
+    offReferencePresent: !!O,
+    instrument: { verdict: instrumentVerdict, unresolved, informativeCells: instrumentInformative, grid },
+    arms: armGrades,
+    generatedAt: new Date().toISOString(),
+  };
+  const outPath = path.join(OUT, `fling-ab-${Date.now()}.json`);
+  fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
+
+  // Print
+  const iqrOf = (c) => (c && c.iqr ? `[${c.iqr[0]},${c.iqr[1]}]` : "[-]");
+  console.log("\n=== FLING A/B (phase 3n.1 P8 — INSTRUMENT FIRST, reported, NON-GATING) ===");
+  console.log("arms: ON-uia-A, ON-uia-B (same code), ON-input-manager, ON-scrcpy[drift], OFF (proprietary)");
+  console.log(`\n=== INSTRUMENT CONTROL (uia-A / uia-B) ===`);
+  for (const g of grid) {
+    console.log(
+      `  d=${g.durationMs}ms dist=${g.distance}: uia-A ${g.uiaA && g.uiaA.median} uia-B ${g.uiaB && g.uiaB.median} ` +
+        `→ A/B ${g.abRatio} dev ${g.abDev}` +
+        (g.informative ? "  [informative]" : "  [non-informative]")
+    );
+  }
+  console.log(`INSTRUMENT VERDICT: ${instrumentVerdict}`);
+  if (unresolved) {
+    console.log("\nInstrument unresolved → NO arm verdict is issued for any arm (P8, 3N-H3).");
+  } else {
+    for (const g of armGrades) {
+      console.log(`\n=== ARM ${g.arm} (two-sided on arm/off; arm/uia reported) ===`);
+      for (const c of g.cells) {
+        console.log(
+          `  d=${c.durationMs}ms dist=${c.distance}: ${g.arm}=${c.armMedian} (n=${c.n}) ` +
+            `arm/off ${c.ratioOff} arm/uia ${c.ratioUia}` +
+            (c.informative ? ` vs ${c.gradedAgainst} → ${c.ok ? "OK" : c.ok === false ? "OUT" : "n/a"}` : "  [non-informative]")
+        );
+      }
+      console.log(`  ${g.arm} VERDICT: ${g.verdict}`);
+    }
+  }
+  console.log(`\nFLING_AB_JSON=${outPath}`);
+  console.log("FLING (3n.1) is REPORTED, NEVER gating — this step always exits 0 (P8).");
+}
+
 const uia = readOpt("ON-uiautomation");
 const scr = readOpt("ON-scrcpy");
 if (!uia || !scr) {
@@ -247,6 +395,77 @@ for (const c of perCell) {
 }
 console.log(`FLING VERDICT: ${verdict}`);
 console.log("FLING_AB_JSON=" + outPath);
+
+// Phase 3n: the input-manager injection arm, graded under the SAME pre-registered
+// rule but two-sided on input-manager/uia AND input-manager/off (uia|off are the
+// references; the bimodality/power exclusions key on them, never on input-manager).
+// The other two 3n strategies (uia-sync / uia-async) inject the byte-identical
+// momentum-swipe timeline as the ON-uiautomation arm — their fling result IS the
+// uia arm's, so only input-manager is measured here. This section is INFORMATIONAL
+// on the measurement run (it never changes this job's exit code); the pre-registered
+// blocking condition — input-manager fling PASS on every informative cell — is
+// applied when a strategy is promoted to default (3n ticket §3 / §5).
+const im = readOpt("ON-input-manager");
+if (im) {
+  const IM = map(im);
+  const imGrid = uia.cells.map((c) => {
+    const k = key(c);
+    const u = U[k],
+      o = O[k],
+      x = IM[k];
+    const imOverUia = ratio(x, u);
+    const imOverOff = ratio(x, o);
+    const offPresent = !!o;
+    const reasons = [];
+    if (!(u && x && Number.isFinite(imOverUia))) reasons.push("missing arm / no im-uia ratio");
+    else {
+      if (refStraddlesFloor(u)) reasons.push(`uia reference q25=${q25(u)} at the ${SCROLL_FLOOR} floor`);
+      if (underpowered(u)) reasons.push(`uia n=${u && u.n} < 10`);
+      if (underpowered(x)) reasons.push(`input-manager n=${x && x.n} < 10`);
+      if (offPresent) {
+        if (!Number.isFinite(imOverOff)) reasons.push("no im-off ratio");
+        if (refStraddlesFloor(o)) reasons.push(`off reference q25=${q25(o)} at the ${SCROLL_FLOOR} floor`);
+        if (underpowered(o)) reasons.push(`off n=${o && o.n} < 10`);
+      }
+    }
+    const informative = reasons.length === 0;
+    const devUia = Number.isFinite(imOverUia) ? Number(Math.abs(imOverUia - 1).toFixed(3)) : null;
+    const devOff = offPresent && Number.isFinite(imOverOff) ? Number(Math.abs(imOverOff - 1).toFixed(3)) : null;
+    const withinUia = Number.isFinite(imOverUia) && Math.abs(imOverUia - 1) <= TOL;
+    const withinOff = offPresent ? Number.isFinite(imOverOff) && Math.abs(imOverOff - 1) <= TOL : true;
+    return {
+      durationMs: c.durationMs,
+      distance: c.distance,
+      imOverUia,
+      imOverOff: offPresent ? imOverOff : null,
+      devUia,
+      devOff,
+      informative,
+      ok: informative && withinUia && withinOff,
+      reasons,
+    };
+  });
+  const imInformative = imGrid.filter((g) => g.informative);
+  const imOffenders = imInformative.filter((g) => !g.ok);
+  const imNonInf = imGrid.length - imInformative.length;
+  let imVerdict;
+  if (imInformative.length === 0) {
+    imVerdict = `INCONCLUSIVE (${RULE.replace(/scrcpy/g, "input-manager")}, 0 informative cells; ${imNonInf} of ${imGrid.length} non-informative)`;
+  } else {
+    imVerdict = `${imOffenders.length === 0 ? "PASS" : "FAIL"} (${RULE.replace(/scrcpy/g, "input-manager")}, over ${imInformative.length} informative cell(s); ${imNonInf} of ${imGrid.length} non-informative)`;
+  }
+  console.log(`\n=== FLING PARITY (phase 3n input-manager arm; ${RULE.replace(/scrcpy/g, "input-manager")}) — INFORMATIONAL on this run ===`);
+  for (const g of imGrid) {
+    console.log(
+      `  d=${g.durationMs}ms dist=${g.distance}: input-manager/uia ${g.imOverUia} dev ${g.devUia}` +
+        (g.imOverOff !== null ? ` | input-manager/off ${g.imOverOff} dev ${g.devOff}` : "") +
+        (g.informative ? (g.ok ? "  OK" : "  OUT") : `  [non-informative: ${g.reasons.join("; ")}]`)
+    );
+  }
+  console.log(`INPUT-MANAGER FLING VERDICT (informational; blocking only at promotion): ${imVerdict}`);
+} else {
+  console.log("\n(no ON-input-manager fling arm this run — phase 3n input-manager fling section skipped)");
+}
 // BLOCKING: an informative cell out of tolerance fails the job. INCONCLUSIVE (zero
 // informative cells — every reference floored/underpowered, or an arm that lost its
 // samples) ALSO fails the job (3K1-M3): the run cannot certify fling parity when

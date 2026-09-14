@@ -33,6 +33,10 @@ import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
+// Phase 3n.1 P9: start the on-device server with benchDebug so the forced-fallback
+// case can flip `_forceInjectUnavailable` on a `tap`. Debug params are honored only
+// under benchDebug and only when explicitly sent, so this changes nothing else.
+if (ENABLED) process.env.ARGENT_OPEN_SERVER_BENCH_DEBUG = "1";
 const SETTINGS = "com.android.settings";
 const CHROME = "com.android.chrome";
 const LAUNCHER = "com.google.android.apps.nexuslauncher";
@@ -742,6 +746,218 @@ suite("android open-device-server on-device", () => {
     );
   }, 150_000);
 
+  // ── Phase 3n: one case per injection strategy ─────────────────────────────
+  // Each strategy (uia-sync / uia-async / input-manager) is threaded on the RPC's
+  // `inject` param and must produce the SAME observable outcomes as the default
+  // path: a tap navigates, a momentum swipe scrolls further than a momentum-free
+  // one, and a 2-pointer pinch zooms. input-manager degrades to uia-async when the
+  // device blocks the hidden API — the outcome is unchanged (the action still
+  // lands); we record which strategy actually ran from the response echo. A
+  // separate measurement-only case reads the device MotionEvent cadence per
+  // strategy from `dumpsys input` (label: 8-frame wire gesture, N).
+  const STRATEGIES = ["uia-sync", "uia-async", "input-manager"] as const;
+  for (const strategy of STRATEGIES) {
+    it(`3n-${strategy} — tap navigates, momentum swipe > momentum-free, pinch delivers 2 pointers`, async () => {
+      // (1) TAP NAVIGATES.
+      const info0 = await freshSettings();
+      const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+      const beforeTexts = textSet(before);
+      const clickables = before.filter(
+        (e) => e.clickable === true && e.bounds.y1 > info0.screenHeight * 0.12 && e.bounds.y2 < info0.screenHeight * 0.85
+      );
+      const inside = (p: { x: number; y: number }, e: Element): boolean =>
+        p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
+      const row =
+        before.find((e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))) ??
+        clickables.find((e) => label(e).length > 0);
+      if (!row) throw new Error(`3n-${strategy}: no labelled clickable row on Settings`);
+      const c = center(row);
+      const tapRes = (await api.tap(c.x, c.y, { inject: strategy })) as {
+        success: boolean;
+        strategy?: string;
+        injectError?: string;
+      };
+      const ranAs = tapRes.strategy ?? "(no echo)";
+      const unavailable = tapRes.strategy === "unavailable";
+      await sleep(1200);
+      await api.waitForIdle(3000);
+      const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+      const gained = [...afterTexts].filter((t) => !beforeTexts.has(t));
+      const lost = [...beforeTexts].filter((t) => !afterTexts.has(t));
+      expect(tapRes.success).toBe(true);
+      expect(gained.length + lost.length).toBeGreaterThan(0);
+
+      // (2) MOMENTUM SWIPE > MOMENTUM-FREE. Same anchor-displacement method as 3d.
+      const measure = async (hold: boolean): Promise<{ moved: number; offscreen: boolean }> => {
+        const info = await freshSettings();
+        const tree = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+        const labelled = tree.filter((e) => label(e).length > 0 && e.bounds.y2 > e.bounds.y1);
+        const target = info.screenHeight * 0.6;
+        const anchor = labelled.slice().sort((a, b) => Math.abs(a.bounds.y1 - target) - Math.abs(b.bounds.y1 - target))[0];
+        if (!anchor) throw new Error(`3n-${strategy}: no anchor row for swipe`);
+        const anchorLabel = label(anchor);
+        const beforeTop = anchor.bounds.y1;
+        const cx = Math.round(info.screenWidth / 2);
+        const y0 = Math.round(info.screenHeight * 0.7);
+        const y1 = Math.round(info.screenHeight * 0.4);
+        await api.swipe(cx, y0, cx, y1, 12, hold ? 120 : 0, { inject: strategy });
+        await sleep(1400);
+        await api.waitForIdle(3000);
+        const found = (await api.getAccessibilityTree({ maxElements: 200 })).tree.find((e) => label(e) === anchorLabel);
+        if (!found) return { moved: NaN, offscreen: true };
+        return { moved: beforeTop - found.bounds.y1, offscreen: false };
+      };
+      const def = await measure(false);
+      const held = await measure(true);
+      let swipeNote: string;
+      if (!def.offscreen && !held.offscreen) {
+        expect(def.moved).toBeGreaterThan(0);
+        expect(held.moved).toBeGreaterThan(0);
+        expect(held.moved).toBeLessThan(def.moved);
+        swipeNote = `fling ${def.moved}px > momentum-free ${held.moved}px`;
+      } else if (def.offscreen && !held.offscreen) {
+        expect(held.moved).toBeGreaterThan(0);
+        swipeNote = `fling scrolled anchor OFF-screen (>span); momentum-free ${held.moved}px on-screen`;
+      } else {
+        throw new Error(
+          `3n-${strategy}: swipe unmeasured (def offscreen=${def.offscreen}, held offscreen=${held.offscreen})`
+        );
+      }
+
+      // (3) PINCH DELIVERS 2 POINTERS. The RPC must succeed via this strategy; the
+      // visual zoom assertion runs only when headless Chrome actually rendered a
+      // zoomable page (readiness gate, as in 3f), else it is measurement-only.
+      const { ready } = await ensureChromeZoomable(
+        api,
+        serial,
+        "https://example.com",
+        /example|more information|illustrative|iana|documents/i
+      );
+      const info = await api.getInfo();
+      const cx = Math.round(info.screenWidth / 2);
+      const cy = Math.round(info.screenHeight * 0.4);
+      const frames = 12;
+      const lerp = (a: number, b: number, t: number): number => Math.round(a + (b - a) * t);
+      const nearSpan = Math.round(info.screenWidth * 0.05);
+      const farSpan = Math.round(info.screenWidth * 0.46);
+      const buildPinch = (from: number, to: number) =>
+        [0, 1].map((pi) => {
+          const dir = pi === 0 ? -1 : 1;
+          const points = [];
+          for (let f = 0; f < frames; f++) {
+            const t = f / (frames - 1);
+            points.push({ x: cx + dir * lerp(from, to, t), y: cy, tMs: f * 25 });
+          }
+          return { id: pi, points };
+        });
+      await api.gesture(buildPinch(farSpan, nearSpan), { inject: strategy });
+      await sleep(1000);
+      await api.waitForIdle(3000);
+      const pinchBefore = Buffer.from((await api.screenshot({ format: "png" })).data, "base64");
+      const pinchRes = (await api.gesture(buildPinch(nearSpan, farSpan), { inject: strategy })) as {
+        success: boolean;
+        strategy?: string;
+      };
+      expect(pinchRes.success).toBe(true);
+      await sleep(1200);
+      await api.waitForIdle(3000);
+      const pinchAfter = Buffer.from((await api.screenshot({ format: "png" })).data, "base64");
+      const ratio = pngDiffRatio(pinchBefore, pinchAfter);
+      let pinchNote: string;
+      if (ready) {
+        expect(ratio).toBeGreaterThan(0.02);
+        pinchNote = `zoom changed ${(ratio * 100).toFixed(1)}% of pixels`;
+      } else {
+        pinchNote = `Chrome not zoomable (measurement-only); pinch RPC success=${pinchRes.success}`;
+      }
+
+      record(
+        `3n-${strategy}`,
+        "PASS",
+        `ranAs=${ranAs}${unavailable ? " (input-manager UNAVAILABLE → uia-async fallback)" : ""}; ` +
+          `tap +${gained.length}/-${lost.length} labels; swipe ${swipeNote}; pinch ${pinchNote}`
+      );
+    }, 180_000);
+
+    it(`3n-${strategy} — dumpsys MotionEvent cadence (8-frame wire gesture, N) [measurement-only]`, async () => {
+      const info = await freshSettings();
+      const cx = Math.round(info.screenWidth / 2);
+      const y0 = Math.round(info.screenHeight * 0.7);
+      const y1 = Math.round(info.screenHeight * 0.4);
+      // A deterministic 8-frame single-pointer wire (DOWN + 6 MOVE + UP), 16 ms
+      // apart, injected via this strategy — so dumpsys reports its MOVE cadence.
+      const N_FRAMES = 8;
+      const points = [];
+      for (let f = 0; f < N_FRAMES; f++) {
+        const t = f / (N_FRAMES - 1);
+        points.push({ x: cx, y: Math.round(y0 + (y1 - y0) * t), tMs: f * 16 });
+      }
+      const res = (await api.gesture([{ id: 0, points }], { inject: strategy })) as {
+        success: boolean;
+        strategy?: string;
+      };
+      // Read the device-side MotionEvent times IMMEDIATELY (the RecentQueue is short).
+      let cadence: { source: string; n: number; spanMs: number | null; cadenceMs: number[] };
+      try {
+        const dump = await adbShell(serial, "dumpsys input");
+        cadence = dumpsysMotionEventTimes(dump);
+      } catch (e) {
+        cadence = { source: `dumpsys input unavailable: ${e instanceof Error ? e.message : String(e)}`, n: 0, spanMs: null, cadenceMs: [] };
+      }
+      // Measurement-only: never fails the enforced suite (parsing varies by image).
+      record(
+        `3n-${strategy}-cadence`,
+        "PASS",
+        `8-frame wire via ${res.strategy ?? "(no echo)"}; ${cadence.source}; N=${cadence.n}; ` +
+          `deliveredSpan=${cadence.spanMs ?? "unmeasured"}ms; MOVE cadence=[${cadence.cadenceMs.join(", ")}]ms`
+      );
+    }, 120_000);
+  }
+
+  it("3n.1 P9 — input-manager forced unavailable falls back to uia-async, outcome unchanged", async () => {
+    // Force the reflective pipe to report unavailable on THIS tap (benchDebug seam),
+    // even though the emulator resolves it, and prove the tap still lands via the
+    // automatic uia-async fallback — the fallback path has otherwise never run on a
+    // "blocked" device (review 3N-M11). Then a normal input-manager tap confirms the
+    // override was request-scoped (reset).
+    const info = await freshSettings();
+    const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+    const beforeTexts = textSet(before);
+    const clickables = before.filter(
+      (e) => e.clickable === true && e.bounds.y1 > info.screenHeight * 0.12 && e.bounds.y2 < info.screenHeight * 0.85
+    );
+    const inside = (p: { x: number; y: number }, e: Element): boolean =>
+      p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
+    const row =
+      before.find((e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))) ??
+      clickables.find((e) => label(e).length > 0);
+    if (!row) throw new Error("3n.1 P9: no labelled clickable row on Settings");
+    const c = center(row);
+    const forced = (await api.tap(c.x, c.y, { inject: "input-manager", _forceInjectUnavailable: true })) as {
+      success: boolean;
+      strategy?: string;
+      fellBackTo?: string;
+      injectError?: string;
+    };
+    expect(forced.success).toBe(true);
+    expect(forced.strategy).toBe("unavailable");
+    expect(forced.fellBackTo).toBe("uia-async");
+    await sleep(1200);
+    await api.waitForIdle(3000);
+    const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const changed = [...afterTexts].filter((t) => !beforeTexts.has(t)).length + [...beforeTexts].filter((t) => !afterTexts.has(t)).length;
+    expect(changed).toBeGreaterThan(0); // outcome unchanged: the fell-back tap still navigated
+    // Reset check: a normal input-manager tap (no force) reports input-manager again.
+    await freshSettings();
+    const normal = (await api.tap(c.x, c.y, { inject: "input-manager" })) as { success: boolean; strategy?: string };
+    expect(normal.strategy).toBe("input-manager");
+    record(
+      "3n.1 P9 forced-fallback",
+      "PASS",
+      `forced unavailable → strategy=${forced.strategy} fellBackTo=${forced.fellBackTo}; tap still navigated (+/-${changed} labels); reset → ${normal.strategy}`
+    );
+  }, 120_000);
+
   it("3g paste (typeText) — text lands in an EditText, read back via describe", async () => {
     await freshSettings();
     const tree = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
@@ -843,7 +1059,10 @@ suite("android open-device-server on-device", () => {
     // ---- (A) Idle describes: residual within tolerance, no fingerprints requested.
     await freshSettings();
     const idleResiduals: number[] = [];
-    for (let i = 0; i < 5; i++) {
+    // Phase 3n pre-registration: 20-sample median (was 5). Run 34840929610 failed the
+    // |captureMs − Σ(stages)| ≤ 10 gate by 1 ms on a 5-sample median — too few samples
+    // for a stable median. The 10 ms threshold is unchanged.
+    for (let i = 0; i < 20; i++) {
       const st = await api.getNestedState({});
       expect(st.timings).toBeTruthy();
       idleResiduals.push(st.captureMs - sumStages(st.timings!));
@@ -883,7 +1102,8 @@ suite("android open-device-server on-device", () => {
     };
     const afterResiduals: number[] = [];
     let afterRootSource: string | undefined;
-    for (let i = 0; i < 5; i++) {
+    // Phase 3n pre-registration: 20-sample median (was 5); threshold unchanged.
+    for (let i = 0; i < 20; i++) {
       const c = await tapTarget();
       await api.tap(c.x, c.y);
       // settle:false shape — capture mid/just-after transition (waitTimeoutMs 0).
@@ -939,7 +1159,7 @@ suite("android open-device-server on-device", () => {
         `rootSource=${afterRootSource}; after-tap traversals delta ${tAfter - tBefore} (==1); ` +
         `opt-out hash absent, opt-in hash present`
     );
-  }, 180_000);
+  }, 300_000);
 
   it("3j paste (setClipboard + KEYCODE_PASTE / typeText fallback, F20) — URL lands in an EditText", async () => {
     const KEYCODE_PASTE = 279;

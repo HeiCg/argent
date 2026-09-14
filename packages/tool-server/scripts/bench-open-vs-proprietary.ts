@@ -53,7 +53,11 @@ import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
 import { resolveDevice } from "../src/utils/device-info";
 import { isAndroidTv, isAndroidTvCached } from "../src/utils/adb";
-import { openDeviceServerRef, type OpenDeviceServerApi } from "../src/blueprints/android-open-server";
+import {
+  openDeviceServerRef,
+  type OpenDeviceServerApi,
+  type OpenInjectStrategy,
+} from "../src/blueprints/android-open-server";
 import { AndroidOpenServerClient } from "../src/utils/android-open-server-client";
 import {
   emulatorConsolePort,
@@ -411,6 +415,11 @@ async function ensureChrome(reg: Reg): Promise<boolean> {
 interface VerbResult {
   verb: string;
   latency: ReturnType<typeof summarize>;
+  // Phase 3n.1 (review 3N-H5): the raw per-sample latencies (ms) behind `latency`,
+  // so the scoreboard can bootstrap a 95 % CI on the p50 difference vs the OFF blocks
+  // instead of deciding a gate at ±1 ms with no interval. For the tap-effect verbs
+  // this is the effect-checked (landed) subset, matching `latency`.
+  latencySamples: number[];
   errors: number;
   fallbacks: number;
   fallbackSamples: string[];
@@ -464,6 +473,7 @@ async function timeCalls(
   return {
     verb: label,
     latency: summarize(lat),
+    latencySamples: lat.slice(),
     errors,
     errorSamples,
     fallbacks: fb.count,
@@ -633,6 +643,7 @@ async function timeTapEffect(
   return {
     verb: label,
     latency: summarize(lat),
+    latencySamples: lat.slice(),
     errors,
     errorSamples,
     fallbacks: fb.count,
@@ -991,6 +1002,7 @@ async function describeIdleLatencyWithStages(
     verb: {
       verb: label,
       latency: summarize(lat),
+      latencySamples: lat.slice(),
       errors,
       errorSamples,
       fallbacks: fb.count,
@@ -1729,6 +1741,14 @@ interface BlockResult {
   // Phase 3f: whether tap/swipe/gesture ran on the scrcpy fast-inject backend
   // (true only for the ON-scrcpy block); describe/state/etc. stay on Kotlin.
   fastInject: boolean;
+  // Phase 3n: the on-device injection strategy this ON block requested (uia-sync /
+  // uia-async / input-manager), or undefined for the DEFAULT / scrcpy / OFF arms.
+  injectStrategy?: OpenInjectStrategy | "default";
+  // Phase 3n: the strategy the on-device server reported it actually ran, read
+  // from a raw `tap` echo — "unavailable" iff an input-manager arm hit the
+  // hiddenapi policy and fell back to uia-async (the merge/report drops that
+  // block from the strategy comparison, ticket §3). undefined when not probed.
+  injectStrategyReported?: string;
   coldStartMs: number[];
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
@@ -1850,12 +1870,21 @@ async function coldStart(config: "OFF" | "ON"): Promise<number[]> {
 async function runBlock(
   block: string,
   config: "OFF" | "ON",
-  fastInject: boolean
+  fastInject: boolean,
+  // Phase 3n: the on-device injection strategy this ON block carries (uia-sync /
+  // uia-async / input-manager). undefined = the DEFAULT path (today's behaviour),
+  // used by OFF blocks and ON-scrcpy. Threaded to the host via the env var the
+  // blueprint reads per gesture, so one bench run carries every arm.
+  injectStrategy?: OpenInjectStrategy | "default"
 ): Promise<BlockResult> {
   const notes: string[] = [];
   resetUiDumpProbe(); // re-probe the backend-independent locate source per block
   if (config === "ON") setFlag("open-device-server", true, "project");
   else unsetFlag("open-device-server", "project");
+  // Phase 3n: select the Kotlin injection strategy for this block. Cleared for the
+  // DEFAULT/scrcpy/OFF arms so their path is unchanged.
+  if (injectStrategy) process.env.ARGENT_OPEN_INJECT_STRATEGY = injectStrategy;
+  else delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
   // Phase 3f: the scrcpy control-channel touch backend is gated by this flag; the
   // blueprint reads it when the factory `fastInject` option is omitted (which is
   // the case for the registry-created instances the bench drives). Only the
@@ -2371,7 +2400,8 @@ async function runBlock(
     `effect-check: firstTapNoEffect=${firstTapNoEffectTotal}/${effectCheckedTotal} ` +
       `(first-attempt only, no re-tap; originLost=${originLostTotal}, locateFailed=${locateFailedTotal}, ` +
       `coordMoved=${coordMovedTotal}, locateVia dump/describe=${locateViaTotal.dump}/${locateViaTotal.describe}, ` +
-      `target=${nav ? nav.target : "none"}); tap backend=${injectBackend}`
+      `target=${nav ? nav.target : "none"}); tap backend=${injectBackend}` +
+      `${injectStrategy ? ` inject-strategy=${injectStrategy}` : ""}`
   );
   // flushInput asymmetry (fix c, review A2): only the scrcpy branch defers the input
   // drain to the next read; the UiAutomation/proprietary tap RPC drains inline. So
@@ -2413,6 +2443,44 @@ async function runBlock(
   // (before any tap/paste/keyboard state), so OFF and ON are the same screen.
   const fidelitySet = parsed.idTextSet;
 
+  // Phase 3n.1 P7 (review 3N-M1): read the per-strategy injection COUNTS the server
+  // accumulated over the whole block from `getInfo` — every measured tap/swipe/gesture
+  // recorded the strategy it ran — instead of one extra post-hoc probe tap (which was
+  // an unaccounted injection, 3N-L5). Reported as `<reported>: n/total` so a silent
+  // hiddenapi fallback (`unavailable`) shows in the denominator split, per ON block.
+  let injectStrategyReported: string | undefined;
+  if (config === "ON") {
+    try {
+      const device = resolveDevice(SERIAL);
+      const ref = openDeviceServerRef(device);
+      const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+      const info = (await server.getInfo()) as { injectStrategyCounts?: Record<string, number> };
+      const counts = info.injectStrategyCounts ?? {};
+      const total = Object.values(counts).reduce((s, n) => s + n, 0);
+      // The strategy the host asked this block to run: input-manager for that arm, the
+      // Kotlin DEFAULT (reported "default") for the ON-uiautomation control block.
+      const expected = injectStrategy ?? "default";
+      const n = counts[expected] ?? 0;
+      const unavailable = counts["unavailable"] ?? 0;
+      injectStrategyReported =
+        `${expected}: ${n}/${total}` +
+        (unavailable > 0 ? ` (unavailable→uia-async: ${unavailable}/${total})` : "") +
+        ` [counts ${JSON.stringify(counts)}]`;
+      if (expected === "input-manager" && unavailable > 0) {
+        notes.push(
+          `inject-strategy input-manager fell back to uia-async ${unavailable}/${total} time(s) on-device ` +
+            `(hiddenapi) — P9 fallback path; treat as a portability caveat, not a clean input-manager arm`
+        );
+      } else if (expected === "input-manager") {
+        notes.push(`inject-strategy input-manager ran ${n}/${total} on-device (0 fallbacks)`);
+      } else {
+        notes.push(`inject-strategy control block ran ${expected} ${n}/${total} on-device`);
+      }
+    } catch (e) {
+      notes.push(`inject-strategy count read failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   await reg.dispose().catch(() => undefined);
   await teardownBackend();
 
@@ -2420,6 +2488,8 @@ async function runBlock(
     block,
     config,
     fastInject,
+    injectStrategy,
+    injectStrategyReported,
     coldStartMs,
     verbs,
     describeSample,
@@ -2491,13 +2561,19 @@ async function main(): Promise<void> {
   // assembles the four into the same combined result + fidelity. No env → the
   // original single-process full run.
   //
-  // Phase 3f: FOUR blocks. The two ON blocks share the open Kotlin describe/state
-  // path (so their describe bytes/tokens/fidelity are identical); they differ only
-  // in the tap/swipe/gesture backend — ON-uiautomation injects via UiAutomation,
-  // ON-scrcpy injects over the scrcpy control channel (fast-inject flag on).
-  const ALL_BLOCKS: Array<[string, "OFF" | "ON", boolean]> = [
+  // Phase 3n.1 (run 2): FIVE blocks (P0). Every ON block shares the open Kotlin
+  // describe/state path; they differ only in the tap/swipe/gesture injection path.
+  // `ON-uiautomation` is the mandatory CONTROL block (P0) — the pre-3n.1 Kotlin
+  // DEFAULT path, selected by the `default` sentinel (host sends no `inject`).
+  // `ON-input-manager` is the promotion candidate. `ON-scrcpy` is the scrcpy control
+  // arm (fast-inject). OFF-1/OFF-2 are the PROPRIETARY blocks every gate is graded
+  // against (P1). Tuple: [name, config, fastInject, injectStrategy?] where
+  // injectStrategy is the `ARGENT_OPEN_INJECT_STRATEGY` value ("default" = the
+  // sentinel for the old Kotlin DEFAULT).
+  const ALL_BLOCKS: Array<[string, "OFF" | "ON", boolean, (OpenInjectStrategy | "default")?]> = [
     ["OFF-1", "OFF", false],
-    ["ON-uiautomation", "ON", false],
+    ["ON-uiautomation", "ON", false, "default"],
+    ["ON-input-manager", "ON", false, "input-manager"],
     ["ON-scrcpy", "ON", true],
     ["OFF-2", "OFF", false],
   ];
@@ -2507,10 +2583,13 @@ async function main(): Promise<void> {
     throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.map(([b]) => b).join("|")}`);
 
   const blocks: BlockResult[] = [];
-  for (const [block, config, fastInject] of toRun) {
-    realDebug(`[bench] === block ${block} (${config}${fastInject ? ", scrcpy fast-inject" : ""}) ===`);
+  for (const [block, config, fastInject, injectStrategy] of toRun) {
+    realDebug(
+      `[bench] === block ${block} (${config}${fastInject ? ", scrcpy fast-inject" : ""}` +
+        `${injectStrategy ? `, inject=${injectStrategy}` : ""}) ===`
+    );
     const dbgMark = debugLines.length;
-    const r = await runBlock(block, config, fastInject);
+    const r = await runBlock(block, config, fastInject, injectStrategy);
     blocks.push(r);
     // Surface the scrcpy server start line + scid + control-channel line to REAL
     // stdout (not only the captured console.debug), plus this block's fast-inject
@@ -2568,10 +2647,10 @@ async function main(): Promise<void> {
   }
 
   const off1 = blocks.find((b) => b.block === "OFF-1")!;
-  // Fidelity (describe tree) is identical for both ON blocks — fast-inject only
-  // changes touch injection, not the describe path — so compare OFF-1 against the
-  // ON-uiautomation describe sample.
-  const on = blocks.find((b) => b.block === "ON-uiautomation")!;
+  // Fidelity (describe tree) is identical for every ON block — the injection
+  // strategy only changes touch injection, not the describe path — so compare OFF-1
+  // against the first ON block present (phase 3n: the arm names vary now).
+  const on = blocks.find((b) => b.config === "ON")!;
   const result = {
     env,
     blocks,

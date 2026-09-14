@@ -62,15 +62,18 @@ object MotionInjector {
      * Inject a synchronized multi-pointer gesture. `paths` is one entry per
      * pointer; `ids[i]` is pointer i's stable id. Every path must be the same
      * length (>= 2: a down frame and an up frame). Coordinates are device pixels.
-     * The final ACTION_UP is dispatched synchronously (F3).
+     * The final ACTION_UP is dispatched synchronously under DEFAULT (F3); the
+     * explicit [strategy] values override the final-UP mode (phase 3n).
      *
-     * @return `true` if any injected event was rejected by the dispatcher (R1).
+     * @return the [InjectOutcome]: `dropped` if any event was rejected, plus the
+     *   strategy that actually ran (`"unavailable"` on a hiddenapi fallback).
      */
     fun inject(
         uiAutomation: UiAutomation,
         ids: IntArray,
-        paths: List<List<Point>>
-    ): Boolean {
+        paths: List<List<Point>>,
+        strategy: InjectStrategy = InjectStrategy.DEFAULT
+    ): InjectOutcome {
         val n = paths.size
         require(n >= 1) { "gesture needs at least one pointer" }
         require(ids.size == n) { "ids and paths length mismatch" }
@@ -95,6 +98,15 @@ object MotionInjector {
         val downTime = SystemClock.uptimeMillis()
         var dropped = false
 
+        // Resolve the strategy for this gesture. A swipe/gesture's DEFAULT keeps its
+        // SYNCHRONOUS final UP (F3): the RPC returns only once the finger is up. The
+        // explicit strategies override that (uia-async / input-manager return after
+        // the async UP and fold the drain into the next read; uia-sync forces the
+        // blocking UP). input-manager degrades to uia-async when the hidden API is
+        // blocked, reported on the outcome.
+        val effective = resolveEffective(strategy)
+        val finalUpSync = finalUpSyncFor(effective.strategy, defaultFinalUpSync = true)
+
         fun setCoords(frame: Int, count: Int) {
             for (i in 0 until count) {
                 val p = paths[i][frame]
@@ -107,7 +119,7 @@ object MotionInjector {
             }
         }
 
-        fun send(action: Int, count: Int, slotMs: Long, sync: Boolean = false) {
+        fun send(action: Int, count: Int, slotMs: Long, isFinalUp: Boolean = false) {
             // Real-clock pacing: sleep only for the time still remaining until this
             // frame's slot, measured now.
             val waitMs = (downTime + slotMs) - SystemClock.uptimeMillis()
@@ -131,8 +143,13 @@ object MotionInjector {
                 InputDevice.SOURCE_TOUCHSCREEN,
                 0
             )
+            // Only the FINAL UP blocks, and only for a sync strategy; every other
+            // frame is async (its arrival is already spaced by the wall-clock wait
+            // above). input-manager routes every frame through the reflective ASYNC
+            // pipe regardless.
+            val doSync = isFinalUp && finalUpSync
             try {
-                if (!uiAutomation.injectInputEvent(event, sync)) dropped = true
+                if (!dispatchEvent(uiAutomation, effective.strategy, event, doSync)) dropped = true
             } finally {
                 event.recycle()
             }
@@ -170,11 +187,21 @@ object MotionInjector {
             )
         }
         setCoords(last, 1)
-        send(MotionEvent.ACTION_UP, 1, upSlot, sync = true)
-        // The final UP above was synchronous, so the dispatcher queue is drained;
-        // any tap's async UP that was still in flight is now delivered too.
-        asyncUp.clear()
-        return dropped
+        send(MotionEvent.ACTION_UP, 1, upSlot, isFinalUp = true)
+        // Settle bookkeeping. A synchronous final UP (default swipe/gesture, or
+        // uia-sync) already drained the dispatcher FIFO — including any tap async UP
+        // still in flight — so clear the flag. An async final UP (uia-async /
+        // input-manager) leaves the UP queued; record it at the end point so the
+        // next state/hierarchy read folds the drain in (the scrcpy-flushInput
+        // asymmetry, on this channel).
+        val finalUpWasSync = effective.strategy != InjectStrategy.INPUT_MANAGER && finalUpSync
+        if (finalUpWasSync) {
+            asyncUp.clear()
+        } else {
+            asyncUp.markOutstanding(coords[0].x, coords[0].y)
+        }
+        InjectStrategyCounter.record(effective.reported)
+        return InjectOutcome(dropped, effective.reported, effective.fellBackTo, effective.error)
     }
 
     /**
@@ -190,9 +217,11 @@ object MotionInjector {
      * so a plain tap no longer pays the sync round-trip on top of its `holdMs`
      * press. Ordering vs a following capture is preserved by the dispatcher's FIFO
      * delivery, and [StateHandler]/[HierarchyHandler] flush the pending UP via
-     * [drainAsyncUp] before they read the tree.
+     * [drainAsyncUp] before they read the tree. The final-UP mode is DEFAULT
+     * (async); the explicit [strategy] values override it (phase 3n).
      *
-     * @return `true` if any injected event was rejected by the dispatcher (R1).
+     * @return the [InjectOutcome]: `dropped` if any event was rejected, plus the
+     *   strategy that actually ran (`"unavailable"` on a hiddenapi fallback).
      */
     fun injectTaps(
         uiAutomation: UiAutomation,
@@ -200,9 +229,16 @@ object MotionInjector {
         y: Float,
         count: Int,
         holdMs: Long,
-        gapMs: Long
-    ): Boolean {
+        gapMs: Long,
+        strategy: InjectStrategy = InjectStrategy.DEFAULT
+    ): InjectOutcome {
         require(count >= 1) { "tap needs count >= 1" }
+        // A tap's DEFAULT is an ASYNC final UP (F1/R1): the RPC returns as soon as
+        // the UP is queued and the next capture drains it. uia-sync opts into a
+        // blocking UP; input-manager routes every event through the reflective ASYNC
+        // pipe (falling back to uia-async when the hidden API is blocked).
+        val effective = resolveEffective(strategy)
+        val finalUpSync = finalUpSyncFor(effective.strategy, defaultFinalUpSync = false)
         val props = MotionEvent.PointerProperties().apply {
             id = 0
             toolType = MotionEvent.TOOL_TYPE_FINGER
@@ -218,7 +254,7 @@ object MotionInjector {
         val base = SystemClock.uptimeMillis()
         var dropped = false
 
-        fun dispatch(action: Int, downTime: Long, slotMs: Long, sync: Boolean) {
+        fun dispatch(action: Int, downTime: Long, slotMs: Long, isFinalUp: Boolean) {
             val waitMs = (base + slotMs) - SystemClock.uptimeMillis()
             if (waitMs > 0) SystemClock.sleep(waitMs)
             val eventTime = SystemClock.uptimeMillis()
@@ -238,8 +274,9 @@ object MotionInjector {
                 InputDevice.SOURCE_TOUCHSCREEN,
                 0
             )
+            val doSync = isFinalUp && finalUpSync
             try {
-                if (!uiAutomation.injectInputEvent(event, sync)) dropped = true
+                if (!dispatchEvent(uiAutomation, effective.strategy, event, doSync)) dropped = true
             } finally {
                 event.recycle()
             }
@@ -253,18 +290,35 @@ object MotionInjector {
             val downWait = (base + downSlot) - SystemClock.uptimeMillis()
             if (downWait > 0) SystemClock.sleep(downWait)
             val tapDownTime = SystemClock.uptimeMillis()
-            // DOWN has always been async (ordering is preserved by the dispatcher);
-            // the final UP is now async too (R1) so the whole tap returns without a
-            // sync round-trip.
-            if (!dispatchAt(uiAutomation, props, coords, MotionEvent.ACTION_DOWN, tapDownTime, tapDownTime, false)) {
+            // DOWN is always async (ordering is preserved by the dispatcher). The UP
+            // is async too by default (R1); only uia-sync makes the LAST tap's UP
+            // block. Every event routes through the effective strategy's pipe.
+            if (!dispatchAt(
+                    uiAutomation,
+                    effective.strategy,
+                    props,
+                    coords,
+                    MotionEvent.ACTION_DOWN,
+                    tapDownTime,
+                    tapDownTime,
+                    false
+                )
+            ) {
                 dropped = true
             }
-            dispatch(MotionEvent.ACTION_UP, tapDownTime, upSlot, sync = false)
+            dispatch(MotionEvent.ACTION_UP, tapDownTime, upSlot, isFinalUp = k == count - 1)
         }
-        // The final UP was queued asynchronously; record it so a following capture
-        // drains it before reading the tree.
-        asyncUp.markOutstanding(x, y)
-        return dropped
+        // Settle bookkeeping mirrors [inject]: a synchronous last UP (uia-sync)
+        // drained the queue, so clear; an async last UP (default / uia-async /
+        // input-manager) is recorded so the next capture drains it before reading.
+        val lastUpWasSync = effective.strategy != InjectStrategy.INPUT_MANAGER && finalUpSync
+        if (lastUpWasSync) {
+            asyncUp.clear()
+        } else {
+            asyncUp.markOutstanding(x, y)
+        }
+        InjectStrategyCounter.record(effective.reported)
+        return InjectOutcome(dropped, effective.reported, effective.fellBackTo, effective.error)
     }
 
     /** Whether a `tap`'s final ACTION_UP is still queued but not yet drained. */
@@ -341,6 +395,7 @@ object MotionInjector {
     /** @return `false` if the injection was rejected by the dispatcher. */
     private fun dispatchAt(
         uiAutomation: UiAutomation,
+        effectiveStrategy: InjectStrategy,
         props: MotionEvent.PointerProperties,
         coords: MotionEvent.PointerCoords,
         action: Int,
@@ -365,9 +420,74 @@ object MotionInjector {
             0
         )
         return try {
-            uiAutomation.injectInputEvent(event, sync)
+            dispatchEvent(uiAutomation, effectiveStrategy, event, sync)
         } finally {
             event.recycle()
         }
     }
+
+    /** The strategy actually used for a gesture plus how the outcome is reported. */
+    private data class Effective(
+        val strategy: InjectStrategy,
+        val reported: String,
+        val fellBackTo: String?,
+        val error: String?
+    )
+
+    /**
+     * Resolve the requested strategy to the one that will run. Only
+     * [InjectStrategy.INPUT_MANAGER] can change: when the hidden API is blocked it
+     * degrades to [InjectStrategy.UIA_ASYNC] and the outcome reports
+     * `strategy: "unavailable"` with the exception text. Every other value maps to
+     * itself.
+     */
+    private fun resolveEffective(requested: InjectStrategy): Effective {
+        if (requested == InjectStrategy.INPUT_MANAGER) {
+            val availability = InputManagerInjector.probe()
+            return if (availability.available) {
+                Effective(InjectStrategy.INPUT_MANAGER, InjectStrategy.INPUT_MANAGER.wire, null, null)
+            } else {
+                Effective(
+                    InjectStrategy.UIA_ASYNC,
+                    InjectOutcome.UNAVAILABLE,
+                    InjectStrategy.UIA_ASYNC.wire,
+                    availability.error
+                )
+            }
+        }
+        return Effective(requested, requested.wire, null, null)
+    }
+
+    /**
+     * Whether the FINAL ACTION_UP blocks. uia-sync always blocks; uia-async and
+     * input-manager never do (async UP, drain folded into the next read); DEFAULT
+     * defers to the call site ([defaultFinalUpSync] — true for swipe/gesture, false
+     * for tap).
+     */
+    private fun finalUpSyncFor(effective: InjectStrategy, defaultFinalUpSync: Boolean): Boolean =
+        when (effective) {
+            InjectStrategy.UIA_SYNC -> true
+            InjectStrategy.UIA_ASYNC -> false
+            InjectStrategy.INPUT_MANAGER -> false
+            InjectStrategy.DEFAULT -> defaultFinalUpSync
+        }
+
+    /**
+     * Inject one built [MotionEvent] through the effective strategy's pipe.
+     * [InjectStrategy.INPUT_MANAGER] uses the reflective ASYNC pipe (the `sync`
+     * flag does not apply there); every other strategy uses
+     * [UiAutomation.injectInputEvent] with the given `sync`. Returns whether the
+     * dispatcher accepted the event.
+     */
+    private fun dispatchEvent(
+        uiAutomation: UiAutomation,
+        effectiveStrategy: InjectStrategy,
+        event: MotionEvent,
+        sync: Boolean
+    ): Boolean =
+        if (effectiveStrategy == InjectStrategy.INPUT_MANAGER) {
+            InputManagerInjector.injectAsync(event)
+        } else {
+            uiAutomation.injectInputEvent(event, sync)
+        }
 }

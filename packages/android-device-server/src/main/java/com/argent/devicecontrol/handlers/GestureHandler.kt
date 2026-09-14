@@ -1,6 +1,7 @@
 package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
+import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
 import org.json.JSONObject
 
@@ -59,10 +60,16 @@ class GestureHandler(private val uiAutomation: UiAutomation) {
             paths.add(resample(full))
         }
 
-        val dropped = MotionInjector.inject(uiAutomation, ids, paths)
+        // Phase 3n: per-RPC injection strategy (absent → DEFAULT = today's blocking
+        // final UP for a multi-pointer gesture).
+        val strategy = InjectStrategy.fromWire(params.optString("inject", ""))
+        val outcome = MotionInjector.inject(uiAutomation, ids, paths, strategy)
         return JSONObject().apply {
-            put("success", !dropped)
-            if (dropped) put("dropped", true)
+            put("success", !outcome.dropped)
+            if (outcome.dropped) put("dropped", true)
+            put("strategy", outcome.strategy)
+            outcome.fellBackTo?.let { put("fellBackTo", it) }
+            outcome.error?.let { put("injectError", it) }
         }
     }
 

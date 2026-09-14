@@ -2,6 +2,8 @@ package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.input.InjectOutcome
+import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
 import org.json.JSONObject
 
@@ -45,15 +47,21 @@ class SwipeHandler(
         // to ~0 and the OS applies little to no fling; 0 (the default) is a plain
         // flinging swipe that lifts with the last segment's velocity.
         val holdEndMs = params.optLong("holdEndMs", 0)
+        // Phase 3n: per-RPC injection strategy (absent → DEFAULT = today's blocking
+        // final UP). Shared by both the momentum and held paths.
+        val strategy = InjectStrategy.fromWire(params.optString("inject", ""))
 
-        val dropped = if (holdEndMs > 0) {
-            injectHeldSwipe(startX, startY, endX, endY, steps, holdEndMs)
+        val outcome = if (holdEndMs > 0) {
+            injectHeldSwipe(startX, startY, endX, endY, steps, holdEndMs, strategy)
         } else {
-            injectMomentumSwipe(startX, startY, endX, endY, steps)
+            injectMomentumSwipe(startX, startY, endX, endY, steps, strategy)
         }
         return JSONObject().apply {
-            put("success", !dropped)
-            if (dropped) put("dropped", true)
+            put("success", !outcome.dropped)
+            if (outcome.dropped) put("dropped", true)
+            put("strategy", outcome.strategy)
+            outcome.fellBackTo?.let { put("fellBackTo", it) }
+            outcome.error?.let { put("injectError", it) }
         }
     }
 
@@ -72,8 +80,9 @@ class SwipeHandler(
         startY: Int,
         endX: Int,
         endY: Int,
-        steps: Int
-    ): Boolean {
+        steps: Int,
+        strategy: InjectStrategy
+    ): InjectOutcome {
         val requested = maxOf(1, steps)
         // Total wall-clock the finger stays down = the requested duration (matches
         // the proprietary path, so the fling reads the same release velocity).
@@ -100,10 +109,11 @@ class SwipeHandler(
                 )
             )
         }
-        // Final ACTION_UP is dispatched synchronously (F3): the RPC returns only
-        // once the finger is actually up, matching the proprietary path's blocking
-        // Up. Intermediate frames stay async, paced by the injector's wall clock.
-        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path))
+        // Under DEFAULT the final ACTION_UP is dispatched synchronously (F3): the RPC
+        // returns only once the finger is actually up, matching the proprietary
+        // path's blocking Up. Intermediate frames stay async, paced by the injector's
+        // wall clock. The explicit strategies override the final-UP mode.
+        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path), strategy)
     }
 
     private fun injectHeldSwipe(
@@ -112,8 +122,9 @@ class SwipeHandler(
         endX: Int,
         endY: Int,
         steps: Int,
-        holdEndMs: Long
-    ): Boolean {
+        holdEndMs: Long,
+        strategy: InjectStrategy
+    ): InjectOutcome {
         val travelSteps = maxOf(1, steps)
         val path = ArrayList<MotionInjector.Point>(travelSteps + 3)
 
@@ -133,6 +144,6 @@ class SwipeHandler(
             path.add(MotionInjector.Point(endX.toFloat(), endY.toFloat(), baseT + h * STEP_MS))
         }
 
-        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path))
+        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path), strategy)
     }
 }
