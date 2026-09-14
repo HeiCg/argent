@@ -256,6 +256,17 @@ and significant at 150/0.3, 400/0.3 and 400/0.5.
 cell(s); 2 of 6 non-informative at the metric floor)` — offenders 150/0.3 (0.644/0.515),
 400/0.3 (0.675/0.699), 400/0.5 (0.813/0.717); 250/0.3 passes (0.910/0.899).
 
+**Knife-edge caveat (3K1-M4).** The reference-bimodality exclusion keys on `iqr[0]` (q25 by
+nearest rank, `round(0.25·(n−1))` → the 4th of 12). At 150/0.3 the uia reference has **3 of
+12 samples at the 0.175 floor** (0.175, 0.175, 0.175, 0.298, …), so q25 = 0.298 and the cell
+is informative — **one more floored uia sample** and the gate's largest offender
+(0.644/0.515) flips to non-informative; same fragility at 400/0.5 (uia 2/12 floored). A
+linear-interpolation q25 gives 0.267 here, not 0.298. Floored-sample counts per arm (out of
+12): 150/0.3 — off 1, uia 3, scrcpy drift 4, scrcpy legacy 6; 400/0.5 — off 0, uia 2,
+drift 2, legacy 5. The clearer statement of the defect is this floor rate (the scrcpy arms
+simply fail to fling on a third to a half of the short/long swipes), not the ratio of
+medians on a two-level metric — which is also why `n ≥ 10` is insufficient power.
+
 ### Device pacing evidence (3K-H3) — dumpsys input MotionEvent cadence, N per arm
 Device suite **19 passed** (17 enforced + 2 measurement-only). The wire gesture is **8
 frames** (26 requested steps → 8 wire frames; the host trace reads `frames=8`, not
