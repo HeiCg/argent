@@ -49,11 +49,15 @@
       // eslint-disable-next-line no-console
       console.log(`[run-bench] ready-gate warned before ${arm} — proceeding (the child effect gate is authoritative)`);
     }
-    // Isolated child process: one block, memory-frugal, cannot re-orchestrate.
-    execFileSync("node", [__filename], {
-      env: { ...process.env, BENCH_ONLY: arm, ARGENT_BENCH_NO_ORCHESTRATE: "1" },
-      stdio: "inherit",
-    });
+    // Isolated child process: one block, memory-frugal, cannot re-orchestrate. Tee the
+    // child's output to bench-log-<arm>.txt (3N-M5) — staged in the artifact — AND the
+    // job log, so a self-orchestrated arm's warnings are reviewable from the zip.
+    const logPath = path.join(OUT, `bench-log-${arm}.txt`);
+    execFileSync(
+      "bash",
+      ["-c", `ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=${arm} node ${JSON.stringify(__filename)} 2>&1 | tee -a ${JSON.stringify(logPath)}; exit \${PIPESTATUS[0]}`],
+      { stdio: "inherit", env: process.env }
+    );
   }
 })();
 
