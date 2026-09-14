@@ -24,21 +24,16 @@
  *
  *   emulator -avd bench-api35 -no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token
  *
- * Run under ts-node from the repo root (the package's composite tsconfig rejects
- * files under scripts/, so register ts-node with skipProject via a tiny loader):
- *
- *   // run-bench-sg.js
- *   require("ts-node").register({ transpileOnly: true, skipProject: true,
- *     compilerOptions: { module: "commonjs", target: "ES2022",
- *       moduleResolution: "node", esModuleInterop: true, resolveJsonModule: true,
- *       skipLibCheck: true, strict: false, ignoreDeprecations: "6.0" } });
- *   require("./packages/tool-server/scripts/bench-screen-graph.ts");
+ * Run under ts-node (the package's composite tsconfig rejects files under
+ * scripts/, so the runner registers ts-node with skipProject). The loader lives
+ * beside this file at `packages/tool-server/scripts/run-bench-sg.cjs` and resolves
+ * its target relative to __dirname, so it works from any CWD:
  *
  *   ARGENT_SIMULATOR_SERVER_DIR=<pkg>/bin \
  *   ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR=<pkg>/bin \
  *   ARGENT_NATIVE_DEVTOOLS_DIR=<pkg>/dylibs \
  *   ANDROID_HOME=$HOME/Library/Android/sdk BENCH_SERIAL=emulator-5554 \
- *   node run-bench-sg.js
+ *   node packages/tool-server/scripts/run-bench-sg.cjs
  *
  * Env knobs: BENCH_SERIAL (default emulator-5554), BENCH_REPS (3),
  * BENCH_CONFIGS (comma list; default all), BENCH_OUT
@@ -1172,19 +1167,26 @@ async function runTask(
       b1Obs = await runObservation(reg, config, "describe", {});
       const tapSel = (step.action as { selector: BenchSelector }).selector;
       located = parseDescribeLocate(b1Obs.text, tapSel);
-      // Phase D.4 (ticket §2): when B1's SYMMETRIC resolver cannot uniquely locate
-      // a target, quote its proprietary describe rendering of the rows that mention
-      // the selector — so B1's outcome is explained by the RENDERING, not the
-      // resolver. Dumped once per (task, selector, rep 0) into the teed matrix log.
-      if (!located.found && rep === 0) {
+      // Phase D.4 (ticket §2): quote B1's proprietary describe rendering of the rows
+      // that mention the selector, so B1's outcome on a task is explained by the
+      // RENDERING, not the resolver. Dumped once per (task, selector) at rep 0 into
+      // the teed matrix log for EVERY B1 tap step — including the steps where the
+      // symmetric resolver DID find a unique node (outcome FOUND-UNIQUE) but the tap
+      // still did not reach the destination. The earlier gate only fired on a
+      // locate-fail, so a row like the two-level "Internet" step (rep 0 resolves a
+      // unique-but-wrong node → oracle-unmet, not locate-fail) was never captured
+      // and item §2's excerpt was missing from the artifact. This is a log line only:
+      // it changes no tap, route, oracle read or success count.
+      if (rep === 0) {
         const needle = (tapSel.text ?? tapSel.id ?? "").toLowerCase();
         const rows = b1Obs.text
           .split("\n")
           .filter((l) => needle && l.toLowerCase().includes(needle))
           .map((l) => l.trim())
           .slice(0, 6);
+        const outcome = located.found ? "FOUND-UNIQUE" : located.ambiguous ? "AMBIGUOUS" : "MISS";
         realDebug(
-          `[bench-sg][D4] B1 locate ${located.ambiguous ? "AMBIGUOUS" : "MISS"} for ${JSON.stringify(tapSel)} ` +
+          `[bench-sg][D4] B1 locate ${outcome} for ${JSON.stringify(tapSel)} ` +
             `on ${task.id} step ${i}; describe rows containing "${needle}": ${rows.join(" || ") || "(none)"}`
         );
       }

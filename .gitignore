@@ -66,3 +66,5 @@ packages/argent/README.md
 .opencode/
 opencode.json
 skills-lock.json
+# Bench artifacts downloaded/generated locally (screen-graph + latency runs)
+.bench-results/
