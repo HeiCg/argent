@@ -96,6 +96,15 @@ export interface OpenServerInfo {
    * here so a caller (and the bench) can assert zero silent degrades.
    */
   fastInjectFallbacks?: number;
+  /**
+   * Phase 3n.1 P7: per-strategy injection counts over this server process
+   * (`default` / `uia-sync` / `uia-async` / `input-manager` / `unavailable` →
+   * count). A fresh process per bench block makes this a per-block count, so the
+   * bench reports `injectStrategyReported` as `input-manager: n/total` from every
+   * measured tap/swipe/gesture rather than a single post-hoc probe. Absent when the
+   * server injected nothing yet.
+   */
+  injectStrategyCounts?: Record<string, number>;
 }
 
 export interface OpenServerTreeResult {

@@ -200,6 +200,7 @@ object MotionInjector {
         } else {
             asyncUp.markOutstanding(coords[0].x, coords[0].y)
         }
+        InjectStrategyCounter.record(effective.reported)
         return InjectOutcome(dropped, effective.reported, effective.fellBackTo, effective.error)
     }
 
@@ -316,6 +317,7 @@ object MotionInjector {
         } else {
             asyncUp.markOutstanding(x, y)
         }
+        InjectStrategyCounter.record(effective.reported)
         return InjectOutcome(dropped, effective.reported, effective.fellBackTo, effective.error)
     }
 

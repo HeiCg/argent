@@ -72,3 +72,28 @@ data class InjectOutcome(
         const val UNAVAILABLE = "unavailable"
     }
 }
+
+/**
+ * Process-global count of injections per REPORTED strategy (phase 3n.1 P7). Every
+ * `MotionInjector.inject` / `injectTaps` records the strategy it actually ran
+ * (`default` / `uia-sync` / `uia-async` / `input-manager` / `unavailable`), so a
+ * block's `getInfo` can report `injectStrategyReported` as a per-RPC count over the
+ * whole block — not a single post-hoc probe (review 3N-M1). Each bench block runs a
+ * fresh instrumentation process, so the counts are per-block. Thread-safe; the RPC
+ * loop is serialized but the counter is shared, so a concurrent connection cannot
+ * corrupt it.
+ */
+object InjectStrategyCounter {
+    private val counts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun record(strategy: String) {
+        counts.merge(strategy, 1) { a, b -> a + b }
+    }
+
+    /** Immutable snapshot of the current counts, for `getInfo`. */
+    fun snapshot(): Map<String, Int> = HashMap(counts)
+
+    fun resetForTest() {
+        counts.clear()
+    }
+}

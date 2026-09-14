@@ -1735,7 +1735,7 @@ interface BlockResult {
   fastInject: boolean;
   // Phase 3n: the on-device injection strategy this ON block requested (uia-sync /
   // uia-async / input-manager), or undefined for the DEFAULT / scrcpy / OFF arms.
-  injectStrategy?: OpenInjectStrategy;
+  injectStrategy?: OpenInjectStrategy | "default";
   // Phase 3n: the strategy the on-device server reported it actually ran, read
   // from a raw `tap` echo — "unavailable" iff an input-manager arm hit the
   // hiddenapi policy and fell back to uia-async (the merge/report drops that
@@ -1867,7 +1867,7 @@ async function runBlock(
   // uia-async / input-manager). undefined = the DEFAULT path (today's behaviour),
   // used by OFF blocks and ON-scrcpy. Threaded to the host via the env var the
   // blueprint reads per gesture, so one bench run carries every arm.
-  injectStrategy?: OpenInjectStrategy
+  injectStrategy?: OpenInjectStrategy | "default"
 ): Promise<BlockResult> {
   const notes: string[] = [];
   resetUiDumpProbe(); // re-probe the backend-independent locate source per block
@@ -2435,32 +2435,41 @@ async function runBlock(
   // (before any tap/paste/keyboard state), so OFF and ON are the same screen.
   const fidelitySet = parsed.idTextSet;
 
-  // Phase 3n: confirm the input-manager arm actually resolved the hidden API
-  // on-device. Read the `strategy` echo from one raw tap AFTER the measured loop
-  // (benign — the block is tearing down). "unavailable" means the arm silently ran
-  // uia-async (hiddenapi policy), which the merge/report must surface and drop.
+  // Phase 3n.1 P7 (review 3N-M1): read the per-strategy injection COUNTS the server
+  // accumulated over the whole block from `getInfo` — every measured tap/swipe/gesture
+  // recorded the strategy it ran — instead of one extra post-hoc probe tap (which was
+  // an unaccounted injection, 3N-L5). Reported as `<reported>: n/total` so a silent
+  // hiddenapi fallback (`unavailable`) shows in the denominator split, per ON block.
   let injectStrategyReported: string | undefined;
-  if (config === "ON" && injectStrategy === "input-manager") {
+  if (config === "ON") {
     try {
       const device = resolveDevice(SERIAL);
       const ref = openDeviceServerRef(device);
       const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-      const sz = await server.getScreenSize();
-      const probe = await server.tap(Math.round(sz.screenWidth / 2), Math.round(sz.screenHeight / 2), {
-        inject: "input-manager",
-      });
-      injectStrategyReported = (probe as { strategy?: string }).strategy;
-      if (injectStrategyReported === "unavailable") {
-        const reason = (probe as { injectError?: string }).injectError ?? "no reason reported";
+      const info = (await server.getInfo()) as { injectStrategyCounts?: Record<string, number> };
+      const counts = info.injectStrategyCounts ?? {};
+      const total = Object.values(counts).reduce((s, n) => s + n, 0);
+      // The strategy the host asked this block to run: input-manager for that arm, the
+      // Kotlin DEFAULT (reported "default") for the ON-uiautomation control block.
+      const expected = injectStrategy ?? "default";
+      const n = counts[expected] ?? 0;
+      const unavailable = counts["unavailable"] ?? 0;
+      injectStrategyReported =
+        `${expected}: ${n}/${total}` +
+        (unavailable > 0 ? ` (unavailable→uia-async: ${unavailable}/${total})` : "") +
+        ` [counts ${JSON.stringify(counts)}]`;
+      if (expected === "input-manager" && unavailable > 0) {
         notes.push(
-          `inject-strategy input-manager UNAVAILABLE on-device (${reason}) — the arm ran uia-async; ` +
-            `DROP this block from the strategy comparison (ticket §3)`
+          `inject-strategy input-manager fell back to uia-async ${unavailable}/${total} time(s) on-device ` +
+            `(hiddenapi) — P9 fallback path; treat as a portability caveat, not a clean input-manager arm`
         );
+      } else if (expected === "input-manager") {
+        notes.push(`inject-strategy input-manager ran ${n}/${total} on-device (0 fallbacks)`);
       } else {
-        notes.push(`inject-strategy input-manager confirmed on-device (strategy=${injectStrategyReported})`);
+        notes.push(`inject-strategy control block ran ${expected} ${n}/${total} on-device`);
       }
     } catch (e) {
-      notes.push(`inject-strategy input-manager availability probe failed: ${e instanceof Error ? e.message : String(e)}`);
+      notes.push(`inject-strategy count read failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2544,18 +2553,18 @@ async function main(): Promise<void> {
   // assembles the four into the same combined result + fidelity. No env → the
   // original single-process full run.
   //
-  // Phase 3n: SIX blocks. Every ON block shares the open Kotlin describe/state path
-  // (so their describe bytes/tokens/fidelity are identical); they differ only in the
-  // tap/swipe/gesture injection path. The three Kotlin strategy arms
-  // (ON-uia-sync / ON-uia-async / ON-input-manager) run over the UiAutomation /
-  // reflective-InputManager channel with `ARGENT_OPEN_INJECT_STRATEGY` set;
-  // ON-scrcpy injects over the scrcpy control channel (the control arm, fast-inject
-  // flag on). OFF-1/OFF-2 bracket the drift floor. Tuple: [name, config, fastInject,
-  // injectStrategy?].
-  const ALL_BLOCKS: Array<[string, "OFF" | "ON", boolean, OpenInjectStrategy?]> = [
+  // Phase 3n.1 (run 2): FIVE blocks (P0). Every ON block shares the open Kotlin
+  // describe/state path; they differ only in the tap/swipe/gesture injection path.
+  // `ON-uiautomation` is the mandatory CONTROL block (P0) — the pre-3n.1 Kotlin
+  // DEFAULT path, selected by the `default` sentinel (host sends no `inject`).
+  // `ON-input-manager` is the promotion candidate. `ON-scrcpy` is the scrcpy control
+  // arm (fast-inject). OFF-1/OFF-2 are the PROPRIETARY blocks every gate is graded
+  // against (P1). Tuple: [name, config, fastInject, injectStrategy?] where
+  // injectStrategy is the `ARGENT_OPEN_INJECT_STRATEGY` value ("default" = the
+  // sentinel for the old Kotlin DEFAULT).
+  const ALL_BLOCKS: Array<[string, "OFF" | "ON", boolean, (OpenInjectStrategy | "default")?]> = [
     ["OFF-1", "OFF", false],
-    ["ON-uia-sync", "ON", false, "uia-sync"],
-    ["ON-uia-async", "ON", false, "uia-async"],
+    ["ON-uiautomation", "ON", false, "default"],
     ["ON-input-manager", "ON", false, "input-manager"],
     ["ON-scrcpy", "ON", true],
     ["OFF-2", "OFF", false],
