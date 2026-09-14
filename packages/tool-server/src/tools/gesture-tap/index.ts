@@ -10,6 +10,7 @@ import {
   openServerTap,
   openServerTapWithOutcome,
 } from "../../utils/open-server-input";
+import { shouldUseIosOpenServer, iosOpenServerTap } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
@@ -120,7 +121,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       // With the open-device-server flag on, the simulator-server is resolved
       // lazily in execute only if the open path fails, so a healthy open backend
       // never spawns the proprietary server.
-      if (shouldUseOpenServer(device)) {
+      if (shouldUseOpenServer(device) || shouldUseIosOpenServer(device)) {
         return {};
       }
       return { simulatorServer: simulatorServerRef(device) };
@@ -137,7 +138,22 @@ Before tapping, determine the correct coordinates by using discovery tools — p
         return { tapped: true, timestampMs };
       }
       let api: SimulatorServerApi;
-      if (shouldUseOpenServer(device)) {
+      if (shouldUseIosOpenServer(device)) {
+        // Open iOS server (XCUITest runner) behind the `open-ios-device-server`
+        // flag. Falls back to the proprietary simulator-server on any failure.
+        try {
+          await iosOpenServerTap(registry, device, params.x, params.y, clickCount);
+          return { tapped: true, timestampMs };
+        } catch (err) {
+          console.debug(
+            `[gesture-tap] ios open-device-server failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+          const ref = simulatorServerRef(device);
+          api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
+        }
+      } else if (shouldUseOpenServer(device)) {
         try {
           // Default (screen-graph off): plain `tap` RPC, pre-merge semantics — no
           // `outcome` request leaves the host, so `runAction` is the pass-through

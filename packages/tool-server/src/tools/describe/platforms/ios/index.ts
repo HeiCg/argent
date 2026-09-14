@@ -13,6 +13,7 @@ import { parseNativeDescribeScreenResult } from "../../../native-devtools/native
 import { DescribeTreeData, parseDescribeResult, type DescribeNode } from "../../contract";
 import { adaptAXDescribeToDescribeResult } from "./ios-ax-adapter";
 import { adaptNativeDescribeToDescribeResult } from "./ios-native-adapter";
+import { shouldUseIosOpenServer, describeIosViaOpenServer } from "../../../../utils/ios-open-server-input";
 
 // `degraded` means the pre-boot accessibility prefs were never written — the one
 // thing boot-device does that an external `xcrun simctl boot` cannot. It
@@ -136,6 +137,21 @@ export async function describeIos(
   const isTvOs = options.isTvOs ?? (await isTvOsSimulator(device.id));
   if (isTvOs) {
     return { tree: emptyTree(), source: "ax-service", hint: TVOS_HINT };
+  }
+
+  // Open iOS server (XCUITest runner) behind the `open-ios-device-server` flag.
+  // Falls back to the ax-service / native-devtools chain below on any failure.
+  if (shouldUseIosOpenServer(device)) {
+    try {
+      return await describeIosViaOpenServer(registry, device);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.debug(
+        `[describe-ios] open ios-device-server failed, falling back to ax-service: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
   }
 
   let tree: DescribeNode = emptyTree();
