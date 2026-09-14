@@ -126,8 +126,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             2>&1 | tee build/build-device.log
 
-      - name: Launch the runner against Settings and wait until it answers
+      - name: Launch the runner against Settings and run the device suite
         shell: bash
+        env:
+          OPEN_IOS_SERVER_DEVICE_TESTS: "1"
+          TMPDIR: ${{ github.workspace }}/build/shots
         run: |
           XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun 2>/dev/null \
             | grep -i simulator | head -1)
@@ -136,47 +139,49 @@ jobs:
           fi
           echo "xctestrun=$XCTESTRUN"
           PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-          echo "SIM_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "runner port=$PORT"
           mkdir -p build/shots
-          TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT nohup xcodebuild test-without-building \
+          # Launch the runner in the BACKGROUND OF THIS STEP and run the suite in the
+          # same step: a detached xcodebuild test does not survive the step boundary
+          # (the next step saw ECONNREFUSED), so the runner must stay a child of the
+          # shell that runs vitest.
+          TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT xcodebuild test-without-building \
             -xctestrun "$XCTESTRUN" \
             -only-testing:ArgentRunnerUITests/ArgentRunnerSession/testServeCommands \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -test-timeouts-enabled NO \
             -resultBundlePath build/runner.xcresult \
             > build/runner.log 2>&1 &
-          echo $! > build/runner.pid
-          # The runner answers JSON-RPC over raw TCP; poll a ping until ready (120s).
+          RUNNER_PID=$!
+          echo "$RUNNER_PID" > build/runner.pid
+          # Poll a JSON-RPC ping over raw TCP until ready (120s).
           READY=""
           for i in $(seq 1 120); do
+            if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
+              echo "::error::runner process exited before answering"; tail -120 build/runner.log || true; exit 1
+            fi
             if node -e "
               const net=require('net');
               const s=net.connect($PORT,'127.0.0.1');
               s.on('connect',()=>s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping'})+'\n'));
-              s.on('data',()=>{process.exit(0)});
+              s.on('data',()=>process.exit(0));
               s.on('error',()=>process.exit(1));
               setTimeout(()=>process.exit(1),1500);
             " 2>/dev/null; then READY=1; echo "runner ready after ${i}s"; break; fi
             sleep 1
           done
           if [ -z "$READY" ]; then
-            echo "::error::runner did not answer ping within 120s"
-            tail -100 build/runner.log || true
-            exit 1
+            echo "::error::runner did not answer ping within 120s"; tail -120 build/runner.log || true; exit 1
           fi
-
-      - name: Run the device suite
-        shell: bash
-        env:
-          OPEN_IOS_SERVER_DEVICE_TESTS: "1"
-          # Not ARGENT_*-prefixed: the `clear-argent-env` vitest setup strips those
-          # before the test module loads.
-          IOS_OPEN_SERVER_PORT: ${{ env.SIM_PORT }}
-          IOS_OPEN_SERVER_UDID: ${{ env.SIM_UDID }}
-          TMPDIR: ${{ github.workspace }}/build/shots
-        run: |
-          cd packages/tool-server
-          npx vitest run --maxWorkers=2 test/blueprints/ios-open-server.device.test.ts
+          # Same step: the background runner stays up while vitest runs.
+          export IOS_OPEN_SERVER_PORT=$PORT
+          export IOS_OPEN_SERVER_UDID=$SIM_UDID
+          set +e
+          ( cd packages/tool-server && npx vitest run --maxWorkers=2 test/blueprints/ios-open-server.device.test.ts )
+          STATUS=$?
+          set -e
+          kill "$RUNNER_PID" 2>/dev/null || true
+          exit $STATUS
 
       - name: Stop the runner
         if: always()
