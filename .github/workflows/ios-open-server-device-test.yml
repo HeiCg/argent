@@ -48,7 +48,10 @@ jobs:
       - name: Install deps
         shell: bash
         run: |
-          npm ci
+          # `npm install`, not `npm ci`: this branch adds the new
+          # `@argent/ios-device-server` workspace, so the committed lockfile is not
+          # yet in sync (it is regenerated in the main checkout before merge).
+          npm install --no-audit --no-fund
           # vite/rollup native binary that npm can skip (npm/cli#4828).
           npm install @rollup/rollup-darwin-arm64 --no-save
 

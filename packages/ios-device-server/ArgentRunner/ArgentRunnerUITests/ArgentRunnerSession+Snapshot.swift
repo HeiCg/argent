@@ -164,7 +164,9 @@ extension ArgentRunnerSession {
     /// element is enabled and has on-screen area.
     private static func makeNode(_ snapshot: XCUIElementSnapshot, children: [NestedNode]) -> NestedNode {
         let f = snapshot.frame
-        let hasArea = !f.isEmpty && f.isFinite && f.width > 0 && f.height > 0
+        // CGRect has no `isFinite`; `isEmpty` is already true for a null/zero rect,
+        // and `isInfinite` guards the geometry-less case.
+        let hasArea = !f.isEmpty && !f.isInfinite && f.width > 0 && f.height > 0
         return NestedNode(
             type: elementTypeName(snapshot.elementType),
             label: snapshot.label.isEmpty ? nil : snapshot.label,
