@@ -37,6 +37,36 @@ const CHROME = "com.android.chrome";
 const LAUNCHER = "com.google.android.apps.nexuslauncher";
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Phase 3k measurement helper. Parse a `logcat -v threadtime` dump for the touch
+ * MotionEvents of a just-injected gesture and return the DELIVERED span in ms —
+ * the wall-clock between the first and last touch-dispatch line — so the delivered
+ * gesture duration can be compared to the requested duration for the backend under
+ * test. Returns null when no touch lines are present (parsing varies by emulator
+ * image; the caller then records "unmeasured" rather than failing the enforced
+ * suite). A threadtime line starts `MM-DD HH:MM:SS.mmm `.
+ */
+function threadtimeMs(line: string): number | null {
+  const m = line.match(/^\d{2}-\d{2}\s+(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+  if (!m) return null;
+  return ((Number(m[1]) * 60 + Number(m[2])) * 60 + Number(m[3])) * 1000 + Number(m[4]);
+}
+function deliveredSpanMs(logcat: string): { spanMs: number | null; events: number } {
+  const ts: number[] = [];
+  for (const line of logcat.split("\n")) {
+    // Touch dispatch lines under InputDispatcher/InputReader VERBOSE. Broad on
+    // purpose (image-dependent wording); we only need the burst's first/last time.
+    if (!/InputDispatcher|InputReader|MotionEvent/.test(line)) continue;
+    if (!/\b(DOWN|MOVE|UP|ACTION_DOWN|ACTION_MOVE|ACTION_UP|dispatchMotion|deliverInputEvent)\b/.test(line)) {
+      continue;
+    }
+    const t = threadtimeMs(line);
+    if (t !== null) ts.push(t);
+  }
+  if (ts.length < 2) return { spanMs: null, events: ts.length };
+  return { spanMs: Math.max(...ts) - Math.min(...ts), events: ts.length };
+}
+
 /** Fraction of pixels that differ (per-channel tolerance 24) between two PNGs. */
 function pngDiffRatio(a: Buffer, b: Buffer): number {
   const pa = PNG.sync.read(a);
@@ -434,6 +464,34 @@ suite("android open-device-server on-device", () => {
         `swipe comparison unmeasured: default offscreen=${def.offscreen}, momentum:false offscreen=${held.offscreen} — cannot assert held < fling`
       );
     }
+  }, 120_000);
+
+  it("3k pacing — UiAutomation delivered swipe duration from logcat MotionEvents", async () => {
+    // Phase 3k measurement (option i), UiAutomation arm (the default open path here).
+    // Same 26-frame long swipe as the scrcpy arm; read the delivered MotionEvent span
+    // from logcat. MEASUREMENT only (records delivered-vs-requested, asserts the
+    // backend stayed live) so a logcat-parse miss never fails the enforced suite.
+    const info = await freshSettings();
+    const cx = Math.round(info.screenWidth / 2);
+    const y0 = Math.round(info.screenHeight * 0.72);
+    const y1 = Math.round(info.screenHeight * 0.32);
+    const steps = 26;
+    const requestedMs = steps * 16;
+    await runAdb(["-s", serial, "logcat", "-c"]).catch(() => undefined);
+    await api.swipe(cx, y0, cx, y1, steps, 0);
+    await sleep(600);
+    const dump = await runAdb(["-s", serial, "logcat", "-d", "-v", "threadtime"], {
+      timeoutMs: 20_000,
+    }).catch(() => ({ stdout: "" }));
+    const { spanMs, events } = deliveredSpanMs(dump.stdout);
+    const evidence =
+      spanMs === null
+        ? `delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
+        : `delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+    // eslint-disable-next-line no-console
+    console.log(`  3k pacing uiautomation ${evidence}`);
+    expect(api.isReady()).toBe(true);
+    record("3k pacing (uia delivered dur)", "PASS", evidence);
   }, 120_000);
 
   it("3e long-press (gesture custom, ~800ms hold) — context menu appears", async () => {
@@ -1200,6 +1258,52 @@ fiSuite("android open-device-server FAST-INJECT (scrcpy)", () => {
       );
     }
   }, 240_000);
+
+  it("3k pacing — scrcpy delivered swipe duration (drift vs legacy) from logcat MotionEvents", async () => {
+    // Phase 3k measurement (option i), scrcpy arm. Inject a long (26-frame ~416 ms)
+    // plain swipe under BOTH pacing modes and read the delivered MotionEvent span
+    // from logcat, so the host pacing trace ([open-server-fast-inject] `pacing …`)
+    // can be checked against what the OS actually received. MEASUREMENT: it records
+    // delivered-vs-requested and asserts only that the swipe was injected (the
+    // fling scroll A/B is the graded before/after) so a logcat-parse miss on some
+    // emulator image never fails the enforced device suite.
+    const info = await fiHome();
+    const cx = Math.round(info.screenWidth / 2);
+    const y0 = Math.round(info.screenHeight * 0.72);
+    const y1 = Math.round(info.screenHeight * 0.32);
+    const steps = 26; // ~416 ms at 16 ms/frame — the long-duration cell that under-scrolls
+    const requestedMs = steps * 16;
+    const measureArm = async (pacing: "drift" | "legacy"): Promise<string> => {
+      if (pacing === "legacy") process.env.ARGENT_SCRCPY_PACING = "legacy";
+      else delete process.env.ARGENT_SCRCPY_PACING;
+      await fiHome();
+      await runAdb([`-s`, fiSerial, "logcat", "-c"]).catch(() => undefined);
+      await fiApi.swipe(cx, y0, cx, y1, steps, 0);
+      await sleep(600);
+      const dump = await runAdb([`-s`, fiSerial, "logcat", "-d", "-v", "threadtime"], {
+        timeoutMs: 20_000,
+      }).catch(() => ({ stdout: "" }));
+      const { spanMs, events } = deliveredSpanMs(dump.stdout);
+      const line =
+        spanMs === null
+          ? `${pacing}: delivered=UNMEASURED (no MotionEvent lines; ${events} ts) requested=${requestedMs}ms`
+          : `${pacing}: delivered=${spanMs}ms requested=${requestedMs}ms (${events} touch events)`;
+      // eslint-disable-next-line no-console
+      console.log(`  3k pacing scrcpy ${line}`);
+      return line;
+    };
+    let drift = "drift: injected";
+    let legacy = "legacy: injected";
+    try {
+      drift = await measureArm("drift");
+      legacy = await measureArm("legacy");
+    } finally {
+      delete process.env.ARGENT_SCRCPY_PACING;
+    }
+    // Safe assertion: the backend stayed live through both injections.
+    expect(fiApi.isReady()).toBe(true);
+    record("3k pacing (scrcpy delivered dur)", "PASS", `${drift}; ${legacy}`);
+  }, 180_000);
 
   it("fast-inject coexists with the Kotlin instrumentation channel", async () => {
     // scrcpy (shell-uid app_process) injects touch while the same instance's Kotlin

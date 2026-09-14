@@ -392,6 +392,14 @@ jobs:
           # run failure must be caught by the `if …; else exit 1` below.
           set -eo pipefail
           export BENCH_OUT="$PWD/.bench-results"
+          # Phase 3k measurement (option i): capture verbose-input logcat PER ARM so the
+          # delivered gesture duration (MotionEvent DOWN→UP eventTime deltas) can be read
+          # for all three arms — uiautomation, scrcpy(drift), scrcpy(legacy) — and the
+          # proprietary OFF reference. One file per arm; staged as artifacts. Paired with
+          # the host per-frame pacing trace ([scrcpy-server]/[open-server-fast-inject]
+          # `pacing …` lines) that the backend emits into each fling-log.
+          adb -s emulator-5554 shell setprop log.tag.InputDispatcher VERBOSE || true
+          adb -s emulator-5554 shell setprop log.tag.InputReader VERBOSE || true
           # Phase 3k: ON-scrcpy runs the drift-corrected pacing fix (after arm) and
           # ON-scrcpy-legacy the pre-3k await-per-frame pacing (before arm) — both in
           # THIS run so the pacing fix is a same-run before/after. The harness sets
@@ -401,7 +409,12 @@ jobs:
             if [ "$cfg" = "OFF" ] && [ "${PROP_EXECUTABLE:-0}" != "1" ]; then
               echo "skipping OFF fling reference (proprietary not executable)"; continue
             fi
-            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then :; else
+            adb -s emulator-5554 logcat -c || true
+            adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-fling-$cfg.txt" 2>&1 &
+            FLING_LOGCAT_PID=$!
+            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then FLING_RC=0; else FLING_RC=1; fi
+            kill "$FLING_LOGCAT_PID" 2>/dev/null || true
+            if [ "$FLING_RC" != "0" ]; then
               # OFF reference and the ON-scrcpy-legacy BEFORE arm are transparency,
               # not gated — a failure there drops that arm with a warning. The gated
               # arms (ON-uiautomation, ON-scrcpy drift) must succeed.

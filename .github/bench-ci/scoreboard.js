@@ -214,6 +214,37 @@ if (effKeys.length) {
   L.push("");
 }
 
+// Locate source per block (review F5) + no-effect diagnostics (review F7). The
+// per-iteration untimed locate is NOT backend-independent: its primary source, a
+// `uiautomator dump` file, is unusable while a backend holds UiAutomation, so it
+// falls through to the block's OWN backend describe. Only the effect FINGERPRINT
+// (mResumedActivity via dumpsys) is backend-independent. Print the split so the
+// asymmetry is visible, and surface any first-attempt no-effect tap's identity.
+if (blocks.some((b) => b.locateViaTotal || (b.noEffectSamples && b.noEffectSamples.length))) {
+  L.push("### Locate source & no-effect taps (F5 / F7)");
+  L.push("");
+  L.push("Locate is per-backend (dump primary, backend-describe fallback); only the effect fingerprint (`mResumedActivity`) is backend-independent.");
+  L.push("");
+  L.push("| block | locate dump/describe | first-attempt no-effect |");
+  L.push("| --- | --- | --- |");
+  for (const b of blocks) {
+    const lv = b.locateViaTotal;
+    const via = lv ? `${lv.dump}/${lv.describe}` : "-";
+    const ne = b.noEffectSamples && b.noEffectSamples.length ? String(b.noEffectSamples.length) : "0";
+    L.push(`| ${b.block} | ${via} | ${ne} |`);
+  }
+  L.push("");
+  const withMisses = blocks.filter((b) => b.noEffectSamples && b.noEffectSamples.length);
+  if (withMisses.length) {
+    L.push("First-attempt no-effect tap identities (F7):");
+    L.push("");
+    for (const b of withMisses) {
+      for (const s of b.noEffectSamples) L.push(`- **${b.block}** ${s}`);
+    }
+    L.push("");
+  }
+}
+
 // Notes
 L.push("### Notes per block");
 L.push("");
@@ -227,20 +258,40 @@ for (const b of blocks) {
 
 // Fling A/B
 if (fling) {
-  L.push("### Fling A/B (scrcpy vs uiautomation median scroll)");
+  L.push("### Fling A/B (scrcpy[drift] vs uiautomation median scroll)");
   L.push("");
-  L.push(`OFF reference present: ${fling.offReferencePresent ? "yes" : "no"}`);
+  L.push(`OFF reference present: ${fling.offReferencePresent ? "yes" : "no"}` +
+    ` · scrcpy pacing: **${fling.scrcpyPacing || "drift"}**` +
+    ` · before(legacy) arm present: ${fling.legacyArmPresent ? "yes" : "no"}`);
   if (fling.flingGate) {
     L.push("");
-    L.push(`Fling parity gate (±${fling.flingGate.tolerance} on informative cells): **${fling.flingGate.verdict}**`);
+    L.push(`Fling parity gate (scrcpy[drift]/uia ±${fling.flingGate.tolerance}, **no whitelist**, per-cell blocking): **${fling.flingGate.verdict}**`);
   }
   L.push("");
-  L.push("| dur(ms) | dist | uia med | scrcpy med | scrcpy/uia | off med | reliable |");
-  L.push("| --- | --- | --- | --- | --- | --- | --- |");
+  // scrcpy/off and uia/off are the proprietary-reference transparency (review F2/F4).
+  L.push("| dur(ms) | dist | uia med | scrcpy med | scrcpy/uia | off med | scrcpy/off | uia/off | reliable |");
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const g of fling.grid || []) {
-    L.push(`| ${g.durationMs} | ${g.distance} | ${g.uiautomation?.median ?? "-"} | ${g.scrcpy?.median ?? "-"} | ${g.scrcpyOverUia} | ${g.off?.median ?? "-"} | ${g.reliable ? "✓" : "saturated"} |`);
+    L.push(
+      `| ${g.durationMs} | ${g.distance} | ${g.uiautomation?.median ?? "-"} | ${g.scrcpy?.median ?? "-"} | ${g.scrcpyOverUia} | ` +
+        `${g.off?.median ?? "-"} | ${g.scrcpyOverOff ?? "-"} | ${g.uiaOverOff ?? "-"} | ${g.reliable ? "✓" : "saturated"} |`
+    );
   }
   L.push("");
+  // Same-run before/after pacing (legacy → drift), when the before arm ran.
+  if (fling.legacyArmPresent) {
+    L.push("**Pacing before(legacy) → after(drift), same run**");
+    L.push("");
+    L.push("| dur(ms) | dist | legacy med | drift med | scrcpy/uia legacy→drift | scrcpy/off legacy→drift |");
+    L.push("| --- | --- | --- | --- | --- | --- |");
+    for (const g of fling.grid || []) {
+      L.push(
+        `| ${g.durationMs} | ${g.distance} | ${g.scrcpyLegacy?.median ?? "-"} | ${g.scrcpy?.median ?? "-"} | ` +
+          `${g.scrcpyLegacyOverUia ?? "-"} → ${g.scrcpyOverUia ?? "-"} | ${g.scrcpyLegacyOverOff ?? "-"} → ${g.scrcpyOverOff ?? "-"} |`
+      );
+    }
+    L.push("");
+  }
 }
 
 // Phase 3j: serialize-once + compact in-run A/B and the transport experiment.

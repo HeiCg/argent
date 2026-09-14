@@ -1,0 +1,305 @@
+// Unit tests for the CI bench GATES (review: "gates never observed to fire").
+// Each gate script (merge-blocks.js, merge-fling.js, scoreboard.js) is a standalone
+// Node program that reads $BENCH_OUT/*.json and exits non-zero on a violation. These
+// tests write synthetic block/fling JSONs into a throwaway BENCH_OUT and assert the
+// script's exit code + message, so tap-timeline parity, oracle self-test, vacuous-arm,
+// degraded-arm, redir, zero-fallback, landing-rate, missing-ON, the fling parity gate
+// (now WITH NO whitelist + floor exclusion) and the F3 tap-parity verdict all have a
+// firing/non-firing proof that does not depend on a full device run.
+//
+// Run: node --test .github/bench-ci/gates.test.js
+const { test } = require("node:test");
+const assert = require("node:assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync } = require("child_process");
+
+const HERE = __dirname;
+const MERGE_BLOCKS = path.join(HERE, "merge-blocks.js");
+const MERGE_FLING = path.join(HERE, "merge-fling.js");
+const SCOREBOARD = path.join(HERE, "scoreboard.js");
+
+function freshOut() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "bench-gate-"));
+}
+
+/** Run a gate script; return { code, stdout, stderr }. Never throws on non-zero. */
+function run(script, out, extraEnv = {}) {
+  try {
+    const stdout = execFileSync("node", [script], {
+      env: { ...process.env, BENCH_OUT: out, ...extraEnv },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { code: 0, stdout, stderr: "" };
+  } catch (e) {
+    return { code: e.status ?? 1, stdout: String(e.stdout || ""), stderr: String(e.stderr || "") };
+  }
+}
+
+const ENV = {
+  androidRelease: "14",
+  androidSdk: "34",
+  abi: "x86_64",
+  screen: "1080x2400",
+  density: "420",
+  N: 20,
+  WARMUP: 3,
+  COLD: 3,
+  tokenizer: "o200k",
+};
+
+/** A healthy per-block file. Override any field of `.block`. */
+function block(name, over = {}) {
+  const isOff = name.startsWith("OFF");
+  return {
+    env: ENV,
+    block: {
+      block: name,
+      config: isOff ? "OFF" : "ON",
+      fastInject: name === "ON-scrcpy",
+      gestureParams: { tapHoldMs: 50, swipeDurationMs: 250, pinchDurationMs: 300 },
+      injectedTapTimeline: { holdMs: 50, frameCount: 2, hasMoveFrame: false, backend: name },
+      verbs: [{ verb: "gesture-tap", latency: { p50: 52, p95: 54 }, errors: 0, fallbacks: 0 }],
+      effectCheckedTotal: isOff ? 40 : 60,
+      effectZeroTotal: 0,
+      firstTapNoEffectTotal: 0,
+      originLostTotal: 0,
+      locateFailedTotal: 0,
+      coordMovedTotal: 0,
+      locateViaTotal: { dump: 0, describe: isOff ? 40 : 60 },
+      noEffectSamples: [],
+      oracleSelfTestPassed: true,
+      transport: isOff ? null : "redir",
+      degradedReasons: [],
+      fidelitySet: ["a", "b", "c"],
+      coldStartMs: [500, 450, 440],
+      describeSample: { source: name, bytes: 1894, tokens: 657, elements: 17 },
+      screenshot: { bytes: 1000, width: 1080, height: 2400, format: "jpeg" },
+      ...over,
+    },
+  };
+}
+
+function writeBlocks(out, blocks) {
+  for (const b of blocks) fs.writeFileSync(path.join(out, `bench-block-${b.block.block}.json`), JSON.stringify(b));
+}
+
+const FOUR = () => [block("OFF-1"), block("ON-uiautomation"), block("ON-scrcpy"), block("OFF-2")];
+const ALLENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-scrcpy,OFF-2" };
+
+/* ------------------------------- merge-blocks ----------------------------- */
+
+test("merge-blocks: healthy four-block run passes", () => {
+  const out = freshOut();
+  writeBlocks(out, FOUR());
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /blocks merged: OFF-1, ON-uiautomation, ON-scrcpy, OFF-2/);
+});
+
+test("merge-blocks: tap-timeline parity FIRES on a MOVE frame", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.injectedTapTimeline = { holdMs: 50, frameCount: 3, hasMoveFrame: true, backend: "ON-scrcpy" };
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /tap-timeline parity/);
+});
+
+test("merge-blocks: oracle self-test FIRES", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.oracleSelfTestPassed = false;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /oracle self-test failed/);
+});
+
+test("merge-blocks: vacuous-arm FIRES (tap verbs but effectChecked 0)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[1].block.effectCheckedTotal = 0;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /UNARMED/);
+});
+
+test("merge-blocks: degraded-arm FIRES", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[0].block.degradedReasons = ["await-screen-idle capped every iteration"];
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /DEGRADED ARM/);
+});
+
+test("merge-blocks: redir gate FIRES when an ON block used adb-forward", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.transport = "adb-forward";
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /did NOT use the redir transport/);
+});
+
+test("merge-blocks: zero-fast-inject-fallback FIRES for ON-scrcpy", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.verbs = [{ verb: "gesture-tap", latency: { p50: 52, p95: 54 }, errors: 0, fallbacks: 2 }];
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /fast-inject fallback/);
+});
+
+test("merge-blocks: landing-rate FIRES below 95% (not a 1-2% drop)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.effectZeroTotal = 6; // 6/60 = 90%
+  bs[2].block.firstTapNoEffectTotal = 6;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /landing rate below 95%/);
+});
+
+test("merge-blocks: a 1/60 scrcpy async drop does NOT fire the landing gate", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.effectZeroTotal = 1; // 59/60 = 98.3%
+  bs[2].block.firstTapNoEffectTotal = 1;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+});
+
+test("merge-blocks: a requested ON block that produced no file FIRES", () => {
+  const out = freshOut();
+  writeBlocks(out, [block("OFF-1"), block("ON-uiautomation"), block("OFF-2")]); // ON-scrcpy missing
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /missing required ON block/);
+});
+
+/* -------------------------------- merge-fling ----------------------------- */
+
+function flingBlock(name, cells, extra = {}) {
+  return { serial: "emulator-5554", N: 12, config: name, cells, ...extra };
+}
+// Six cells; `spec` maps "dur|dist" -> [uiaMed, scrMed, offMed].
+function flingSet(out, spec, opts = {}) {
+  const uia = [], scr = [], off = [], leg = [];
+  for (const [k, v] of Object.entries(spec)) {
+    const [durationMs, distance] = k.split("|").map(Number);
+    const cell = (median) => ({ durationMs, distance, n: 12, median, iqr: [median, median] });
+    uia.push(cell(v[0]));
+    scr.push(cell(v[1]));
+    if (v[2] != null) off.push(cell(v[2]));
+    if (v[3] != null) leg.push(cell(v[3]));
+  }
+  fs.writeFileSync(path.join(out, "fling-block-ON-uiautomation.json"), JSON.stringify(flingBlock("ON-uiautomation", uia)));
+  fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy.json"), JSON.stringify(flingBlock("ON-scrcpy", scr, { pacing: "drift" })));
+  if (off.length) fs.writeFileSync(path.join(out, "fling-block-OFF.json"), JSON.stringify(flingBlock("OFF", off)));
+  if (leg.length) fs.writeFileSync(path.join(out, "fling-block-ON-scrcpy-legacy.json"), JSON.stringify(flingBlock("ON-scrcpy-legacy", leg, { pacing: "legacy" })));
+}
+
+test("merge-fling: passes when every informative cell is within ±0.15", () => {
+  const out = freshOut();
+  flingSet(out, {
+    "150|0.3": [0.45, 0.46, 0.46],
+    "250|0.3": [0.36, 0.34, 0.45],
+    "400|0.3": [0.34, 0.33, 0.36],
+    "400|0.5": [0.60, 0.58, 0.62],
+  });
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /FLING VERDICT: PASS/);
+});
+
+test("merge-fling: NO whitelist — a cell that used to be whitelisted (400|0.5) now FAILS", () => {
+  const out = freshOut();
+  // 400|0.5 scrcpy/uia = 0.36/0.50 = 0.72 — outside ±0.15 and formerly whitelisted.
+  flingSet(out, {
+    "150|0.3": [0.45, 0.46, 0.46],
+    "250|0.3": [0.36, 0.34, 0.45],
+    "400|0.5": [0.50, 0.36, 0.62],
+  });
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /fling parity gate FAILED/);
+  assert.match(r.stdout, /FLING VERDICT: FAIL/);
+});
+
+test("merge-fling: a floor-pinned cell (both arms at 0.175) is EXCLUDED, not counted", () => {
+  const out = freshOut();
+  // Only cell is floor-pinned → no informative cells → INCONCLUSIVE, not a pass/fail.
+  flingSet(out, { "150|0.5": [0.175, 0.175, 0.175] });
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0);
+  assert.match(r.stdout, /INCONCLUSIVE/);
+  assert.match(r.stdout, /floor-pinned/);
+});
+
+test("merge-fling: scrcpy/off and uia/off transparency + before/after legacy arm are printed", () => {
+  const out = freshOut();
+  flingSet(out, {
+    "150|0.3": [0.45, 0.46, 0.46, 0.47],
+    "400|0.3": [0.34, 0.33, 0.36, 0.23], // legacy scrcpy under-scrolls (0.23) vs drift 0.33
+  });
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /scrcpy\/off/);
+  assert.match(r.stdout, /uia\/off/);
+  assert.match(r.stdout, /before\(legacy\) → after\(drift\)/);
+});
+
+test("merge-fling: missing the drift arm FIRES (hard requirement)", () => {
+  const out = freshOut();
+  fs.writeFileSync(
+    path.join(out, "fling-block-ON-uiautomation.json"),
+    JSON.stringify(flingBlock("ON-uiautomation", [{ durationMs: 150, distance: 0.3, n: 12, median: 0.45, iqr: [0.45, 0.45] }]))
+  );
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr + r.stdout, /fling-block-ON-scrcpy\.json|needs/);
+});
+
+/* --------------------------------- scoreboard ----------------------------- */
+
+test("scoreboard: F3 — a 1ms gap at a 0ms drift floor reads 'at parity', not a win", () => {
+  const out = freshOut();
+  // ON-scrcpy tap 51 vs OFF 52; OFF-1 == OFF-2 (0ms drift floor). Must say parity.
+  const bs = FOUR();
+  const setTap = (b, p50) => (b.block.verbs = [{ verb: "gesture-tap", latency: { p50, p95: p50 + 2 }, errors: 0, fallbacks: 0 }]);
+  setTap(bs[0], 52);
+  setTap(bs[1], 77);
+  setTap(bs[2], 51);
+  setTap(bs[3], 52);
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, ALLENV).code, 0);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /ON-scrcpy vs OFF on tap:.*at parity/);
+});
+
+test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.effectZeroTotal = 1;
+  bs[2].block.firstTapNoEffectTotal = 1;
+  bs[2].block.noEffectSamples = ["i=7 verb='tap+describe(settle:false)' tapMs=41 coord=(0.5000,0.3200) via=describe originFp='act:Settings' finalFp='act:Settings'"];
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, ALLENV).code, 0);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Locate source & no-effect taps/);
+  assert.match(r.stdout, /only the effect fingerprint .*is backend-independent/i);
+  assert.match(r.stdout, /i=7 verb=/);
+});
