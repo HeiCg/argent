@@ -8,15 +8,19 @@
 #   - the focused window belongs to a launcher,
 # for N consecutive clean reads. Each read first dismisses any system/ANR dialog
 # (CLOSE_SYSTEM_DIALOGS + BACK) and returns HOME, then inspects `dumpsys window`.
-# Never fatal — on timeout it warns and proceeds (the tests still run and the
-# scrcpy/logcat evidence is captured), but the wait is logged so an environment-
-# degraded run is visible in the step log.
+# STRICT (4th arg) decides what a timeout means (review F12). STRICT=0 (advisory,
+# the device-test step): warn and proceed — the tests still run and the scrcpy/
+# logcat evidence is captured, and the wait is logged so a degraded run is visible.
+# STRICT=1 (BLOCKING, each bench block): a screen that never settles poisons the
+# block's effect check, so exit non-zero and let the caller fail the block rather
+# than score taps that may have landed on an ANR dialog.
 #
-# Usage: ready-gate.sh [serial] [need-consecutive] [max-iterations(~2s each)]
+# Usage: ready-gate.sh [serial] [need-consecutive] [max-iterations(~2s each)] [strict]
 set -uo pipefail
 SERIAL="${1:-emulator-5554}"
 NEED="${2:-3}"
 MAXIT="${3:-60}"
+STRICT="${4:-0}"
 
 ash() { adb -s "$SERIAL" shell "$@" 2>/dev/null; }
 
@@ -45,5 +49,9 @@ for i in $(seq 1 "$MAXIT"); do
   fi
   sleep 2
 done
+if [ "$STRICT" = "1" ]; then
+  echo "::error::[ready-gate] NOT settled after $((MAXIT * 2))s (${NEED} consecutive clean reads never reached) — failing this block (STRICT); a tap on an ANR dialog is not a landed tap"
+  exit 1
+fi
 echo "::warning::[ready-gate] NOT settled after $((MAXIT * 2))s (${NEED} consecutive clean reads never reached) — proceeding, run may be environment-degraded"
 exit 0

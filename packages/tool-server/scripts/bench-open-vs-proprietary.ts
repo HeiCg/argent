@@ -511,6 +511,8 @@ interface TapEffectResult extends VerbResult {
   // How the coordinate was located: backend-independent uiautomator-dump file vs the
   // block's backend describe fallback. Same PRIMARY source in every block.
   locateVia: { dump: number; describe: number };
+  // F7: per-miss identity strings for the first-attempt no-effect taps (capped).
+  noEffectSamples: string[];
 }
 
 /**
@@ -558,6 +560,10 @@ async function timeTapEffect(
   let locateFailed = 0;
   let coordMoved = 0;
   const locateVia = { dump: 0, describe: 0 };
+  // F7: identity of each first-attempt no-effect tap (block/verb/iteration, origin
+  // and final fingerprints, timings, coordinate + locate source), so a 59/60 is
+  // diagnosable from the artifacts rather than a bare aggregate count.
+  const noEffectSamples: string[] = [];
   let prev: { x: number; y: number } | undefined;
   for (let i = 0; i < N; i++) {
     // 1. UNTIMED fresh locate on the CURRENT screen. If it fails, relaunch a pristine
@@ -601,7 +607,18 @@ async function timeTapEffect(
     // run-6 decision): a tap that produced no effect is not a representative timing.
     // Its count is firstTapNoEffect (printed); it is never retried away.
     if (changed) lat.push(dt);
-    else effectZero++;
+    else {
+      effectZero++;
+      // F7: capture WHY this first attempt showed no effect — the fingerprint the
+      // poll ended on, the origin it was compared against, the tapped coordinate and
+      // its locate source, and the tap timing — so a silent 59/60 is explicable.
+      const finalFp = await fingerprint().catch(() => undefined);
+      const sample =
+        `i=${i} verb='${label}' tapMs=${dt} coord=(${loc.x.toFixed(4)},${loc.y.toFixed(4)}) ` +
+        `via=${loc.source} originFp='${originFp}' finalFp='${finalFp ?? "(undef)"}'`;
+      if (noEffectSamples.length < 10) noEffectSamples.push(sample);
+      realDebug(`[bench][no-effect] ${sample}`);
+    }
     // 5. Restore for the next iteration: BACK; if not back on the root, hard-reset.
     if (changed) {
       await restoreBack().catch(() => undefined);
@@ -627,6 +644,7 @@ async function timeTapEffect(
     locateFailed,
     coordMoved,
     locateVia,
+    noEffectSamples,
   };
 }
 
@@ -1418,6 +1436,20 @@ function resetUiDumpProbe(): void {
 // it). After 2 consecutive empties in a block it short-circuits (dump unusable here).
 function dumpUiTreeFile(): string {
   if (uiDumpEmptyStreak >= 2) return "";
+  // F6: the short-circuit is a LOGGED, GATED event, not a silent per-block
+  // degradation. When the 2nd consecutive empty dump disables the primary source
+  // for the rest of the block (so every later locate falls through to the block's
+  // own backend describe), record it once so the scoreboard/log shows WHEN the
+  // backend-independent primary stopped being used.
+  const noteShortCircuit = (): void => {
+    if (uiDumpEmptyStreak === 2) {
+      realDebug(
+        "[bench][locate] uiautomator-dump short-circuited for this block (2 consecutive empty " +
+          "dumps) — the backend-independent primary is disabled; locate falls through to the " +
+          "block's own backend describe from here on (review F6)"
+      );
+    }
+  };
   try {
     adbShell("uiautomator dump /sdcard/df_bench_ui.xml >/dev/null 2>&1", 6_000);
     const out = adbShell("cat /sdcard/df_bench_ui.xml 2>/dev/null", 5_000);
@@ -1425,12 +1457,14 @@ function dumpUiTreeFile(): string {
     const end = out.lastIndexOf("</hierarchy>");
     if (start === -1 || end === -1) {
       uiDumpEmptyStreak++;
+      noteShortCircuit();
       return "";
     }
     uiDumpEmptyStreak = 0;
     return out.slice(start, end + "</hierarchy>".length);
   } catch {
     uiDumpEmptyStreak++;
+    noteShortCircuit();
     return "";
   }
 }
@@ -1602,43 +1636,6 @@ async function deriveNavTarget(
   return null;
 }
 
-// After a navigating tap, does the IMMEDIATE describe already show the
-// destination screen (fresh) or still the pre-tap root (stale)? Returns the
-// destination-visible rate over n runs for the given describe idle policy
-// (`policy` is passed straight to the describe tool: undefined = OFF path where
-// `settle` is a no-op; false/true = ON's two policies). `waitedP50` confirms the
-// server-side idle wait each policy actually spent (≈0 for settle:false, ≈cap for
-// settle:true; null on OFF, which surfaces no split).
-async function destinationVisibleRate(
-  reg: Reg,
-  n: number,
-  policy: boolean | undefined,
-  nav: { target: string; x: number; y: number; markers: string[] }
-): Promise<{ visible: number; n: number; rate: number; waitedP50: number | null }> {
-  let visible = 0;
-  let counted = 0;
-  const waited: number[] = [];
-  const markers = new Set(nav.markers);
-  for (let i = 0; i < n; i++) {
-    await relaunchSettings(reg); // light reset (no pm clear) — this loop runs N×2 on ON
-    try {
-      await reg.invokeTool("gesture-tap", { udid: SERIAL, x: nav.x, y: nav.y });
-      const d = (await reg.invokeTool("describe", {
-        udid: SERIAL,
-        ...(policy === undefined ? {} : { settle: policy }),
-      })) as { description: string; waitedMs?: number };
-      counted++;
-      const labels = labelSetOf(d.description);
-      if ([...markers].some((m) => labels.has(m))) visible++;
-      if (typeof d.waitedMs === "number") waited.push(d.waitedMs);
-    } catch {
-      /* skip this run */
-    }
-  }
-  const rate = counted ? Number((visible / counted).toFixed(3)) : NaN;
-  return { visible, n: counted, rate, waitedP50: waited.length ? summarize(waited).p50 : null };
-}
-
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
@@ -1673,18 +1670,6 @@ interface BlockResult {
   adbFormFactorBeforeP95: number | null;
   adbFormFactorAfterP50: number | null;
   adbFormFactorN: number;
-  // Post-navigating-tap staleness (P3d): "destination already visible" rate for
-  // each describe idle policy — OFF (as-is) in an OFF block; ON settle:false and
-  // ON settle:true in an ON block. Empty when no nav target could be derived.
-  destinationVisible: Array<{
-    policy: string;
-    target: string | null;
-    markerCount: number;
-    visible: number;
-    n: number;
-    rate: number;
-    waitedP50: number | null;
-  }>;
   describeSample: {
     source: string;
     bytes: number;
@@ -1723,6 +1708,10 @@ interface BlockResult {
   locateFailedTotal: number;
   coordMovedTotal: number;
   locateViaTotal: { dump: number; describe: number };
+  // F7: per-miss identity of the first-attempt no-effect taps in this block (block,
+  // verb, iteration, tap timing, origin/final fingerprints, coord + locate source),
+  // so a silent 59/60 is diagnosable from the block JSON, not only an aggregate.
+  noEffectSamples: string[];
   // Oracle self-test verdict (run-2 review): did the backend complete ONE
   // detected+restored navigation before the timed loop? false ⇒ the block's effect
   // rows are untrustworthy; the merge fails it with a DISTINCT "oracle self-test
@@ -2073,43 +2062,15 @@ async function runBlock(
 
   await ensureSettings(reg);
 
-  // Post-navigating-tap staleness (P3d): after tapping a KNOWN Settings category,
-  // does the immediate describe already contain the destination screen's content?
-  // OFF measures its one policy; ON measures settle:false (like-for-like) and
-  // settle:true (settled read). Reuses the `nav` target derived above (same row +
-  // marker set), so the effect check and the staleness probe agree.
-  const destinationVisible: BlockResult["destinationVisible"] = [];
-  if (!nav || nav.markers.length === 0) {
-    notes.push(
-      "destination-visible: could not derive a nav target / destination markers on this root; staleness skipped"
-    );
-  } else if (config === "ON") {
-    const off = await destinationVisibleRate(reg, N, false, nav);
-    destinationVisible.push({
-      policy: "ON settle:false",
-      target: nav.target,
-      markerCount: nav.markers.length,
-      ...off,
-    });
-    await ensureSettings(reg);
-    const onT = await destinationVisibleRate(reg, N, true, nav);
-    destinationVisible.push({
-      policy: "ON settle:true",
-      target: nav.target,
-      markerCount: nav.markers.length,
-      ...onT,
-    });
-  } else {
-    const offRes = await destinationVisibleRate(reg, N, undefined, nav);
-    destinationVisible.push({
-      policy: "OFF",
-      target: nav.target,
-      markerCount: nav.markers.length,
-      ...offRes,
-    });
-  }
-
-  await ensureSettings(reg);
+  // Post-navigating-tap staleness probe (phase 3d `destinationVisible`) REMOVED
+  // (review F19). It read `visible: 0 of 20` in ALL four blocks of run 7 — including
+  // the two proprietary OFF blocks whose taps landed 40/40 — because it tapped the
+  // STALE coordinate derived once at nav-derive time and matched marker labels
+  // captured once then, rather than locating fresh per iteration. An all-zero
+  // oracle-adjacent probe is broken, not a finding, and given this effort's history
+  // with needle-matching retractions it must not disappear silently; per F19 the
+  // choice is "locate fresh per iteration OR remove", and it is removed here (the
+  // phase-3d staleness claim is void from run 7 and is not re-measured this run).
 
   // gesture-swipe — reset to the Settings root before each iteration (F5).
   verbs.push(
@@ -2269,6 +2230,10 @@ async function runBlock(
     0
   );
   const coordMovedTotal = verbs.reduce((s, v) => s + ((v as Partial<TapEffectResult>).coordMoved ?? 0), 0);
+  // F7: gather the per-miss identity strings from every tap verb into the block.
+  const noEffectSamples = verbs.flatMap(
+    (v) => (v as Partial<TapEffectResult>).noEffectSamples ?? []
+  );
   const locateViaTotal = verbs.reduce(
     (acc, v) => {
       const lv = (v as Partial<TapEffectResult>).locateVia;
@@ -2348,6 +2313,7 @@ async function runBlock(
     locateFailedTotal,
     coordMovedTotal,
     locateViaTotal,
+    noEffectSamples,
     oracleSelfTestPassed,
     describeSplitIdle,
     describeSplitAfterTap,
@@ -2360,7 +2326,6 @@ async function runBlock(
     adbFormFactorBeforeP95: adbFF.beforeP95,
     adbFormFactorAfterP50: adbFF.afterP50,
     adbFormFactorN: adbFF.n,
-    destinationVisible,
     transport: lastTransport,
     degradedReasons,
     notes,
