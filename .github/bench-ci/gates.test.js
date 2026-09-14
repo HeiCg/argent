@@ -74,6 +74,16 @@ function block(name, over = {}) {
       coldStartMs: [500, 450, 440],
       describeSample: { source: name, bytes: 1894, tokens: 657, elements: 17 },
       screenshot: { bytes: 1000, width: 1080, height: 2400, format: "jpeg" },
+      // Phase 3n.3 (3N2-H1): every ON block carries the on-device per-strategy counts
+      // from getInfo. The input-manager arm reads all-input-manager with no unavailable
+      // key; the UiAutomation control reads all-default. The fallback gate reads these.
+      ...(isOff
+        ? {}
+        : {
+            injectStrategyCounts: name === "ON-uiautomation" ? { default: 161 } : { "input-manager": 161 },
+            injectStrategyTotal: 161,
+            measuredInjectRpcs: 100,
+          }),
       ...over,
     },
   };
@@ -173,16 +183,43 @@ test("merge-blocks: redir gate FIRES when an ON block used adb-forward", () => {
   assert.match(r.stderr, /did NOT use the redir transport/);
 });
 
-test("merge-blocks: zero-fallback gate FIRES for ON-input-manager (3n.2 rename)", () => {
+test("merge-blocks: fallback gate FIRES on on-device injectStrategyCounts.unavailable (3n.3)", () => {
   const out = freshOut();
   const bs = FOUR();
-  // bs[2] is ON-input-manager: a host-side inject fallback means the reflective pipe
-  // degraded mid-run (replaces the old ON-scrcpy zero-fast-inject-fallback gate).
-  bs[2].block.verbs = [{ verb: "gesture-tap", latency: { p50: 52, p95: 54 }, errors: 0, fallbacks: 2 }];
+  // bs[2] is ON-input-manager: 11 of 161 injections fell back to uia-async on-device
+  // (hiddenapi). The AUTHORITATIVE signal is injectStrategyCounts.unavailable, NOT the
+  // dead host `verb.fallbacks` counter (structurally 0 after the scrcpy removal, 3N2-H1).
+  bs[2].block.injectStrategyCounts = { "input-manager": 150, unavailable: 11 };
+  bs[2].block.injectStrategyTotal = 161;
   writeBlocks(out, bs);
   const r = run(MERGE_BLOCKS, out, ALLENV);
   assert.strictEqual(r.code, 1);
-  assert.match(r.stderr, /inject fallback/);
+  assert.match(r.stderr, /fell back to uia-async on 11\/161/);
+});
+
+test("merge-blocks: fallback gate does NOT fire on host verb.fallbacks (the dead counter, 3n.3)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  // The dead host counter reads non-zero but the on-device counts are clean — the run
+  // is a clean input-manager arm. The old gate would have fired here; the new one must not.
+  bs[2].block.verbs = [{ verb: "gesture-tap", latency: { p50: 52, p95: 54 }, errors: 0, fallbacks: 2 }];
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /on-device inject fallbacks .*: 0\/161 \(gate 0\) — OK/);
+});
+
+test("merge-blocks: fallback gate FIRES on a missing/zero on-device inject denominator (3n.3)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  // The counter never ran (getInfo unread / absent counter): no denominator, so the run
+  // cannot certify a clean input-manager arm.
+  bs[2].block.injectStrategyCounts = {};
+  bs[2].block.injectStrategyTotal = 0;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /NO on-device injections/);
 });
 
 test("merge-blocks: landing-rate FIRES below 95% (not a 1-2% drop)", () => {

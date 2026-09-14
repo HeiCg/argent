@@ -1746,6 +1746,15 @@ interface BlockResult {
   // hiddenapi policy and fell back to uia-async (the merge/report drops that
   // block from the strategy comparison, ticket §3). undefined when not probed.
   injectStrategyReported?: string;
+  // Phase 3n.3 (3N2-H1): the RAW on-device per-strategy injection counts from
+  // `getInfo` (`{"input-manager":161}`, or `{"input-manager":150,"unavailable":11}`
+  // on a hiddenapi fall-back), and their process-wide total — the merge gate fails on
+  // `injectStrategyCounts["unavailable"] > 0` or a missing/zero total. undefined on OFF.
+  injectStrategyCounts?: Record<string, number>;
+  injectStrategyTotal?: number;
+  // Phase 3n.3 (3N2-M6): count of TIMED, measured gated-inject RPCs behind the latency
+  // rows (the "N measured" in the 161 process-wide breakdown). undefined on OFF/no verbs.
+  measuredInjectRpcs?: number;
   coldStartMs: number[];
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
@@ -2418,6 +2427,13 @@ async function runBlock(
   // an unaccounted injection, 3N-L5). Reported as `<reported>: n/total` so a silent
   // hiddenapi fallback (`unavailable`) shows in the denominator split, per ON block.
   let injectStrategyReported: string | undefined;
+  // Phase 3n.3 (3N2-H1): carry the RAW on-device per-strategy counts (and their
+  // process-wide total) on the block JSON, so the merge gate can fail on
+  // `injectStrategyCounts["unavailable"]` — the authoritative fallback signal now
+  // that the host-side `[open-server-fast-inject] … falling back` emitter is gone —
+  // instead of the dead host counter. `injectStrategyReported` stays as the human note.
+  let injectStrategyCounts: Record<string, number> | undefined;
+  let injectStrategyTotal: number | undefined;
   if (config === "ON") {
     try {
       const device = resolveDevice(SERIAL);
@@ -2426,6 +2442,8 @@ async function runBlock(
       const info = (await server.getInfo()) as { injectStrategyCounts?: Record<string, number> };
       const counts = info.injectStrategyCounts ?? {};
       const total = Object.values(counts).reduce((s, n) => s + n, 0);
+      injectStrategyCounts = counts;
+      injectStrategyTotal = total;
       // The strategy the host asked this block to run: input-manager for that arm, the
       // Kotlin DEFAULT (reported "default") for the ON-uiautomation control block.
       const expected = injectStrategy ?? "default";
@@ -2453,11 +2471,29 @@ async function runBlock(
   await reg.dispose().catch(() => undefined);
   await teardownBackend();
 
+  // Phase 3n.3 (3N2-M6): the measured gated-inject-RPC denominator as a NUMBER, so
+  // Q4 can state "161 process-wide = N measured + warmups + oracle + locate/restore"
+  // with N spelled out rather than "a subset". Every timed iteration of an inject verb
+  // performed exactly one on-device injection; effect-checked verbs also injected on the
+  // (excluded-from-latency) missed/errored iterations, so count `effectChecked + errors`
+  // there and the full `latencySamples + errors` on the OFF-style timed verbs.
+  const INJECT_VERB = /^(gesture-tap|gesture-swipe|gesture-pinch|tap\+describe)/;
+  const measuredInjectRpcs = verbs
+    .filter((v) => INJECT_VERB.test(v.verb))
+    .reduce(
+      (s, v) =>
+        s + (v.effectChecked != null ? v.effectChecked + v.errors : v.latencySamples.length + v.errors),
+      0
+    );
+
   return {
     block,
     config,
     injectStrategy,
     injectStrategyReported,
+    injectStrategyCounts,
+    injectStrategyTotal,
+    measuredInjectRpcs,
     coldStartMs,
     verbs,
     describeSample,
