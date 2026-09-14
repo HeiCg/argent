@@ -37,6 +37,18 @@ class InjectStrategyTest {
     }
 
     @Test
+    fun `forceUnavailableForTest makes probe report unavailable with the reason (P9 seam)`() {
+        try {
+            InputManagerInjector.forceUnavailableForTest("blocked by test")
+            val a = InputManagerInjector.probe()
+            assertEquals(false, a.available)
+            assertEquals("blocked by test", a.error)
+        } finally {
+            InputManagerInjector.resetForTest()
+        }
+    }
+
+    @Test
     fun `outcome carries strategy and optional fallback fields`() {
         val ok = InjectOutcome(dropped = false, strategy = "uia-async")
         assertEquals("uia-async", ok.strategy)

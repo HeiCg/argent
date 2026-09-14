@@ -405,8 +405,17 @@ export interface OpenDeviceServerApi {
     x: number,
     y: number,
     // `inject` (phase 3n) selects the on-device injection strategy for this RPC;
-    // omit for today's behaviour.
-    opts?: { clickCount?: number; holdMs?: number; gapMs?: number; inject?: OpenInjectStrategy }
+    // omit for today's behaviour. `_forceInjectUnavailable` (phase 3n.1 P9) is a
+    // bench/test-only flag honored only when the server runs with benchDebug: it forces
+    // the input-manager pipe to report `strategy:"unavailable"` and fall back to
+    // `uia-async`, so the fallback can be exercised on a device where the API resolves.
+    opts?: {
+      clickCount?: number;
+      holdMs?: number;
+      gapMs?: number;
+      inject?: OpenInjectStrategy;
+      _forceInjectUnavailable?: boolean;
+    }
     // `dropped:true` (phase 3g) when the on-device dispatcher rejected an injected
     // event (no injectable window mid-transition, secure surface, contended input
     // pipe). The caller must treat it as a failed tap and fall back.
@@ -1006,6 +1015,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(tapOpts.holdMs !== undefined ? { holdMs: tapOpts.holdMs } : {}),
           ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
           ...(tapOpts.inject !== undefined ? { inject: tapOpts.inject } : {}),
+          ...(tapOpts._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
       setClipboard: (text) =>
         client.request<{ success: boolean; text: string; error?: string }>("setClipboard", { text }),

@@ -33,6 +33,10 @@ import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
+// Phase 3n.1 P9: start the on-device server with benchDebug so the forced-fallback
+// case can flip `_forceInjectUnavailable` on a `tap`. Debug params are honored only
+// under benchDebug and only when explicitly sent, so this changes nothing else.
+if (ENABLED) process.env.ARGENT_OPEN_SERVER_BENCH_DEBUG = "1";
 const SETTINGS = "com.android.settings";
 const CHROME = "com.android.chrome";
 const LAUNCHER = "com.google.android.apps.nexuslauncher";
@@ -909,6 +913,50 @@ suite("android open-device-server on-device", () => {
       );
     }, 120_000);
   }
+
+  it("3n.1 P9 — input-manager forced unavailable falls back to uia-async, outcome unchanged", async () => {
+    // Force the reflective pipe to report unavailable on THIS tap (benchDebug seam),
+    // even though the emulator resolves it, and prove the tap still lands via the
+    // automatic uia-async fallback — the fallback path has otherwise never run on a
+    // "blocked" device (review 3N-M11). Then a normal input-manager tap confirms the
+    // override was request-scoped (reset).
+    const info = await freshSettings();
+    const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+    const beforeTexts = textSet(before);
+    const clickables = before.filter(
+      (e) => e.clickable === true && e.bounds.y1 > info.screenHeight * 0.12 && e.bounds.y2 < info.screenHeight * 0.85
+    );
+    const inside = (p: { x: number; y: number }, e: Element): boolean =>
+      p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
+    const row =
+      before.find((e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))) ??
+      clickables.find((e) => label(e).length > 0);
+    if (!row) throw new Error("3n.1 P9: no labelled clickable row on Settings");
+    const c = center(row);
+    const forced = (await api.tap(c.x, c.y, { inject: "input-manager", _forceInjectUnavailable: true })) as {
+      success: boolean;
+      strategy?: string;
+      fellBackTo?: string;
+      injectError?: string;
+    };
+    expect(forced.success).toBe(true);
+    expect(forced.strategy).toBe("unavailable");
+    expect(forced.fellBackTo).toBe("uia-async");
+    await sleep(1200);
+    await api.waitForIdle(3000);
+    const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const changed = [...afterTexts].filter((t) => !beforeTexts.has(t)).length + [...beforeTexts].filter((t) => !afterTexts.has(t)).length;
+    expect(changed).toBeGreaterThan(0); // outcome unchanged: the fell-back tap still navigated
+    // Reset check: a normal input-manager tap (no force) reports input-manager again.
+    await freshSettings();
+    const normal = (await api.tap(c.x, c.y, { inject: "input-manager" })) as { success: boolean; strategy?: string };
+    expect(normal.strategy).toBe("input-manager");
+    record(
+      "3n.1 P9 forced-fallback",
+      "PASS",
+      `forced unavailable → strategy=${forced.strategy} fellBackTo=${forced.fellBackTo}; tap still navigated (+/-${changed} labels); reset → ${normal.strategy}`
+    );
+  }, 120_000);
 
   it("3g paste (typeText) — text lands in an EditText, read back via describe", async () => {
     await freshSettings();

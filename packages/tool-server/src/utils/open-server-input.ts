@@ -40,7 +40,15 @@ const MULTI_TAP_GAP_MS = 100;
 export function resolveInjectStrategy(): OpenInjectStrategy | undefined {
   const v = process.env.ARGENT_OPEN_INJECT_STRATEGY;
   if (v === "uia-sync" || v === "uia-async" || v === "input-manager") return v;
-  return undefined;
+  // Phase 3n.1 (run-1 promotion): the default injector is now `input-manager` — the
+  // host sends `inject:"input-manager"` on every gesture unless overridden, and the
+  // on-device server falls back to `uia-async` by itself on a hiddenapi block. The
+  // `default` (alias `uia`) sentinel selects the PRE-3n.1 Kotlin DEFAULT path — the
+  // host sends NO `inject`, so tap keeps its async UP and swipe/gesture their sync UP;
+  // it is what the `ON-uiautomation` control block (gate P0) runs. Any other value
+  // (unset included) is the new default.
+  if (v === "default" || v === "uia") return undefined;
+  return "input-manager";
 }
 
 /** Spread `{ inject }` only when a strategy is active, so DEFAULT RPCs are unchanged. */

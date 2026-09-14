@@ -38,12 +38,22 @@ object InputManagerInjector {
     @Volatile private var resolved: Resolved? = null
     @Volatile private var probeError: String? = null
 
+    // Test seam (phase 3n.1 P9): when set, [probe] reports UNAVAILABLE with this reason
+    // WITHOUT touching the real resolution cache, so a test can force the `uia-async`
+    // fallback path on a device where the hidden API is actually reachable. Toggled
+    // per-request by the benchDebug-gated `_forceInjectUnavailable` param
+    // (JsonRpcHandler); null (the default) in production and between requests.
+    @Volatile private var forcedUnavailable: String? = null
+
     /**
      * Resolve (once) the InputManager singleton and its `injectInputEvent`
      * method. Idempotent and thread-safe. Never throws — a failure is captured in
      * the returned [Availability.error].
      */
     fun probe(): Availability {
+        // Test seam (P9): a forced-unavailable override short-circuits, so the
+        // `uia-async` fallback can be exercised on a device where the API resolves.
+        forcedUnavailable?.let { return Availability(false, it) }
         if (!probed) {
             synchronized(lock) {
                 if (!probed) {
@@ -83,7 +93,18 @@ object InputManagerInjector {
             probed = false
             resolved = null
             probeError = null
+            forcedUnavailable = null
         }
+    }
+
+    /**
+     * Force [probe] to report UNAVAILABLE with [reason] (or clear the override with
+     * null). Test seam (P9): exercises the `uia-async` fallback on a device where the
+     * hidden API is reachable. Never called in production — reachable only through the
+     * benchDebug-gated `_forceInjectUnavailable` request param.
+     */
+    fun forceUnavailableForTest(reason: String?) {
+        forcedUnavailable = reason
     }
 
     private fun resolve(): Resolved {
