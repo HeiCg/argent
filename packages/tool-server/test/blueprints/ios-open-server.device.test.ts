@@ -228,16 +228,24 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
   }, 90_000);
 
   it("typeText enters text into the Settings search field", async () => {
-    // Return to the Settings root, then focus the search field.
+    // Return to the Settings root.
     await client.launchApp(SETTINGS);
     await sleep(1500);
+    // iOS hides the search bar just above the first row; a downward swipe at the
+    // top reveals it so its element is on-screen and hittable.
+    const s0 = await client.getNestedState();
+    const table = findByType(s0.tree, "Table") ?? findByType(s0.tree, "CollectionView");
+    if (table) {
+      const midX = (table.bounds.x1 + table.bounds.x2) / 2;
+      await client.swipe(midX, table.bounds.y1 + 40, midX, table.bounds.y1 + 260, { steps: 8 });
+      await sleep(900);
+    }
     const state = await client.getNestedState();
     const search = findByType(state.tree, "SearchField");
-    if (search) {
-      const c = center(search);
-      await client.tap(c.x, c.y);
-      await sleep(800);
-    }
+    expect(search, "no SearchField in the Settings tree").toBeDefined();
+    const c = center(search!);
+    await client.tap(c.x, c.y);
+    await sleep(900);
     const res = await client.typeText("General");
     expect(res.success).toBe(true);
     expect(res.charsTyped).toBe("General".length);

@@ -26,7 +26,7 @@ permissions:
 jobs:
   ios-open-server-simulator:
     runs-on: macos-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -65,8 +65,10 @@ jobs:
         run: |
           # vitest resolves bare `@argent/*` imports to each package's built
           # `dist/` (its package.json main/exports), so the workspace must be
-          # compiled first — same as the repo's start-tool-server action.
-          npx tsc --build packages/tool-server
+          # compiled first. Use the ROOT build (like the repo's start-tool-server
+          # action): tool-server imports packages (e.g. @argent/telemetry) that its
+          # own tsconfig does not reference, so a scoped build misses them.
+          npx tsc --build
 
       - name: Create and boot an iPhone simulator
         shell: bash
