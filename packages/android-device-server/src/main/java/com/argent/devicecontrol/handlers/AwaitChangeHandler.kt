@@ -85,7 +85,10 @@ class AwaitChangeHandler {
         return result(snap.version, snap.hash, snap.stateHash, changed = snap.version > fromVersion, timedOut = true)
     }
 
-    private fun result(version: Long, hash: String, stateHash: String, changed: Boolean, timedOut: Boolean): JSONObject =
+    // Phase 3m.1 (3M-H1): `hash` / `stateHash` are nullable — an empty forest has
+    // no fingerprint. `put(key, null)` drops the key, so the reply omits the hash
+    // rather than shipping the EMPTY_TREE_HASH.
+    private fun result(version: Long, hash: String?, stateHash: String?, changed: Boolean, timedOut: Boolean): JSONObject =
         JSONObject().apply {
             put("version", version)
             put("hash", hash)

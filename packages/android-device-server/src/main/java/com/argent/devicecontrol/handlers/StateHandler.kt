@@ -103,6 +103,20 @@ class StateHandler(
         // versions/fingerprints pay for it (lazy, idempotent).
         if (wantFingerprints) TreeStore.armClock()
 
+        // Phase 3m.1 (3M-H4): the reported `version` must describe the SAME tree as
+        // the reply — read the AX clock ONCE here, BEFORE the capture, never a live
+        // volatile read after it. A post-capture read can be newer than the tree the
+        // reply carries (an AX event landed during the ~400 ms capture), so a later
+        // `sinceVersion == that` would falsely report `unchanged` and the host would
+        // never learn about the change it never saw. When fingerprints are computed
+        // the authoritative version is the snapshot's own (`fpSnap.version`, read
+        // under the build lock with the hash), which cannot disagree with the hash.
+        // While the clock is UNARMED `version` is meaningless (pinned at 0) and is
+        // reported ABSENT — never overloaded with 0, which a host could store and
+        // later replay as `sinceVersion: 0` to get a spurious `unchanged: true`.
+        val clockArmedAtCapture = TreeStore.isClockArmed()
+        val versionAtCapture = TreeStore.version
+
         // 0. Order any preceding touch's UP ahead of the capture. Fast-inject path
         //    (flush=true) drains the whole input queue synchronously; the default
         //    path drains only this server's own async ACTION_UP (R1, phase 3e). Both
@@ -262,18 +276,29 @@ class StateHandler(
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
             put("timings", timings)
-            // `version` is ALWAYS returned (the volatile AX clock; 0 while unarmed).
-            put("version", TreeStore.version)
+            // Phase 3m.1 (3M-H4): the reported version comes from ONE source,
+            // consistent with the hash — the snapshot's when we built one, else the
+            // single pre-capture read. ABSENT while the clock is unarmed (see above).
+            val reportedVersion: Long? = when {
+                !clockArmedAtCapture -> null
+                fpSnap != null -> fpSnap.version
+                else -> versionAtCapture
+            }
+            reportedVersion?.let { put("version", it) }
             // Phase 3m: fingerprints + `unchanged` ONLY when requested
             // (`fingerprints: true` or `sinceVersion`). Absent ⇒ not computed, never
-            // an EMPTY_TREE_HASH the host must not synthesise.
+            // an EMPTY_TREE_HASH the host must not synthesise. Phase 3m.1 (3M-H1): an
+            // empty forest carries no fingerprint (`fpSnap.isEmpty`) — omit the hash
+            // entirely so the host never mints a transient empty frame as a screen.
             if (wantFingerprints) {
                 fpSnap?.let {
-                    put("hash", it.hash)
-                    put("stateHash", it.stateHash)
-                    put("idHash", it.idHash)
+                    if (!it.isEmpty) {
+                        put("hash", it.hash)
+                        put("stateHash", it.stateHash)
+                        put("idHash", it.idHash)
+                    }
                 }
-                put("unchanged", sinceVersion == TreeStore.version)
+                reportedVersion?.let { put("unchanged", sinceVersion == it) }
             }
             // Serialize-once splice payload (phase 3j), per-request: JsonRpcHandler
             // removes this member (so it never ships) and splices it over TREE_TOKEN.

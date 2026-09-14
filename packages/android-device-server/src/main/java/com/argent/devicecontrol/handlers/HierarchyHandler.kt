@@ -33,6 +33,12 @@ class HierarchyHandler(
         val wantFingerprints = !nested &&
             (params.optBoolean("fingerprints", false) || params.has("sinceVersion"))
         if (wantFingerprints) TreeStore.armClock()
+        // Phase 3m.1 (3M-H4): read the AX clock ONCE, before the capture, and report
+        // it ABSENT while unarmed (never overloaded with 0). When a fingerprint is
+        // built its snapshot version is authoritative and cannot disagree with the
+        // hash. Mirrors StateHandler.
+        val clockArmedAtCapture = TreeStore.isClockArmed()
+        val versionAtCapture = TreeStore.version
 
         // 0. Order any preceding touch's UP ahead of this capture (R1). getAccessibility-
         //    Tree can be called directly after a tap (not only via getState), so it
@@ -110,12 +116,21 @@ class HierarchyHandler(
             // fingerprint-free (the host derives its own). `truncated` is exact:
             // NodeSerializer stops only when it hits `maxElements`.
             if (!nested) {
-                response.put("version", TreeStore.version)
+                // Phase 3m.1 (3M-H4): version from one source, absent while unarmed.
+                val reportedVersion: Long? = when {
+                    !clockArmedAtCapture -> null
+                    fpSnap != null -> fpSnap.version
+                    else -> versionAtCapture
+                }
+                reportedVersion?.let { response.put("version", it) }
                 response.put("truncated", tree.length() >= maxElements)
+                // Phase 3m.1 (3M-H1): omit the hash for an empty forest.
                 fpSnap?.let {
-                    response.put("hash", it.hash)
-                    response.put("stateHash", it.stateHash)
-                    response.put("idHash", it.idHash)
+                    if (!it.isEmpty) {
+                        response.put("hash", it.hash)
+                        response.put("stateHash", it.stateHash)
+                        response.put("idHash", it.idHash)
+                    }
                 }
             }
             return response

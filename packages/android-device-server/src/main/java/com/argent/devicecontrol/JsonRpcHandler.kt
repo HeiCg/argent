@@ -226,7 +226,9 @@ class JsonRpcHandler(
             before
         } else {
             var a = TreeStore.ensure()
-            if (a.roots.isEmpty() || a.hash == TreeStore.EMPTY_TREE_HASH) {
+            // Phase 3m.1 (3M-H1): an empty forest now has a null hash; guard on
+            // isEmpty (EMPTY_TREE_HASH kept for a legacy build).
+            if (a.isEmpty || a.hash == null || a.hash == TreeStore.EMPTY_TREE_HASH) {
                 a = TreeStore.awaitNonEmptyTree(idleTimeoutMs)
             }
             a
