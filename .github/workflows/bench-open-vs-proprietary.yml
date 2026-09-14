@@ -20,7 +20,7 @@ on:
       blocks:
         description: "Latency blocks to run (comma list)"
         required: false
-        default: "OFF-1,ON-uiautomation,ON-scrcpy,OFF-2"
+        default: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2"
       n:
         description: "Iterations per verb (BENCH_N)"
         required: false
@@ -44,7 +44,7 @@ on:
           - capture
 
 jobs:
-  # ── Latency bench (4 blocks) + device smoke + fling A/B ────────────────────
+  # ── Latency bench (4 blocks) + device smoke ───────────────────────────────
   latency:
     name: Latency bench (OFF/ON, x86_64 KVM)
     if: ${{ github.event.inputs.suite == 'latency' || github.event.inputs.suite == 'both' }}
@@ -200,11 +200,14 @@ jobs:
           echo "boot step complete"
 
       - name: Install argent deps + build TS
-        # `npm ci` MUST run lifecycle scripts: the @argent/tool-server postinstall
-        # fetches the scrcpy-server 3.3.1 jar the fast-inject path needs. Rollup's
-        # native binary is an optional dep npm can skip, so install it explicitly.
+        # `npm install` (NOT `npm ci`): phase 3n.2 removed the @yume-chan/* deps and the
+        # scrcpy-server postinstall from package.json, but the committed lockfile still
+        # lists them (it cannot be regenerated in the worktree — no install there).
+        # `npm install` regenerates package-lock.json from the edited package.json and
+        # installs; `npm ci` would fail its out-of-sync check. Rollup's native binary is
+        # an optional dep npm can skip, so install it explicitly.
         run: |
-          npm ci
+          npm install
           npm install @rollup/rollup-linux-x64-gnu --no-save
           npx tsc --build
 
@@ -256,13 +259,12 @@ jobs:
       # ---- (1) device test ----
       - name: Open-server on-device test (OPEN_SERVER_DEVICE_TESTS=1)
         id: devtest
-        # Validation gate (phase 3h). `continue-on-error` here lets the latency
-        # bench below ALWAYS run (its per-block effect-check is the diagnostic that
-        # would have caught the retracted "tap win"), but the job is still failed on
-        # any device-test failure by the "Enforce device-test result" step at the
-        # very end — AFTER artifacts upload. So no run can look green with a failing
-        # device test, and the bench diagnostics survive a failure.
-        continue-on-error: true
+        # Validation gate (phase 3h). Phase 3n.2 (review 3N1-M8): `continue-on-error`
+        # is REMOVED so a device-test failure fails THIS step visibly (previously the
+        # step reported success and a failure was only visible via the final Enforce
+        # step). The latency bench + artifact steps below carry `if: ${{ !cancelled() }}`
+        # / `if: always()`, so their diagnostics still run and upload after a
+        # device-test failure, and the Enforce step re-confirms the failure at the end.
         env:
           OPEN_SERVER_DEVICE_TESTS: "1"
           OPEN_SERVER_DEVICE_SERIAL: emulator-5554
@@ -273,8 +275,7 @@ jobs:
           # Responding" window) before running — logs the wait, never fatal.
           bash .github/bench-ci/ready-gate.sh emulator-5554 3 90 | tee "$RUNNER_TEMP/ready-gate-device-test.txt"
           # Capture logcat (verbose input) across the run so a dropped/mis-targeted
-          # injected touch is diagnosable — the scrcpy-server's own stdout is also
-          # surfaced into device-test.log via the backend's [scrcpy-server] pump.
+          # injected touch is diagnosable.
           adb -s emulator-5554 shell setprop log.tag.InputDispatcher VERBOSE || true
           adb -s emulator-5554 shell setprop log.tag.InputReader VERBOSE || true
           adb -s emulator-5554 logcat -c || true
@@ -296,6 +297,9 @@ jobs:
 
       # ---- (2) latency bench: 4 blocks via BENCH_ONLY, then merge ----
       - name: Latency bench — 4 blocks + merge
+        # Phase 3n.2 (3N1-M8): runs even after a device-test failure (which now fails
+        # its own step) so the bench diagnostics survive and upload.
+        if: ${{ !cancelled() }}
         env:
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
@@ -360,7 +364,9 @@ jobs:
           fi
           # ON blocks — hard requirement (set -e fails the step on any ON failure).
           if echo "$BENCH_BLOCKS" | grep -q "ON-uiautomation"; then run_block "ON-uiautomation"; sleep 3; fi
-          if echo "$BENCH_BLOCKS" | grep -q "ON-scrcpy"; then run_block "ON-scrcpy"; sleep 3; fi
+          # Phase 3n.2: ON-scrcpy removed. ON-input-manager is self-orchestrated by
+          # run-bench.js (STRATEGY_ARMS) on the first run_block invocation above, so it
+          # needs no explicit run_block call here.
           if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
             if run_block "OFF-2"; then :; else
               OFF_FAILED=1
@@ -377,59 +383,6 @@ jobs:
             echo "::error::proprietary OFF baseline failed on an executable runner — failing the run (missing baseline, F13)"
             exit 1
           fi
-
-      # ---- (3) fling A/B (Kotlin vs scrcpy) when ON-scrcpy is in blocks ----
-      # `!cancelled()` so a FAILED merge (e.g. the landing-rate gate) does NOT skip the
-      # fling A/B — it must run and produce fling data regardless of the merge outcome
-      # (team-lead run-6 decision). The job still fails if the merge failed.
-      - name: Fling A/B (uiautomation vs scrcpy)
-        if: ${{ !cancelled() && contains(github.event.inputs.blocks, 'ON-scrcpy') }}
-        env:
-          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
-          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
-          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
-          BENCH_SERIAL: emulator-5554
-          FLING_N: "12"
-          NODE_OPTIONS: "--max-old-space-size=2048"
-        run: |
-          # pipefail so `node run-fling.js | tee` reports node's exit; an ON fling
-          # run failure must be caught by the `if …; else exit 1` below.
-          set -eo pipefail
-          export BENCH_OUT="$PWD/.bench-results"
-          # Phase 3k measurement (option i): capture logcat PER ARM for crash/ANR
-          # context. Plain threadtime only — NOT InputDispatcher/InputReader VERBOSE:
-          # verbose input logging perturbs injection and would alter the very fling
-          # scroll distances this A/B grades (and inflated ON latency ~10x in the first
-          # 3k run). The delivered MotionEvent-duration per arm is measured in the
-          # isolated device-test 3k step; the host per-frame pacing trace
-          # ([open-server-fast-inject] `pacing …`) is captured in each fling-log.
-          # Phase 3k: ON-scrcpy runs the drift-corrected pacing fix (after arm) and
-          # ON-scrcpy-legacy the pre-3k await-per-frame pacing (before arm) — both in
-          # THIS run so the pacing fix is a same-run before/after. The harness sets
-          # ARGENT_SCRCPY_PACING per config. OFF is the proprietary reference.
-          for cfg in ON-uiautomation ON-scrcpy ON-scrcpy-legacy OFF; do
-            echo "########## FLING $cfg ##########"
-            if [ "$cfg" = "OFF" ] && [ "${PROP_EXECUTABLE:-0}" != "1" ]; then
-              echo "skipping OFF fling reference (proprietary not executable)"; continue
-            fi
-            adb -s emulator-5554 logcat -c || true
-            adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-fling-$cfg.txt" 2>&1 &
-            FLING_LOGCAT_PID=$!
-            if FLING_CONFIG="$cfg" node .github/bench-ci/run-fling.js 2>&1 | tee "$BENCH_OUT/fling-log-$cfg.txt"; then FLING_RC=0; else FLING_RC=1; fi
-            kill "$FLING_LOGCAT_PID" 2>/dev/null || true
-            if [ "$FLING_RC" != "0" ]; then
-              # OFF reference and the ON-scrcpy-legacy BEFORE arm are transparency,
-              # not gated — a failure there drops that arm with a warning. The gated
-              # arms (ON-uiautomation, ON-scrcpy drift) must succeed.
-              if [ "$cfg" = "OFF" ] || [ "$cfg" = "ON-scrcpy-legacy" ]; then
-                echo "::warning::$cfg fling arm failed — dropping (transparency arm, not gated)"
-              else
-                exit 1
-              fi
-            fi
-            sleep 3
-          done
-          node .github/bench-ci/merge-fling.js
 
       # ---- (4) 3g stage-timing table is emitted inline by the bench (captured in
       #          bench-log-*.txt above). No separate step needed. ----
@@ -575,8 +528,10 @@ jobs:
           adb -s emulator-5554 shell settings put global animator_duration_scale 0 || true
 
       - name: Install deps + build (screen-graph tree)
+        # `npm install` not `npm ci`: phase 3n.2 dropped the @yume-chan/* deps from
+        # package.json but not the committed lockfile, so regenerate it on install.
         run: |
-          npm ci
+          npm install
           npm install @rollup/rollup-linux-x64-gnu --no-save
           npx tsc --build
           npm run build:android-device-server

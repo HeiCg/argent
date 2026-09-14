@@ -49,14 +49,16 @@ describe("open-server inject strategy (phase 3n)", () => {
       expect(resolveInjectStrategy()).toBeUndefined();
     });
 
-    // Phase 3n.2 (3N1-H1): guard the fling-harness contract so a future default flip
-    // cannot silently re-break the uia control arms. `bench-fling-fidelity.ts` now
-    // PINS `default` on the uia arms (never deletes the env — an unset env resolves
-    // to `input-manager` post-flip) and `input-manager` on the input-manager arm.
-    // Assert the resolved strategy the harness's two writes produce: the uia arm
-    // never resolves to `input-manager` (no `inject` on the wire), the im arm does.
-    it("fling-harness contract: uia arm pins `default` (→ no inject), im arm pins `input-manager`", () => {
-      // What the harness writes for a `uia-A`/`uia-B` visit:
+    // Phase 3n.2 (3N1-H1): guard the strategy-arm contract so a future default flip
+    // cannot silently re-break a `uia`-labelled control arm. Any harness driving a
+    // control arm must PIN `default` (never delete the env — an unset env resolves to
+    // `input-manager` post-flip) and pin `input-manager` for the input-manager arm.
+    // (The fling harness that carried this leak was removed with scrcpy in 3n.2; this
+    // durable test is what keeps the next harness honest.) Assert the resolved
+    // strategy each write produces: `default` never resolves to `input-manager` (no
+    // `inject` on the wire), `input-manager` does.
+    it("strategy-arm contract: a control arm pins `default` (→ no inject), im arm pins `input-manager`", () => {
+      // What a `uia`-labelled control arm must write:
       process.env[ENV_KEY] = "default";
       expect(resolveInjectStrategy()).toBeUndefined();
       expect(resolveInjectStrategy()).not.toBe("input-manager");
