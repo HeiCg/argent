@@ -246,7 +246,7 @@ export async function recordOpenServerObservation(
     // (run 33958064084 minted a second "Network & internet: Internet" node that
     // two different taps landed on). The node's content is built from the SAME
     // settled read, so key and content are consistent.
-    const settled = await server.getState({ includeScreenshot: false, waitTimeoutMs: RECORD_SETTLE_TIMEOUT_MS });
+    const settled = await server.getState({ includeScreenshot: false, waitTimeoutMs: RECORD_SETTLE_TIMEOUT_MS, fingerprints: true });
     const afterId = settled.idHash;
     if (!afterId) {
       bumpSkippedNoIdHash();

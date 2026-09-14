@@ -14,6 +14,8 @@ import org.json.JSONObject
 class DiffHandler {
     fun execute(params: JSONObject): JSONObject {
         val sinceVersion = params.optLong("sinceVersion", -1L)
+        // `diff` needs a live version clock (phase 3m lazy-arm).
+        TreeStore.armClock()
         val snap = TreeStore.ensure()
 
         if (sinceVersion == snap.version) {

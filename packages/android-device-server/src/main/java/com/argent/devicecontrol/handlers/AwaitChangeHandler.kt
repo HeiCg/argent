@@ -30,6 +30,8 @@ class AwaitChangeHandler {
     private val active = AtomicInteger(0)
 
     fun execute(params: JSONObject): JSONObject {
+        // awaitChange lives or dies by the AX-event clock — arm it (phase 3m lazy-arm).
+        TreeStore.armClock()
         val fromVersion = params.optLong("fromVersion", TreeStore.version)
         val timeoutMs = params.optLong("timeoutMs", 5_000L)
         val until = params.optJSONObject("until")

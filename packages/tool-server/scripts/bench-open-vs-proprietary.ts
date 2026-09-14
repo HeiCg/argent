@@ -698,6 +698,9 @@ type DescribeStages = {
   rootsMs: StageStat;
   serializeMs: StageStat;
   encodeMs: StageStat;
+  // Fingerprint (hash) build cost (phase 3m). ~0 on the plain describe path (G1);
+  // its own stage so the after-tap residual (G2) no longer hides a forced rebuild.
+  fingerprintMs: StageStat;
   // Host-side split (phase 3i): the cost OUTSIDE the on-device `timings`.
   // `hostParseMs` is the host JSON.parse of the reply, `hostRenderMs` the host
   // tree-lowering + v2 trim. The host-clock timeline decomposes the round-trip:
@@ -723,6 +726,7 @@ const STAGE_KEYS = [
   "rootsMs",
   "serializeMs",
   "encodeMs",
+  "fingerprintMs",
   "hostParseMs",
   "hostRenderMs",
   "hostTtfbMs",
@@ -772,6 +776,7 @@ type DescribeMeta = {
     rootsMs?: number[];
     serializeMs?: number;
     encodeMs?: number;
+    fingerprintMs?: number;
     prevServerHandleMs?: number;
     prevServerWriteMs?: number;
     prevServerTotalMs?: number;
@@ -792,6 +797,7 @@ function newSplitAcc(): SplitAcc {
     wireBytesSamples: [],
     stageSamples: {
       idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+      fingerprintMs: [],
       hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
       prevServerWriteMs: [], prevServerHandleMs: [], prevServerTotalMs: [],
     },
@@ -816,6 +822,7 @@ function collectSplit(acc: SplitAcc, d: DescribeMeta): void {
     if (Array.isArray(t.rootsMs)) s.rootsMs.push(t.rootsMs.reduce((a, b) => a + b, 0));
     if (typeof t.serializeMs === "number") s.serializeMs.push(t.serializeMs);
     if (typeof t.encodeMs === "number") s.encodeMs.push(t.encodeMs);
+    if (typeof t.fingerprintMs === "number") s.fingerprintMs.push(t.fingerprintMs);
     if (typeof t.prevServerWriteMs === "number") s.prevServerWriteMs.push(t.prevServerWriteMs);
     if (typeof t.prevServerHandleMs === "number") s.prevServerHandleMs.push(t.prevServerHandleMs);
     if (typeof t.prevServerTotalMs === "number") s.prevServerTotalMs.push(t.prevServerTotalMs);
@@ -831,6 +838,7 @@ function finalizeSplit(acc: SplitAcc): DescribeSplit {
     rootsMs: stageStat(s.rootsMs),
     serializeMs: stageStat(s.serializeMs),
     encodeMs: stageStat(s.encodeMs),
+    fingerprintMs: stageStat(s.fingerprintMs),
     hostParseMs: stageStat(s.hostParseMs),
     hostRenderMs: stageStat(s.hostRenderMs),
     hostTtfbMs: stageStat(s.hostTtfbMs),

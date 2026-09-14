@@ -49,7 +49,7 @@ export async function describeAndroidTiered(
     return await openDeviceServerMutex.withDeviceLock(device.id, async () => {
       const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
       const { store } = await resolveStoreForCurrentApp(device.id, server);
-      const state = await server.getState({ includeScreenshot: false });
+      const state = await server.getState({ includeScreenshot: false, fingerprints: true });
       // Phase D.1 Fix B: the graph is keyed by H_id, NOT the structural hash.
       // Keying the describe tier by `state.hash` (structural) is what created the
       // pollutant duplicate nodes that made a navTarget resolve to two screens.

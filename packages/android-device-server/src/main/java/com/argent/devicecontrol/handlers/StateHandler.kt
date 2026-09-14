@@ -90,6 +90,18 @@ class StateHandler(
         // `benchDebug` (server started with `-e benchDebug true`). Default false =
         // the single-pass path (always, in production).
         val legacyEncode = benchDebug && params.optBoolean("_benchLegacyEncode", false)
+        // Phase 3m: fingerprints (`hash` / `stateHash` / `idHash` / `unchanged`) are
+        // OPT-IN. The screen-graph host wiring passes `fingerprints: true` (or a
+        // `sinceVersion`, which needs them); the plain describe / latency path does
+        // not, so the capture never forces a `TreeStore.ensure()` rebuild (the C1
+        // after-tap `rootInActiveWindow` block) and the process never arms the AX
+        // event listener (the C2 always-on tax). `version` is ALWAYS returned (a
+        // free volatile read); an absent hash means "not requested", never "empty".
+        val hasSinceVersion = params.has("sinceVersion")
+        val wantFingerprints = params.optBoolean("fingerprints", false) || hasSinceVersion
+        // Arming the clock is what makes `version` advance; only callers that read
+        // versions/fingerprints pay for it (lazy, idempotent).
+        if (wantFingerprints) TreeStore.armClock()
 
         // 0. Order any preceding touch's UP ahead of the capture. Fast-inject path
         //    (flush=true) drains the whole input queue synchronously; the default
@@ -133,12 +145,7 @@ class StateHandler(
             ""
         }
 
-        // 3. Fingerprints + version from the AX cache (cache hit → no traversal, so
-        //    the Phase A traversals counter is unchanged across unchanged reads).
-        val snap = TreeStore.ensure()
-        val unchanged = sinceVersion == snap.version
-
-        // 4. Hierarchy — the nested raw multi-window tree (F12 token parity, its own
+        // 3. Hierarchy — the nested raw multi-window tree (F12 token parity, its own
         //    traversal for raw class names/ids) or the flat compressed list. Capture
         //    the active package from the SAME accessibility root we serialize, before
         //    it is recycled, so `info` below never calls uiDevice.currentPackageName
@@ -161,9 +168,15 @@ class StateHandler(
         // is an exact truncation signal. The nested token-parity path is never capped
         // below 3000, so it stays false.
         var truncated = false
+        // Phase 3m: fingerprints computed here (opt-in), from the SAME `rootNode`
+        // this capture serialized — one active-root resolution, no second
+        // `rootInActiveWindow`. `fingerprintMs` is a first-class stage so no
+        // fingerprint work can hide in the capture residual. 0 when not requested.
+        var fpSnap: TreeStore.Snapshot? = null
+        var fingerprintMs = 0L
         val hierarchy = if (rootNode != null) {
             try {
-                if (nested) {
+                val tree = if (nested) {
                     NestedWindowSerializer.serialize(uiAutomation, rootNode, maxOf(maxElements, 3000), windowTimings, compact)
                 } else {
                     val t0 = System.currentTimeMillis()
@@ -172,6 +185,17 @@ class StateHandler(
                     truncated = flat.length() >= maxElements
                     flat
                 }
+                // Count this capture's own forest walk. Together with `ensure()`'s
+                // build counter, `traversals` becomes the real forest-walk count:
+                // an after-tap describe reads 1 here (capture only) with the fix and
+                // 2 on the pre-fix build (the forced ensure rebuild + this capture).
+                TreeStore.recordCaptureTraversal()
+                if (wantFingerprints) {
+                    val fpStart = System.currentTimeMillis()
+                    fpSnap = TreeStore.ensure(rootNode)
+                    fingerprintMs = System.currentTimeMillis() - fpStart
+                }
+                tree
             } finally {
                 rootNode.recycle()
             }
@@ -224,6 +248,8 @@ class StateHandler(
             put("rootsMs", JSONArray(windowTimings.rootsMs))
             put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
             put("encodeMs", encodeMs)
+            // Phase 3m: fingerprint build cost, its own stage so Σ(stages) ≈ captureMs.
+            put("fingerprintMs", fingerprintMs)
             put("rootSource", resolved.source)
         }
 
@@ -236,12 +262,19 @@ class StateHandler(
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
             put("timings", timings)
-            // Screen-graph Phase A/D fingerprints + version.
-            put("hash", snap.hash)
-            put("stateHash", snap.stateHash)
-            put("idHash", snap.idHash)
-            put("version", snap.version)
-            put("unchanged", unchanged)
+            // `version` is ALWAYS returned (the volatile AX clock; 0 while unarmed).
+            put("version", TreeStore.version)
+            // Phase 3m: fingerprints + `unchanged` ONLY when requested
+            // (`fingerprints: true` or `sinceVersion`). Absent ⇒ not computed, never
+            // an EMPTY_TREE_HASH the host must not synthesise.
+            if (wantFingerprints) {
+                fpSnap?.let {
+                    put("hash", it.hash)
+                    put("stateHash", it.stateHash)
+                    put("idHash", it.idHash)
+                }
+                put("unchanged", sinceVersion == TreeStore.version)
+            }
             // Serialize-once splice payload (phase 3j), per-request: JsonRpcHandler
             // removes this member (so it never ships) and splices it over TREE_TOKEN.
             if (rawTreeJson != null) put(RAW_TREE_MEMBER, rawTreeJson)

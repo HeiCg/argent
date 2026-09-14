@@ -604,7 +604,7 @@ async function currentHash(reg: Reg, config: BenchConfigId): Promise<string> {
   if (!usesOpenServer(config)) return "";
   try {
     const server = await openServer(reg);
-    const s = await server.getState({ includeScreenshot: false });
+    const s = await server.getState({ includeScreenshot: false, fingerprints: true });
     return s.idHash ?? s.hash ?? "";
   } catch {
     return "";

@@ -18,6 +18,8 @@ class QueryHandler {
             (0 until arr.length()).map { arr.getString(it) }.toSet()
         }
 
+        // `query` needs a live version clock (phase 3m lazy-arm).
+        TreeStore.armClock()
         val snap = TreeStore.ensure()
         val nodes = ScreenSelector.query(snap.roots, selector, limit, fields)
         return JSONObject().apply {

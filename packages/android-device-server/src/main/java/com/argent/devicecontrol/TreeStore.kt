@@ -2,6 +2,7 @@ package com.argent.devicecontrol
 
 import android.app.UiAutomation
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.accessibility.AxNode
 import com.argent.devicecontrol.accessibility.ScreenHash
@@ -41,6 +42,16 @@ object TreeStore {
     @Volatile
     private var lastEventAtMs: Long = 0L
 
+    // Phase 3m (C2): the AX event listener is registered LAZILY, on the first RPC
+    // that needs the version clock or fingerprints (see [armClock]), not at
+    // instrumentation start. The default open path (plain describe / tap latency)
+    // then runs the pre-0.1.21 process shape with no always-on `UiAutomation`
+    // event dispatch. `version` stays 0 and `unchanged` is not reported while the
+    // clock is unarmed; callers that need the clock arm it explicitly.
+    @Volatile
+    private var clockArmed: Boolean = false
+    private val armLock = Any()
+
     // Guards version bumps + the awaitChange / waitForQuiet condition waits.
     private val waitLock = Object()
 
@@ -71,7 +82,23 @@ object TreeStore {
     )
 
     /**
-     * Register the AX-event listener. Called once at server start.
+     * Record the [UiDevice] / [UiAutomation] handles at server start. Phase 3m:
+     * this NO LONGER registers the AX-event listener — see [armClock]. Until the
+     * clock is armed the process carries no `OnAccessibilityEventListener`, so the
+     * default open path (plain describe, tap latency) never pays the always-on
+     * event-dispatch tax the screen-graph merge introduced (C2).
+     */
+    fun init(uiDevice: UiDevice, uiAutomation: UiAutomation) {
+        this.uiDevice = uiDevice
+        this.uiAutomation = uiAutomation
+        lastEventAtMs = System.currentTimeMillis()
+    }
+
+    /**
+     * Register the AX-event listener so the version clock advances. Idempotent and
+     * lazy: called by the first RPC that needs versions / fingerprints (opt-in
+     * `getState` / `getAccessibilityTree`), by `query` / `diff` / `awaitChange`,
+     * and by the outcome-bearing actions. A no-op once armed.
      *
      * NOTE (ticket "beware the UiAutomation flag setup"): setting an
      * OnAccessibilityEventListener does NOT break `UiDevice.waitForIdle` —
@@ -79,19 +106,38 @@ object TreeStore {
      * a registered listener, and `executeAndWaitForEvent`/`waitForIdle` read that,
      * not this callback. We only READ `eventType` and never retain the event.
      */
-    fun init(uiDevice: UiDevice, uiAutomation: UiAutomation) {
-        this.uiDevice = uiDevice
-        this.uiAutomation = uiAutomation
-        lastEventAtMs = System.currentTimeMillis()
-        uiAutomation.setOnAccessibilityEventListener { event ->
-            when (event?.eventType) {
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                AccessibilityEvent.TYPE_VIEW_SCROLLED,
-                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onEvent()
-                else -> { /* ignore other event types */ }
+    fun armClock() {
+        if (clockArmed) return
+        synchronized(armLock) {
+            if (clockArmed) return
+            val ui = uiAutomation ?: return
+            lastEventAtMs = System.currentTimeMillis()
+            ui.setOnAccessibilityEventListener { event ->
+                when (event?.eventType) {
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                    AccessibilityEvent.TYPE_VIEW_SCROLLED,
+                    AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onEvent()
+                    else -> { /* ignore other event types */ }
+                }
             }
+            clockArmed = true
         }
+    }
+
+    /** Whether the AX-event listener is registered (the clock is advancing). */
+    fun isClockArmed(): Boolean = clockArmed
+
+    /**
+     * Count a full active-window forest walk performed by a CAPTURE path
+     * (`getState` / `getAccessibilityTree` serialization) that did not go through
+     * [ensure]. Together with the [ensure] build counter this makes [traversals]
+     * the number of real forest walks, so a test around an after-tap describe reads
+     * 1 (the capture only) with the phase-3m fix and 2 on the pre-fix build (the
+     * forced [ensure] rebuild + the capture). Diagnostic; not on any hot lock.
+     */
+    fun recordCaptureTraversal() {
+        traversals++
     }
 
     private fun onEvent() {
@@ -102,18 +148,33 @@ object TreeStore {
         }
     }
 
-    /** Build-or-cache the current tree. Only a real rebuild increments [traversals]. */
-    fun ensure(): Snapshot {
+    /**
+     * Build-or-cache the current tree. Only a real rebuild increments [traversals].
+     *
+     * Phase 3m (C1/C2): when [providedRoot] is non-null the rebuild uses THAT root
+     * — the one the capture already resolved from the interactive-windows snapshot
+     * (`NestedWindowSerializer.activeRoot`) — instead of calling
+     * `uiAutomation.rootInActiveWindow`, so a fingerprint rebuild on the capture
+     * path never re-enters the ~170-210 ms mid-transition binder block the phase-3g
+     * fix removed from the hot path. The caller owns [providedRoot] (it is NOT
+     * recycled here); the same node the describe serialized is hashed. With no
+     * [providedRoot] (the internal `query` / `diff` / outcome paths) the behaviour
+     * is unchanged.
+     */
+    fun ensure(providedRoot: AccessibilityNodeInfo? = null): Snapshot {
         synchronized(buildLock) {
             val v = version
             val cached = lastSnapshot
             if (cached != null && lastBuiltAtVersion == v) return cached
 
-            val ui = uiAutomation ?: throw IllegalStateException("TreeStore not initialized")
             val dev = uiDevice ?: throw IllegalStateException("TreeStore not initialized")
             val w = dev.displayWidth
             val h = dev.displayHeight
-            val root = ui.rootInActiveWindow
+            // Reuse the capture's already-resolved root, or fall back to a fresh
+            // rootInActiveWindow (recycled here) for the internal callers.
+            val ownsRoot = providedRoot == null
+            val root = providedRoot
+                ?: (uiAutomation ?: throw IllegalStateException("TreeStore not initialized")).rootInActiveWindow
             var pkg = ""
             val roots = if (root != null) {
                 try {
@@ -122,7 +183,7 @@ object TreeStore {
                     pkg = root.packageName?.toString() ?: ""
                     ScreenTree.build(root, w, h)
                 } finally {
-                    root.recycle()
+                    if (ownsRoot) root.recycle()
                 }
             } else {
                 emptyList()

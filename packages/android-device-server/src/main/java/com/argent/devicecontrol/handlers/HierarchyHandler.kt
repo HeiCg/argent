@@ -27,6 +27,12 @@ class HierarchyHandler(
         // `flush` (phase 3f): a preceding scrcpy fast-inject touch came from another
         // process this UiAutomation cannot see, so `drainAsyncUp` would no-op.
         val flush = params.optBoolean("flush", false)
+        // Phase 3m: fingerprints are OPT-IN here too (`fingerprints: true` or a
+        // `sinceVersion`). The default flat read no longer forces a `TreeStore`
+        // rebuild, and the process arms the AX listener only on demand.
+        val wantFingerprints = !nested &&
+            (params.optBoolean("fingerprints", false) || params.has("sinceVersion"))
+        if (wantFingerprints) TreeStore.armClock()
 
         // 0. Order any preceding touch's UP ahead of this capture (R1). getAccessibility-
         //    Tree can be called directly after a tap (not only via getState), so it
@@ -67,6 +73,19 @@ class HierarchyHandler(
                 serializeMsFlat = System.currentTimeMillis() - t0
                 flat
             }
+            // Count this capture's own forest walk (phase 3m): getAccessibilityTree
+            // can follow a tap directly, so its traversals must be visible too.
+            TreeStore.recordCaptureTraversal()
+            // Phase 3m: fingerprints (opt-in) reuse THIS capture's root — no second
+            // `rootInActiveWindow`. `fingerprintMs` is a stage so nothing hides in
+            // the residual.
+            var fpSnap: TreeStore.Snapshot? = null
+            var fingerprintMs = 0L
+            if (wantFingerprints) {
+                val fpStart = System.currentTimeMillis()
+                fpSnap = TreeStore.ensure(rootNode)
+                fingerprintMs = System.currentTimeMillis() - fpStart
+            }
             val encStart = System.currentTimeMillis()
             tree.toString()
             val encodeMs = System.currentTimeMillis() - encStart
@@ -77,25 +96,27 @@ class HierarchyHandler(
                 put("rootsMs", JSONArray(windowTimings.rootsMs))
                 put("serializeMs", if (nested) windowTimings.serializeMs else serializeMsFlat)
                 put("encodeMs", encodeMs)
+                put("fingerprintMs", fingerprintMs)
                 put("rootSource", resolved.source)
             }
             val response = JSONObject().apply {
                 put("tree", tree)
                 put("timings", timings)
             }
-            // Screen-graph Phase A/D fingerprints, added on top of the phase-3g
-            // capture: the flat read also carries the version-clock hashes so the
-            // screen-graph consumers can key off the same reply. `TreeStore.ensure()`
-            // reuses the version cache when nothing changed. The nested token-parity
-            // path stays fingerprint-free (the host derives its own). `truncated` is
-            // exact: NodeSerializer stops only when it hits `maxElements`.
+            // The flat read reports `version` unconditionally (a free volatile read;
+            // 0 while the clock is unarmed) and the Phase A/D fingerprints ONLY when
+            // requested (`fingerprints: true` / `sinceVersion`) — an absent hash means
+            // "not requested", never "empty". The nested token-parity path stays
+            // fingerprint-free (the host derives its own). `truncated` is exact:
+            // NodeSerializer stops only when it hits `maxElements`.
             if (!nested) {
-                val snap = TreeStore.ensure()
-                response.put("hash", snap.hash)
-                response.put("stateHash", snap.stateHash)
-                response.put("idHash", snap.idHash)
-                response.put("version", snap.version)
+                response.put("version", TreeStore.version)
                 response.put("truncated", tree.length() >= maxElements)
+                fpSnap?.let {
+                    response.put("hash", it.hash)
+                    response.put("stateHash", it.stateHash)
+                    response.put("idHash", it.idHash)
+                }
             }
             return response
         } finally {

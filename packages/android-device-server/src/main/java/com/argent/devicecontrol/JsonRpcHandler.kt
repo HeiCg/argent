@@ -207,6 +207,10 @@ class JsonRpcHandler(
      */
     private fun runAction(params: JSONObject, action: () -> JSONObject): JSONObject {
         val outcome = params.optJSONObject("outcome") ?: return action()
+        // An outcome-bearing action reads before/after fingerprints and settles on
+        // the AX clock — arm it (phase 3m lazy-arm; the plain no-outcome action
+        // above returns without arming, keeping the tap latency path listener-free).
+        TreeStore.armClock()
         val firstEventTimeoutMs = outcome.optLong("firstEventTimeoutMs", 600L)
         val quietMs = outcome.optLong("quietMs", 80L)
         val idleTimeoutMs = outcome.optLong("idleTimeoutMs", 1500L)
