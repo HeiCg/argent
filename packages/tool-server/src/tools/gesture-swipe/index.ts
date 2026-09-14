@@ -9,7 +9,12 @@ import type {
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
-import { shouldUseOpenServer, openServerSwipeWithOutcome } from "../../utils/open-server-input";
+import {
+  shouldUseOpenServer,
+  openServerSwipe,
+  openServerSwipeWithOutcome,
+} from "../../utils/open-server-input";
+import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -151,6 +156,27 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           // position `holdEndMs` before the lift so the release velocity decays to
           // ~0 (T7 option (a)), instead of that behaviour being lost.
           const steps = Math.max(1, Math.round(duration / 16));
+          // Default (screen-graph off): plain `swipe` RPC, pre-merge semantics —
+          // no `outcome` request, so `runAction` is the pass-through and the
+          // per-swipe `settleAfterAction` wait is not paid. `momentum: false` still
+          // rides on `holdEndMs` (the server holds before the lift), so the
+          // deterministic-scroll semantics are unchanged; only the outcome/settle
+          // is dropped. It returns when the graph is being recorded
+          // (`screenGraphRecordingEnabled()`: the `screen-graph` flag or the
+          // bench's `ARGENT_SG_RECORD` record-only mode). `outcome` stays optional.
+          if (!screenGraphRecordingEnabled()) {
+            await openServerSwipe(
+              registry,
+              device,
+              params.fromX,
+              params.fromY,
+              params.toX,
+              params.toY,
+              steps,
+              momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
+            );
+            return { swiped: true, timestampMs };
+          }
           const outcome = await openServerSwipeWithOutcome(
             registry,
             device,
