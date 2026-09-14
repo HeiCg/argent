@@ -79,6 +79,11 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "Under `open-device-server`, inject tap/swipe/gesture touch events over the scrcpy control channel (Apache-2.0, server 3.3.1 via `@yume-chan/adb-scrcpy`) instead of the UiAutomation instrumentation hop, cutting per-event inject latency. Only the tap/swipe/gesture verbs move to scrcpy; describe/state/screenshot/typeText/key/await-* stay on the Kotlin on-device server. Ordering with a following read is preserved by a synchronous `flushInput` RPC. No effect unless `open-device-server` is also on. Off by default.",
   },
   {
+    name: "open-device-server-inject-strategy",
+    description:
+      "Under `open-device-server`, select the on-device touch-injection strategy for tap/swipe/gesture per RPC (phase 3n): `uia-sync` (blocking final UP), `uia-async` (async final UP, drain folded into the next read — the scrcpy `flushInput` asymmetry, on the UiAutomation channel), or `input-manager` (reflective `InputManager.injectInputEvent` with `INJECT_INPUT_EVENT_MODE_ASYNC`; falls back to `uia-async` and reports `strategy:\"unavailable\"` when the hidden API is blocked). Default = current behaviour (a tap's async UP, a swipe/gesture's blocking UP). The active value is carried by the `ARGENT_OPEN_INJECT_STRATEGY` env var (the boolean flag store cannot hold a value), mirroring the `ARGENT_SCRCPY_PACING` A/B so the bench can flip strategy per block in one run. No effect unless `open-device-server` is also on. Off/default by default.",
+  },
+  {
     name: "screen-graph",
     description:
       "Build a persistent per-app screen graph from the open-device-server's action outcomes and serve describe from it: the `summary` describe tier (label + affordances), a device-hash-validated `compact` cache, and the `navigate-to` tool that replays a planned action path with per-step hash verification. Requires `open-device-server`. Off by default.",

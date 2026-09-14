@@ -46,6 +46,27 @@ const OPEN_DEVICE_SERVER_NAMESPACE = "OpenDeviceServer";
  */
 export type FastInjectBackend = "off" | "scrcpy";
 
+/**
+ * On-device touch-injection strategy for a single tap/swipe/gesture RPC (phase
+ * 3n), threaded on the `inject` param. Omit for today's behaviour (a tap's async
+ * UP, a swipe/gesture's blocking UP). See the `open-device-server-inject-strategy`
+ * flag; the value is carried by `ARGENT_OPEN_INJECT_STRATEGY`. Independent of
+ * [FastInjectBackend] — the scrcpy backend is the control arm and ignores this.
+ */
+export type OpenInjectStrategy = "uia-sync" | "uia-async" | "input-manager";
+
+/**
+ * The strategy fields the on-device server echoes on a tap/swipe/gesture reply so
+ * the caller (and the bench) can confirm the arm and detect a hiddenapi fallback:
+ * `strategy` is what ran (`"unavailable"` when an `input-manager` request fell
+ * back), `fellBackTo`/`injectError` are set only on that fallback.
+ */
+export interface OpenInjectReport {
+  strategy?: string;
+  fellBackTo?: string;
+  injectError?: string;
+}
+
 type OpenDeviceServerFactoryOptions = Record<string, unknown> & {
   device: DeviceInfo;
   fastInject?: FastInjectBackend;
@@ -371,11 +392,13 @@ export interface OpenDeviceServerApi {
   tap(
     x: number,
     y: number,
-    opts?: { clickCount?: number; holdMs?: number; gapMs?: number }
+    // `inject` (phase 3n) selects the on-device injection strategy for this RPC;
+    // omit for today's behaviour.
+    opts?: { clickCount?: number; holdMs?: number; gapMs?: number; inject?: OpenInjectStrategy }
     // `dropped:true` (phase 3g) when the on-device dispatcher rejected an injected
     // event (no injectable window mid-transition, secure surface, contended input
     // pipe). The caller must treat it as a failed tap and fall back.
-  ): Promise<{ success: boolean; dropped?: boolean }>;
+  ): Promise<{ success: boolean; dropped?: boolean } & OpenInjectReport>;
   /**
    * Put `text` on the DEVICE clipboard via ClipboardManager (F20). Returns
    * `success:false` (not an error) when the write did not round-trip on-device
@@ -393,10 +416,15 @@ export interface OpenDeviceServerApi {
     // >0 holds the last pointer position that long before the lift, so the OS
     // reads ~0 release velocity and applies little to no fling (a momentum-free
     // swipe). Omit / 0 for the fast `uiDevice.swipe()` path whose lift flings.
-    holdEndMs?: number
-  ): Promise<{ success: boolean }>;
+    holdEndMs?: number,
+    // `inject` (phase 3n) selects the on-device injection strategy for this RPC.
+    opts?: { inject?: OpenInjectStrategy }
+  ): Promise<{ success: boolean } & OpenInjectReport>;
   /** Inject a synchronized multi-pointer gesture (pinch / rotate / custom). */
-  gesture(pointers: GesturePointerPath[]): Promise<{ success: boolean }>;
+  gesture(
+    pointers: GesturePointerPath[],
+    opts?: { inject?: OpenInjectStrategy }
+  ): Promise<{ success: boolean } & OpenInjectReport>;
   /**
    * Synchronously drain the on-device input dispatcher's touch queue (phase 3f).
    * Called after a fast-inject (scrcpy) tap/swipe/gesture so a following
@@ -470,7 +498,7 @@ export interface OpenDeviceServerApi {
     // The multi-tap timeline (F1/F8/F9) travels on the SAME `tap` RPC as the
     // outcome request, so a double-tap is one round-trip that both builds the
     // whole DOWN/UP timeline server-side and reports the before/after delta.
-    opts?: OutcomeOptions & { clickCount?: number; holdMs?: number; gapMs?: number }
+    opts?: OutcomeOptions & { clickCount?: number; holdMs?: number; gapMs?: number; inject?: OpenInjectStrategy }
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   longPressWithOutcome(
     x: number,
@@ -485,11 +513,11 @@ export interface OpenDeviceServerApi {
     endY: number,
     steps?: number,
     holdEndMs?: number,
-    opts?: OutcomeOptions
+    opts?: OutcomeOptions & { inject?: OpenInjectStrategy }
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   gestureWithOutcome(
     pointers: GesturePointerPath[],
-    opts?: OutcomeOptions
+    opts?: OutcomeOptions & { inject?: OpenInjectStrategy }
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   typeTextWithOutcome(
     text: string,
@@ -952,27 +980,33 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         ...(spawned.allPort !== undefined ? { allPort: spawned.allPort } : {}),
       }),
       tap: (x, y, tapOpts = {}) =>
-        client.request<{ success: boolean; dropped?: boolean }>("tap", {
+        client.request<{ success: boolean; dropped?: boolean } & OpenInjectReport>("tap", {
           x,
           y,
           ...(tapOpts.clickCount !== undefined ? { clickCount: tapOpts.clickCount } : {}),
           ...(tapOpts.holdMs !== undefined ? { holdMs: tapOpts.holdMs } : {}),
           ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
+          ...(tapOpts.inject !== undefined ? { inject: tapOpts.inject } : {}),
         }),
       setClipboard: (text) =>
         client.request<{ success: boolean; text: string; error?: string }>("setClipboard", { text }),
       longPress: (x, y, durationMs) =>
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
-      swipe: (startX, startY, endX, endY, steps, holdEndMs) =>
-        client.request<{ success: boolean }>("swipe", {
+      swipe: (startX, startY, endX, endY, steps, holdEndMs, swipeOpts) =>
+        client.request<{ success: boolean } & OpenInjectReport>("swipe", {
           startX,
           startY,
           endX,
           endY,
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
+          ...(swipeOpts?.inject !== undefined ? { inject: swipeOpts.inject } : {}),
         }),
-      gesture: (pointers) => client.request<{ success: boolean }>("gesture", { pointers }),
+      gesture: (pointers, gestureOpts) =>
+        client.request<{ success: boolean } & OpenInjectReport>("gesture", {
+          pointers,
+          ...(gestureOpts?.inject !== undefined ? { inject: gestureOpts.inject } : {}),
+        }),
       flushInput: () => client.request<{ success: boolean }>("flushInput"),
       typeText: (text) =>
         client.request<{ success: boolean; charsTyped: number }>("typeText", { text }),
@@ -1040,6 +1074,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(outcomeOpts?.clickCount !== undefined ? { clickCount: outcomeOpts.clickCount } : {}),
           ...(outcomeOpts?.holdMs !== undefined ? { holdMs: outcomeOpts.holdMs } : {}),
           ...(outcomeOpts?.gapMs !== undefined ? { gapMs: outcomeOpts.gapMs } : {}),
+          ...(outcomeOpts?.inject !== undefined ? { inject: outcomeOpts.inject } : {}),
           outcome: outcomeObject(outcomeOpts),
         }),
       longPressWithOutcome: (x, y, durationMs, outcomeOpts) =>
@@ -1057,11 +1092,13 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           endY,
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
+          ...(outcomeOpts?.inject !== undefined ? { inject: outcomeOpts.inject } : {}),
           outcome: outcomeObject(outcomeOpts),
         }),
       gestureWithOutcome: (pointers, outcomeOpts) =>
         client.request<{ success: boolean } & OpenServerActionOutcome>("gesture", {
           pointers,
+          ...(outcomeOpts?.inject !== undefined ? { inject: outcomeOpts.inject } : {}),
           outcome: outcomeObject(outcomeOpts),
         }),
       typeTextWithOutcome: (text, outcomeOpts) =>
