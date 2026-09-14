@@ -256,3 +256,98 @@ Base for run 1 is `open/main` @ 8315e396 (3m.1) merged into this branch (clean).
   the ON-scrcpy arm. `scrcpyPacing` is recorded per block (3m.1 pins the default arm to
   `legacy`; `bench-open-vs-proprietary.ts` `scrcpyPacing` on the block JSON), so run 1's
   scrcpy arm is `legacy` and no pacing is silent.
+
+## Result — run 1 (CI 34853156073, head 46fb3f79 on the merged 3m.1 base)
+
+**Run outcome: the latency job FAILED at the fling step (step 16) — the pre-registered
+BLOCKING scrcpy control-arm parity gate fired** (`scrcpy/off` out of ±0.15 at 250/0.3 =
+**0.662** and 400/0.5 = **0.802**, the known scrcpy under-scroll deficit 3n exists to
+replace — NOT a regression from 3n). Everything else on the latency job was green:
+**Kotlin APK built in CI** (step 11), **device tests passed** (step 14, incl. all six 3n
+cases + the 20-sample residual gate), **latency 6-block run + merge passed** (step 15 —
+`run-bench.js` self-orchestrated the three strategy arms, all six `bench-block-*.json`
+produced), scoreboard/artifacts/enforce-device-test all green. Screen-graph job: reported
+separately (still running at write time).
+
+### Verb latency p50 (ms), this run vs run 34813849446
+
+| verb | OFF-1 | ON-uia-sync | ON-uia-async | ON-input-manager | ON-scrcpy | OFF-2 | floor | 34813849446 (ON-uia / scrcpy) |
+|---|---|---|---|---|---|---|---|---|
+| gesture-tap | 53 | 84 | 86 | **55** | 52 | 53 | ±2 | 78 / 51 |
+| gesture-swipe | 307 | 311 | 291 | **268** | 258 | 300 | ±7 | 292 / 259 |
+| gesture-pinch | 351 | 347 | 340 | **323** | 307 | 356 | ±5 | 346 / 307 |
+| tap+describe(settle:false) | – | 437 | 422 | **400** | 340 | – | ±2 | 505 / 529 |
+| await-ui-element | 84 | 47 | 48 | 47 | 44 | 80 | – | 45 / 47 |
+| await-screen-idle | 509 | 314 | 312 | 312 | 310 | 504 | – | 294 / 294 |
+
+**Headline: `input-manager` closes the UiAutomation tap gap** — 55 ms vs scrcpy 52
+(the default UiAutomation tap was 78 in 34813849446), while the UiAutomation-pipe
+strategies (`uia-sync` 84, `uia-async` 86) stay ~30 ms behind. `input-manager` is the
+fastest Kotlin arm on every gesture verb and was **available on-device**
+(`injectStrategyReported: input-manager`, confirmed — the reflective
+`InputManager.injectInputEvent` pipe worked; no hiddenapi fallback).
+
+### Pre-registered promotion gate — PASS/FAIL per strategy (deltas vs ON-scrcpy at the drift floor)
+
+| gate | uia-sync | uia-async | input-manager |
+|---|---|---|---|
+| 1. tap RPC within scrcpy floor (±2) | +32 **FAIL** | +34 **FAIL** | +3 **FAIL by 1 ms** |
+| 2. swipe RPC within floor (±7) | +53 **FAIL** | +33 **FAIL** | +10 **FAIL by 3 ms** |
+| 3. pinch not slower than scrcpy by > floor (±5) | +40 **FAIL** | +33 **FAIL** | +16 **FAIL by 11 ms** |
+| 4. tap+describe(settle:false) not worse than scrcpy | +97 **FAIL** | +82 **FAIL** | +60 **FAIL** |
+| 5. first-attempt landing ≥ 95% | 60/60 **PASS** | 60/60 **PASS** | 60/60 **PASS** (scrcpy 58/60 = 96.7%) |
+| 6. zero fallbacks | 0 **PASS** | 0 **PASS** | 0 **PASS** |
+| 7. fling gate PASS every informative cell | = ON-uia arm (fling FAIL this run) | = ON-uia arm | **FAIL** (OUT on all 3 informative, noisy) |
+| 8. input-manager available (not "unavailable") | n/a | n/a | **PASS** (confirmed on-device) |
+
+**No strategy meets the full promotion gate.** `input-manager` is by far the closest —
+within a few ms of scrcpy on every latency verb, cleaner reliability (100% landing vs
+scrcpy 96.7%, 0 no-effect vs scrcpy 2) — but it does not clear this run's very tight drift
+floors (tap +3 / floor 2, swipe +10 / floor 7, pinch +16 / floor 5), loses
+tap+describe(settle:false) by 60 ms, and its fling arm is out (see below). The scrcpy
+control arm itself FAILED its own fling parity gate, so scrcpy is not a clean winner either.
+
+### Fling per-cell per arm (3k.1 rule; n per cell)
+
+Scrcpy control gate (BLOCKING, scrcpyPacing arm = drift) — **FAIL**, 3 informative / 3 non-informative:
+- 250/0.3: scrcpy/uia 0.973 OK · **scrcpy/off 0.662 dev 0.338 OUT**
+- 400/0.3: scrcpy/uia 1.088 · scrcpy/off 0.958 — OK
+- 400/0.5: scrcpy/uia 1.141 · **scrcpy/off 0.802 dev 0.198 OUT**
+- 150/0.3, 150/0.5, 250/0.5 non-informative (reference q25 at the 0.175 floor).
+
+input-manager arm (INFORMATIONAL) — OUT on all 3 informative cells, and the metric is
+noisy this run:
+- 250/0.3: **im/uia 1.54** (uia read a low 0.30 median here) · im/off 1.048 — OUT on im/uia
+- 400/0.3: im/uia 0.959 · **im/off 0.844** (n=11) — OUT on im/off
+- 400/0.5: im/uia 1.132 · **im/off 0.796** — OUT on im/off (input-manager under-scrolls vs
+  off at 400 ms, similar to scrcpy — the fling deficit is not eliminated by the Kotlin path,
+  though the 250/0.3 uia anomaly shows the anchor-displacement metric is noisy on this KVM
+  emulator). uia-sync/uia-async inject the identical momentum timeline as the ON-uia arm, so
+  their fling result is the ON-uia arm's (also not clean this run).
+
+### Device tests per strategy (all PASS; `OPEN_SERVER_DEVICE_TESTS=1`, step 14 green)
+
+| strategy | ran as | tap navigates | fling > momentum-free | pinch zoom | 8-frame cadence (deliveredSpan, MOVE ms) |
+|---|---|---|---|---|---|
+| uia-sync | uia-sync | +2/−40 labels | 1168 > 540 px | 2.9% | 122 ms, [23,9,17,15,16,16,26] |
+| uia-async | uia-async | +2/−40 labels | 1168 > 631 px | 2.9% | 118 ms, [17,15,16,17,15,19,19] |
+| input-manager | **input-manager** | +2/−40 labels | 1168 > 566 px | 2.9% | 120 ms, [16,16,16,16,17,18,21] |
+
+`input-manager` was **available** and delivered the cleanest ~16 ms MOVE cadence — the
+reflective ASYNC pipe preserves the timeline. (The 3g per-RPC inject-vs-dispatch-vs-serialize
+stage split was, as pre-registered, not emitted — the server carries per-stage timings only
+for the describe path; the dumpsys cadence above is the delivered-cadence measurement.)
+
+### Verdict (item 4 close-out; item 5 is the planner's)
+
+Per the ticket's "if no strategy passes" branch: **keep scrcpy off by default; the honest
+result is that no Kotlin strategy cleared the promotion gate on run 1.** `input-manager` is
+the standout candidate — near-scrcpy latency on every verb, better landing, available and
+cadence-clean on-device — failing tap by 1 ms and swipe by 3 ms over unusually tight drift
+floors, and losing tap+describe by 60 ms. The scrcpy arm also failed its own fling gate, so
+neither path is clean on fling this run (a noisy metric on the KVM emulator). Recommendation
+for the planner's review (NOT applied here): either (a) a second run to tighten the fling/drift
+noise before deciding, or (b) the hybrid default (Kotlin `input-manager` for tap/swipe/pinch —
+it already beats scrcpy on reliability and is within a few ms — keeping scrcpy only if the
+fling deficit proves real and Kotlin-unfixable). Promotion/removal (item 5) is deferred for
+review.
