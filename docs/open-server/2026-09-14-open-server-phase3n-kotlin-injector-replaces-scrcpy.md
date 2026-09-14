@@ -376,3 +376,77 @@ in CI, the host threading works, all six latency arms + the input-manager fling 
 produced, the device suite (incl. the 20-sample residual gate) passes, and input-manager is
 available on this emulator. The measurement stands; the promotion/removal decision (item 5)
 is the planner's.
+
+## Result (3n.1) — run 2 pre-registration (gates P0–P10 written BEFORE the run)
+
+Base: `feat/open-server-3n-kotlin-injector` @ a61c47d5 with `open/main` @ 2905f0d5 merged
+(docs only). Default flip to `input-manager` shipped in code (Work 1); scrcpy NOT removed
+(3n.2 after run 2 is green). Blocks: `OFF-1, ON-uiautomation (control, `default` sentinel),
+ON-input-manager, ON-scrcpy, OFF-2`. Fling arms: `ON-uia-A, ON-uia-B, ON-input-manager,
+ON-scrcpy, OFF` interleaved per sample. N=20 per verb per block; fling N=12 per cell-arm.
+
+Pre-registered gates P0–P10, verbatim from `2026-09-14-review-3n-run1-findings.md`
+"Promotion recommendation (b)":
+
+> **P0 — control arm present.** `ON-uiautomation` (the current default, no
+> `ARGENT_OPEN_INJECT_STRATEGY`) runs as a latency block. If it is absent the run is void.
+>
+> **P1 — drift floor is measured, never defaulted.** For every gated verb the floor is
+> `|OFF-1 p50 − OFF-2 p50|` on the SAME verb name in the OFF blocks. A verb with no OFF
+> counterpart is gated on the OFF verb the scoreboard already declares its comparator
+> (`tap+describe(settle:false)` → OFF `tap+describe`). `scoreboard.js` must NOT substitute
+> a constant; a missing comparator makes the gate `N/A`, never `±2`.
+>
+> **P2 — tap RPC vs proprietary.** `ON-input-manager` `gesture-tap` p50 ≤ `max(OFF-1,
+> OFF-2)` + floor.
+>
+> **P3 — swipe RPC vs proprietary.** `ON-input-manager` `gesture-swipe` p50 ≤ `min(OFF-1,
+> OFF-2)` + floor.
+>
+> **P4 — pinch RPC vs proprietary.** `ON-input-manager` `gesture-pinch` p50 ≤ `min(OFF-1,
+> OFF-2)` + floor.
+>
+> **P5 — headline, vs proprietary (restates 3m G6).** `ON-input-manager`
+> `tap+describe(settle:false)` p50 ÷ same-run OFF `tap+describe` p50 ≤ **1.15** against
+> **each** of OFF-1, OFF-2 and their pooled p50.
+>
+> **P6 — no regression of the default.** `ON-input-manager` is not slower than
+> `ON-uiautomation` by more than the floor on any of the four gated verbs.
+>
+> **P7 — landing and fallbacks.** First-attempt landing ≥ 95 % with the effect oracle on
+> every block, oracle self-test passed, and **0** `input-manager` fallbacks; the
+> `strategy` echo is recorded on **every** measured tap/swipe/gesture reply and the block
+> reports `injectStrategyReported` as a count (`input-manager: n/n`), not a single probe.
+>
+> **P8 — fling instrument first, arms second.** The fling job runs `ON-uia-A` and
+> `ON-uia-B` as two independent same-code arms, interleaved per sample. If
+> `|A/B − 1| > 0.15` on any informative cell, the fling section is reported as
+> **INSTRUMENT-UNRESOLVED** and no arm verdict — PASS or FAIL — is issued for any arm.
+> Only if the A/B control holds are the arms graded under the 3k.1 rule, two-sided on
+> `arm/off` (proprietary) with `arm/uia` reported for information only, informative =
+> `q25(off) > 0.175 + eps` **or** `q25(uia) > 0.175 + eps`, graded against whichever
+> reference is above the floor, n ≥ 10 per arm-cell. Fling is **not** a promotion blocker
+> for run 2: the current default fails it too (run 34853156073: uia/off 0.680, 0.881,
+> 0.703), so it cannot select between arms.
+>
+> **P9 — availability and portability.** `input-manager` resolves on the CI image with no
+> `hidden_api_policy` write, AND the `uia-async` fallback is exercised at least once by a
+> test that forces `InputManagerInjector.probe()` to fail, asserting
+> `strategy == "unavailable"`, `fellBackTo == "uia-async"` and an unchanged outcome.
+>
+> **P10 — screen-graph.** Job green, store invariants OK, `skippedNoIdHash` reported
+> alongside 34813849446 (0) and 34840929610, per-config success and tokens reported with
+> the H4 paired-cluster intervals. A drop below the reference's 100/100 is reported, not
+> called "undisturbed".
+>
+> **Promotion is P0–P7 + P9 + P10 all green.** P8 is reported, never gating. If P2–P6 are
+> green the default becomes `input-manager` and scrcpy removal ships in the following PR.
+
+Implementation summary (Work 1–5, all committed, gates.test 26/26, tsc clean): default flip
++ `default` sentinel control (Work 1); P9 benchDebug `_forceInjectUnavailable` seam + host
++ device tests; per-block strategy echo COUNTS on `getInfo` (Work 2, P7); per-sample
+latency arrays + 10 000-draw seeded bootstrap CI (Work 3, H5); run-2 blocks + fling A/B
+arms (Work 4); scoreboard P1 measured floor (no constant) + P2–P6 CI-based vs proprietary,
+merge-blocks P0 void, merge-fling 3n.1 instrument-first NON-GATING mode (Work 5). Wall-time
+estimate for the latency job (5 blocks + 5 fling arm-streams): ~90 min < 120 (run 1 was
+~95–100 min with 6 blocks); no split, N unchanged.
