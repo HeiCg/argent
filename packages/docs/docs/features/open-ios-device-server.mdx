@@ -1,0 +1,49 @@
+---
+sidebar_position: 11
+sidebar_label: Open iOS server
+title: Open iOS server
+sidebar_custom_props:
+  icon: server
+---
+
+Argent can drive iOS through an open-source on-device server. The server is an
+XCUITest runner. It reads the accessibility tree with one `app.snapshot()` call
+and injects taps, swipes, text and keys through XCUITest. The Swift sources and
+the Xcode project live in this repository, so the iOS control path is not a black
+box. The server speaks the same wire contract as the open Android server:
+newline-delimited JSON-RPC over a loopback TCP socket.
+
+The feature is experimental and off by default. It runs on the iOS Simulator and,
+with a signed build, on a physical iPhone. Turn it on with the
+`open-ios-device-server` flag:
+
+```bash
+argent enable open-ios-device-server
+```
+
+## What changes when it is on
+
+The agent uses the same tools. Only the backend they reach changes.
+
+- **`describe`** reads the accessibility tree from the runner. The result is
+  tagged `source: "xcuitest-runner"`.
+- **`gesture-tap`**, **`gesture-swipe`**, the **keyboard** text and key entry, and
+  **`screenshot`** dispatch through the runner instead of the simulator-server.
+
+## Automatic fallback
+
+Every path degrades safely. If the runner is not built, cannot start, or stops
+answering, `describe` falls back to the `ax-service` and native-devtools chain,
+the gestures and text fall back to the simulator-server, and `screenshot` falls
+back to `xcrun simctl io screenshot`. Turning the flag on never removes a working
+path. It only adds a preferred one.
+
+## Building the runner
+
+The runner is built from the committed Swift sources with Xcode. The
+`ios-open-server-device-test` workflow builds it on a macOS runner, launches it
+against Settings on a booted simulator, and runs the device suite against it.
+
+The simulator needs no code signing. A physical iPhone needs an Apple team id in
+`ARGENT_IOS_TEAM_ID`. Hosted CI has no attached hardware, so the physical path is
+compiled in CI but exercised only on a developer's own device.

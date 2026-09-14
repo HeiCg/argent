@@ -14,6 +14,7 @@ import {
   openServerSwipe,
   openServerSwipeWithOutcome,
 } from "../../utils/open-server-input";
+import { shouldUseIosOpenServer, iosOpenServerSwipe } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
@@ -138,7 +139,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       const device = resolveDevice(params.udid);
       // See gesture-tap: skip resolving the proprietary server when the open path
       // is active; it is resolved lazily in execute only as a fallback.
-      if (shouldUseOpenServer(device)) return {};
+      if (shouldUseOpenServer(device) || shouldUseIosOpenServer(device)) return {};
       return { simulatorServer: simulatorServerRef(device) };
     },
     async execute(services, params, ctx?: ToolContext) {
@@ -146,6 +147,29 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       const momentumFree = params.momentum === false;
       const timestampMs = Date.now();
       const device = resolveDevice(params.udid);
+
+      if (shouldUseIosOpenServer(device)) {
+        try {
+          const steps = Math.max(1, Math.round(duration / 16));
+          await iosOpenServerSwipe(
+            registry,
+            device,
+            params.fromX,
+            params.fromY,
+            params.toX,
+            params.toY,
+            steps,
+            momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
+          );
+          return { swiped: true, timestampMs };
+        } catch (err) {
+          console.debug(
+            `[gesture-swipe] ios open-device-server failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
 
       if (shouldUseOpenServer(device)) {
         try {
@@ -198,7 +222,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       }
 
       const ref = simulatorServerRef(device);
-      const api = shouldUseOpenServer(device)
+      const api = shouldUseOpenServer(device) || shouldUseIosOpenServer(device)
         ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
         : (services.simulatorServer as SimulatorServerApi);
       // No sample floor on this ramp, unlike `momentum: false` above: a fast swipe

@@ -14,6 +14,7 @@ import { isTvOsSimulator } from "../../utils/ios-devices";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { shouldUseOpenServer, captureAndroidScreenshot } from "../../utils/open-server-input";
+import { shouldUseIosOpenServer, captureIosScreenshotViaOpenServer } from "../../utils/ios-open-server-input";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -187,6 +188,42 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
           mimeType: "image/png",
         });
         return { image };
+      }
+
+      // iOS + open-ios-device-server flag: capture via the XCUITest runner's
+      // `screenshot` RPC (PNG). If the runner is not ready, fall back to
+      // `xcrun simctl io <udid> screenshot`, then to the simulator-server below.
+      if (device.platform === "ios" && shouldUseIosOpenServer(device)) {
+        try {
+          const { path: openPath } = await captureIosScreenshotViaOpenServer(registry, device, params.scale);
+          const image = await requireArtifacts(ctx).register({
+            hostPath: openPath,
+            kind: "screenshot",
+            mimeType: "image/png",
+          });
+          return { image };
+        } catch (err) {
+          console.debug(
+            `[screenshot] open ios-device-server capture failed, falling back to simctl io: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+          try {
+            const pngPath = await tvScreenshot(params.udid, scale, signal);
+            const image = await requireArtifacts(ctx).register({
+              hostPath: pngPath,
+              kind: "screenshot",
+              mimeType: "image/png",
+            });
+            return { image };
+          } catch (simctlErr) {
+            console.debug(
+              `[screenshot] simctl io fallback failed, falling back to simulator-server: ${
+                simctlErr instanceof Error ? simctlErr.message : String(simctlErr)
+              }`
+            );
+          }
+        }
       }
 
       // Android + open-device-server flag: capture via the on-device server's

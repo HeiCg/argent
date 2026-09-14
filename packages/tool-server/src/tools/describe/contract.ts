@@ -73,6 +73,7 @@ export type DescribeSource =
   | "uiautomator"
   | "android-devtools"
   | "open-device-server"
+  | "xcuitest-runner"
   | "cdp-dom"
   | "vega-automation"
   | "tv-focus";

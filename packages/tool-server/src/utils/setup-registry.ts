@@ -4,6 +4,7 @@ import { simulatorServerBlueprint } from "../blueprints/simulator-server";
 import { nativeDevtoolsBlueprint } from "../blueprints/native-devtools";
 import { androidDevtoolsBlueprint } from "../blueprints/android-devtools";
 import { androidOpenServerBlueprint } from "../blueprints/android-open-server";
+import { iosOpenServerBlueprint } from "../blueprints/ios-open-server";
 import { axServiceBlueprint } from "../blueprints/ax-service";
 import { chromiumCdpBlueprint } from "../blueprints/chromium-cdp";
 import { chromiumJsRuntimeDebuggerBlueprint } from "../blueprints/chromium-js-runtime-debugger";
@@ -108,6 +109,7 @@ export function createRegistry(): Registry {
   registry.registerBlueprint(nativeDevtoolsBlueprint);
   registry.registerBlueprint(androidDevtoolsBlueprint);
   registry.registerBlueprint(androidOpenServerBlueprint);
+  registry.registerBlueprint(iosOpenServerBlueprint);
   registry.registerBlueprint(axServiceBlueprint);
   registry.registerBlueprint(chromiumCdpBlueprint);
   registry.registerBlueprint(chromiumJsRuntimeDebuggerBlueprint);

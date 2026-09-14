@@ -83,6 +83,11 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     description:
       "Build a persistent per-app screen graph from the open-device-server's action outcomes and serve describe from it: the `summary` describe tier (label + affordances), a device-hash-validated `compact` cache, and the `navigate-to` tool that replays a planned action path with per-step hash verification. Requires `open-device-server`. Off by default.",
   },
+  {
+    name: "open-ios-device-server",
+    description:
+      "Route iOS describe, screenshot and tap/swipe/long-press/type/key input through the open-source on-device XCUITest server (`@argent/ios-device-server`) instead of the proprietary simulator-server. When on and the runner is reachable it serves describe (source: xcuitest-runner), screenshot (with an `xcrun simctl io` fallback if the runner is not ready), and the gesture/text verbs; every path falls back to the current one if the runner is unavailable. Experimental; simulator and physical device. Off by default; requires the built runner (CI on macOS).",
+  },
 ];
 
 export function getFlagDefinition(

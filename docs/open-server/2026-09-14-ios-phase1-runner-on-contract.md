@@ -101,3 +101,192 @@ method-parity and describe-lockstep tests green; docs pages added; `## Result` h
 run ids, the xcodebuild/simulator versions, per-RPC device timings as informal
 observations (NOT scoreboard numbers), what was copied from B verbatim vs changed, and
 what is deferred to iOS-2/3/4.
+
+## Result (2026-09-14)
+
+Branch `feat/ios-open-server-1` off `open/main` @ ada26126, worktree
+`../argent-fork-wt-ios1`. Commits: `613eeb46` (D1 Swift), `b007ca1f` (D2 host),
+`89b07d78` (D3 CI/device/docs), plus run fixes `bbfabff4`, `03a47ef9`,
+`bff9b1e3`. Pushed over SSH (`git@github.com:HeiCg/argent.git`) — the HTTPS token
+lacks the `workflow` scope. `open/main` not touched; no `.github/bench-ci/**`,
+`bench-open-vs-proprietary*`, Android device server, or scoreboard change.
+
+### Status: GREEN — the device suite passes on the simulator.
+Eight CI runs (3 + two 3-run extensions; the 8th was not needed). Run
+**34904275293** is fully green: Swift builds clean on the simulator AND on a
+physical destination, the runner launches inside XCUITest against Settings, and
+the whole device suite (9 cases) passes — tap/swipe by neutral pixels, getNestedState
+stage sums, typeText, screenshot, launch/terminate. Environment: **Xcode 26.6
+(17F113), iOS 26.5** simulator; xctestrun `ArgentRunner_iphonesimulator26.5-arm64`.
+
+### CI runs (workflow `ios-open-server-device-test.yml`, macos-latest)
+Environment: the image carries **Xcode 26.x / iOS 26.5 simulator runtime** (the
+`Xcode_16.4` pin was absent; the step now picks the newest installed Xcode). The
+built xctestrun was `ArgentRunner_iphonesimulator26.5-arm64.xctestrun`.
+
+- **34895279791** (run 1) — FAIL *Install deps*: `npm ci` rejected the new
+  `@argent/ios-device-server` workspace (`Missing: @argent/ios-device-server@0.22.1
+  from lock file`). Fix: CI uses `npm install`.
+- **34896291506** (run 2) — FAIL *Create/boot simulator*: the device-type picker
+  chose `iPod-touch--7th-generation-` (family "iPhone"), incompatible with iOS
+  26.5 (`SimError 403: Incompatible device`). Fix: newest `iPhone N` numeric pick
+  + create fallback loop; numeric runtime sort.
+- **34897488202** (run 3) — install ✓, sim ✓, **build-for-testing FAILED (Swift)**:
+  ```
+  ArgentRunnerSession+Commands.swift:18:22: error: 'volumeUp' is unavailable in
+    iOS: This API is not available in the Simulator ...
+  ArgentRunnerSession+Commands.swift:19:24: error: 'volumeDown' is unavailable ...
+  ```
+  `XCUIDevice.Button.volumeUp/.volumeDown` are physical-hardware-only (base B built
+  `iphoneos`). Fix: compile them in only under `#if !targetEnvironment(simulator)`.
+  (Also fixed by prior review: `CGRect.isFinite`, an API that does not exist.)
+- **34898913390** (extra 1) — install ✓, sim ✓, **build-for-testing GREEN**,
+  **physical-destination compile GREEN**, **runner launched + `ping` GREEN**,
+  device suite FAILED to load: `Failed to resolve entry for package
+  "@argent/registry"` — vitest resolves bare `@argent/*` imports to each package's
+  built `dist/`, which `npm install` alone does not produce. Fix: build the
+  workspace TS before the suite.
+- **34899964412** (extra 2) — FAIL *Build the workspace TypeScript*:
+  `tsc --build packages/tool-server` misses packages tool-server imports but does
+  not reference (`Cannot find module '@argent/telemetry'`, TS2307). Fix: use the
+  ROOT `npx tsc --build` (all packages), like the repo's start-tool-server action.
+- **34901004889** (extra 3, LAST) — install ✓, **workspace TS build GREEN**, sim ✓,
+  **build-for-testing GREEN**, **physical compile GREEN**, **runner launched +
+  `ping` GREEN (ready after 32s)**, **device suite FAILED in `beforeAll`**:
+  `IOS_OPEN_SERVER_PORT ... expected 0 to be greater than 0`. Root cause: the
+  `clear-argent-env` vitest setup deletes every `ARGENT_*` env var before the test
+  loads, so `ARGENT_IOS_OPEN_SERVER_PORT`/`_UDID` were wiped (the step env had the
+  correct port `51033`). Fix (`26ff7649`, unverified): rename to
+  `IOS_OPEN_SERVER_PORT` / `IOS_OPEN_SERVER_UDID`.
+
+- **34902372315** (extra 4) — env fix worked (beforeAll passed) and the suite
+  reached its assertions, but every RPC hit `ECONNREFUSED 127.0.0.1:50732`: a
+  detached `xcodebuild test-without-building` does not survive the step boundary.
+  Fix: launch the runner in the background OF the suite step and run vitest in the
+  same shell.
+- **34904275293** (extra 5, GREEN) — full build + physical compile + runner launch
+  + **device suite all 9 green**. Artifact: `ios-open-server-device-artifacts`
+  (build-sim.log, build-device.log, runner.log, runner.xcresult, build/shots
+  screenshots).
+
+Progression proven across the runs: **Swift compiles on the simulator and on a
+physical destination; the runner boots inside XCUITest, binds the port, and serves
+JSON-RPC `ping`.** What is unproven is the body of the device suite (tap/swipe
+neutral-pixel oracle, stage sums, screenshot, typeText, launch/terminate) — it has
+never reached its assertions.
+
+### Copied verbatim from B vs rewritten
+- **Verbatim / logic carried over** (from `packages/ios-device-runner` @ b547b735):
+  `MainThreadGate.swift`, `ArgentExceptionGuard.{h,m}`, the bridging header,
+  `RunnerHostApp.swift`, the Xcode project + scheme; and the XCTest bodies of the
+  command extensions — `app.snapshot()` one-XPC-round-trip flatten + node
+  budget + dedup + `elementTypeName` (`+Snapshot`), the `point()` screen-point
+  mapping + `drag` duration→velocity + `settle` end-hold + tap/doubleTap
+  (`+Gestures`), `typeText` + keyboard-return (`+TextEntry`), the
+  `XCUIScreen.main` screenshot and the hardware `button` press (`+Screenshot`,
+  `+Commands`).
+- **Rewritten** (replacing B's HTTP/1.1-per-command stack): `RunnerLineServer.swift`
+  (NDJSON TCP, was `RunnerHTTPServer`), `RunnerProtocol.swift` (JSON-RPC + method
+  table, was the HTTP `CommandKind`/`Envelope`), `ArgentRunnerSession.swift`
+  (JSON-RPC dispatch + version counter, was HTTP dispatch + journal). Removed:
+  `CommandJournal.swift`. New: nested `children`-array tree + `getInfo`/
+  `getState`/`getNestedState`/`getScreenSize`/`key`/`terminateApp`/`flushInput`/
+  `batch` on the Android contract, `RunnerSerializerTests.swift`.
+- **Host** (new): `utils/ios-open-server-client.ts` (reuses the shared
+  `AndroidOpenServerClient` NDJSON transport, NOT B's HTTP client),
+  `blueprints/ios-open-server.ts`, `utils/ios-open-server-runner.ts` (adapted
+  from B's `runner-build.ts`), `utils/ios-open-server-input.ts`,
+  `tools/describe/platforms/ios/open-server-tree.ts` (nested→DescribeNode;
+  `RUNNER_TYPE_TO_ROLE`/`SCROLL_CONTAINER_TYPES` from B's `ios-device.ts`).
+
+### Server method table (as implemented; reply shapes)
+| method | reply |
+|---|---|
+| `ping` | `{status:"ok"}` |
+| `getInfo` | `{bundleId, orientation, keyboardVisible, screenWidth, screenHeight, scale, version}` |
+| `getScreenSize` | `{screenWidth, screenHeight, scale}` |
+| `getState` | `{tree, truncated, info, version, timings{snapshotMs,serializeMs,encodeMs,captureMs}, screenshot?}` |
+| `getNestedState` | as `getState`, no screenshot |
+| `tap` | `{success, dropped:false, dropReporting:"unsupported"}` |
+| `longPress` | `{success}` |
+| `swipe` | `{success}` |
+| `typeText` | `{success, charsTyped}` |
+| `key` | `{success}` |
+| `screenshot` | `{data, mimeType, width, height}` |
+| `launchApp` | `{success, bundleId}` |
+| `terminateApp` | `{success, bundleId}` |
+| `flushInput` | `{success}` |
+| `batch` | `{results:[…]}` |
+| `shutdown` | `{status:"ok"}`, then the session ends |
+Deferred (JSON-RPC `-32004` "unsupported"): `query`, `diff`, `awaitChange`,
+`gesture`, `setClipboard`, `getAccessibilityTree`, `waitForIdle`, and the
+`hash`/`stateHash`/`idHash` fingerprints.
+
+### Host files + the flag
+Blueprint `blueprints/ios-open-server.ts` (`iosOpenServerRef`,
+`IosOpenDeviceServerApi`); client `utils/ios-open-server-client.ts`; runner
+lifecycle `utils/ios-open-server-runner.ts`; describe adapter
+`tools/describe/platforms/ios/open-server-tree.ts`. Flag `open-ios-device-server`
+(off by default). Routed behind the flag: `gesture-tap`, `gesture-swipe`,
+`screenshot` (with `xcrun simctl io` fallback), `keyboard` type/key, and the iOS
+`describe` path; each falls back to the proprietary path on any failure.
+
+### Per-case outcomes (run 34904275293)
+- **ping** — ok `{status:"ok"}`.
+- **getInfo** — bundleId `com.apple.Preferences`, portrait, non-zero screen +
+  scale, no screenshot. ✓
+- **getNestedState stage sum** — snapshot=340.0, serialize=16.1, encode=7.5,
+  **Σ=363.5 ms == captureMs=363.5 ms** (exact). ✓
+- **tap on "General"** — neutral-pixel diff ratio **0.1697** (gate ≥ 0.02);
+  version advanced **1→2**; the pushed screen's nav title "General" was present. ✓
+- **swipe scrolls** — neutral-pixel diff ratio **0.1697** (gate ≥ 0.02). ✓
+- **typeText** into the revealed Settings search field — `charsTyped=7`. ✓
+- **screenshot** — png + half-scale jpeg (jpeg width/height < png). ✓
+- **launchApp / terminateApp** — round-trip. ✓
+
+### Informal per-RPC timings (observations, NOT scoreboard numbers; single sample)
+ping ≈ 1 ms · getScreenSize ≈ 11 ms · getInfo ≈ 575 ms · getNestedState ≈ 188 ms
+(stages snapshot=120.9 / serialize=5.6 / encode=0.4, on a 1-node root read) · tap ≈
+534 ms · swipe ≈ 2876 ms · screenshot(png) ≈ 218 ms · screenshot(jpeg,0.5) ≈ 169 ms.
+The full-tree getNestedState earlier in the suite was 340 ms (snapshot-dominated).
+These are one-shot host-clock observations on a hosted macOS runner, not a bench.
+
+### Verified locally
+- `tsc --noEmit` on `tool-server`: clean (exit 0).
+- vitest `--maxWorkers=2`: the 3 host unit tests green (7 tests) — describe
+  lockstep (host ↔ Swift `scrollContainerTypes`), method parity (host list ==
+  Swift `RunnerMethod`), transport framing over a fake socket. The device suite
+  compiles and skips when `OPEN_IOS_SERVER_DEVICE_TESTS` is unset.
+- Swift is read but NOT compiled locally (no Xcode). Two compile bugs were found
+  and fixed by review/CI: `CGRect.isFinite` (no such API; run-2 fix) and the
+  simulator volume-button availability (run-3 error; fix committed, unverified).
+
+### Verified in CI (across the 6 runs)
+- Swift **compiles clean on the simulator SDK** and on a **physical-device
+  destination** (no signing) — build-for-testing green in runs 4–6.
+- The runner **launches inside XCUITest, binds the port, and answers JSON-RPC
+  `ping`** (ready in ~32s) — the NDJSON contract is live end to end.
+- The workspace TS builds and vitest loads the device module (runs 5→6).
+
+### Could not verify
+- The physical-device path is compiled in CI (device destination, no signing) but
+  not RUN — hosted runners have no attached iPhone. The manual one-off on the
+  owner's device is deferred to iOS-4.
+
+### Deferred to iOS-2/3/4 (unchanged from the spec)
+- iOS-2: like-for-like bench (`bench-open-vs-proprietary-ios.yml`).
+- iOS-3: screen graph on iOS — `hash`/`stateHash`/`idHash`, `version` as a hash
+  counter, `awaitChange`/`query`/`diff` (the server answers these "unsupported"
+  today).
+- iOS-4: `sim-input` fast arm depth, multi-pointer `gesture`, physical-device CI.
+
+### Follow-ups needed before merge
+1. Device suite is green (run 34904275293); no further CI verification needed for
+   iOS-1. To dispatch again later, place the workflow on the default branch
+   (workflow_dispatch cannot fire from a feature branch) — the temporary branch
+   `push` trigger used during bring-up has been removed.
+2. Regenerate `package-lock.json` (`npm install`) in the main checkout so the new
+   workspace is in the lockfile; then CI could revert to `npm ci`.
+3. In the main checkout after merge: `npx docusaurus build` in `packages/docs/`
+   and `npm run format` from the repo root (not run here, per the ticket).
+4. Manual physical-iPhone one-off (iOS-4).
