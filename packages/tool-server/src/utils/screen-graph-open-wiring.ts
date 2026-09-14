@@ -13,6 +13,7 @@ import type { DeviceInfo } from "@argent/registry";
 import type { OpenDeviceServerApi, OpenServerActionOutcome } from "../blueprints/android-open-server";
 import { adbShell } from "./adb";
 import {
+  EMPTY_TREE_HASH,
   FLAG_CLICKABLE,
   FLAG_ENABLED,
   FLAG_FOCUSED,
@@ -87,6 +88,20 @@ export function takeRecordMs(): number {
 }
 export function resetSkippedNoIdHash(): void {
   skippedNoIdHash = 0;
+}
+
+/**
+ * Phase 3m.1 (3M-H1): a fingerprint whose STRUCTURAL or STATE hash is
+ * {@link EMPTY_TREE_HASH} came from a transient frame with zero kept nodes — a
+ * screen caught mid-transition, not a real destination. Its `idHash` can still
+ * look real because the device folds the package name into `H_id`, so a plain
+ * truthiness check on `idHash` does not catch it (that is exactly how
+ * run 34827025184 minted an empty-tree node `b2fbe9151b60b485`). Treat it like a
+ * missing id: never key a node or edge off it. Servers at versionCode 26+ omit
+ * the hash for an empty forest so this is belt-and-suspenders for older builds.
+ */
+function isEmptyTreeFingerprint(fp: { hash?: string; stateHash?: string }): boolean {
+  return fp.hash === EMPTY_TREE_HASH || fp.stateHash === EMPTY_TREE_HASH;
 }
 
 /** cache: `${serial}|${pkg}` → resolved versionCode (best-effort). */
@@ -235,7 +250,10 @@ export async function recordOpenServerObservation(
     // fall back to the structural hash, creating duplicate nodes that made a
     // navTarget resolve to two screens ("ambiguous target"). Skip and count.
     const beforeId = outcome.before.idHash;
-    if (!beforeId) {
+    // Phase 3m.1 (3M-H1): a missing id OR an empty-tree fingerprint (structural /
+    // state == EMPTY_TREE_HASH, `H_id` package-only) is not a real screen — skip
+    // and count, never key a node/edge off a transient empty frame.
+    if (!beforeId || isEmptyTreeFingerprint(outcome.before)) {
       bumpSkippedNoIdHash();
       return;
     }
@@ -248,7 +266,12 @@ export async function recordOpenServerObservation(
     // settled read, so key and content are consistent.
     const settled = await server.getState({ includeScreenshot: false, waitTimeoutMs: RECORD_SETTLE_TIMEOUT_MS, fingerprints: true });
     const afterId = settled.idHash;
-    if (!afterId) {
+    // Phase 3m.1 (3M-H1): same empty-tree guard on the settled after-read. The
+    // settled `getState` waits for idle, but a screen that stays transient (or a
+    // pre-versionCode-26 server that still folds the empty forest) can return
+    // structural/state == EMPTY_TREE_HASH with a package-only `H_id`; refusing here
+    // is what keeps the phase-D.3 store invariant green.
+    if (!afterId || isEmptyTreeFingerprint(settled)) {
       bumpSkippedNoIdHash();
       return;
     }

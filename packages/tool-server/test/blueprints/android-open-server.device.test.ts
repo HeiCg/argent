@@ -29,6 +29,7 @@ import {
 import type { OpenServerElement, OpenServerNestedElement } from "../../src/tools/describe/platforms/android/open-server-tree";
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
+import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
@@ -849,8 +850,13 @@ suite("android open-device-server on-device", () => {
       // Plain describe path: fingerprints NOT requested ⇒ absent, and ~0 cost.
       expect(st.hash).toBeUndefined();
       expect(st.timings!.fingerprintMs ?? 0).toBeLessThanOrEqual(5);
-      // version is ALWAYS returned (a number), even with the clock unarmed.
-      expect(typeof st.version).toBe("number");
+      // Phase 3m.1 (3M-H4): `version` is ABSENT while the AX clock is unarmed
+      // (pinned at 0, no information) and a number once any armed read/action has
+      // registered the listener — never a literal 0 a host could replay as
+      // `sinceVersion: 0`. The clock is process-global and sticky, so its state
+      // here depends on suite order; assert the invariant that holds either way.
+      expect(st.version === undefined || typeof st.version === "number").toBe(true);
+      if (st.version !== undefined) expect(st.version).toBeGreaterThanOrEqual(0);
     }
     const idleResidualMed = median(idleResiduals.map((r) => Math.abs(r)));
     expect(idleResidualMed).toBeLessThanOrEqual(10);
@@ -909,11 +915,22 @@ suite("android open-device-server on-device", () => {
     expect(typeof fpNested.hash).toBe("string");
     expect((fpNested.hash ?? "").length).toBeGreaterThan(0);
     expect(typeof fpNested.idHash).toBe("string");
+    // Phase 3m.1 (3M-H1): a real screen never carries the EMPTY_TREE_HASH sentinel.
+    expect(fpNested.hash).not.toBe(EMPTY_TREE_HASH);
+    expect(fpNested.stateHash).not.toBe(EMPTY_TREE_HASH);
+    // Phase 3m.1 (3M-H4): a fingerprints read ARMS the clock, so `version` is a
+    // number (not absent) and non-negative — the same value that describes `hash`.
+    expect(typeof fpNested.version).toBe("number");
     const plainFlat = await api.getState({ includeScreenshot: false });
     expect(plainFlat.hash).toBeUndefined();
+    // Clock is now armed (the opt-in reads above registered the listener), so even
+    // a plain read reports a numeric version (3M-H4: armed ⇒ present).
+    expect(typeof plainFlat.version).toBe("number");
     const fpFlat = await api.getState({ includeScreenshot: false, fingerprints: true });
     expect(typeof fpFlat.hash).toBe("string");
     expect((fpFlat.hash ?? "").length).toBeGreaterThan(0);
+    expect(fpFlat.hash).not.toBe(EMPTY_TREE_HASH);
+    expect(typeof fpFlat.version).toBe("number");
 
     record(
       "3m fingerprints opt-in",

@@ -47,6 +47,20 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = 0xffffffffffffffffn;
 
+/**
+ * Fingerprint of an EMPTY tree: `fnv1a("")` folds no bytes and returns the bare
+ * FNV-1a 64-bit offset basis. Phase 3m.1 (3M-H1): a `structuralHash` /
+ * `stateHash` equal to this is a transient mid-transition frame captured with no
+ * kept nodes, NOT a real screen — the screen graph must never mint a node from
+ * it (the run-34827025184 store-invariant failure minted exactly such a node,
+ * whose `H_id` looked real because [identity] also folds the package name). This
+ * is the exact hex the device's `TreeStore.EMPTY_TREE_HASH` emits (edit in
+ * lockstep). The device stopped emitting it as of versionCode 26 — it now omits
+ * the hash for an empty forest — but the host guard stays for older builds and
+ * replayed artifacts.
+ */
+export const EMPTY_TREE_HASH = "cbf29ce484222325";
+
 const SCROLLING_CONTAINERS = new Set(["RecyclerView", "ListView", "ScrollView", "HorizontalScrollView"]);
 
 /**
