@@ -1,6 +1,146 @@
 # Scoreboard — open driver vs argent proprietary
 
-## FINAL (2026-09-05) — consolidated CI run 33975063607, adversarially reviewed
+## Goal status
+
+Owner's goal — "our driver beats theirs" — on the consolidated base, reference run
+**34813849446** (`feat/open-server-3k1` @ `6f7e2a6f`, `open/main` @ `8cbd3902`,
+ubuntu-latest KVM, Android 14 / SDK 34, N=20 per verb per block, p50/p95 ms, judged at the
+within-run OFF-1↔OFF-2 drift floor): open **WINS** gesture-swipe (scrcpy −37…−41 ms),
+gesture-pinch (−39…−51), await-screen-idle (−207), await-ui-element (−33…−35), and
+tokens/agent-step (3–30× fewer at 100/100 task success across all seven screen-graph
+configs). **PARITY**: describe idle at p50 (but 14–18 ms slower at p95 — the run-7 describe
+win did not reproduce), gesture-tap (scrcpy; UiAutomation is +25 ms slower). paste is
+directional only. The **two open losses** are (1) the scrcpy **fling** under-scroll at long
+durations — gate RED, same-run paired legacy→drift null, mechanism OPEN — and (2) the
+headline **tap+describe(settle:false)**, where open is +150…+230 ms slower ON vs OFF at a
+57 ms floor; both reproduce in run 34806342684, so tap+describe is a property of the
+screen-graph-d base, not phase 3k/3k.1.
+
+## FINAL (2026-09-14) — consolidated CI run 34813849446, adversarially reviewed
+
+Source: `2026-09-05-open-server-phase3k-fling-pacing-and-gates.md` "Result (3k.1)" and
+`2026-09-13-open-server-3k-results-ci.md`, review `2026-09-14-review-3k1-findings.md`
+(ACCEPT-WITH-CAVEATS), screen-graph whitelist `2026-09-14-review-d4-1-findings.md`. This is
+the **single reference** for latency, fling and screen-graph — the only run on the
+consolidated base (3k Part B + outcome-regression fix + D.4.1), `suite=both`,
+`sg_mode=matrix`. Environment: GitHub Actions ubuntu-latest, KVM, x86_64, Android 14 API
+34, 1080x2400 @ 420dpi, animations off. Latency: **N=20 per verb per block**, blocks
+OFF-1 → ON-uiautomation → ON-scrcpy → OFF-2, verdicts at the within-run OFF-1↔OFF-2 p50
+drift floor. Fling: **n=12 per cell-arm** (one uia cell n=11), interleaved over 3 rotated
+rounds. Screen-graph: 7 configs × 20 tasks × 5 reps, **n=155 non-launch steps/config**,
+o200k_base, bootstrap B=10000 seed `0x5eedc0de`. Each row supersedes the run-7
+(33975063607) / D.2 (33964414774) row of the same name; both run ids are named. ON-scrcpy
+ran the **shipped default** pacing (`legacy`).
+
+### Latency verbs (run 34813849446, N=20, p50/p95 ms)
+
+| verb | OFF-1 | ON-uia | ON-scrcpy | OFF-2 | drift floor | verdict (vs run 7 = 33975063607) |
+|---|---|---|---|---|---|---|
+| describe (idle) — **win → parity/loss** | 52/56 | 53/74 | 53/73 | 52/59 | 0 (p50) / 3 (p95) | **parity at p50 (+1 ms), 14–18 ms SLOWER at p95.** The run-7 ON describe advantage (39/36 vs 52) does not reproduce; 34806342684 reads the same (ON-uia 55/74). "Open never slower in 3 same-code runs" RETIRED |
+| gesture-tap (tap RPC only) | 53/60 | 78/116 | 51/53 | 54/56 | 1 | scrcpy **at parity** (−2…−3; harness judges ±2 ms); UiAutomation **+25 ms slower** (same +25 as run 7). Not like-for-like across ON variants (scrcpy defers the input drain) |
+| tap+describe (headline; ON settle:false) — **parity → loss** | 354/831 | 505/728 (n=19) | 529/1029 (n=19) | 297/654 | **57** | **Open LOSES: +150…+230 ms** on both ON variants. Run 7 had ON-scrcpy at parity (298/810 vs OFF 305/313); present in 34806342684 (ON-scrcpy 548) → screen-graph-d base, not 3k/3k.1 — cause not established |
+| gesture-swipe (250 ms) | 300/312 | 292/309 | 259/261 | 296/305 | 4 | **Open wins (scrcpy −37…−41)**; UiAutomation at parity. Reproduces run 7 (257) and 34806342684 (258) |
+| gesture-pinch | 358/373 | 346/372 | 307/311 | 346/365 | 12 | **Open wins (scrcpy −39…−51)**; UiAutomation at parity. scrcpy 307 in all three runs |
+| await-screen-idle — **magnitude changes** | 501/507 | 294/297 | 294/308 | 501/511 | 0 | **Open wins −207 ms** (vs −35 in run 7, ON 463/461): the base changed with the screen-graph-d tree (34806342684 reads 292/293), not with 3k.1; cause not established |
+| await-ui-element | 80/84 | 45/51 | 47/53 | 80/81 | 0 | **Open wins −33…−35 ms** (run 7: −41 on a 72 ms OFF baseline; both OFF and ON moved on this base, 34806342684 reads 43/43) |
+| paste | 804/1122 | 291/1086 | 385/990 | 662/1057 | **142** | Directional only: −277…−371 ms clears the floor; p95 does not separate |
+| first-attempt tap landing (landed/checked) | 40/40 | **59/59** | **59/59** | 40/40 | — | = 100 % on every block (each ON denominator is 59, not 60: one `uiautomator dump` parse error per ON block). No scrcpy async drop this run; run 7's 1/60 not reproduced |
+| tokens (describe, o200k) | 657 | 657 | 657 | 657 | — | identical; fidelity Jaccard **0.889** this run (live text churn: OFF "Storage / 36 % used - 5.08 GB free" vs ON "37 % used - 5.01 GB"), not the 1.0 of run 7 |
+
+Footnote (latency block): *ON-scrcpy ran the shipped default pacing (`legacy`); run
+34800933407's ON-scrcpy verbs ran `drift`, which was then the default.*
+
+### Fling status row (run 34813849446) — supersedes the run-7 "open loses" fling row; status stays OPEN
+
+> **Fling parity (n=12 per cell-arm, interleaved over 3 rotated rounds, median normalized
+> scroll):** the scrcpy under-scroll vs the proprietary reference is **real and significant
+> in 3 of 4 informative cells** — `scrcpy(drift)/off` 0.515 at 150 ms/0.3 (permutation
+> p = 0.009), **0.699** at 400 ms/0.3 (p = 0.001), 0.717 at 400 ms/0.5 (p = 0.001);
+> 250 ms/0.3 passes (0.899). The pre-3k `legacy` arm shows the same deficit (0.549 / 0.808
+> / 0.542, p = 0.031 / 0.014 / 0.002), and the same-run paired legacy→drift test is **not
+> significant in any cell** (Δ −0.020 / −0.053 / −0.266 / −0.038 / +0.115, permutation
+> p = 1.00 / 0.63 / 0.13 / 0.31 / 0.33, 20 000 draws). The deficit is **larger** than in run
+> 34800933407 (400/0.3 scrcpy/off 0.699 vs 0.886); run-to-run variance on this two-level
+> metric is of the order of the effect. **Status: OPEN.** Host pacing is not the cause:
+> `drift` ≈ `legacy` and the host dispatch span equals the requested duration on the drift
+> arm (n=72 swipes, median worst-frame drift 2.1 ms, max 7.9 ms); the device saw a stretched
+> tail on both scrcpy arms (452/439 ms for a 416 ms request, final MOVE→UP gap 46/35 ms vs
+> uia 17 ms, N=1 per arm). Mechanism unresolved — the **8-frame schedule alone is ruled
+> out** (the UiAutomation arm sends the identical 8 frames and reads `uia/off` 1.037 at
+> 400 ms/0.3). Floor rate (samples at the 0.175 metric floor out of 12, measurement-only):
+> 150 ms/0.3 — off 1, uia 3, scrcpy drift 4, scrcpy legacy 6; 400 ms/0.5 — off 0, uia 2,
+> drift 2, legacy 5.
+
+### Gate / process row (run 34813849446, no measurement)
+
+> **Fling parity gate (phase 3k.1):** pre-registered before the run in
+> `2026-09-14-open-server-phase3k1-fling-status-open.md` — per-cell **two-sided**
+> `|scrcpy/uia − 1| ≤ 0.15` AND `|scrcpy/off − 1| ≤ 0.15`, **blocking, no whitelist**,
+> reference-bimodality exclusion keyed on the **reference arms only** (`q25(uia|off) ≤
+> 0.175 + eps`, never on scrcpy), power floor **n ≥ 10 on every arm**. Verdict on this run:
+> `FAIL (per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist, over 4 informative
+> cell(s); 2 of 6 non-informative at the metric floor)` — offenders 150/0.3 (0.644/0.515),
+> 400/0.3 (0.675/0.699), 400/0.5 (0.813/0.717). **22 gate unit tests**
+> (`.github/bench-ci/gates.test.js`, `unit-tests.yml`; 21 in the reference run, +1 after
+> Part 1), of which the two fling regression tests run on **byte-identical copies of the
+> real artifacts** of run 33975063607 (stays RED, 3 informative cells all red) and
+> 34800933407 (3 PASS / 3 non-informative). The two named holes: (a) the gate grades the
+> **opt-in `drift`** arm while the shipped default is `legacy` — **NOT closed in Part 1**
+> (a docs disclosure; the default `legacy` arm is red too — 3 offenders — and both arms are
+> graded in the tables); (b) a verdict of `INCONCLUSIVE` (zero informative cells) exited 0 —
+> **CLOSED in Part 1** (`merge-fling.js` now exits non-zero, the orchestrator rethrows
+> arm-round failures, +1 firing gate test).
+
+### Bench-honesty row (run 34813849446)
+
+> F5 locate split per block: **dump 0 / describe 40, 60, 60, 40** — `locateVia = describe`
+> 100 % in every block; F6 dump short-circuit logged and surfaced, **not gated**; F7
+> first-attempt no-effect **0/40, 0/59, 0/59, 0/40**, oracle self-test pass in all four
+> blocks, transport `redir` on both ON blocks, 0 degraded blocks, **0 fast-inject
+> fallbacks**; F12 per-block ready gate blocking; F13 an executable OFF baseline failure
+> fails the run; F19 `destinationVisible` probe removed. Device suite **17 enforced + 2
+> measurement-only** (19 passed). Disclosure: **three ON-side `uiautomator dump` parse
+> failures** this run (one per ON block on `tap+describe(settle:false)`, so those cells are
+> n = 19, and one fling sample dropped with its reason recorded).
+
+### Pacing default row (run 34813849446, process)
+
+> scrcpy host pacing default is **`legacy`** — verified **character-identical** to
+> `690e66bc`'s `injectTimeline` loop (18 lines, whitespace-normalized diff empty; the
+> legacy catch path is the pre-3k one; no instrumentation on the default path).
+> `ARGENT_SCRCPY_PACING=drift` is opt-in, read per gesture, any other value falls back to
+> legacy (7 unit tests, `open-server-fast-inject-pacing.test.ts` — 8 after Part 1's 3K-L4
+> test). No default change until a same-run paired effect clears p < 0.05 with the
+> pre-registered gate green.
+
+### Screen-graph rows (run 34813849446; supersede the D.2 run-33964414774 table and restate the D.4.1 run-34801849653 table, naming all three run ids)
+
+| row | value |
+|---|---|
+| success, Wilson (n=100) + paired task-cluster bootstrap (n=20 tasks, B=10000, seed `0x5eedc0de`) | B1 100/100 [96,100] · B2 100/100 · O1 100/100 · O2 100/100 · O3 100/100 · O4 100/100 · O5 100/100 — **success is at parity across all seven configs; the differentiator is tokens, not success.** Replication: run 34801849653, same code, 99/100 on O2 and 100/100 elsewhere |
+| B1 caveat (D41-H2, sourced to its own runs) | B1 100/100 holds under a harness that performs an explicit post-action settle for every config and splits B1's collapsed `"<title> / <summary>"` describe labels into text/cd before resolution. The same B1 code without those two was 81/100 (run 34788497583) and 82/100 (run 34794414764); the D.4 82 % is not a capability gap |
+| tokens/agent-step, o200k p50, n=155 non-launch steps each | B1 657 · B2 651 · O1 179 · **O2 54** · O3 627 · O4 21 · O5 21. Launch-step observation excluded; each config observes its own sequence. Same-code run-to-run spread (D.4.1 runs): O1 138–179, O2 **54–68**, O3 598–627 |
+| RTT count/step, p50, same n | B1 2 · B2 2 · O1 2 · O2 2 · O3 2 · O4 1 · O5 1. Not a latency column; modelled as action + observation, excludes the settle RPC |
+| H1 tokens ratio | O1/B2 o200k p50 over all non-launch steps = 179/651 = **0.275×** (target ≤ 0.5×), PASS — identical to run 34801849653 |
+| H2 | p50 over all non-launch steps: B2 − O2 = 0, **FAIL (structural)**. Same-screen steps (n=50 per arm): p50 2 − 1 = 1, PASS; means B2 2.00 vs O2 **1.20** (34801849653: 1.22) |
+| H3 warm/cold | O4/O3 o200k p50 = 21/627 = **0.033×** (target ≤ 0.2×), PASS |
+| H4 non-inferiority, paired task-cluster bootstrap, B=10000, seed `0x5eedc0de`, n=100 | vs B1 (100/100) and vs B2 (100/100): none inferior — O1/O2/O3/O4/O5 all +0 [0,0]. Every arm is 100/100 here, so this is unremarkable by construction; the informative version is run 34801849653 (O2 −1 [−3,0]) |
+| invariants gate | Store invariants OK: 0 duplicate screens, 0 multi-destination edges (`sg-matrix.log:197`); `skippedNoIdHash` 0; three stores — `com.android.settings` **10 nodes / 9 edges, max out-degree 8, mean 0.9**, `com.android.chrome` 1/1, `com.google.android.settings.intelligence` 2/1. (Run 34801849653 built 11/10/9 for settings — the store shape is not run-stable) |
+| O5 routing coverage, n=60 known-target taps | **60/60 one-step routed** · 0 zero-step no-op · 0 mis-landed · **0 diverged** · 0 no-route · 0 nav fallbacks (run 34801849653: 59/60 with one hash-mismatch divergence) |
+| O5 measured RPCs per one-step routed tap, n=60 | min 7 / p50 7 / max 7 — a LOWER bound |
+
+**Screen-graph rows explicitly NOT allowed from this run:** the D41-H1 **post-action-wait
+symmetry** row ("equal within 5 %") — on run 34813849446 `actionRttMs + settleMs` p50
+spreads **2246 (B1) … 2644 (O5), 17.7 %, with B1 the cheapest** (the opposite shape of run
+34801849653's 5.2 %); it is cited only from 34801849653 with that run id, never as a
+property of 34813849446. Also not allowed (carried from D.4.1): `settleMs` alone as
+symmetry evidence, "B1's 82 % was not a rendering property" unqualified, "O2 same-screen
+mean RTT/step 1.74", O5 `fallbacks` from the harness `results-ci.md`, and any token
+×-factor without its statistic.
+
+## Superseded (run 33975063607 latency + run 33964414774 screen-graph; kept for provenance)
+
+### Superseded — run 33975063607 latency (was FINAL 2026-09-05; superseded by run 34813849446)
 
 Source: `2026-09-03-open-vs-proprietary-results-final-ci.md` (run 7,
 `feat/bench-ci-final` @ f76f5d245, code `feat/android-open-server-final`),
@@ -38,7 +178,7 @@ doc. Void in run 7: `destinationVisible` probe read 0/20 in all four blocks
 (stale coordinate), so phase-3d staleness is unsupported here; the screen-graph
 job was skipped in this run (its numbers come from the run below).
 
-## FINAL — screen-graph (tokens per agent step), run 33964414774 on `feat/screen-graph-d`, reviewed
+### Superseded — screen-graph run 33964414774 (D.2; superseded by run 34813849446 / 34801849653)
 
 Source: `2026-09-03-screen-graph-results-ci.md` (D.2), reviews `…review-d1…`,
 `…review-d2-findings.md` (ACCEPT-WITH-CAVEATS). 7 configs × 20 tasks × 5 reps,
@@ -75,7 +215,7 @@ harness resolver, so B1's drop is not a proprietary capability claim; H4 is
 meaningful vs B2. Follow-up D.4: symmetric resolvers on both renderings, a
 Network-&-internet-unique navTarget for `settings-network`.
 
-## Goal verdict (owner's goal: "our driver beats theirs")
+### Superseded — Goal verdict (run 33975063607, 2026-09-05); replaced by "Goal status" at the top (run 34813849446)
 
 Wins (review-accepted, same run): swipe, pinch, await-screen-idle,
 await-ui-element (scrcpy or both ON variants); describe idle never slower and
@@ -83,7 +223,16 @@ faster in 2 of 3 runs; tokens per agent step 3–30× lower with equal task
 success. Parity: tap RPC, tap+describe (scrcpy). Loss: scrcpy fling momentum at
 long durations (reproducible), UiAutomation tap +25 ms. Not measured on this
 line: physical devices; local arm64 numbers (older sections below) predate the
-gates and are not comparable.
+gates and are not comparable. **Superseded on run 34813849446:** the run-7
+describe win and the tap+describe(scrcpy) parity did NOT reproduce — describe is
+parity/loss and tap+describe is an open loss on the consolidated base (see "Goal
+status" and the run-34813849446 latency table above).
+
+## Retractions added 2026-09-14 (run 34813849446, review 3k1)
+- "open describe idle never slower in 3 same-code runs / faster in 2 of 3" — falsified on run 34813849446: describe is at parity at p50 and **14–18 ms slower at p95**; the run-7 ON win (39/36 vs 52) did not reproduce (34806342684 reads the same). Direction-only claim retired.
+- "tap+describe(scrcpy) at parity" — on run 34813849446 the headline `tap+describe(settle:false)` is an **open loss** (ON +150…+230 ms vs OFF at a 57 ms floor); reproduces in 34806342684, so it is the screen-graph-d base, not a 3k/3k.1 regression, cause not established.
+- "fling fixed / resolved" (phase 3k) — retracted already; on run 34813849446 the deficit is **real and significant in 3 of 4 informative cells** in BOTH pacing arms, the paired legacy→drift test is null (p ≥ 0.13), and the gate is RED — status OPEN.
+- "the 400 ms deficit is not present in run 34800933407" and the 8-frame / VelocityTracker frame-count mechanism as a finding — the deficit WAS present in 34800933407 (p=0.001), and the 8-frame explanation is ruled out (uia sends the same 8 frames, `uia/off` 1.037 at 400/0.3).
 
 ## Retractions added 2026-09-05
 - 3h "DOWN-MOVE-UP fixes the scrcpy tap" — the bench oracle was the bug; MOVE reverted and now forbidden by the parity gate.
