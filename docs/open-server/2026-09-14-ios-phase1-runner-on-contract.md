@@ -111,13 +111,13 @@ Branch `feat/ios-open-server-1` off `open/main` @ ada26126, worktree
 lacks the `workflow` scope. `open/main` not touched; no `.github/bench-ci/**`,
 `bench-open-vs-proprietary*`, Android device server, or scoreboard change.
 
-### Status: runner builds and serves; device suite has not yet run its assertions.
-Six CI runs (3 + a 3-run extension). By run 6 the Swift builds clean on the
-simulator AND on a physical destination, the runner launches against Settings and
-answers `ping` — the NDJSON contract works end to end. The device-suite
-**assertions never executed**: runs 4–6 failed in test harness/plumbing (module
-resolution, then a test-env name collision), not in the runner. The 6-run budget
-is exhausted; the final fix (env rename) is committed but **not CI-verified**.
+### Status: GREEN — the device suite passes on the simulator.
+Eight CI runs (3 + two 3-run extensions; the 8th was not needed). Run
+**34904275293** is fully green: Swift builds clean on the simulator AND on a
+physical destination, the runner launches inside XCUITest against Settings, and
+the whole device suite (9 cases) passes — tap/swipe by neutral pixels, getNestedState
+stage sums, typeText, screenshot, launch/terminate. Environment: **Xcode 26.6
+(17F113), iOS 26.5** simulator; xctestrun `ArgentRunner_iphonesimulator26.5-arm64`.
 
 ### CI runs (workflow `ios-open-server-device-test.yml`, macos-latest)
 Environment: the image carries **Xcode 26.x / iOS 26.5 simulator runtime** (the
@@ -158,6 +158,16 @@ built xctestrun was `ArgentRunner_iphonesimulator26.5-arm64.xctestrun`.
   loads, so `ARGENT_IOS_OPEN_SERVER_PORT`/`_UDID` were wiped (the step env had the
   correct port `51033`). Fix (`26ff7649`, unverified): rename to
   `IOS_OPEN_SERVER_PORT` / `IOS_OPEN_SERVER_UDID`.
+
+- **34902372315** (extra 4) — env fix worked (beforeAll passed) and the suite
+  reached its assertions, but every RPC hit `ECONNREFUSED 127.0.0.1:50732`: a
+  detached `xcodebuild test-without-building` does not survive the step boundary.
+  Fix: launch the runner in the background OF the suite step and run vitest in the
+  same shell.
+- **34904275293** (extra 5, GREEN) — full build + physical compile + runner launch
+  + **device suite all 9 green**. Artifact: `ios-open-server-device-artifacts`
+  (build-sim.log, build-device.log, runner.log, runner.xcresult, build/shots
+  screenshots).
 
 Progression proven across the runs: **Swift compiles on the simulator and on a
 physical destination; the runner boots inside XCUITest, binds the port, and serves
@@ -221,14 +231,25 @@ lifecycle `utils/ios-open-server-runner.ts`; describe adapter
 `screenshot` (with `xcrun simctl io` fallback), `keyboard` type/key, and the iOS
 `describe` path; each falls back to the proprietary path on any failure.
 
-### Per-case outcomes + per-RPC timings
-**None captured.** The device suite reached its assertions in no run — it either
-failed to load (extra 1) or failed in `beforeAll` before any test body ran (extra
-3). So there are no neutral-pixel diff ratios, no stage sums, and no informal
-per-RPC timings to report yet. The test emits them (`[device]` / `[device][timing]`
-log lines: tap/swipe diff ratios, getNestedState `snapshot/serialize/encode/sum/
-capture`, and per-RPC ms) once a run gets past `beforeAll`. (No scoreboard numbers
-were ever in scope for this phase.)
+### Per-case outcomes (run 34904275293)
+- **ping** — ok `{status:"ok"}`.
+- **getInfo** — bundleId `com.apple.Preferences`, portrait, non-zero screen +
+  scale, no screenshot. ✓
+- **getNestedState stage sum** — snapshot=340.0, serialize=16.1, encode=7.5,
+  **Σ=363.5 ms == captureMs=363.5 ms** (exact). ✓
+- **tap on "General"** — neutral-pixel diff ratio **0.1697** (gate ≥ 0.02);
+  version advanced **1→2**; the pushed screen's nav title "General" was present. ✓
+- **swipe scrolls** — neutral-pixel diff ratio **0.1697** (gate ≥ 0.02). ✓
+- **typeText** into the revealed Settings search field — `charsTyped=7`. ✓
+- **screenshot** — png + half-scale jpeg (jpeg width/height < png). ✓
+- **launchApp / terminateApp** — round-trip. ✓
+
+### Informal per-RPC timings (observations, NOT scoreboard numbers; single sample)
+ping ≈ 1 ms · getScreenSize ≈ 11 ms · getInfo ≈ 575 ms · getNestedState ≈ 188 ms
+(stages snapshot=120.9 / serialize=5.6 / encode=0.4, on a 1-node root read) · tap ≈
+534 ms · swipe ≈ 2876 ms · screenshot(png) ≈ 218 ms · screenshot(jpeg,0.5) ≈ 169 ms.
+The full-tree getNestedState earlier in the suite was 340 ms (snapshot-dominated).
+These are one-shot host-clock observations on a hosted macOS runner, not a bench.
 
 ### Verified locally
 - `tsc --noEmit` on `tool-server`: clean (exit 0).
@@ -248,11 +269,9 @@ were ever in scope for this phase.)
 - The workspace TS builds and vitest loads the device module (runs 5→6).
 
 ### Could not verify
-- The device-suite assertions (tap/swipe neutral-pixel oracle, getNestedState
-  stage sums, screenshot png+jpeg, typeText, launch/terminate) — never reached
-  their bodies. The final env-name fix (`26ff7649`) is committed but unverified;
-  it is the last known blocker and a further run is very likely to go green.
-- The physical-device run + the manual one-off on the owner's iPhone (iOS-4).
+- The physical-device path is compiled in CI (device destination, no signing) but
+  not RUN — hosted runners have no attached iPhone. The manual one-off on the
+  owner's device is deferred to iOS-4.
 
 ### Deferred to iOS-2/3/4 (unchanged from the spec)
 - iOS-2: like-for-like bench (`bench-open-vs-proprietary-ios.yml`).
@@ -262,12 +281,10 @@ were ever in scope for this phase.)
 - iOS-4: `sim-input` fast arm depth, multi-pointer `gesture`, physical-device CI.
 
 ### Follow-ups needed before merge
-1. One more CI run to verify the env-name fix (`26ff7649`) lets the device suite
-   run its assertions green — the 6-run budget (3 + a 3-run extension) is spent,
-   and the runner is proven up to `ping`. To run again from a feature branch,
-   re-add the temporary branch-scoped `push` trigger (workflow_dispatch cannot
-   fire from a non-default branch), or dispatch after the workflow reaches the
-   default branch.
+1. Device suite is green (run 34904275293); no further CI verification needed for
+   iOS-1. To dispatch again later, place the workflow on the default branch
+   (workflow_dispatch cannot fire from a feature branch) — the temporary branch
+   `push` trigger used during bring-up has been removed.
 2. Regenerate `package-lock.json` (`npm install`) in the main checkout so the new
    workspace is in the lockfile; then CI could revert to `npm ci`.
 3. In the main checkout after merge: `npx docusaurus build` in `packages/docs/`
