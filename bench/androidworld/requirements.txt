@@ -1,0 +1,21 @@
+# AW-1 Python dependencies. Installed only in CI (never in the worktree — the
+# machine resource policy forbids local pip installs). AndroidWorld is pinned to
+# a commit and vendored nowhere; it is pulled straight from GitHub.
+#
+# Pin (research §10): e3fea3c on main, dated 2026-09-09. Every run's manifest
+# records this exact SHA so a published AW number is never mistaken across
+# harness versions (research §5). AndroidWorld requires Python >= 3.11 and pulls
+# its own deps (android_env, absl-py, numpy, pandas, protobuf, grpcio-tools, ...).
+android_world @ git+https://github.com/google-research/android_world@e3fea3ccc69787570e282c99573298f1c3019a34
+
+# The fixed agent's brain (claude_wrapper.py). Needs output_config.effort support
+# for claude-opus-5; bump the floor if the harness rejects the param.
+anthropic>=0.69.0
+
+# Tool-server HTTP client (driver_env.py) — POST /tools/<name>.
+requests>=2.31.0
+
+# Observation-token accounting on our side (driver_env.py). o200k_base matches
+# the tool-server's own js-tiktoken accounting so "tokens (ours)" is comparable
+# to the screen-graph bench numbers; the API usage stays the authoritative count.
+tiktoken>=0.7.0
