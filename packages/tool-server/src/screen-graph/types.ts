@@ -277,8 +277,8 @@ export function actionSignature(a: CanonicalAction): string {
 }
 
 /** Phase E (design D2 R4): the volatility threshold — 4+ samples, ≥ 75 % churn. */
-export const VOLATILE_MIN_SAMPLES = 4;
-export const VOLATILE_CHURN_RATIO = 0.75;
+const VOLATILE_MIN_SAMPLES = 4;
+const VOLATILE_CHURN_RATIO = 0.75;
 
 /** Whether a node's `volatility` tracker has crossed the volatile threshold. */
 export function isNodeVolatile(node: ScreenNode): boolean {

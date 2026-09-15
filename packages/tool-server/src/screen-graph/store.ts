@@ -67,7 +67,7 @@ interface ScreenGraphStoreOptions {
  * in. `concreteTo` is the real destination `H_id` (counted for `instances`);
  * `itemText` is the tapped item's label (kept in a small ring for the summary).
  */
-export interface TemplateObservation {
+interface TemplateObservation {
   containerKey: string;
   itemTemplate: string;
   concreteTo: string;
@@ -77,7 +77,7 @@ export interface TemplateObservation {
 }
 
 /** Phase E: counts of what the last `flush()` pruned, for the harness record. */
-export interface PruneStats {
+interface PruneStats {
   evictedNodes: number;
   evictedEdges: number;
   decayedEdges: number;

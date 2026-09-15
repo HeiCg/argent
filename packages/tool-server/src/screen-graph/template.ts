@@ -102,7 +102,7 @@ function contains(
 }
 
 /** The `SC:<class>#<id>` token screen-hash folds for a scrolling container. */
-export function scTokenOf(el: TemplateElement): string {
+function scTokenOf(el: TemplateElement): string {
   return `SC:${stripClass(el.className)}#${stripId(el.resourceId)}`;
 }
 
@@ -270,7 +270,7 @@ export function destinationShapeOf(
 }
 
 /** The synthetic template-node hash (design D1). */
-export function templateNodeHashOf(
+function templateNodeHashOf(
   containerKey: string,
   itemTemplate: string,
   destinationShape: string
@@ -279,7 +279,7 @@ export function templateNodeHashOf(
 }
 
 /** A fully-resolved template edge target, or `null` when the tap was not in a list. */
-export interface ResolvedTemplate {
+interface ResolvedTemplate {
   containerKey: string;
   itemTemplate: string;
   destinationShape: string;
