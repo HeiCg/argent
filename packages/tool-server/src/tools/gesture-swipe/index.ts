@@ -13,7 +13,13 @@ import {
   shouldUseOpenServer,
   openServerSwipe,
   openServerSwipeWithOutcome,
+  openServerVerifiedSwipe,
+  type OpenServerVerify,
+  type OpenServerVerifiedResult,
 } from "../../utils/open-server-input";
+import { verifyParamSchema } from "../../utils/open-server-verify";
+import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
+import { recordIncident, clearIncident } from "../../utils/open-server-incident";
 import { shouldUseIosOpenServer, iosOpenServerSwipe } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
@@ -52,8 +58,20 @@ const MAX_DURATION_MS = 10_000;
 const zodSchema = z
   .object({
     udid: z.string().describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
-    fromX: z.number().describe("Start x: normalized 0.0–1.0 (not pixels; same as tap)"),
-    fromY: z.number().describe("Start y: normalized 0.0–1.0 (not pixels; same as tap)"),
+    fromX: z
+      .number()
+      .optional()
+      .describe(
+        "Start x: normalized 0.0–1.0 (not pixels). Required unless `verify` is given on the Android " +
+          "open path, where it is an optional cross-check of the resolved start element."
+      ),
+    fromY: z
+      .number()
+      .optional()
+      .describe(
+        "Start y: normalized 0.0–1.0 (not pixels). Required unless `verify` is given on the Android " +
+          "open path, where it is an optional cross-check of the resolved start element."
+      ),
     toX: z.number().describe("End x: normalized 0.0–1.0 (not pixels; same as tap)"),
     toY: z.number().describe("End y: normalized 0.0–1.0 (not pixels; same as tap)"),
     durationMs: z
@@ -83,6 +101,24 @@ const zodSchema = z
       .describe(
         "Retired: renamed to `momentum` with the opposite sense. Pass `momentum: false` for what `settle: true` meant; `settle: false` was the default, so drop the key."
       ),
+    verify: verifyParamSchema
+      .optional()
+      .describe(
+        "Android open-device-server only: verify the swipe's START point on the LIVE accessibility " +
+          "tree before swiping. Pass { selector, tolerancePx? } (ScreenSelector grammar, same as " +
+          "gesture-tap). The host runs the server-side `query` RPC and resolves a UNIQUE node: exactly " +
+          "one match starts the swipe at its bounds center; zero refuses `verify_not_found`; several " +
+          "refuses `verify_ambiguous` — NO swipe is issued on a refusal. The end point is taken as " +
+          "authored. fromX/fromY are OPTIONAL with `verify`: give them to cross-check (refuses " +
+          "`verify_mismatch` if they fall outside the match ± tolerancePx, default 0), or omit them to " +
+          "start from the resolved center. On iOS or the proprietary Android path `verify` refuses " +
+          "`verify_unsupported`. When absent the swipe path is unchanged."
+      ),
+  })
+  .refine((p) => p.verify !== undefined || (p.fromX !== undefined && p.fromY !== undefined), {
+    message:
+      "fromX and fromY are required unless `verify` is given (with verify, they are an optional cross-check of the start element).",
+    path: ["fromX"],
   })
   .refine(
     (p) =>
@@ -104,6 +140,37 @@ interface Result {
    * The before/after fingerprint delta of this swipe.
    */
   outcome?: OpenServerActionOutcome;
+  /**
+   * Ticket A1 (verified swipe start) — present only when `verify` was passed on
+   * the Android open path. `true` when the start selector resolved uniquely and
+   * the swipe started from its center; `false` on a refusal (no swipe issued).
+   */
+  verified?: boolean;
+  verifyCode?: "verify_not_found" | "verify_ambiguous" | "verify_mismatch" | "verify_unsupported";
+  resolvedBounds?: VerifyBounds;
+  version?: number;
+  verifyMs?: number;
+  candidates?: VerifyCandidate[];
+  requestedPx?: { x: number; y: number };
+  mismatchLabel?: string;
+}
+
+const pctPair = (a: number | undefined, b: number | undefined): string =>
+  a === undefined || b === undefined
+    ? "the verified element"
+    : `(${Math.round(a * 100)}%, ${Math.round(b * 100)}%)`;
+
+function swipeDescription(params: Params, tense: "present" | "past"): string {
+  const verb = tense === "present" ? "Swiping" : "Swiped";
+  return `${verb} from ${pctPair(params.fromX, params.fromY)} to ${pctPair(params.toX, params.toY)}`;
+}
+
+// A1-H2: a refusal issues no injection, so the completed line must not claim a swipe.
+function swipeResultMessage(params: Params, result: Result): string {
+  if (result.verified === false && result.verifyCode) {
+    return `Verify refused (${result.verifyCode}); no swipe issued`;
+  }
+  return swipeDescription(params, "past");
 }
 
 // Touch platforms only: on a desktop renderer a mouse drag selects text instead
@@ -118,10 +185,8 @@ export function createGestureSwipeTool(registry: Registry): ToolDefinition<Param
   return {
     id: "gesture-swipe",
     interaction: {
-      startedMsg: ({ params }) =>
-        `Swiping from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
-      completedMsg: ({ params }) =>
-        `Swiped from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
+      startedMsg: ({ params }) => swipeDescription(params, "present"),
+      completedMsg: ({ params, result }) => swipeResultMessage(params, result),
       failedMsg: ({ failureSignal }) => `Failed to swipe: ${failureSignal.error_code}`,
     },
     // The bounds are spelled out rather than interpolated: extract-tools scans this
@@ -148,14 +213,24 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       const timestampMs = Date.now();
       const device = resolveDevice(params.udid);
 
+      // A1-M5: `verify` is only honored on the Android open path; refuse elsewhere
+      // rather than issue an unverified swipe.
+      if (params.verify && !shouldUseOpenServer(device)) {
+        return { swiped: false, timestampMs, verified: false, verifyCode: "verify_unsupported" };
+      }
+      // fromX/fromY are only optional under `verify` on the open path (refine);
+      // every non-verify path below is reached with them present.
+      const fromX = params.fromX ?? 0;
+      const fromY = params.fromY ?? 0;
+
       if (shouldUseIosOpenServer(device)) {
         try {
           const steps = Math.max(1, Math.round(duration / 16));
           await iosOpenServerSwipe(
             registry,
             device,
-            params.fromX,
-            params.fromY,
+            fromX,
+            fromY,
             params.toX,
             params.toY,
             steps,
@@ -169,6 +244,70 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             }`
           );
         }
+      }
+
+      if (shouldUseOpenServer(device) && params.verify) {
+        // Ticket A1 (verified swipe start): resolve the START target on the LIVE
+        // tree first and begin the swipe at its center, or refuse WITHOUT
+        // injecting. No fallback to the proprietary path.
+        const steps = Math.max(1, Math.round(duration / 16));
+        const verify: OpenServerVerify = params.verify;
+        let vr: OpenServerVerifiedResult;
+        try {
+          vr = await openServerVerifiedSwipe(
+            registry,
+            device,
+            params.fromX,
+            params.fromY,
+            params.toX,
+            params.toY,
+            steps,
+            verify,
+            momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
+          );
+        } catch (err) {
+          recordIncident(device.id, {
+            tool: "gesture-swipe",
+            code: "timeout",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          throw err;
+        }
+        if (vr.outcome === "swiped") {
+          clearIncident(device.id);
+          return {
+            swiped: true,
+            timestampMs,
+            verified: true,
+            resolvedBounds: vr.resolvedBounds,
+            version: vr.version,
+            verifyMs: vr.verifyMs,
+          };
+        }
+        const verifyCode =
+          vr.outcome === "not_found"
+            ? "verify_not_found"
+            : vr.outcome === "ambiguous"
+              ? "verify_ambiguous"
+              : "verify_mismatch";
+        recordIncident(device.id, {
+          tool: "gesture-swipe",
+          code: verifyCode,
+          message: `verify refused: ${verifyCode}`,
+          ...(vr.label !== undefined ? { label: vr.label } : {}),
+        });
+        return {
+          swiped: false,
+          timestampMs,
+          verified: false,
+          verifyCode,
+          version: vr.version,
+          verifyMs: vr.verifyMs,
+          ...(vr.resolvedBounds ? { resolvedBounds: vr.resolvedBounds } : {}),
+          ...(vr.candidates ? { candidates: vr.candidates } : {}),
+          ...(vr.requestedPx ? { requestedPx: vr.requestedPx } : {}),
+          ...(vr.label !== undefined ? { mismatchLabel: vr.label } : {}),
+        };
       }
 
       if (shouldUseOpenServer(device)) {
@@ -192,25 +331,27 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             await openServerSwipe(
               registry,
               device,
-              params.fromX,
-              params.fromY,
+              fromX,
+              fromY,
               params.toX,
               params.toY,
               steps,
               momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
             );
+            clearIncident(device.id);
             return { swiped: true, timestampMs };
           }
           const outcome = await openServerSwipeWithOutcome(
             registry,
             device,
-            params.fromX,
-            params.fromY,
+            fromX,
+            fromY,
             params.toX,
             params.toY,
             steps,
             momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
+          clearIncident(device.id);
           return { swiped: true, timestampMs, outcome };
         } catch (err) {
           console.debug(
@@ -277,8 +418,8 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
         // away, leaving the fast pre-hold velocity to fling, and a beyond-the-end
         // hold would run off-screen for a swipe that already finishes at an edge.
         const progress = momentumFree ? 1 - Math.pow(1 - t, MOMENTUM_FREE_EASE_EXPONENT) : t;
-        const x = params.fromX + (params.toX - params.fromX) * progress;
-        const y = params.fromY + (params.toY - params.fromY) * progress;
+        const x = fromX + (params.toX - fromX) * progress;
+        const y = fromY + (params.toY - fromY) * progress;
         const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
         // In the Up's own frame, with no added sleep, so the cadence is unchanged.
         if (type === "Up") {

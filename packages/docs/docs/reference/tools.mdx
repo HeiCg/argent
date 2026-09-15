@@ -39,6 +39,30 @@ Run `argent tools` to list them from the terminal, `argent tools describe <name>
 | `await-screen-idle` | Block until the screen has rendered content and stopped changing                 |
 | `await-ui-element`  | Block until a UI element reaches an expected state, instead of polling in a loop |
 
+### Execution incident line (Android open server)
+
+On Android with the open device server active, `describe` prepends one line to
+its output after a failed verified gesture on the same device. The line reports
+the last failure so the agent sees it on the next read:
+
+```
+incident: <tool> <code> ×<n> — <hint>
+```
+
+`<tool>` is the tool that failed. `<code>` is the failure code, for example
+`verify_not_found`. `<n>` is the number of failures in a row. `<hint>` tells the
+agent what to change:
+
+| Code               | Hint                                        |
+| ------------------ | ------------------------------------------- |
+| `verify_not_found` | re-describe and pick a visible label        |
+| `verify_ambiguous` | add a second field to the selector          |
+| `verify_mismatch`  | your coordinates point at the named element |
+
+After three failures in a row the line adds `consider a different approach`.
+The next successful gesture clears the line. Argent keeps this state in memory
+only. It does not survive a tool-server restart and it adds no device call.
+
 ## Interacting
 
 | Tool                     | Description                                                      |
@@ -89,6 +113,58 @@ element by its index. It passes `target: { index, version }` to `gesture-tap` or
 a `gesture-sequence` `tap` step. Argent resolves the index on the device against the
 same snapshot version. Argent refuses the tap with `stale_index` when the screen
 moved since the `describe`, so a stale index never taps the wrong element.
+
+### Verified tap and swipe (Android open server)
+
+`gesture-tap` and `gesture-swipe` accept an optional `verify` parameter. `verify`
+applies only on Android when the open device server is active. On iOS or the
+proprietary Android path, Argent refuses a `verify` request with
+`verify_unsupported` and issues no tap. When `verify` is absent, the tap and
+swipe paths do not change.
+
+With `verify`, the coordinates are optional. Omit `x` and `y` (or `fromX` and
+`fromY` for a swipe) to tap or start at the resolved element center. Supply them
+to cross-check the resolved element.
+
+`verify` takes a `selector` and an optional `tolerancePx`:
+
+| Field         | Type   | Meaning                                                                         |
+| ------------- | ------ | ------------------------------------------------------------------------------- |
+| `selector`    | object | The element to confirm on the live screen. See the fields below.                |
+| `tolerancePx` | number | Slack in pixels around the matched element for the coordinate check. Default 0. |
+
+The `selector` uses the screen-selector grammar. Each string field is a bare
+string for an exact match, or an object `{ contains }`, `{ equals }` or
+`{ regex }` with an optional `caseInsensitive`.
+
+| Selector field       | Meaning                                         |
+| -------------------- | ----------------------------------------------- |
+| `id`                 | Resource id.                                    |
+| `text`               | Visible text.                                   |
+| `class`              | Class name.                                     |
+| `index`              | Pick the Nth match, 0-based.                    |
+| `visible`            | Require a visible node.                         |
+| `containsDescendant` | A nested selector that a descendant must match. |
+
+Argent runs a `query` on the live accessibility tree before it injects the
+gesture. Argent resolves one unique node with a fixed precedence: exact id, then
+exact text, then exact content description, then a single contains match, then
+class. Fields the server matches directly — `regex`, `containsDescendant`,
+`visible`, `index` and a contains-only `id` — resolve the same way: when the
+server returns exactly one node, Argent taps it. On a unique match Argent taps
+the center of the element bounds. For a swipe, Argent starts the swipe at the
+center of the element bounds and keeps the end point as given.
+
+The reply reports `verified: true`, `resolvedBounds`, `version` and `verifyMs`.
+`verifyMs` is the time of the one `query` call. Argent refuses without injecting
+in these cases:
+
+| Error code           | Cause                                                                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify_not_found`   | No element matched the selector. The reply carries no bounds.                                                                                                                 |
+| `verify_ambiguous`   | More than one element matched. The reply lists up to five of the colliding candidates.                                                                                        |
+| `verify_mismatch`    | The x and y fall outside the matched bounds ± `tolerancePx` (default 0). The reply returns the requested coordinates and the matched element. Only when x and y are supplied. |
+| `verify_unsupported` | The device is not on the Android open path (iOS or the proprietary backend). Argent issues no tap.                                                                            |
 
 ## JavaScript runtime debugging
 

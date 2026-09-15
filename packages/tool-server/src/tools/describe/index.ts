@@ -24,8 +24,13 @@ import { formatDescribeTree } from "./format-tree";
 // Renders the adapter-internal `tree` to text and drops it, so the caller (LLM)
 // never pays for the JSON tree. Pruning stays in the per-platform adapters.
 function withDescription(data: DescribeTreeData): DescribeResult {
+  const rendered = formatDescribeTree(data.tree, { source: data.source });
+  // Ticket A1 (part B): the open Android path prepends ONE execution-incident
+  // line (set on `data.incidentLine`) above the tree while an incident is active.
+  const description =
+    data.incidentLine !== undefined ? `${data.incidentLine}\n${rendered}` : rendered;
   const out: DescribeResult = {
-    description: formatDescribeTree(data.tree, { source: data.source }),
+    description,
     source: data.source,
   };
   if (data.should_restart) out.should_restart = data.should_restart;
