@@ -30,6 +30,9 @@ import type { OpenServerElement } from "../../src/tools/describe/platforms/andro
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
 import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
+import { resolveVerify, boundsCenter } from "../../src/utils/open-server-verify";
+import type { QueryNodeLite } from "../../src/screen-graph/bench/locate";
+import { pct } from "../../src/screen-graph/bench/tokens";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
@@ -1309,5 +1312,114 @@ suite("android open-device-server on-device", () => {
       "PASS",
       `5 calls during fling: [${timings.join(", ")}]ms, worst ${worst}ms < ${GATE_MS}`
     );
+  }, 90_000);
+
+  // ── Ticket A1 — verified tap (`verify: { selector }`) ─────────────────────
+  // Exercises the SAME shared resolver (`resolveVerify`, pickUniqueNode
+  // precedence) the gesture-tap tool routes to, against the LIVE `query` RPC.
+  // These run on the CI emulator as part of the enforced device suite.
+  const NET_ROW = "Network & internet";
+
+  it("A1 verified tap — verify:{text} resolves unique and navigates (effect oracle)", async () => {
+    await freshSettings();
+    const before = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const selector = { text: NET_ROW };
+    const q = await api.query(selector);
+    const res = resolveVerify(q.nodes as unknown as QueryNodeLite[], selector);
+    if (res.kind !== "match") {
+      record(
+        "A1 verified tap (navigate)",
+        "FAIL",
+        `expected match, got ${res.kind} (${q.nodes.length} nodes)`
+      );
+    }
+    expect(res.kind).toBe("match");
+    if (res.kind !== "match") return;
+    const c = boundsCenter(res.bounds);
+    await api.tap(Math.round(c.x), Math.round(c.y));
+    await sleep(1200);
+    await api.waitForIdle(3000);
+    const after = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const gained = [...after].filter((t) => !before.has(t));
+    const lost = [...before].filter((t) => !after.has(t));
+    expect(gained.length + lost.length).toBeGreaterThan(0);
+    record(
+      "A1 verified tap (navigate)",
+      "PASS",
+      `resolved unique "${NET_ROW}" + tapped center; +${gained.length}/-${lost.length} labels`
+    );
+  }, 90_000);
+
+  it("A1 verified tap — verify:{text:'Internet'} on the root refuses, no tap issued", async () => {
+    const info = await freshSettings();
+    const before = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    // Bare-string text is EXACT (ScreenSelector grammar): "Internet" does not
+    // equal the collapsed "Network & internet" row, so the query returns nothing
+    // (verify_not_found) — or, if the image ships an exact "Internet" summary on
+    // >1 node, ambiguous. Record which; either way NO tap is issued.
+    const selector = { text: "Internet" };
+    const q = await api.query(selector);
+    // Cross-check against a plausible on-screen coordinate (row band), so this is
+    // the same guarded call the tool makes.
+    const midY = Math.round(info.screenHeight * 0.4);
+    const res = resolveVerify(q.nodes as unknown as QueryNodeLite[], selector, {
+      xPx: Math.round(info.screenWidth / 2),
+      yPx: midY,
+      tolerancePx: 0,
+    });
+    expect(["not_found", "ambiguous", "mismatch"]).toContain(res.kind);
+    // No tap issued — the screen must be unchanged.
+    await sleep(600);
+    const after = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const churn =
+      [...after].filter((t) => !before.has(t)).length +
+      [...before].filter((t) => !after.has(t)).length;
+    expect(churn).toBe(0);
+    record(
+      "A1 verify refusal (Internet)",
+      "PASS",
+      `verify refused ${res.kind} (${q.nodes.length} query nodes); no tap, screen unchanged`
+    );
+  }, 90_000);
+
+  it("A1 verified tap — correct selector, wrong x/y refuses verify_mismatch", async () => {
+    await freshSettings();
+    const selector = { text: NET_ROW };
+    const q = await api.query(selector);
+    const base = resolveVerify(q.nodes as unknown as QueryNodeLite[], selector);
+    if (base.kind !== "match") {
+      record("A1 verify mismatch", "FAIL", `precondition: expected match, got ${base.kind}`);
+    }
+    expect(base.kind).toBe("match");
+    if (base.kind !== "match") return;
+    const b = base.bounds;
+    // Coordinates far from the match (top-left corner), tolerance 0.
+    const res = resolveVerify(q.nodes as unknown as QueryNodeLite[], selector, {
+      xPx: 5,
+      yPx: 5,
+      tolerancePx: 0,
+    });
+    expect(res.kind).toBe("mismatch");
+    if (res.kind === "mismatch") expect(res.label).toBe(NET_ROW);
+    record(
+      "A1 verify mismatch",
+      "PASS",
+      `coords (5,5) off match bounds [${b.x1},${b.y1},${b.x2},${b.y2}] -> verify_mismatch`
+    );
+  }, 90_000);
+
+  it("A1 verifyMs — p50 of the `query` RPC over N>=10 (bench figure)", async () => {
+    await freshSettings();
+    const selector = { text: NET_ROW };
+    const ms: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const t0 = Date.now();
+      await api.query(selector);
+      ms.push(Date.now() - t0);
+    }
+    expect(ms.length).toBeGreaterThanOrEqual(10);
+    const sorted = ms.slice().sort((a, b) => a - b);
+    const p50 = pct(sorted, 50);
+    record("A1 verifyMs", "PASS", `query p50=${p50}ms over N=${ms.length} [${ms.join(",")}]ms`);
   }, 90_000);
 });
