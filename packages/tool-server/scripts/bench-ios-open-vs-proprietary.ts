@@ -36,7 +36,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as os from "node:os";
 import { createRegistry } from "../src/utils/setup-registry";
-import { setFlag, unsetFlag } from "@argent/configuration-core";
+import { unsetFlag } from "@argent/configuration-core";
 import {
   IosOpenServerClient,
   type IosOpenServerNode,
@@ -160,13 +160,6 @@ function capDescribe(desc: string, cap: number): string {
   const head = rootIdx >= 0 ? lines.slice(0, rootIdx + 1) : [];
   const body = describeBody(desc).slice(0, cap);
   return [...head, ...body].join("\n");
-}
-function jaccard(a: string[], b: string[]): number {
-  const A = new Set(a);
-  const B = new Set(b);
-  const inter = [...A].filter((x) => B.has(x)).length;
-  const uni = new Set([...a, ...b]).size;
-  return uni === 0 ? 1 : Number((inter / uni).toFixed(3));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -895,7 +888,7 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
   const errorSamples: string[] = [];
   let effectChecked = 0;
   let effectZero = 0;
-  let originLost = 0;
+  const originLost = 0;
   let locateFailed = 0;
   const noEffectSamples: string[] = [];
 
@@ -1385,7 +1378,6 @@ async function main(): Promise<void> {
     deviceType,
     macosVersion: os.release(),
   };
-  // eslint-disable-next-line no-console
   console.log("[bench-ios] env:", JSON.stringify(env));
 
   const ALL_BLOCKS = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -1396,11 +1388,9 @@ async function main(): Promise<void> {
 
   const blocks: BlockResult[] = [];
   for (const block of toRun) {
-    // eslint-disable-next-line no-console
     console.log(`########## BLOCK ${block} ##########`);
     const r = await runBlock(block);
     blocks.push(r);
-    // eslint-disable-next-line no-console
     console.log(
       `[bench-ios][${block}] backend=${r.treeBackend} oracleSelfTest=${r.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
         `landing=${r.effectCheckedTotal - r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
@@ -1429,7 +1419,6 @@ async function main(): Promise<void> {
 main()
   .then(() => process.exit(0))
   .catch((e) => {
-    // eslint-disable-next-line no-console
     console.error("[bench-ios] FATAL", e);
     process.exit(1);
   });

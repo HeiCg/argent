@@ -19,16 +19,16 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
 
-export type SpawnLike = typeof nodeSpawn;
+type SpawnLike = typeof nodeSpawn;
 
-export interface IosSimInputOptions {
+interface IosSimInputOptions {
   /** Override the path to the sim-input binary. */
   binary?: string;
   /** Override the spawn implementation (for tests). */
   spawn?: SpawnLike;
 }
 
-export interface TapArgs {
+interface TapArgs {
   x: number;
   y: number;
   width: number;
@@ -37,7 +37,7 @@ export interface TapArgs {
   duration?: number;
 }
 
-export interface SwipeArgs {
+interface SwipeArgs {
   fromX: number;
   fromY: number;
   toX: number;
@@ -100,17 +100,6 @@ export class IosSimInputService {
     if (args.width !== undefined) env.screenWidth = args.width;
     if (args.height !== undefined) env.screenHeight = args.height;
     return this.send(udid, env);
-  }
-
-  pressKey(udid: string, key: number): Promise<void> {
-    return this.send(udid, { type: "press", key });
-  }
-
-  releaseKey(udid: string, key: number): Promise<void> {
-    // sim-input acks release as a no-op (press brackets down+up atomically). We
-    // still go through the wire so callers can observe ordering w.r.t. other
-    // queued commands.
-    return this.send(udid, { type: "release", key });
   }
 
   typeText(udid: string, text: string): Promise<void> {
@@ -193,7 +182,6 @@ export class IosSimInputService {
         const line = errBuf.slice(0, idx);
         errBuf = errBuf.slice(idx + 1);
         if (line.length === 0) continue;
-        // eslint-disable-next-line no-console
         console.error("[sim-input %s] %s", udid, line);
       }
     });
@@ -221,7 +209,6 @@ export class IosSimInputService {
     try {
       obj = JSON.parse(line);
     } catch {
-      // eslint-disable-next-line no-console
       console.error("[sim-input] failed to parse ack line: %s", line);
       return;
     }
@@ -231,7 +218,6 @@ export class IosSimInputService {
     if (typeof obj.id === "number") {
       const idx = entry.pending.findIndex((p) => p.id === obj.id);
       if (idx < 0) {
-        // eslint-disable-next-line no-console
         console.error("[sim-input] no pending entry for ack id=%d", obj.id);
         return;
       }
@@ -244,7 +230,6 @@ export class IosSimInputService {
     // FIFO fallback.
     const pending = entry.pending.shift();
     if (!pending) {
-      // eslint-disable-next-line no-console
       console.error("[sim-input] received ack with empty pending queue");
       return;
     }
