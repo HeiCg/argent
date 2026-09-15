@@ -184,6 +184,22 @@ o200k_base, bootstrap B=10000 seed `0x5eedc0de`. Each row supersedes the run-7
 (33975063607) / D.2 (33964414774) row of the same name; both run ids are named. ON-scrcpy
 ran the **shipped default** pacing (`legacy`).
 
+
+> **3o update (run 34914983320, `feat/open-server-3o-fling-metric`, merged; pending
+> adversarial review, no number graded).** A new optical scroll metric (1-D normalized
+> cross-correlation on host screenshots, proven ±1 px on synthetic images, 0 refused of
+> 480 flings) replaced the censored anchor-displacement metric. Pre-registered self-test:
+> two identical-code UiAutomation arms (`uia-A`/`uia-B`, both pinned to the Kotlin
+> DEFAULT path, interleaved per sample, N = 16 per cell-arm) must agree within ±5 % of
+> the pooled median per cell. Result: **INSTRUMENT-UNRESOLVED** — they diverge 7–35 %
+> on every informative cell (150/0.5 saturates at end-of-list), permutation p 0.39–0.55,
+> so no arm was graded and no ON/OFF gate was evaluated. Descriptive only, not a
+> verdict: `input-manager` medians sit at or above the proprietary arm in most cells
+> with fully overlapping IQRs. Reading: the emulator's momentum-fling distance varies
+> more than any arm effect at this N; the earlier "open loses fling" numbers were on
+> the censored metric and are not carried. Fling remains OPEN for lack of a resolving
+> instrument, not for evidence of a loss. Next: larger N or a deterministic scroll
+> target instead of a momentum fling (not ticketed).
 ### Latency verbs (run 34813849446, N=20, p50/p95 ms)
 
 | verb | OFF-1 | ON-uia | ON-scrcpy | OFF-2 | drift floor | verdict (vs run 7 = 33975063607) |
