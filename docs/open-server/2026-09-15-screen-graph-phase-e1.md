@@ -74,22 +74,66 @@ is measured but the overlap stress is E-2).
 
 ## Result
 
-Run: **PENDING** — `bench-open-vs-proprietary.yml`, `suite=screen-graph`,
-`sg_mode=matrix`, `blocks=churn`. This section is pre-registered BEFORE the run;
-the outcomes column is filled from `churn-results.md` / `churn.json` /
-`sg-matrix.log` in the run artifact and the invariants line, never blended with
-run 34801849653 (D.4.1) or 34870686468 (`README.md:108-117`).
+Run: **34957934222** (`HeiCg/argent`, `bench-open-vs-proprietary.yml`,
+`suite=screen-graph`, `sg_mode=matrix`, `blocks=churn`, branch
+`feat/screen-graph-e1-templates` @ 9de873b8), job **conclusion success**. The
+gates were pre-registered above BEFORE this run; the outcomes are read from
+`churn.json` / `churn-results.md` / `sg-matrix.log` in the run artifact, never
+blended with run 34801849653 (D.4.1) or 34870686468.
+
+**Verdict: the template mechanism holds (E1-G1/G2/G4/G5 PASS), but two churn
+HARNESS defects made E1-G3 fail 0/40. Both are fixed in commit ce4793b5; NOT
+re-run — the planner decides on a second CI run.**
+
+### First-run outcomes (run 34957934222)
+
+- **E1-G1 PASS** — ON `churn=100` deltas k2..k5 = **+1 node / +0 edges** each
+  (feed + one template node, then constant); OFF **+1n/+1e** each. (The OFF
+  linear growth is smaller than the F5 worked example's +50 because a harness
+  defect — below — let only item 0 be tapped; with the fix each session taps 8
+  distinct items, so OFF grows ~+8n/+8e.)
+- **E1-G2 PASS** — ON store **34 299 B** at K=5 (≤ 64 KB); OFF 34 047 B (also
+  small for the same defect reason).
+- **E1-G3 FAIL (0/40) — harness defects, fixed:** (1) the navigate arrival
+  Jaccard compared the LIVE full rid multiset against the template node's
+  `nonScrollRids`, so the decor `statusBar`/`navigationBar` ids dropped it to
+  **7/9 = 0.78 < 0.9** ("tapped=true, reason=arrival" for ~38/40); (2) a detail
+  `back` did not return to a queryable feed on this app/emulator, so the tap
+  phase got stuck on the first detail and only ever tapped item 0 (edge
+  `lastItemTexts` all "Story 0"; the item-0 detail node had `visits=50` from the
+  scroll phase running on it). Fixes (ce4793b5): `executeTemplateStep` returns
+  `nonScrollRids(after)` so arrival is compared like-for-like (regression test
+  asserts Jaccard 1.0), and the churn tap/scroll phases RELAUNCH the feed (the
+  nav phase's working pattern) instead of relying on `back`.
+- **E1-G4 PASS** — ON `dupScreens=0 dupEdges=0 dangling=0 hygiene=0`, nodes 8,
+  edges 1; OFF `duplicateEdgeTargets=1` (RECORDED — the stable-title/churning-
+  detail control break, E-0 §F4). Job invariants line green (0 duplicate
+  screens, 0 multi-destination edges) — the OFF store is outside the gated dir,
+  so the per-arm scoping held.
+- **E1-G5 PASS** — the D.4.1 matrix ran with templates OFF, unchanged: success
+  B1/B2 100/100, O1 98, O2 99, O3 98, O4/O5 99 (~100 %, within the D.4.1 noise
+  floor); tokens/step o200k p50 B1 657, B2 651, O1 **138**, O4 **21**
+  (all inside the published floors O1 138–179, O4 20–22, B1/B2 657/651,
+  `2026-09-13-screen-graph-phase-d4-results-ci.md:294-299`); settings store
+  **11 nodes / 11 edges** (D.4.1 10–11 edge variance); invariants gate green;
+  `skippedNoIdHash` 1.
+- **E1-G6 DESCRIPTIVE** — feed summary tokens/step p50 ON ~23 vs OFF ~23 (the
+  `topN=6` cap bounds both, as pre-registered).
+- Containment audit: row taps attributed to `#list` 10/10 (0 misattributed);
+  carousel taps 0/0 (the defect stopped the carousel tap from running).
+
+Original pre-run gate table (outcomes appended from this run):
 
 ### Pre-registered gates (written before the run grades anything)
 
-| gate  | statistic                                                    | pass condition                                                                                                                                                                                                | outcome |
-| ----- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| E1-G1 | ON arm, `churn=100`: nodes/edges delta per session, k = 2..5 | ≤ 2 nodes and ≤ 4 edges per session (growth constant in content states); OFF arm reported beside it, expected linear (+ ~8n/+8e per session at 8 taps)                                                        | PENDING |
-| E1-G2 | ON arm store bytes at K = 5                                  | ≤ 64 KB; OFF arm recorded (expected linear in tapped content states)                                                                                                                                          | PENDING |
-| E1-G3 | ON arm `navigate-to` to off-screen items, n = 40 (8 × 5)     | ≥ 38/40 (non-inferiority margin 5 pp vs the D.4.1 O5 coverage 59/60 = 98.3 %, `2026-09-13-screen-graph-phase-d4-results-ci.md:88`); at n = 40 this detects gross failure only                                 | PENDING |
-| E1-G4 | invariants G-I1..G-I6 on the ON arm                          | all green; the OFF arm's `duplicateEdgeTargets` is RECORDED, not gated (E-0 §F4)                                                                                                                              | PENDING |
-| E1-G5 | regression: the Settings/Chrome matrix with templates OFF    | store shape within the published variance (11 nodes / 10 edges, `...d4-results-ci.md:87,358`) and tokens/step p50 inside the published run-to-run floor (O1 138–179, O4 20–22, `...d4-results-ci.md:294-299`) | PENDING |
-| E1-G6 | summary tokens/step on the feed screen, ON vs OFF            | DESCRIPTIVE ONLY, never pass/fail — the `topN = 6` cap already bounds it (`describe-tiers.ts:41`)                                                                                                             | PENDING |
+| gate  | statistic                                                    | pass condition                                                                                                                                                                                                | outcome                                                    |
+| ----- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| E1-G1 | ON arm, `churn=100`: nodes/edges delta per session, k = 2..5 | ≤ 2 nodes and ≤ 4 edges per session (growth constant in content states); OFF arm reported beside it, expected linear (+ ~8n/+8e per session at 8 taps)                                                        | PASS (+1n/+0e/session)                                     |
+| E1-G2 | ON arm store bytes at K = 5                                  | ≤ 64 KB; OFF arm recorded (expected linear in tapped content states)                                                                                                                                          | PASS (34 299 B)                                            |
+| E1-G3 | ON arm `navigate-to` to off-screen items, n = 40 (8 × 5)     | ≥ 38/40 (non-inferiority margin 5 pp vs the D.4.1 O5 coverage 59/60 = 98.3 %, `2026-09-13-screen-graph-phase-d4-results-ci.md:88`); at n = 40 this detects gross failure only                                 | FAIL 0/40 — 2 harness defects, fixed ce4793b5 (not re-run) |
+| E1-G4 | invariants G-I1..G-I6 on the ON arm                          | all green; the OFF arm's `duplicateEdgeTargets` is RECORDED, not gated (E-0 §F4)                                                                                                                              | PASS (OFF dupEdge=1 recorded)                              |
+| E1-G5 | regression: the Settings/Chrome matrix with templates OFF    | store shape within the published variance (11 nodes / 10 edges, `...d4-results-ci.md:87,358`) and tokens/step p50 inside the published run-to-run floor (O1 138–179, O4 20–22, `...d4-results-ci.md:294-299`) | PASS (tokens+shape+invariants in-floor)                    |
+| E1-G6 | summary tokens/step on the feed screen, ON vs OFF            | DESCRIPTIVE ONLY, never pass/fail — the `topN = 6` cap already bounds it (`describe-tiers.ts:41`)                                                                                                             | DESCRIPTIVE (ON~23 vs OFF~23)                              |
 
 ### Invariants added (checked per arm)
 
