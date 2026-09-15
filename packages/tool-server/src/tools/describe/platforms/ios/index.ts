@@ -148,7 +148,6 @@ export async function describeIos(
     try {
       return await describeIosViaOpenServer(registry, device);
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.debug(
         `[describe-ios] open ios-device-server failed, falling back to ax-service: ${
           err instanceof Error ? err.message : String(err)

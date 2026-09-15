@@ -890,7 +890,6 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           redirHostPort = undefined;
         }
         redirConsolePort = undefined;
-        // eslint-disable-next-line no-console
         console.debug(
           `[open-device-server] redir setup failed, using adb forward: ${
             e instanceof Error ? e.message : String(e)
@@ -910,7 +909,6 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       } else if (redirClient) {
         redirClient.close();
       }
-      // eslint-disable-next-line no-console
       console.debug(`[open-device-server] transport=${activeTransport} (${decision.reason})`);
     } else {
       const decision = decideTransport({
@@ -919,7 +917,6 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         allPort: spawned.allPort,
         redirOk: false,
       });
-      // eslint-disable-next-line no-console
       console.debug(`[open-device-server] transport=${activeTransport} (${decision.reason})`);
     }
 

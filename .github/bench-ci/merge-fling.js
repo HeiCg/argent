@@ -48,12 +48,6 @@ function median(xs) {
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
-function quantile(xs, q) {
-  if (!xs.length) return NaN;
-  const s = xs.slice().sort((a, b) => a - b);
-  const i = Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))));
-  return s[i];
-}
 // Deterministic PRNG so the permutation p is reproducible (mulberry32, seed 7).
 function mulberry32(seed) {
   let a = seed >>> 0;

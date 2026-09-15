@@ -347,14 +347,12 @@ async function main(): Promise<void> {
             if (cell.samples.length < N) cell.drops.push({ round, reason });
           }
         }
-        // eslint-disable-next-line no-console
         console.error(`[fling] ${reason}`);
       } finally {
         if (reg) await reg.dispose().catch(() => undefined);
       }
       await sleep(3000);
     }
-    // eslint-disable-next-line no-console
     console.log(`[fling] round ${round + 1}/${rounds} complete`);
   }
   unsetFlag("open-device-server", "project");
@@ -384,10 +382,8 @@ async function main(): Promise<void> {
       cells,
     };
     writeFileSync(join(OUT_DIR, `fling-block-${arm}.json`), JSON.stringify(result, null, 2));
-    // eslint-disable-next-line no-console
     console.log(`\n=== FLING BLOCK ${arm} (optical scroll px, interleaved) ===`);
     for (const c of cells) {
-      // eslint-disable-next-line no-console
       console.log(
         `d=${c.durationMs}ms dist=${c.distance}: median ${c.medianPx}px iqr=[${c.iqrPx[0]},${c.iqrPx[1]}] n=${c.n}` +
           (c.drops.length
@@ -416,7 +412,6 @@ async function main(): Promise<void> {
 main()
   .then(() => process.exit(0))
   .catch((e) => {
-    // eslint-disable-next-line no-console
     console.error("[fling] FATAL", e);
     process.exit(1);
   });

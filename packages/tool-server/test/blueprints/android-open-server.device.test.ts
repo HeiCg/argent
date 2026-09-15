@@ -343,7 +343,6 @@ interface Row {
 const rows: Row[] = [];
 const record = (verb: string, status: "PASS" | "FAIL", evidence: string): void => {
   rows.push({ verb, status, evidence });
-  // eslint-disable-next-line no-console
   console.log(`[${status}] ${verb} — ${evidence}`);
 };
 
@@ -395,10 +394,8 @@ suite("android open-device-server on-device", () => {
   }, 120_000);
 
   afterAll(async () => {
-    // eslint-disable-next-line no-console
     console.log("\n===== OPEN-SERVER DEVICE VALIDATION RESULTS (serial=" + serial + ") =====");
     for (const r of rows) {
-      // eslint-disable-next-line no-console
       console.log(`${r.status.padEnd(4)} | ${r.verb.padEnd(24)} | fallback=NO | ${r.evidence}`);
     }
     if (dispose) await dispose().catch(() => undefined);
@@ -506,14 +503,12 @@ suite("android open-device-server on-device", () => {
       const after = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
       const found = after.find((e) => label(e) === anchorLabel);
       if (!found) {
-        // eslint-disable-next-line no-console
         console.log(
           `  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->offscreen moved=UNMEASURED(>on-screen span)`
         );
         return { moved: NaN, offscreen: true };
       }
       const moved = beforeTop - found.bounds.y1;
-      // eslint-disable-next-line no-console
       console.log(
         `  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->${found.bounds.y1} moved=${moved}`
       );
@@ -595,7 +590,6 @@ suite("android open-device-server on-device", () => {
       // MEASUREMENT only — must not fail the enforced suite on a swipe/logcat hiccup.
       evidence = `UNMEASURED (${e instanceof Error ? e.message : String(e)}) requested=${requestedMs}ms (${wireNote})`;
     }
-    // eslint-disable-next-line no-console
     console.log(`  3k pacing uiautomation ${evidence}`);
     expect(api.isReady()).toBe(true);
     record("3k pacing (uia delivered dur)", "PASS", evidence);
@@ -706,7 +700,6 @@ suite("android open-device-server on-device", () => {
     await api.waitForIdle(3000);
     const after = Buffer.from((await api.screenshot({ format: "png" })).data, "base64");
     const ratio = pngDiffRatio(before, after);
-    // eslint-disable-next-line no-console
     console.log(
       `  pinch screenshot diff ratio = ${(ratio * 100).toFixed(2)}% (chrome ready=${ready})`
     );
@@ -1216,7 +1209,6 @@ suite("android open-device-server on-device", () => {
       `  idle infoMs med ${median(idleInfoMs)} recycleMs med ${median(idleRecycleMs)} otherMs med ${median(idleOtherMs)}\n` +
       `  after residuals(signed) [${afterResiduals.join(", ")}]\n` +
       `  after infoMs med ${median(afterInfoMs)} recycleMs med ${median(afterRecycleMs)} otherMs med ${median(afterOtherMs)}`;
-    // eslint-disable-next-line no-console
     console.log(`[3m residual gate]\n${residualReport}`);
     expect(afterResidualMed).toBeLessThanOrEqual(10);
     // The active root came from the interactive-windows snapshot, not

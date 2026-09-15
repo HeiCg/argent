@@ -43,12 +43,10 @@
     `strategy arms claimed ${new Date().toISOString()} by BENCH_ONLY=${process.env.BENCH_ONLY}\n`
   );
   const serial = process.env.BENCH_SERIAL || "emulator-5554";
-  // eslint-disable-next-line no-console
   console.log(
     `[run-bench] self-orchestrating ${[...arms, ...(wantFling ? ["FLING"] : [])].join(", ") || "(nothing)"} (workflow-scope workaround)`
   );
   for (const arm of arms) {
-    // eslint-disable-next-line no-console
     console.log(`########## BLOCK ${arm} (self-orchestrated) ##########`);
     // Readiness gate before each arm (best-effort, mirrors the workflow's per-block
     // ready-gate; a bad screen still trips the child's own effect gate).
@@ -61,7 +59,6 @@
         }
       );
     } catch {
-      // eslint-disable-next-line no-console
       console.log(
         `[run-bench] ready-gate warned before ${arm} — proceeding (the child effect gate is authoritative)`
       );
@@ -80,7 +77,6 @@
     );
   }
   if (wantFling) {
-    // eslint-disable-next-line no-console
     console.log(
       "########## FLING (self-orchestrated, ticket 3o — optical, report-only) ##########"
     );
@@ -112,7 +108,6 @@
       );
     } catch (e) {
       flingFailure = e;
-      // eslint-disable-next-line no-console
       console.log(
         "::error::fling harness exited non-zero (arm-round collapse) — see bench-log-FLING.txt"
       );
@@ -129,7 +124,6 @@
         }
       );
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.log(`[run-bench] fling merge failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     // A genuine arm-round collapse must fail the step loudly (a broken run must not
