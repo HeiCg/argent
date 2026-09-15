@@ -131,3 +131,20 @@ G2/G4 reported with CIs/floors, optical scroll offsets per arm, results file +
 Result written, adversarial review before any iOS row enters the scoreboard. The
 measured numbers, run ids, and per-run fixes are in
 `docs/open-server/2026-09-14-ios-bench-results-ci.md`.
+
+### Outcome (2026-09-15, after 4 CI runs)
+
+Four runs on `macos-latest` (Xcode 26.6 / iOS 26.5 / iPhone 17), the 4-run budget
+exhausted. **G0 GREEN** (all four blocks + oracle self-test), **G3 GREEN**
+(Σstages−captureMs ≤ 0.003 ms/20 samples on both ON blocks), **G5** present,
+**G2/G4 reported** with bootstrap CIs, drift floors, per-tree-backend tokens, and
+optical scroll offsets. **G1 is RED on ON-siminput: first-attempt landing 50 %
+(10/20)** on the final run — a genuine sim-input HID digitizer reliability limit on
+iOS 26.5 / Xcode 26.6 (the recipe is verified on iOS 26.4 / Xcode 26), NOT a
+locate/coordinate bug (ON-xcuitest taps the identical located coordinate and lands
+20/20). OFF-1 20/20, OFF-2 19/20, ON-xcuitest 20/20; 0 crashes, 0 sim-input ack
+timeouts everywhere. Full numbers, per-run errors + fixes, and the exact failing
+gate: `2026-09-14-ios-bench-results-ci.md`. Per the ticket, STOPPED with the exact
+error rather than forcing green; the sim-input landing fix is iOS-4 sim-input-depth
+work. Runs: 34907978510, 34914794345, 34920382022 (cancelled — teardown hang),
+34926722346 (final). Temp push trigger removed in the last commit.

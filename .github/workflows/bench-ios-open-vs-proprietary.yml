@@ -23,12 +23,10 @@ on:
         description: "Iterations per verb (BENCH_N)"
         required: false
         default: "20"
-  # TEMPORARY branch-scoped push trigger — workflow_dispatch cannot fire from a
-  # feature branch, so bring-up dispatches from a push to this branch. REMOVED in
-  # the last commit of the ticket (see the iOS-1 Result for the same pattern).
-  push:
-    branches:
-      - feat/ios-open-server-2-bench
+  # (The temporary branch-scoped `push` trigger used during bring-up has been
+  # REMOVED in this final commit, per the ticket. To dispatch again, place the
+  # workflow on the default branch — workflow_dispatch cannot fire from a feature
+  # branch.)
 
 permissions:
   contents: read
