@@ -1385,6 +1385,9 @@ suite("android open-device-server on-device", () => {
 
   // ── Artemis A2 §B — index tier + target:{index,version} ────────────────────
   it("A2 index tap — resolve an index target and navigate; version verified", async () => {
+    // Start on a known screen (the prior test may have navigated away): a
+    // top-level Settings row is guaranteed to navigate.
+    await freshSettings();
     const st = await api.getState({ includeScreenshot: false, fingerprints: true });
     const beforeTexts = textSet(st.tree as OpenServerElement[]);
     const version = st.version;
@@ -1414,8 +1417,11 @@ suite("android open-device-server on-device", () => {
   }, 90_000);
 
   it("A2 stale index — a target from a moved snapshot is refused (stale_index)", async () => {
-    // Read v1 and pick an index, navigate so the AX version advances, then resolve
-    // the OLD index against the NEW tree — the stale-index rule must refuse it.
+    // Start on the Settings root so the picked row is a real navigating entry, and
+    // the getState below arms the AX clock. Read v1 and pick an index, navigate so
+    // the AX version advances, then resolve the OLD index against the NEW tree — the
+    // stale-index rule must refuse it.
+    await freshSettings();
     const s1 = await api.getState({ includeScreenshot: false, fingerprints: true });
     const els = buildIndexElements(s1.tree as OpenServerElement[]);
     const navRe = /network|connected|apps|notifications|battery|storage|sound|display|security/i;
@@ -1428,7 +1434,13 @@ suite("android open-device-server on-device", () => {
     await api.tap(pt.x, pt.y);
     await sleep(1200);
     await api.waitForIdle(3000);
-    const s2 = await api.getState({ includeScreenshot: false, fingerprints: true });
+    // The navigation advances the armed AX clock; poll briefly for the version to
+    // move past v1 before asserting the stale-index refusal.
+    let s2 = await api.getState({ includeScreenshot: false, fingerprints: true });
+    for (let i = 0; i < 6 && s2.version === v1; i++) {
+      await sleep(400);
+      s2 = await api.getState({ includeScreenshot: false, fingerprints: true });
+    }
     expect(s2.version).not.toBe(v1); // the snapshot moved
     let refused = false;
     let code = "";
