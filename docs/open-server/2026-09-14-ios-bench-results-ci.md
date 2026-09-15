@@ -103,6 +103,21 @@ iPhone 17** (`com.apple.CoreSimulator.SimDeviceType.iPhone-17`). Tokenizer
   G3 was GREEN in run 1 (Σstages−captureMs max 0.008/0.009 ms over 20 samples);
   G4/G2/scoreboard all rendered with real numbers.
 
+- **34914794345** (run 2) — all four blocks completed and merged. **G0 GREEN**
+  (every block's oracle self-test passed — the goBack→relaunch fix worked;
+  rootDiff 0 on ON arms), **G3 GREEN** (ON stageMaxDelta 0.003 ms/20 samples),
+  OFF-1 warmed to 20/20 and its ax-service describe recovered, OFF gesture-swipe
+  + await-ui-element no longer error. **Only remaining failure: G1 landing 70 %
+  on ON-siminput (14/20).** Root cause found in the block JSON: all 6 no-effect
+  taps were the SAME coordinate `(0.628, 0.847)` — the bottom of the screen.
+  `findByLabel` returned the DFS-first "General", which is sometimes an
+  offscreen / non-hittable table cell (XCUITest reports below-the-fold cells with
+  bottom bounds). XCUITest's own coordinate tap still changed the screen there
+  (so ON-xcuitest read 20/20, masking it), but the sim-input HID tap on a
+  non-hittable spot did nothing → no-effect. Fix: `findTappableByLabel` prefers a
+  `hittable`, on-screen, topmost match; WARMUP trimmed 3→1 for runtime margin
+  (run 2's bench step finished at ~72 min, under the 90-min cap).
+
 _(subsequent run ids appended as the runs progress.)_
 
 ### Scoreboard

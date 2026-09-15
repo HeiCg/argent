@@ -56,7 +56,7 @@ const execFileAsync = promisify(execFile);
 const UDID = process.env.BENCH_UDID ?? process.env.IOS_OPEN_SERVER_UDID ?? "";
 const RUNNER_PORT = Number(process.env.IOS_OPEN_SERVER_PORT ?? "0");
 const N = Number(process.env.BENCH_N ?? 20);
-const WARMUP = Number(process.env.BENCH_WARMUP ?? 3);
+const WARMUP = Number(process.env.BENCH_WARMUP ?? 1);
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 // G4: the equal element cap for the per-tree-backend token comparison. Both
 // backends' describe text is truncated to the first CAP element lines and the
@@ -467,6 +467,35 @@ function findByLabel(nodes: IosOpenServerNode[], label: string): IosOpenServerNo
   });
   return hit;
 }
+/**
+ * The best tappable match for `label`: XCUITest reports offscreen table cells
+ * with below-the-fold bounds, so the DFS-first match can be a non-hittable cell
+ * near the bottom (run 2: every ON-siminput no-effect tap was the SAME bottom
+ * coordinate 0.628,0.847). Prefer a `hittable` match whose center sits on-screen
+ * (a small margin in from the edges), topmost first; fall back to the first
+ * match so a missing `hittable` flag never returns null.
+ */
+function findTappableByLabel(
+  nodes: IosOpenServerNode[],
+  label: string,
+  screenW: number,
+  screenH: number
+): IosOpenServerNode | undefined {
+  const matches: IosOpenServerNode[] = [];
+  walk(nodes, (n) => {
+    if (n.label === label) matches.push(n);
+  });
+  if (matches.length === 0) return undefined;
+  const onScreen = (n: IosOpenServerNode): boolean => {
+    const cy = (n.bounds.y1 + n.bounds.y2) / 2 / (screenH || 1);
+    const cx = (n.bounds.x1 + n.bounds.x2) / 2 / (screenW || 1);
+    return cy > 0.03 && cy < 0.93 && cx > 0 && cx < 1;
+  };
+  const hittable = matches.filter((n) => n.hittable && onScreen(n));
+  const pool = hittable.length ? hittable : matches.filter(onScreen);
+  const chosen = (pool.length ? pool : matches).slice().sort((a, b) => a.bounds.y1 - b.bounds.y1)[0];
+  return chosen;
+}
 function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | undefined {
   const types = ["Table", "CollectionView", "ScrollView"];
   for (const t of types) {
@@ -512,7 +541,7 @@ class OpenTree {
   }
   async locate(label: string): Promise<NPoint | null> {
     const st = await this.client.getNestedState();
-    const hit = findByLabel(st.tree, label);
+    const hit = findTappableByLabel(st.tree, label, st.info.screenWidth, st.info.screenHeight);
     if (!hit) return null;
     const cxPt = (hit.bounds.x1 + hit.bounds.x2) / 2;
     const cyPt = (hit.bounds.y1 + hit.bounds.y2) / 2;
