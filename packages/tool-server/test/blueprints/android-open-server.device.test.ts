@@ -2012,6 +2012,10 @@ suite("android open-device-server on-device", () => {
         };
       };
       await freshSettings();
+      // Clear any incident a prior tool-level case left active, so the `compact`
+      // describe (which prepends the incident line) is not unfairly inflated
+      // against the `index` tier (which bypasses it).
+      clearIncident(serial);
       const root = await measure("Settings root");
       // Navigate into a sub-screen (a verified tap on the Network row) and measure again.
       await reg.invokeTool("gesture-tap", {
