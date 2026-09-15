@@ -135,7 +135,6 @@ describe("token table over committed screen-graph fixtures (Result data)", () =>
     const summary = summarizeTierTable(rows);
 
     // Print the table for the ticket Result.
-    /* eslint-disable no-console */
     console.log("\n===== A2 §B TOKEN TABLE (o200k) — full / summary / compact / index =====");
     console.log(
       "screen".padEnd(40),
@@ -175,7 +174,6 @@ describe("token table over committed screen-graph fixtures (Result data)", () =>
     console.log(
       `DECISION: median index-vs-compact savings = ${summary.medianIndexVsCompactPct}% → shipAsDefault=${summary.shipAsDefault} (rule: ≥20% at ≥ compact locate)\n`
     );
-    /* eslint-enable no-console */
 
     // Invariants that must hold on real captures: index never larger than compact,
     // and index locate (unique index) is at least compact's label locate.
