@@ -40,6 +40,13 @@ export interface PlanStep {
   to: string;
   /** The acted element's recorded selector (phase D §2), for live re-resolution. */
   selector?: EdgeSelector;
+  /**
+   * Phase E (design D1): set when this step traverses a TEMPLATE edge. The
+   * executor resolves the concrete item on the LIVE tree (`query`, bounded
+   * in-container scroll) rather than replaying a stale coordinate. `containerId`
+   * is the container's stripped resource id, when known.
+   */
+  template?: { containerKey: string; itemTemplate: string; containerId?: string };
 }
 
 export interface PlanResult {
@@ -123,6 +130,15 @@ function reconstruct(prev: Map<string, { node: string; edge: Edge }>, target: st
       action: edge.action,
       to: edge.to,
       ...(edge.selector ? { selector: edge.selector } : {}),
+      ...(edge.template
+        ? {
+            template: {
+              containerKey: edge.template.containerKey,
+              itemTemplate: edge.template.itemTemplate,
+              ...(edge.template.containerId ? { containerId: edge.template.containerId } : {}),
+            },
+          }
+        : {}),
     });
     cur = node;
   }
@@ -158,6 +174,26 @@ export function planToSelector(
   }
   if (targets.size === 0) return null;
   return dijkstra(graph, from, targets, now);
+}
+
+/**
+ * Phase E (design D1): the shortest path from `from` to any TEMPLATE node — the
+ * destination of a template edge — so `navigate-to` can route to "an item in a
+ * scrollable container" and resolve the concrete item on the live tree. The last
+ * step of the returned plan carries `template`. `null` when no template edge is
+ * reachable. When several are reachable, Dijkstra returns the cheapest.
+ */
+export function planToTemplate(
+  graph: PlanGraph,
+  from: string,
+  now: number = Date.now()
+): (PlanResult & { templateNode: string }) | null {
+  const templateNodes = new Set<string>();
+  for (const e of graph.edges) if (e.template) templateNodes.add(e.to);
+  if (templateNodes.size === 0) return null;
+  const res = dijkstra(graph, from, templateNodes, now);
+  if (!res || res.steps.length === 0) return null;
+  return { ...res, templateNode: res.target };
 }
 
 /* -------------------------------------------------------------------------- */
