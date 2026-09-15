@@ -35,13 +35,13 @@ export interface IosRunnerTarget {
   kind: "simulator" | "device";
 }
 
-export interface SpawnedIosRunner {
+interface SpawnedIosRunner {
   proc: ChildProcess;
   port: number;
 }
 
 /** Locate the runner Xcode project. Override with `ARGENT_IOS_RUNNER_PROJECT`. */
-export function resolveRunnerProjectPath(): string {
+function resolveRunnerProjectPath(): string {
   const override = process.env.ARGENT_IOS_RUNNER_PROJECT;
   if (override) return override;
   // Packaged tool-server copies the project next to the bundle; in the dev tree
@@ -71,7 +71,7 @@ function runnerError(
 }
 
 /** `xcodebuild -version`, part of the build cache key. */
-export async function xcodebuildVersion(): Promise<string> {
+async function xcodebuildVersion(): Promise<string> {
   const { stdout } = await execFileAsync("xcodebuild", ["-version"]);
   return stdout.trim();
 }
@@ -121,7 +121,7 @@ function destinationFor(target: IosRunnerTarget): string {
  * stamp mismatch wipes the derived dir and rebuilds. Returns the built
  * `.xctestrun` path for the destination's platform.
  */
-export async function buildForTesting(target: IosRunnerTarget): Promise<string> {
+async function buildForTesting(target: IosRunnerTarget): Promise<string> {
   const projectPath = resolveRunnerProjectPath();
   const projectDir = path.dirname(projectPath);
   const destination = destinationFor(target);
@@ -194,10 +194,7 @@ function findXctestrun(productsDir: string, kind: IosRunnerTarget["kind"]): stri
  * port through `TEST_RUNNER_ARGENT_RUNNER_PORT` (xcodebuild strips the prefix so
  * the test process reads `ARGENT_RUNNER_PORT`).
  */
-export async function launchRunner(
-  target: IosRunnerTarget,
-  xctestrun: string
-): Promise<SpawnedIosRunner> {
+async function launchRunner(target: IosRunnerTarget, xctestrun: string): Promise<SpawnedIosRunner> {
   const port = await freeHostPort();
   const destination = destinationFor(target);
   const args = [
@@ -220,7 +217,7 @@ export async function launchRunner(
 }
 
 /** Ping the runner until it answers or 120 s elapse. */
-export async function waitForReady(
+async function waitForReady(
   client: IosOpenServerClient,
   timeoutMs = READY_TIMEOUT_MS
 ): Promise<void> {

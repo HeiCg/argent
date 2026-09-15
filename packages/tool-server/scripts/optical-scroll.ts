@@ -42,7 +42,7 @@ export interface ScrollEstimate {
   reason?: string;
 }
 
-export interface StripOptions {
+interface StripOptions {
   /** ROI column band as fractions of width (default 0.1 … 0.9). */
   x0?: number;
   x1?: number;
@@ -82,7 +82,7 @@ function decode(buf: Buffer): Decoded {
  * Collapse the ROI of a decoded RGBA image to a 1-D grayscale strip along y:
  * one value per SOURCE row, each the mean over `colBins` evenly-spaced columns.
  */
-export function stripFromDecoded(img: Decoded, opt: Required<StripOptions>): Float64Array {
+function stripFromDecoded(img: Decoded, opt: Required<StripOptions>): Float64Array {
   const xStart = Math.max(0, Math.floor(opt.x0 * img.width));
   const xEnd = Math.min(img.width, Math.ceil(opt.x1 * img.width));
   const yStart = Math.max(0, Math.floor(opt.y0 * img.height));

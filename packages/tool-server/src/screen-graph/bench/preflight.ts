@@ -28,7 +28,7 @@ export interface NeedleEvalRow {
   verdict: string;
 }
 
-export interface PreflightVerdict {
+interface PreflightVerdict {
   /** True only when NO row is a PROBLEM (BAD or MISSING). */
   ok: boolean;
   /** One `"<task>: <verdict>"` line per PROBLEM needle, in input order. */

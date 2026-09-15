@@ -25,7 +25,7 @@ export interface FetchedScreen {
   secret?: boolean;
 }
 
-export interface ObserveContext {
+interface ObserveContext {
   store: ScreenGraphStore;
   action: CanonicalAction;
   /** `hash` is the node IDENTITY (`H_id`, phase D §1). */

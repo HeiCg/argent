@@ -93,7 +93,7 @@ const zodSchema = z.object({
 
 type Params = z.infer<typeof zodSchema>;
 
-export interface NavigateToResult {
+interface NavigateToResult {
   reached: boolean;
   /** Label or hash8 of the screen navigation ended on. */
   finalScreen: string;

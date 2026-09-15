@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ScreenGraphStore } from "../src/screen-graph/store";
 import { recordObservation } from "../src/screen-graph/recorder";
-import { plan, planToSelector } from "../src/screen-graph/plan";
+import { plan } from "../src/screen-graph/plan";
 import { resolveTapPoint } from "../src/tools/navigate-to";
 import type { CanonicalAction, EdgeSelector } from "../src/screen-graph/types";
 

@@ -64,20 +64,6 @@ export function iosOpenServerTap(
   });
 }
 
-/** Long-press at normalized coordinates. */
-export function iosOpenServerLongPress(
-  registry: Registry,
-  device: DeviceInfo,
-  xNorm: number,
-  yNorm: number,
-  durationMs?: number
-): Promise<void> {
-  return withServer(registry, device, async (server, size) => {
-    const { x, y } = toPoints(size, xNorm, yNorm);
-    await server.longPress(x, y, durationMs !== undefined ? { durationMs } : {});
-  });
-}
-
 /** Swipe between two normalized points; `holdEndMs > 0` suppresses the fling. */
 export function iosOpenServerSwipe(
   registry: Registry,

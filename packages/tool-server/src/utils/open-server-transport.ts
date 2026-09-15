@@ -33,7 +33,7 @@ export function emulatorConsolePort(serial: string): number | null {
 }
 
 /** Path to the emulator console auth token file (`~/.emulator_console_auth_token`). */
-export function consoleAuthTokenPath(): string {
+function consoleAuthTokenPath(): string {
   return join(homedir(), ".emulator_console_auth_token");
 }
 
@@ -49,7 +49,7 @@ export function readConsoleAuthToken(): string | null {
   }
 }
 
-export interface TransportDecision {
+interface TransportDecision {
   transport: Transport;
   reason: string;
 }
@@ -109,7 +109,7 @@ export async function freeHostPort(): Promise<number> {
  * after the banner, after `auth`, and after each command (or `KO` on error), so
  * progress is tracked by counting `OK` lines. Best-effort: rejects on timeout / KO.
  */
-export async function emulatorConsole(
+async function emulatorConsole(
   consolePort: number,
   commands: string[],
   token: string,

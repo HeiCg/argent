@@ -38,7 +38,7 @@ interface Pending {
 }
 
 /** A request's result plus the wire stats of the reply that carried it. */
-export interface RequestWithStats<T> {
+interface RequestWithStats<T> {
   result: T;
   /** UTF-8 byte length of the raw NDJSON reply line (on-the-wire size). */
   wireBytes: number;

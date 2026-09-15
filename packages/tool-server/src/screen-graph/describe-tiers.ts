@@ -17,13 +17,13 @@ export function hash8(hash: string): string {
   return hash.slice(0, 8);
 }
 
-export interface SummaryAffordance {
+interface SummaryAffordance {
   action: string;
   to: string;
   count: number;
 }
 
-export interface ScreenSummary {
+interface ScreenSummary {
   screen: string;
   visits: number;
   affordances: SummaryAffordance[];
@@ -31,7 +31,7 @@ export interface ScreenSummary {
   changedSince?: number;
 }
 
-export interface SummaryOptions {
+interface SummaryOptions {
   /** Max affordances to list. */
   topN?: number;
   /** Changed-field count vs last visit (present only when it differs). */
@@ -84,25 +84,15 @@ export function renderSummary(summary: ScreenSummary): string {
   return lines.join("\n");
 }
 
-/** Convenience: build + render in one call. */
-export function renderSummaryFor(
-  node: ScreenNode,
-  outgoing: Edge[],
-  nodes: Record<string, ScreenNode>,
-  opts: SummaryOptions = {}
-): string {
-  return renderSummary(buildSummary(node, outgoing, nodes, opts));
-}
+type CompactTierMode = "cache" | "patch" | "refresh";
 
-export type CompactTierMode = "cache" | "patch" | "refresh";
-
-export interface CompactTierResult {
+interface CompactTierResult {
   text: string;
   mode: CompactTierMode;
 }
 
 /** The current device fingerprints the compact tier reconciles against. */
-export interface CurrentFingerprint {
+interface CurrentFingerprint {
   hash: string;
   stateHash: string;
 }

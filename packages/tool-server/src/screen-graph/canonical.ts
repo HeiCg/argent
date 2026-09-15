@@ -19,7 +19,7 @@ export type ActionInvocation =
   | { kind: "back" };
 
 /** Screen dimensions in the same pixel space as tap coordinates. */
-export interface ScreenSize {
+interface ScreenSize {
   width: number;
   height: number;
 }

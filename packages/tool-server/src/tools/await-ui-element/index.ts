@@ -273,7 +273,7 @@ export function evaluateMatches(params: Params, matches: DescribeNode[]): boolea
  * has no on-device equivalent; a role-only selector returns null so the caller
  * keeps the poll loop.
  */
-export function toOpenServerAwaitSelector(selector: Params["selector"]): OpenServerSelector | null {
+function toOpenServerAwaitSelector(selector: Params["selector"]): OpenServerSelector | null {
   const sel: OpenServerSelector = {};
   if (selector.text) sel.text = { contains: selector.text, caseInsensitive: true };
   if (selector.identifier) sel.id = { contains: selector.identifier, caseInsensitive: true };

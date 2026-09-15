@@ -20,7 +20,7 @@ export const DEFAULT_STABLE_MATCH_THRESHOLD = 0.9;
  * `stable(H)` would exclude, not a re-hash. The resource-id multiset (which these
  * nodes share with their stable siblings) is the actual match key.
  */
-export const VOLATILE_TEXT =
+const VOLATILE_TEXT =
   /^\s*(?:\d{1,3}\s*%|\d{1,2}:\d{2}(?:\s*[ap]m)?|\d[\d.,]*\s*(?:%|min|hr|hrs|h|GB|MB|KB|B)?|[A-Z][a-z]{2}\s+\d{1,2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*$/i;
 
 /** True when `text` is purely volatile content (a clock, percentage, counter, date). */
@@ -207,7 +207,7 @@ export function nodeResourceIds(node: ScreenNode): string[] {
   return ids;
 }
 
-export interface StableMatch {
+interface StableMatch {
   hash: string;
   score: number;
 }

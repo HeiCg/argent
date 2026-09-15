@@ -26,10 +26,7 @@ import {
   type OpenDeviceServerApi,
   type OpenServerInfo,
 } from "../../src/blueprints/android-open-server";
-import type {
-  OpenServerElement,
-  OpenServerNestedElement,
-} from "../../src/tools/describe/platforms/android/open-server-tree";
+import type { OpenServerElement } from "../../src/tools/describe/platforms/android/open-server-tree";
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
 import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
@@ -188,61 +185,6 @@ const textSet = (tree: Element[]): Set<string> =>
   new Set(tree.map(label).filter((s) => s.length > 0));
 
 /**
- * Sorted label set of the accessibility tree — a position-independent screen
- * fingerprint. This is the SAME oracle the bench's effect check uses
- * (`describeLabelHash`): a navigating tap changes the label set, a no-op tap
- * leaves it identical, and a scroll (same labels, moved) does NOT read as a
- * change. Preferred over a screenshot pixel-diff, whose fixed threshold a real
- * navigation between two similar-looking Settings lists can fall under (the false
- * negative that failed the tap-landing tests while the bench measured effectZero=0).
- */
-async function labelHash(a: OpenDeviceServerApi): Promise<string | undefined> {
-  try {
-    const set = [...textSet((await a.getAccessibilityTree({ maxElements: 200 })).tree)];
-    return set.length ? set.sort().join("\n") : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Flatten a NESTED window tree (roots carry a `children` array) into all labels. */
-function flattenNestedLabels(nodes: OpenServerNestedElement[], out: string[] = []): string[] {
-  for (const n of nodes) {
-    const l = (n.contentDesc ?? "").trim() || (n.text ?? "").trim();
-    if (l.length) out.push(l);
-    if (Array.isArray(n.children)) flattenNestedLabels(n.children, out);
-  }
-  return out;
-}
-
-/** Sorted label set of a `getNestedState` reply — the same oracle as labelHash but
- * from the nested-describe path, so a quick read on that path can be fingerprinted. */
-function nestedLabelHash(state: { tree: OpenServerNestedElement[] }): string | undefined {
-  const set = new Set(flattenNestedLabels(state.tree));
-  return set.size ? [...set].sort().join("\n") : undefined;
-}
-
-/**
- * Poll the label-set fingerprint until it differs from `origin` or `timeoutMs`
- * elapses — "did the tap EVER land within the window", not "was it rendered by a
- * fixed wait". Mirrors the bench's timing-independent effect poll (poll ≤3 s).
- */
-async function pollFingerprintChanged(
-  a: OpenDeviceServerApi,
-  origin: string,
-  timeoutMs = 3000,
-  stepMs = 150
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const fp = await labelHash(a);
-    if (fp !== undefined && fp !== origin) return true;
-    if (Date.now() >= deadline) return false;
-    await sleep(stepMs);
-  }
-}
-
-/**
  * The `mCurrentFocus` line from `dumpsys window` — the WINDOW that actually receives
  * touch input. Review A8/fix e: `mFocusedApp` is deliberately EXCLUDED because it
  * flips to the destination activity before the window focus does (the early-flip
@@ -267,7 +209,7 @@ const CHROME_FRE_RE =
 
 async function dismissChromeFre(a: OpenDeviceServerApi): Promise<void> {
   for (let i = 0; i < 8; i++) {
-    let tree: Element[] = [];
+    let tree: Element[];
     try {
       tree = (await a.getAccessibilityTree({ maxElements: 200 })).tree;
     } catch {
@@ -560,7 +502,7 @@ suite("android open-device-server on-device", () => {
     const steps = 26; // 26 requested steps → 8 wire frames (~416 ms)
     const requestedMs = steps * 16;
     const wireNote = "26 requested steps → 8 wire frames";
-    let evidence = `UNMEASURED requested=${requestedMs}ms (${wireNote})`;
+    let evidence: string;
     try {
       await runAdb(["-s", serial, "logcat", "-c"]).catch(() => undefined);
       await api.swipe(cx, y0, cx, y1, steps, 0);

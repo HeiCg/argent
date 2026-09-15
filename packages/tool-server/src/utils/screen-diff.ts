@@ -11,7 +11,7 @@
  */
 import { flagsOf, type HashNode } from "./screen-hash";
 
-export interface CompactNode {
+interface CompactNode {
   class: string;
   id: string;
   text: string;
@@ -22,9 +22,9 @@ export interface CompactNode {
   path: number[];
 }
 
-export type ChangedFields = Partial<Omit<CompactNode, "path">>;
+type ChangedFields = Partial<Omit<CompactNode, "path">>;
 
-export interface TreeDiff {
+interface TreeDiff {
   added: CompactNode[];
   /** Paths present in `a` but not `b`. */
   removed: number[][];

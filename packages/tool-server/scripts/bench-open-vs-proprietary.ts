@@ -1364,7 +1364,7 @@ async function measureTransportExperiment(reg: Reg, n: number): Promise<Transpor
     wire: empty(),
   });
 
-  let ports: { localPort: number; devicePort: number; allPort?: number } | null = null;
+  let ports: { localPort: number; devicePort: number; allPort?: number };
   try {
     const device = resolveDevice(SERIAL);
     const ref = openDeviceServerRef(device);
@@ -1602,7 +1602,7 @@ function xmlUnescape(s: string): string {
 // Screen size in pixels (from `adb shell wm size`), to normalize uiautomator-dump
 // bounds (pixels) to the 0..1 coordinates gesture-tap expects. null if unparseable.
 function screenSizePx(): { width: number; height: number } | null {
-  let out = "";
+  let out: string;
   try {
     out = adbShell("wm size", 8_000);
   } catch {
@@ -1762,7 +1762,7 @@ async function locateTargetCoord(
 // check has the SAME sensitivity in every block.
 function resumedActivityFingerprint(): Promise<string | undefined> {
   return Promise.resolve().then(() => {
-    let out = "";
+    let out: string;
     try {
       out = adbShell(
         "dumpsys activity activities | grep -m1 -E 'mResumedActivity|topResumedActivity'",
@@ -1771,7 +1771,7 @@ function resumedActivityFingerprint(): Promise<string | undefined> {
     } catch {
       out = "";
     }
-    let m = out.match(/([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)/);
+    const m = out.match(/([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)/);
     if (m) return "act:" + m[1];
     // Fallback: the focused window's activity component (still backend-independent).
     try {
@@ -1973,7 +1973,7 @@ interface BlockResult {
   notes: string[];
 }
 
-async function coldStart(config: "OFF" | "ON"): Promise<number[]> {
+async function coldStart(_config: "OFF" | "ON"): Promise<number[]> {
   const out: number[] = [];
   for (let k = 0; k < COLD; k++) {
     await teardownBackend();
@@ -2578,7 +2578,7 @@ async function runBlock(
   if (elemVerb && elemVerb.latency.n > 0 && elemVerb.latency.min >= CAP_MS - 100) {
     degradedReasons.push(
       `await-ui-element hit the ${CAP_MS}ms cap on every iteration (min=${elemVerb.latency.min}ms, ` +
-        `selector=${String(elemVerb.extra?.selector ?? "?")})`
+        `selector=${typeof elemVerb.extra?.selector === "string" ? elemVerb.extra.selector : "?"})`
     );
   }
   if (!pasteReady) {

@@ -40,7 +40,7 @@ export const IOS_OPEN_SERVER_METHODS = [
   "shutdown",
 ] as const;
 
-export type IosOpenServerMethod = (typeof IOS_OPEN_SERVER_METHODS)[number];
+type IosOpenServerMethod = (typeof IOS_OPEN_SERVER_METHODS)[number];
 
 // ---- reply shapes (mirror RunnerProtocol.swift) ---------------------------
 
@@ -109,7 +109,7 @@ export interface IosOpenServerScreenshot {
 }
 
 /** The connection facts for a simulator (loopback) target. */
-export interface IosOpenServerClientOptions {
+interface IosOpenServerClientOptions {
   host?: string;
   port: number;
   timeoutMs?: number;

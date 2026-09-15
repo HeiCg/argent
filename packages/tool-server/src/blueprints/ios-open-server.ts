@@ -8,7 +8,6 @@ import {
   type ServiceEvents,
 } from "@argent/registry";
 import {
-  IosOpenServerClient,
   type IosOpenServerInfo,
   type IosOpenServerScreenSize,
   type IosOpenServerState,
