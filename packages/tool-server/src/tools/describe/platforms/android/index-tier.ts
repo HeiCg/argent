@@ -14,6 +14,7 @@
  * not moved (the version check that yields `stale_index`, in `open-server-input`).
  */
 import type { DeviceInfo, Registry } from "@argent/registry";
+import { isFlagEnabled } from "@argent/configuration-core";
 import type { DescribeResult } from "../../contract";
 import {
   openDeviceServerRef,
@@ -104,6 +105,12 @@ export async function describeAndroidIndexTier(
   registry: Registry,
   device: DeviceInfo
 ): Promise<DescribeResult> {
+  // The index tier reads the live tree from the open server. With the flag off,
+  // throw so the describe dispatcher falls back to the standard path instead of
+  // spawning the open server just for an `index` request.
+  if (!isFlagEnabled("open-device-server")) {
+    throw new Error("index tier requires the `open-device-server` flag");
+  }
   const ref = openDeviceServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
