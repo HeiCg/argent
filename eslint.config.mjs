@@ -44,14 +44,9 @@ export default tseslint.config(
         // the per-package tsconfig.test.json. The glob also matches
         // packages/docs, which is outside the npm workspaces, so `npm ci` there
         // has to run before this lint (see .github/workflows/lint.yml). The
-        // per-package scripts/tsconfig.json covers the bench scripts under
-        // packages/*/scripts, which the type-aware parser otherwise rejects as
-        // "file not found in any project".
-        project: [
-          "packages/*/tsconfig.json",
-          "packages/*/tsconfig.test.json",
-          "packages/*/scripts/tsconfig.json",
-        ],
+        // bench scripts under packages/*/scripts are deliberately NOT covered
+        // here — they get a type-info-free block below (see the note there).
+        project: ["packages/*/tsconfig.json", "packages/*/tsconfig.test.json"],
         tsconfigRootDir: import.meta.dirname,
       },
       globals: { ...globals.node },
@@ -112,6 +107,25 @@ export default tseslint.config(
   {
     files: ["**/*.js", "**/*.mjs", "**/*.cjs"],
     extends: [eslint.configs.recommended, tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
+
+  // The bench scripts under packages/*/scripts are dev-only tooling that import
+  // the whole tool-server src type graph; adding them to `parserOptions.project`
+  // (above) makes the type-aware parser build a second full TS program for two
+  // ~115 KB files, which OOMs CI's ESLint at its 4 GB heap. Lint them WITHOUT
+  // type information — the same treatment as the .js dev/build scripts. This is
+  // not a rule opt-out to dodge a finding: the type-info-free set still runs
+  // no-unused-vars, no-useless-assignment and prefer-const here (the errors this
+  // paydown fixed); only the type-aware rules (e.g. no-base-to-string), which
+  // this repo already turns off for test files, do not apply to the scripts.
+  // Without this block they would hit `**/*.ts` above and fail to parse
+  // ("file not found in any project").
+  {
+    files: ["packages/*/scripts/**/*.ts"],
+    extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: { ...globals.node },
     },
