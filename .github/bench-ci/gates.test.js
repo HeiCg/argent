@@ -322,3 +322,103 @@ test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", 
   assert.match(r.stdout, /only the effect fingerprint .*is backend-independent/i);
   assert.match(r.stdout, /i=7 verb=/);
 });
+
+// ── Fling merge (ticket 3o): self-test-first, report-only ────────────────────
+const MERGE_FLING = path.join(HERE, "merge-fling.js");
+const FLING_CELLS = [150, 250, 400].flatMap((d) => [0.3, 0.5].map((dist) => ({ durationMs: d, distance: dist })));
+
+// A fling block whose every cell has `n` samples with a chosen median (px). Samples
+// are spread ±3 px around the target so the median is exactly the target and the
+// permutation test has a real distribution. `medFor(durationMs,distance)` overrides.
+function flingBlock(name, strategy, medFor, n = 16) {
+  return {
+    serial: "emulator-5554",
+    N: 16,
+    config: name,
+    injectStrategy: strategy,
+    openServer: strategy !== null,
+    mode: "interleaved-optical",
+    metric: "optical-scroll-px",
+    cells: FLING_CELLS.map((c) => {
+      const med = medFor(c.durationMs, c.distance);
+      const samples = [];
+      for (let i = 0; i < n; i++) {
+        const off = med + ((i % 7) - 3); // symmetric-ish spread, median == med for odd/even n
+        samples.push({ offsetPx: off, confidence: 0.99, peakShift: Math.round(off) });
+      }
+      // Force an exact median: sort-insert the target as the middle element set.
+      const offs = samples.map((s) => s.offsetPx).sort((a, b) => a - b);
+      const mid = Math.floor(offs.length / 2);
+      // rewrite samples so the median equals `med` exactly
+      const fixed = offs.map((_, i) => ({ offsetPx: med + (i - mid), confidence: 0.99, peakShift: med }));
+      return { durationMs: c.durationMs, distance: c.distance, config: name, n, medianPx: med, iqrPx: [med - 3, med + 3], samples: fixed, drops: [] };
+    }),
+  };
+}
+function writeFling(out, blocks) {
+  for (const b of blocks) fs.writeFileSync(path.join(out, `fling-block-${b.config}.json`), JSON.stringify(b));
+}
+
+test("merge-fling: self-test OK grades arms; input-manager parity → PASS, always exit 0", () => {
+  const out = freshOut();
+  const same = () => 500; // identical medians everywhere
+  writeFling(out, [
+    flingBlock("ON-uia-A", "default", same),
+    flingBlock("ON-uia-B", "default", same),
+    flingBlock("ON-uiautomation", "default", same),
+    flingBlock("ON-input-manager", "input-manager", () => 505),
+    flingBlock("OFF", null, () => 500),
+  ]);
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr); // report-only: always exit 0
+  assert.match(r.stdout, /SELF-TEST VERDICT: INSTRUMENT-OK/);
+  assert.match(r.stdout, /ON-input-manager VERDICT: PASS/);
+  assert.match(r.stdout, /does NOT significantly under-scroll/);
+});
+
+test("merge-fling: uia-A vs uia-B divergence > 5% → INSTRUMENT-UNRESOLVED, no arm graded", () => {
+  const out = freshOut();
+  writeFling(out, [
+    flingBlock("ON-uia-A", "default", () => 500),
+    flingBlock("ON-uia-B", "default", () => 560), // +12% divergence
+    flingBlock("ON-uiautomation", "default", () => 500),
+    flingBlock("ON-input-manager", "input-manager", () => 500),
+    flingBlock("OFF", null, () => 500),
+  ]);
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /SELF-TEST VERDICT: INSTRUMENT-UNRESOLVED/);
+  assert.match(r.stdout, /NO arm is graded/);
+  assert.doesNotMatch(r.stdout, /ON-input-manager VERDICT:/);
+});
+
+test("merge-fling: an underpowered self-test cell (n<12) → INSTRUMENT-UNRESOLVED", () => {
+  const out = freshOut();
+  writeFling(out, [
+    flingBlock("ON-uia-A", "default", () => 500, 8), // n=8 < 12
+    flingBlock("ON-uia-B", "default", () => 500, 8),
+    flingBlock("ON-uiautomation", "default", () => 500),
+    flingBlock("ON-input-manager", "input-manager", () => 500),
+    flingBlock("OFF", null, () => 500),
+  ]);
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /INSTRUMENT-UNRESOLVED/);
+  assert.match(r.stdout, /UNDERPOWERED/);
+});
+
+test("merge-fling: input-manager under-scroll vs proprietary is detected (ratio<1, p<0.05)", () => {
+  const out = freshOut();
+  writeFling(out, [
+    flingBlock("ON-uia-A", "default", () => 500),
+    flingBlock("ON-uia-B", "default", () => 500),
+    flingBlock("ON-uiautomation", "default", () => 500),
+    flingBlock("ON-input-manager", "input-manager", () => 300), // 0.6× → under-scroll
+    flingBlock("OFF", null, () => 500),
+  ]);
+  const r = run(MERGE_FLING, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /SELF-TEST VERDICT: INSTRUMENT-OK/);
+  assert.match(r.stdout, /UNDER-SCROLL: input-manager under-scrolls vs proprietary on \d+ powered cell/);
+  assert.match(r.stdout, /ON-input-manager VERDICT: FAIL/); // 0.6 ratio is outside ±0.15
+});
