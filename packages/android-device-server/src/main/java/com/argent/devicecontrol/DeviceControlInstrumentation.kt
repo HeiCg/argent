@@ -3,6 +3,7 @@ package com.argent.devicecontrol
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.Instrumentation
+import android.app.UiAutomation
 import android.os.Bundle
 import android.util.Log
 import androidx.test.uiautomator.UiDevice
@@ -49,7 +50,17 @@ class DeviceControlInstrumentation : Instrumentation() {
     override fun onStart() {
         super.onStart()
         val uiDevice = UiDevice.getInstance(this)
-        val uiAutomation = uiAutomation
+        // AW-1 probe (run 34946274170) confirmed research §2: a default
+        // UiAutomation connection SUPPRESSES other accessibility services for its
+        // lifetime, so while our server is alive AndroidWorld's a11y forwarder
+        // forest comes back empty ("Could not get a11y tree") and `uiautomator
+        // dump` yields 0 bytes. FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES lets our
+        // UiAutomation coexist with AW's forwarder on one emulator. NOTE: this is a
+        // driver behavior change (suppression is also what makes our reads cheap),
+        // so the describe latencies must be re-measured against run 34870686468 at
+        // the drift floor before any latency row is trusted on this build (AW-1.1;
+        // not folded into the AW-1 harness run).
+        val uiAutomation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
 
         // Enable the interactive-windows API so `uiAutomation.windows` is populated
         // and the active window's root can be read from that snapshot instead of via

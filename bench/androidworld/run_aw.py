@@ -136,8 +136,11 @@ def run_episode(
   agent = TieredAgent(open_env, llm)
   task = task_type(params)
 
-  open_env.reset(go_home=True)
-  task.initialize_task(open_env)
+  # Task lifecycle (init / checker / teardown) runs against the REAL AW env, so a
+  # checker that happens to read get_state sees AW's own observation, never our
+  # tier. The AGENT sees only the open driver (open_env).
+  aw_env.reset(go_home=True)
+  task.initialize_task(aw_env)
   agent.reset(task.start_on_home_screen)
 
   budget = int(task.complexity * 10)
@@ -157,14 +160,14 @@ def run_episode(
     error = f"{type(e).__name__}: {e}"
 
   # G0: a terminal is_successful per episode, regardless of whether the agent
-  # signalled done (never a mean over tasks).
+  # signalled done (never a mean over tasks). Scored on the real AW env.
   try:
-    success_score = float(task.is_successful(open_env))
+    success_score = float(task.is_successful(aw_env))
   except Exception as e:  # noqa: BLE001
     success_score = 0.0
     error = error or f"is_successful: {type(e).__name__}: {e}"
   try:
-    task.tear_down(open_env)
+    task.tear_down(aw_env)
   except Exception:  # noqa: BLE001
     pass
 
