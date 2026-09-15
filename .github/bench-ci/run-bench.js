@@ -23,7 +23,13 @@
     .map((s) => s.trim())
     .filter(Boolean);
   const arms = STRATEGY_ARMS.filter((a) => requested.includes(a));
-  if (arms.length === 0) return; // legacy run — no strategy arms requested
+  // Ticket 3o: the fling job cannot be added to the workflow YAML (no `workflow` OAuth
+  // scope to push it), so the optical fling harness self-orchestrates here too — a
+  // `FLING` token in the `blocks` input runs `run-fling.js` + `merge-fling.js` once,
+  // inside the latency job's already-booted emulator (animations off, proprietary
+  // fetched for the OFF arm). Same lock as the strategy arms, so it runs exactly once.
+  const wantFling = requested.includes("FLING");
+  if (arms.length === 0 && !wantFling) return; // legacy run — nothing to self-orchestrate
   const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
   const LOCK = path.join(OUT, ".bench-strategy-arms.lock");
   try {
@@ -35,7 +41,9 @@
   fs.writeFileSync(LOCK, `strategy arms claimed ${new Date().toISOString()} by BENCH_ONLY=${process.env.BENCH_ONLY}\n`);
   const serial = process.env.BENCH_SERIAL || "emulator-5554";
   // eslint-disable-next-line no-console
-  console.log(`[run-bench] self-orchestrating strategy arms ${arms.join(", ")} (workflow-scope workaround)`);
+  console.log(
+    `[run-bench] self-orchestrating ${[...arms, ...(wantFling ? ["FLING"] : [])].join(", ") || "(nothing)"} (workflow-scope workaround)`
+  );
   for (const arm of arms) {
     // eslint-disable-next-line no-console
     console.log(`########## BLOCK ${arm} (self-orchestrated) ##########`);
@@ -58,6 +66,48 @@
       ["-c", `ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=${arm} node ${JSON.stringify(__filename)} 2>&1 | tee -a ${JSON.stringify(logPath)}; exit \${PIPESTATUS[0]}`],
       { stdio: "inherit", env: process.env }
     );
+  }
+  if (wantFling) {
+    // eslint-disable-next-line no-console
+    console.log("########## FLING (self-orchestrated, ticket 3o — optical, report-only) ##########");
+    const runFling = path.join(__dirname, "run-fling.js");
+    const mergeFling = path.join(__dirname, "merge-fling.js");
+    const flingLog = path.join(OUT, "bench-log-FLING.txt");
+    // Drop the OFF arm if the proprietary binary cannot exec on this runner (the
+    // documented Linux downgrade) — the merge then reports arm/off as NO-OFF instead
+    // of the harness dying on a proprietary swipe that never runs.
+    const offEnv = process.env.PROP_EXECUTABLE === "1" ? "" : "FLING_INCLUDE_OFF=0 ";
+    try {
+      execFileSync("bash", [path.join(".github", "bench-ci", "ready-gate.sh"), serial, "3", "90", "0"], { stdio: "inherit" });
+    } catch {
+      /* best effort — the harness resets Settings per sample anyway */
+    }
+    let flingFailure = null;
+    try {
+      execFileSync(
+        "bash",
+        ["-c", `${offEnv}node ${JSON.stringify(runFling)} 2>&1 | tee -a ${JSON.stringify(flingLog)}; exit \${PIPESTATUS[0]}`],
+        { stdio: "inherit", env: process.env }
+      );
+    } catch (e) {
+      flingFailure = e;
+      // eslint-disable-next-line no-console
+      console.log("::error::fling harness exited non-zero (arm-round collapse) — see bench-log-FLING.txt");
+    }
+    // Always run the merge (report-only, exits 0) so the artifact carries the
+    // self-test verdict + raw distributions even on a partial run.
+    try {
+      execFileSync("bash", ["-c", `node ${JSON.stringify(mergeFling)} 2>&1 | tee -a ${JSON.stringify(flingLog)}`], {
+        stdio: "inherit",
+        env: process.env,
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.log(`[run-bench] fling merge failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // A genuine arm-round collapse must fail the step loudly (a broken run must not
+    // look like a clean instrument result).
+    if (flingFailure) throw flingFailure;
   }
 })();
 

@@ -16,5 +16,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["bench-describe-host.ts", "bench-open-vs-proprietary.ts"]
+  "include": ["bench-describe-host.ts", "bench-open-vs-proprietary.ts", "optical-scroll.ts", "bench-fling-fidelity.ts"]
 }
