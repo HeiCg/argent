@@ -77,6 +77,7 @@ import { observationQuery } from "../src/screen-graph/bench/observe";
 import { parseDescribeLocate } from "../src/screen-graph/bench/describe-locate";
 import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/locate";
 import { ScreenGraphStore } from "../src/screen-graph/store";
+import { runChurnExperiment } from "../src/screen-graph/bench/churn";
 import {
   countBoth,
   range,
@@ -118,6 +119,8 @@ if (!SERIAL.startsWith("emulator-")) {
 const SETTINGS = "com.android.settings";
 const CHROME = "com.android.chrome";
 const OPEN_PKG = "com.argent.devicecontrol";
+/** Phase E (E-1): the synthetic churn feed app (built + installed under BENCH_CHURN=1). */
+const CHURN_PKG = "com.argent.churnapp";
 const ADT_PKG = "com.argent.androiddevtools";
 const DS_PKGS = ["com.devicestream.server", "com.devicestream.server.test"];
 
@@ -2769,6 +2772,69 @@ async function main(): Promise<void> {
   // alongside it — the warm summary lists ≤6 outgoing edges, so the token ratio
   // tracks graph density.
   env.settingsGraph = settingsGraphShape();
+
+  // Phase E (E-1): the churn experiment. Runs AFTER the D.4.1 matrix in the SAME
+  // job (same device), gated by BENCH_CHURN=1. The ON arm's store lands in the
+  // gated graph dir (copied + invariant-checked below); the OFF (control) arm
+  // persists OUTSIDE it so its expected duplicateEdgeTargets break cannot kill the
+  // job — per-arm scoping decided BEFORE the run (the hard constraint).
+  if (process.env.BENCH_CHURN === "1") {
+    try {
+      const churnReg = createRegistry();
+      const churnServer = await openServer(churnReg);
+      const offBaseDir = join(OUT_DIR, "churn-off-graph");
+      const result = await runChurnExperiment({
+        server: churnServer,
+        graphBaseDir: graphDir(),
+        offBaseDir,
+        launchFeed: (seed: number) => {
+          adbTry(["shell", `am force-stop ${CHURN_PKG}`], 6_000);
+          adbTry(
+            ["shell", `am start -n ${CHURN_PKG}/.FeedActivity --ei items 50 --ei seed ${seed}`],
+            8_000
+          );
+        },
+        log: (m: string) => realDebug(m),
+      });
+      writeFileSync(join(OUT_DIR, "churn-results.md"), result.markdown);
+      writeFileSync(
+        join(OUT_DIR, "churn.json"),
+        JSON.stringify(
+          {
+            runId,
+            jobStartedAt,
+            metrics: result.metrics,
+            gates: result.gates,
+            navSuccess: result.navSuccess,
+            navTotal: result.navTotal,
+            misattributionRows: result.misattributionRows,
+            misattributionRowTotal: result.misattributionRowTotal,
+            carouselAttributed: result.carouselAttributed,
+            carouselTotal: result.carouselTotal,
+          },
+          null,
+          2
+        )
+      );
+      env.churn = {
+        gates: result.gates,
+        navSuccess: result.navSuccess,
+        navTotal: result.navTotal,
+      };
+      const churnFail = Object.entries(result.gates).some(([, g]) => g.pass === false);
+      process.stdout.write(
+        `[bench-sg] churn experiment done (run ${runId}): nav ${result.navSuccess}/${result.navTotal}; gates ${Object.entries(
+          result.gates
+        )
+          .map(([id, g]) => `${id}=${g.pass === null ? "desc" : g.pass ? "pass" : "FAIL"}`)
+          .join(" ")}\n`
+      );
+      if (churnFail) process.exitCode = 1;
+    } catch (e) {
+      process.stderr.write(`[bench-sg] churn experiment error (run ${runId}): ${String(e)}\n`);
+      process.exitCode = 1;
+    }
+  }
 
   const raw = {
     env,

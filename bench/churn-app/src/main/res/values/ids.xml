@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Named resource ids so the accessibility tree reports stable resource-ids the
+  screen graph keys on. The identity-title logic (ScreenHash) folds a `title`
+  under a `*toolbar*` container, so the feed / detail title bars use those names.
+-->
+<resources>
+    <item name="feed_toolbar" type="id" />
+    <item name="detail_toolbar" type="id" />
+    <item name="title" type="id" />
+    <item name="carousel" type="id" />
+    <item name="carousel_item" type="id" />
+    <item name="list" type="id" />
+    <item name="row" type="id" />
+    <item name="row_title" type="id" />
+    <item name="row_summary" type="id" />
+    <item name="detail_body" type="id" />
+    <item name="detail_scroll" type="id" />
+</resources>
