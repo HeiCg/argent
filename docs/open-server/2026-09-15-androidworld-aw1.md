@@ -68,3 +68,158 @@ touch iOS files or the A2 branch's files. Append `## Result` with the probe outc
 task table, G0–G5, run ids, and the exact things left for AW-2 (index tier, summary tier,
 20×4 matrix one job per tier). Adversarial review before merge; do not fast-forward
 `open/main`.
+
+## Result
+
+Branch `feat/androidworld-aw1`, worktree `../argent-fork-wt-aw1`, PR **#7** to
+`open/main`. Everything CI-only (no macOS minutes, no local emulator/pip). x86_64/KVM
+here is NOT comparable to local numbers; AW-1's output is "the harness runs and the
+tiers differ by X tokens/step at equal success", nothing stronger.
+
+### Step 0 — a11y-suppression probe (blocking): SUPPRESSION CONFIRMED → flag added
+
+Probe run **34946274170** (API 33, `google_apis`, x86_64; booted WITHOUT
+`-grpc-use-token`). Our instrumentation was alive (ephemeral port 45971). While it held
+its `UiAutomation`:
+
+- `uiautomator dump`: **FAILED** — 0 bytes (no second `UiAutomation` available).
+- AndroidWorld a11y forest (its controller `get_a11y_forest()`): **FAILED** —
+  `RuntimeError: Could not get a11y tree.`
+
+Research §2's inference is confirmed on device: a default `UiAutomation` connection
+suppresses other accessibility services for its lifetime, so while our server is alive
+AndroidWorld's forwarder forest and `uiautomator dump` are dead.
+
+**Pre-registered choice (before any harness run): make
+`FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` OPT-IN, off by default.** The harness keeps
+AW's own env for `initialize_task`/`is_successful`/`tear_down`/adb, and AW's env reads the
+forest on `reset`/checkers — so it must coexist with our `UiAutomation`. The flag is
+requested ONLY when the instrumentation is started with `-e dontSuppressA11y true`
+(`UiAutomationFlags.dontSuppressA11y`, unit-tested; wired through the blueprint's env-gated
+spawn arg `ARGENT_OPEN_SERVER_DONT_SUPPRESS_A11Y=1`, set only by
+`run_aw.start_tool_server`). When the arg is unset the default suppressing `uiAutomation`
+connection is used — **byte-identical to the pre-AW-1 driver**.
+
+**Re-probe run 34947435250 (flag on, unconditional): harness blocker RESOLVED** — with our
+server alive AndroidWorld's forwarder forest returns (`aw_forest.ok=true`, 2 windows, 23
+nodes, 19 ui_elements). `uiautomator dump` stays at 0 bytes but is informational (it needs
+its own separate `UiAutomation`; the harness uses the `A11Y_FORWARDER_APP` forest, not the
+dump).
+
+**Opt-in gating proven on device — run 34950761649 (both ways in one job):**
+
+| arm                        | AW forwarder forest                                   |
+| -------------------------- | ----------------------------------------------------- |
+| default start (no arg)     | NOT readable (`Could not get a11y tree`) — suppressed |
+| `-e dontSuppressA11y true` | 2 windows, **23 nodes, 19 ui_elements** — restored    |
+
+`gating_proven=true`. The same job also **compiled the refactored Kotlin** (`assembleDebug`)
+and **ran the JVM unit tests** (`gradlew testDebugUnitTest`, including
+`UiAutomationFlagsTest`) — both green. So the default driver is byte-identical (suppressing)
+and the flag engages only under the opt-in arg; the harness is a go once the secret lands.
+
+**Latency caveat — bounded to the harness arm; NOT a merge blocker:** suppression is also
+what makes our describe reads cheap, so the non-suppressing connection is a driver behavior
+change — but ONLY on the opt-in path. Because the default start is byte-identical, **no
+describe-latency re-measure is needed to merge this change.** The re-measure is needed only
+for the AndroidWorld harness runs themselves (which set the arg): those must be compared at
+the within-run drift floor and must not reuse run 34870686468 as a cross-build comparator
+(AW-1.1).
+
+### Step 1 — adapter (`bench/androidworld/`, outside `packages/`, nothing vendored)
+
+- `claude_wrapper.py` — `ClaudeWrapper` over the `anthropic` SDK: `claude-opus-5`, one
+  `effort` (`medium`) in the manifest, temperature never forwarded, thinking left at the
+  Opus 5 default, `usage.input_tokens`/`output_tokens` recorded per call. No refusal
+  fallback (it would break the one-model invariant).
+- `tiered_agent.py` — `TieredAgent` = AndroidWorld `T3A` with the observation swapped for
+  our describe `tier=<arm>`; `PROMPT_PREFIX`, `GUIDANCE`,
+  `ACTION_SELECTION_PROMPT_TEMPLATE`, history format and the `JSONAction` grammar are
+  byte-identical across arms; the screenshot-only `add_ui_element_mark` is dropped.
+- `driver_env.py` — `OpenDriverEnv` observes via `describe` (index↔node table built from
+  each line's normalized `(x,y,w,h)` frame) and acts through our tools per the §1 table
+  (double_tap = two taps, long_press = `gesture-custom` hold, clear_text = select-all +
+  delete, wait = `await-screen-idle`, Android scroll = `gesture-swipe`); AW's env kept for
+  init/checker/teardown/adb; a11y forwarder never read by the harness (shape b).
+- `run_aw.py` — `setup` + `run`; one seeded param set per task reused across tiers;
+  per-episode JSON (tokens ours + API usage, wall ms, terminal `is_successful`, AW commit,
+  AVD fingerprint) + manifest + gates.
+
+**Tool-server entry point used:** the standalone HTTP server, started by
+`node packages/tool-server/dist/index.js start` (`ARGENT_PORT=3001`, `ARGENT_HOST=127.0.0.1`,
+`ARGENT_AUTH_TOKEN` unset = no auth), needing only `npm ci` + `tsc --build` (no
+`@swmansion/argent` bundle). The open driver is enabled by
+`setFlag("open-device-server", true, "global")` from `@argent/configuration-core`
+(re-read per request). The adapter POSTs `http://127.0.0.1:3001/tools/<name>` with
+`{"udid":"emulator-5554", ...}` and reads the response `data`
+(`packages/tool-server/src/index.ts:397`, `packages/tool-server/src/http.ts:616`,
+`packages/configuration-core/src/flags.ts:72`). Describe frames are normalized 0–1
+(`packages/tool-server/src/tools/describe/platforms/android/open-server-tree.ts:75`),
+matching `gesture-tap`'s normalized input.
+
+### Step 2 — five tasks, two tiers, one model (pinned)
+
+Verified at the pinned AW commit `e3fea3ccc69787570e282c99573298f1c3019a34`:
+
+| task                           | complexity | app                 |
+| ------------------------------ | ---------- | ------------------- |
+| `ContactsAddContact`           | 1.2        | contacts (system)   |
+| `ClockStopWatchRunning`        | 1          | clock (system)      |
+| `MarkorCreateFolder`           | 1          | markor              |
+| `MarkorDeleteNote`             | 1          | markor              |
+| `SimpleCalendarDeleteOneEvent` | 1.2        | simple calendar pro |
+
+`--task_random_seed = 30`, `--n_task_combinations = 1`. One seeded param set per task,
+reused across both tiers (the tier is the only variable). Tiers `compact` + `full`
+(`summary` needs the graph, `index` does not exist yet — both AW-2). Model
+`claude-opus-5`, effort `medium`, temperature unset. Prompt caching off (identical across
+arms).
+
+### Pre-registered gates (before the run)
+
+- **G0** — the harness completes all 10 episodes, each with a terminal `is_successful`
+  (a float per episode; never a mean over 5).
+- **G1** — per-task pass/fail table per tier.
+- **G2** — tokens/step per tier from API usage, with the observation share (our o200k
+  observation tokens ÷ API input tokens/step).
+- **G3** — s/step per tier.
+- **G4** — manifest: AW commit, tier list, model, effort, seed, task list, AVD fingerprint.
+- **G5** — cost from API usage at claude-opus-5 list price ($5 / $25 per MTok).
+
+No capability claim.
+
+### Step 3 — one run: BLOCKED on the `ANTHROPIC_API_KEY` repo secret
+
+The secret is not set today. Exact secret name: **`ANTHROPIC_API_KEY`** (repo-level, Settings
+→ Secrets and variables → Actions). Once the owner adds it, dispatch:
+
+```
+gh workflow run bench-androidworld.yml --ref feat/androidworld-aw1 \
+  -f job=harness \
+  -f tasks="ContactsAddContact,ClockStopWatchRunning,MarkorCreateFolder,MarkorDeleteNote,SimpleCalendarDeleteOneEvent" \
+  -f tiers="compact,full" \
+  -f seed=30
+```
+
+Estimate ≈ 60 min wall (≈ 30 min fixed setup + AW app install, ≈ 20 min run, ≈ 10 min
+init/teardown), well inside the 180-min cap; ≈ **$3** model spend (≈ 120 calls × ~2 000 in
+/ ~450 out on Opus 5), budget $10 for one re-run. Budget: one harness run, +1 retry ONLY
+for a harness defect (never a task flake); re-run the same seed before reading any delta.
+
+### Runs / hygiene
+
+- Probe **34946274170** (suppression confirmed); re-probe **34947435250** (flag validated);
+  opt-in gating proof **34950761649** (default suppresses, arg restores; Kotlin compiled +
+  JUnit `testDebugUnitTest` green).
+- PR **#7** → `open/main`: Prettier, ESLint, Knip, Static checks, Unit tests, lockfile all
+  PASS. `bench/androidworld/` is Python-only and outside knip's JS/TS workspace
+  scope, so no knip config change or rule-disable was needed (knip stays green). Prettier
+  clean. No iOS files or A2-branch files touched; scoreboard untouched; `open/main` not
+  fast-forwarded (PR only).
+
+### Left for AW-2
+
+The `index` tier (ship the describe `index` tier first), the `summary` tier
+(graph-dependent), and the full 20×4 matrix as one job per tier (the full grid does not fit
+one 6 h job — research §3). Plus **AW-1.1**: re-measure describe latencies on the
+flag-carrying build against run 34870686468 at the drift floor.

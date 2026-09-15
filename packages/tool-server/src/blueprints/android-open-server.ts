@@ -671,6 +671,15 @@ async function spawnServer(serial: string): Promise<SpawnedServer> {
       // RPC params (`_padTo`, `_benchLegacyEncode`). Read at spawn time so the bench
       // can set it programmatically before the first spawn; off in production.
       ...(process.env.ARGENT_OPEN_SERVER_BENCH_DEBUG === "1" ? ["-e", "benchDebug", "true"] : []),
+      // AW-1: `-e dontSuppressA11y true` makes the server's UiAutomation NOT
+      // suppress other accessibility services, so AndroidWorld's a11y forwarder can
+      // coexist with our server on one emulator. OPT-IN and env-gated — the default
+      // (suppressing) connection is byte-identical to before AW-1, so only the
+      // AndroidWorld harness sets this. Suppression is what makes describe reads
+      // cheap, so the arm carrying it has its own latency caveat (AW-1.1).
+      ...(process.env.ARGENT_OPEN_SERVER_DONT_SUPPRESS_A11Y === "1"
+        ? ["-e", "dontSuppressA11y", "true"]
+        : []),
       manifest.instrumentationRunner,
     ],
     { stdio: ["ignore", "pipe", "pipe"] }
