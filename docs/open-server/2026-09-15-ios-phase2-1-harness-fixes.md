@@ -239,11 +239,11 @@ XCUITest control only.)
 PR **#4** → `open/main` (hygiene only; the macOS bench workflow was NOT triggered).
 All six checks **green**:
 
-| check | conclusion | run id |
-| --- | --- | --- |
-| Prettier check | SUCCESS | 34935810470 |
-| ESLint | SUCCESS | 34935810678 |
-| Knip | SUCCESS | 34935810367 |
-| Static checks | SUCCESS | 34935810401 |
-| Unit tests | SUCCESS | 34935810364 |
-| package-lock.json in sync | SUCCESS | 34935810454 |
+| check                     | conclusion | run id      |
+| ------------------------- | ---------- | ----------- |
+| Prettier check            | SUCCESS    | 34935810470 |
+| ESLint                    | SUCCESS    | 34935810678 |
+| Knip                      | SUCCESS    | 34935810367 |
+| Static checks             | SUCCESS    | 34935810401 |
+| Unit tests                | SUCCESS    | 34935810364 |
+| package-lock.json in sync | SUCCESS    | 34935810454 |
