@@ -593,3 +593,16 @@ whole ON-siminput arm (landing 10/20 is an upper bound; the effect threshold let
 0.055 self-test pass), every G2 Δ/CI/verdict, describe latency (identical-code ON blocks
 drift 53 ms), swipe + optical scroll (censored, raster units), await-\*, tap+describe, G3
 as a gate. No further macOS run without the owner's approval (10× billing).
+
+## Post-3n additions (Android, 2026-09-15)
+
+- **A1 verified tap + incident line, A2 gesture-sequence + index tier (opt-in)** merged;
+  consolidation run **34954772917** (`suite=latency`, N = 20, default blocks): device suite
+  37/37 through the tool registry (refusals inject nothing; incident line appears and
+  clears), `input-manager` 161/161, `unavailable` 0, landing 100 % every block. Default
+  path unchanged: every verb within the OFF↔OFF floor of run 34939934318 except
+  `gesture-swipe` (+1 ms over a 1 ms floor) and `paste` (+51 ms over a 30 ms floor) —
+  test-only diff, read as CI noise, not a claim. **Index tier on-device tokens (o200k,
+  N = 5 per screen)**: Settings root 646 vs `compact` 657 (parity); Network & internet
+  sub-screen 289 vs 598 (−52 %). The earlier "−71 %" figure came from a text
+  reconstruction on stored describes and is retired; `index` stays opt-in.
