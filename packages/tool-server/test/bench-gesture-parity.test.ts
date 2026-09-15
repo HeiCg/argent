@@ -67,8 +67,14 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
   it("parity passes across the 4 blocks: same holdMs, identical two-frame tap, no MOVE", () => {
     const blocks = [
       { block: "OFF-1", injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
-      { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
-      { block: "ON-input-manager", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
+      {
+        block: "ON-uiautomation",
+        injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50),
+      },
+      {
+        block: "ON-input-manager",
+        injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50),
+      },
       { block: "OFF-2", injectedTapTimeline: describeInjectedTapTimeline("proprietary", 50) },
     ];
     expect(() => assertTapTimelineParity(blocks)).not.toThrow();
@@ -76,8 +82,14 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
 
   it("throws when holdMs drifts across blocks", () => {
     const blocks = [
-      { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
-      { block: "ON-input-manager", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 80) },
+      {
+        block: "ON-uiautomation",
+        injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50),
+      },
+      {
+        block: "ON-input-manager",
+        injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 80),
+      },
     ];
     expect(() => assertTapTimelineParity(blocks)).toThrow(/parity violated/);
   });
@@ -95,7 +107,10 @@ describe("bench injected tap-timeline recording + parity (phase 3h)", () => {
       ],
     };
     const blocks = [
-      { block: "ON-uiautomation", injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50) },
+      {
+        block: "ON-uiautomation",
+        injectedTapTimeline: describeInjectedTapTimeline("uiautomation", 50),
+      },
       { block: "ON-input-manager", injectedTapTimeline: withMove },
     ];
     expect(() => assertTapTimelineParity(blocks)).toThrow(/parity violated/);

@@ -9,8 +9,7 @@ emulator/adb; CI only.
 ## Measured starting point (run 33784227150, x86_64 KVM, N=20, same-sample)
 
 Idle describe p50: OFF 52, ON-uiautomation 106, ON-scrcpy 103. ON decomposition
-(ms p50): server handle 64 = capture 37 (serialize 8 + encode 26 + root/windows
-2) + response `toString` ≈ 27; server write+flush 0.39; host TTFB 64; host recv
+(ms p50): server handle 64 = capture 37 (serialize 8 + encode 26 + root/windows 2) + response `toString` ≈ 27; server write+flush 0.39; host TTFB 64; host recv
 (first→last byte) 40; host parse+render 0.85; RTT 104; wire 31877 B; ping 1.2.
 Host recv is 40 ms for 31 KB and 41.5 ms for 168 KB: a fixed per-request cost,
 not bandwidth. Low-contention run 33781603888 had ON 63 vs OFF 72 (met).
@@ -47,15 +46,15 @@ not bandwidth. Low-contention run 33781603888 had ON 63 vs OFF 72 (met).
    Experiments in ONE CI run, each N=20 `getNestedState` RTT + recv gap:
    a. baseline via `adb forward` (as today);
    b. direct path via the emulator console `redir add tcp:<host>:<guest 9008>`
-      (bypasses adbd and the adb server; sender on the last hop is qemu slirp);
+   (bypasses adbd and the adb server; sender on the last hop is qemu slirp);
    c. diagnostic only: pad the reply with trailing spaces to the next multiple
-      of 1448 bytes before the newline and see whether the gap disappears
-      (confirms the last-partial-segment theory; never ship padding);
+   of 1448 bytes before the newline and see whether the gap disappears
+   (confirms the last-partial-segment theory; never ship padding);
    d. if (b) removes the gap, make it the default transport for emulators
-      when the console port is known (serial `emulator-NNNN` ⇒ console NNNN;
-      auth token from `~/.emulator_console_auth_token`), with `adb forward` as
-      the fallback for physical devices; log which path is in use in the
-      describe metadata (`transport: "redir" | "adb-forward"`).
+   when the console port is known (serial `emulator-NNNN` ⇒ console NNNN;
+   auth token from `~/.emulator_console_auth_token`), with `adb forward` as
+   the fallback for physical devices; log which path is in use in the
+   describe metadata (`transport: "redir" | "adb-forward"`).
    Report the four numbers with the run id.
 4. **Same-run target.** After 1–3: idle describe ON ≤ OFF in the same run
    (OFF now ≈52 after the adb-spawn removal). Report OFF-1/ON-uia/ON-scrcpy/
@@ -64,6 +63,7 @@ not bandwidth. Low-contention run 33781603888 had ON 63 vs OFF 72 (met).
    regress), and the fallback counter per block.
 
 ## Rules
+
 Same as 3i: numbers name statistic/block/N/run id; a target is not a result;
 never blend runs; OFF-1 vs OFF-2 drift stated per verb; adversarial review
 before the scoreboard. Append "v11 / phase 3j" to

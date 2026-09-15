@@ -57,7 +57,11 @@ const TAP_OUTCOME = {
 
 function makeGestureApi() {
   return {
-    getScreenSize: vi.fn(async () => ({ screenWidth: 1000, screenHeight: 2000, displayRotation: 0 })),
+    getScreenSize: vi.fn(async () => ({
+      screenWidth: 1000,
+      screenHeight: 2000,
+      displayRotation: 0,
+    })),
     getState: vi.fn(async () => ({ tree: [] })),
     tap: vi.fn(async () => ({ success: true })),
     tapWithOutcome: vi.fn(async () => ({ success: true, ...TAP_OUTCOME })),
@@ -131,7 +135,14 @@ describe("gesture-tap: outcome path gated on the screen graph", () => {
 });
 
 describe("gesture-swipe: outcome path gated on the screen graph", () => {
-  const base = { udid: ANDROID_SERIAL, fromX: 0.5, fromY: 0.7, toX: 0.5, toY: 0.2, durationMs: 160 };
+  const base = {
+    udid: ANDROID_SERIAL,
+    fromX: 0.5,
+    fromY: 0.7,
+    toX: 0.5,
+    toY: 0.2,
+    durationMs: 160,
+  };
 
   it("graph OFF (default): plain `swipe` RPC, no `outcome` key leaves the host", async () => {
     flagEnabledMock = GRAPH_OFF;

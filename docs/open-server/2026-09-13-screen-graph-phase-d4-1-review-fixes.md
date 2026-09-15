@@ -3,7 +3,7 @@
 Status: dispatched 2026-09-13. Supersedes the D.4 `## Result` and the D.4 report
 (`2026-09-13-screen-graph-phase-d4-results-ci.md`) until this ticket closes.
 Read first, in this order: `2026-09-13-review-d4-findings.md` (the verdict you are
-fixing — every D4-H*, D4-M*, D4-L* item is a work item here),
+fixing — every D4-H*, D4-M*, D4-L\* item is a work item here),
 `2026-09-05-screen-graph-phase-d4-symmetric-locate.md` (header + addendum + Result),
 `docs/open-server/README.md` "Rules that paid for themselves".
 
@@ -75,6 +75,7 @@ SAME branch in the SAME worktree `/Users/heicg/Desktop/projects/argent-fork-wt-d
    finding-by-finding "how addressed" table (D4-H1…D4-L5).
 
 ## Acceptance
+
 - Same settle policy and same parser tiers reachable in both renderings, proven by
   tests on verbatim artifact rows (no invented rows).
 - B1's two-level task outcome explained by the destination screen's quoted

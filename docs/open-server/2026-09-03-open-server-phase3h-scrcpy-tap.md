@@ -9,6 +9,7 @@ only: merge `feat/bench-ci` CI files into your branch (`feat/bench-ci-3h`)
 and run `bench-open-vs-proprietary.yml -f suite=latency`.
 
 ## Evidence (CI run 33736918373, adversarial review)
+
 - Device test "fast-inject tap navigates (scrcpy DOWN/UP + flushInput)":
   `pngDiffRatio == 0` (byte-identical screenshots), and "tap→describe sees
   destination": 0/20. Kotlin-path tap in the same session: PASS. Swipe and
@@ -18,6 +19,7 @@ and run `bench-open-vs-proprietary.yml -f suite=latency`.
   bench timed no-op injections (tap 51/52 "win" retracted).
 
 ## Hypotheses to test in order (scrcpy 3.3.1 control protocol, @yume-chan/scrcpy 2.3.x)
+
 1. `buttons`/`actionButton`: scrcpy's `Controller.injectTouch` on server
    3.x expects `actionButton`/`buttons` to carry `AMOTION_EVENT_BUTTON_PRIMARY`
    (=1) for a touch DOWN when `pointerId == -1` (mouse) — for a finger
@@ -37,13 +39,14 @@ and run `bench-open-vs-proprietary.yml -f suite=latency`.
    be rejected by `PositionMapper` only when displayData is set — should be
    null in control-only).
 5. Device-side: check `scrcpy` server logcat lines for `Ignore positional
-   event` / `Could not inject` during the failed tap in the run's emulator
+event` / `Could not inject` during the failed tap in the run's emulator
    log (artifact `logs/emulator.log` or the device test output).
-Fix the real cause; add a unit test that the tap message sequence matches
-scrcpy's own click sequence (DOWN pressure 1, buttons per pointer type, UP
-pressure 0, same pointerId).
+   Fix the real cause; add a unit test that the tap message sequence matches
+   scrcpy's own click sequence (DOWN pressure 1, buttons per pointer type, UP
+   pressure 0, same pointerId).
 
 ## Lead from the stopped attempt (2026-09-03)
+
 The agent was inspecting how `@yume-chan/scrcpy`'s `ScrcpyControlMessageWriter`
 buffers/flushes `injectTouch` messages when it was stopped. Hypothesis 0
 (check FIRST): the tap's DOWN and UP are written back-to-back into the
@@ -58,6 +61,7 @@ build validates them for DOWN (control-only 3.3.1 ignores them per the 3f
 review, but confirm for this event type).
 
 ## Bench hardening (required regardless of the fix)
+
 - `gesture-tap` and `tap+describe` in `bench-open-vs-proprietary.ts`: assert
   effect per iteration — read `getState().hash` (open) / describe text hash
   (OFF) before and after the tap on a navigating target; count `effect=0`
@@ -74,6 +78,7 @@ review, but confirm for this event type).
   (median == floor/ceiling); print the verdict.
 
 ## Output
+
 CI run green with device tests enforced; 4 blocks with per-block
 effect-check counts = 0; append "v9 / phase 3h" to
 `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results-v4.md`

@@ -37,16 +37,16 @@ below.
 
 ### Latency verbs (run 34870686468, N=20, p50/p95 ms)
 
-| verb | OFF-1 | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2 | measured OFF↔OFF floor |
-|---|---|---|---|---|---|---|
-| describe | 52/166 | 48/66 | 51/68 | 47/72 | 52/52 | 0 |
-| gesture-tap | 53/60 | 86/134 | **54/55** | 52/53 | 53/60 | **0** |
-| gesture-swipe | 305/322 | 306/345 | **263/285** | 258/259 | 303/315 | **2** |
-| gesture-pinch | 353/364 | 346/404 | **318/357** | 307/312 | 354/367 | **1** |
-| await-screen-idle | 499/505 | 304/307 | 305/310 | 304/308 | 498/506 | 1 |
-| await-ui-element | 76/84 | 41/46 | 41/43 | 42/47 | 76/80 | 0 |
-| paste | — | — | 370 | — | — | 89 |
-| tap+describe(settle:false) | — | 480/831 | **372/616** | 349/655 | — | **78** |
+| verb                       | OFF-1   | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2   | measured OFF↔OFF floor |
+| -------------------------- | ------- | --------------- | ---------------- | --------- | ------- | ---------------------- |
+| describe                   | 52/166  | 48/66           | 51/68            | 47/72     | 52/52   | 0                      |
+| gesture-tap                | 53/60   | 86/134          | **54/55**        | 52/53     | 53/60   | **0**                  |
+| gesture-swipe              | 305/322 | 306/345         | **263/285**      | 258/259   | 303/315 | **2**                  |
+| gesture-pinch              | 353/364 | 346/404         | **318/357**      | 307/312   | 354/367 | **1**                  |
+| await-screen-idle          | 499/505 | 304/307         | 305/310          | 304/308   | 498/506 | 1                      |
+| await-ui-element           | 76/84   | 41/46           | 41/43            | 42/47     | 76/80   | 0                      |
+| paste                      | —       | —               | 370              | —         | —       | 89                     |
+| tap+describe(settle:false) | —       | 480/831         | **372/616**      | 349/655   | —       | **78**                 |
 
 - **gesture-tap vs proprietary** — `input-manager` **54** vs proprietary 53/53 at a measured
   floor of **0**: Δ +1 ms, bootstrap 95 % CI on the p50 difference **[0, +1]** vs pooled OFF.
@@ -87,13 +87,13 @@ below.
   oracle + restore taps), identical across the two ON blocks. `ON-scrcpy` recorded 0 Kotlin
   injections, confirming it ran entirely on the scrcpy channel.
 - **`input-manager` availability** — the reflective `InputManager.injectInputEvent(InputEvent,
-  int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on the image with **no**
+int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on the image with **no**
   `hidden_api_policy` change and no `-e disable-hidden-api-checks`. On this image
   `InputManagerGlobal.getInstance()` is **denied** by hiddenapi policy; the pipe resolves
   through the legacy `InputManager.getInstance()` holder. Availability is a property of this
   image and this holder, not of Android devices in general.
 - **Forced-fallback (P9)** — `input-manager` forced unavailable on-device: `strategy ==
-  "unavailable"`, `fellBackTo == "uia-async"`, tap still navigated (+/−42 labels), next
+"unavailable"`, `fellBackTo == "uia-async"`, tap still navigated (+/−42 labels), next
   request resolved back to `input-manager`. Exercised on the `tap` RPC only (extended to
   swipe/gesture in run 34888577404 — see the 3n.2 row).
 - **Device-test outcome** — all six 3n strategy cases PASS with `ranAs` == requested; the
@@ -184,7 +184,6 @@ o200k_base, bootstrap B=10000 seed `0x5eedc0de`. Each row supersedes the run-7
 (33975063607) / D.2 (33964414774) row of the same name; both run ids are named. ON-scrcpy
 ran the **shipped default** pacing (`legacy`).
 
-
 > **3o update (run 34914983320, `feat/open-server-3o-fling-metric`, merged; pending
 > adversarial review, no number graded).** A new optical scroll metric (1-D normalized
 > cross-correlation on host screenshots, proven ±1 px on synthetic images, 0 refused of
@@ -200,23 +199,24 @@ ran the **shipped default** pacing (`legacy`).
 > the censored metric and are not carried. Fling remains OPEN for lack of a resolving
 > instrument, not for evidence of a loss. Next: larger N or a deterministic scroll
 > target instead of a momentum fling (not ticketed).
+
 ### Latency verbs (run 34813849446, N=20, p50/p95 ms)
 
-| verb | OFF-1 | ON-uia | ON-scrcpy | OFF-2 | drift floor | verdict (vs run 7 = 33975063607) |
-|---|---|---|---|---|---|---|
-| describe (idle) — **win → parity/loss** | 52/56 | 53/74 | 53/73 | 52/59 | 0 (p50) / 3 (p95) | **parity at p50 (+1 ms), 14–18 ms SLOWER at p95.** The run-7 ON describe advantage (39/36 vs 52) does not reproduce; 34806342684 reads the same (ON-uia 55/74). "Open never slower in 3 same-code runs" RETIRED |
-| gesture-tap (tap RPC only) | 53/60 | 78/116 | 51/53 | 54/56 | 1 | scrcpy **at parity** (−2…−3; harness judges ±2 ms); UiAutomation **+25 ms slower** (same +25 as run 7). Not like-for-like across ON variants (scrcpy defers the input drain) |
-| tap+describe (headline; ON settle:false) — **parity → loss** | 354/831 | 505/728 (n=19) | 529/1029 (n=19) | 297/654 | **57** | **Open LOSES: +150…+230 ms** on both ON variants. Run 7 had ON-scrcpy at parity (298/810 vs OFF 305/313); present in 34806342684 (ON-scrcpy 548) → screen-graph-d base, not 3k/3k.1 — cause not established |
-| gesture-swipe (250 ms) | 300/312 | 292/309 | 259/261 | 296/305 | 4 | **Open wins (scrcpy −37…−41)**; UiAutomation at parity. Reproduces run 7 (257) and 34806342684 (258) |
-| gesture-pinch | 358/373 | 346/372 | 307/311 | 346/365 | 12 | **Open wins (scrcpy −39…−51)**; UiAutomation at parity. scrcpy 307 in all three runs |
-| await-screen-idle — **magnitude changes** | 501/507 | 294/297 | 294/308 | 501/511 | 0 | **Open wins −207 ms** (vs −35 in run 7, ON 463/461): the base changed with the screen-graph-d tree (34806342684 reads 292/293), not with 3k.1; cause not established |
-| await-ui-element | 80/84 | 45/51 | 47/53 | 80/81 | 0 | **Open wins −33…−35 ms** (run 7: −41 on a 72 ms OFF baseline; both OFF and ON moved on this base, 34806342684 reads 43/43) |
-| paste | 804/1122 | 291/1086 | 385/990 | 662/1057 | **142** | Directional only: −277…−371 ms clears the floor; p95 does not separate |
-| first-attempt tap landing (landed/checked) | 40/40 | **59/59** | **59/59** | 40/40 | — | = 100 % on every block (each ON denominator is 59, not 60: one `uiautomator dump` parse error per ON block). No scrcpy async drop this run; run 7's 1/60 not reproduced |
-| tokens (describe, o200k) | 657 | 657 | 657 | 657 | — | identical; fidelity Jaccard **0.889** this run (live text churn: OFF "Storage / 36 % used - 5.08 GB free" vs ON "37 % used - 5.01 GB"), not the 1.0 of run 7 |
+| verb                                                         | OFF-1    | ON-uia         | ON-scrcpy       | OFF-2    | drift floor       | verdict (vs run 7 = 33975063607)                                                                                                                                                                                |
+| ------------------------------------------------------------ | -------- | -------------- | --------------- | -------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| describe (idle) — **win → parity/loss**                      | 52/56    | 53/74          | 53/73           | 52/59    | 0 (p50) / 3 (p95) | **parity at p50 (+1 ms), 14–18 ms SLOWER at p95.** The run-7 ON describe advantage (39/36 vs 52) does not reproduce; 34806342684 reads the same (ON-uia 55/74). "Open never slower in 3 same-code runs" RETIRED |
+| gesture-tap (tap RPC only)                                   | 53/60    | 78/116         | 51/53           | 54/56    | 1                 | scrcpy **at parity** (−2…−3; harness judges ±2 ms); UiAutomation **+25 ms slower** (same +25 as run 7). Not like-for-like across ON variants (scrcpy defers the input drain)                                    |
+| tap+describe (headline; ON settle:false) — **parity → loss** | 354/831  | 505/728 (n=19) | 529/1029 (n=19) | 297/654  | **57**            | **Open LOSES: +150…+230 ms** on both ON variants. Run 7 had ON-scrcpy at parity (298/810 vs OFF 305/313); present in 34806342684 (ON-scrcpy 548) → screen-graph-d base, not 3k/3k.1 — cause not established     |
+| gesture-swipe (250 ms)                                       | 300/312  | 292/309        | 259/261         | 296/305  | 4                 | **Open wins (scrcpy −37…−41)**; UiAutomation at parity. Reproduces run 7 (257) and 34806342684 (258)                                                                                                            |
+| gesture-pinch                                                | 358/373  | 346/372        | 307/311         | 346/365  | 12                | **Open wins (scrcpy −39…−51)**; UiAutomation at parity. scrcpy 307 in all three runs                                                                                                                            |
+| await-screen-idle — **magnitude changes**                    | 501/507  | 294/297        | 294/308         | 501/511  | 0                 | **Open wins −207 ms** (vs −35 in run 7, ON 463/461): the base changed with the screen-graph-d tree (34806342684 reads 292/293), not with 3k.1; cause not established                                            |
+| await-ui-element                                             | 80/84    | 45/51          | 47/53           | 80/81    | 0                 | **Open wins −33…−35 ms** (run 7: −41 on a 72 ms OFF baseline; both OFF and ON moved on this base, 34806342684 reads 43/43)                                                                                      |
+| paste                                                        | 804/1122 | 291/1086       | 385/990         | 662/1057 | **142**           | Directional only: −277…−371 ms clears the floor; p95 does not separate                                                                                                                                          |
+| first-attempt tap landing (landed/checked)                   | 40/40    | **59/59**      | **59/59**       | 40/40    | —                 | = 100 % on every block (each ON denominator is 59, not 60: one `uiautomator dump` parse error per ON block). No scrcpy async drop this run; run 7's 1/60 not reproduced                                         |
+| tokens (describe, o200k)                                     | 657      | 657            | 657             | 657      | —                 | identical; fidelity Jaccard **0.889** this run (live text churn: OFF "Storage / 36 % used - 5.08 GB free" vs ON "37 % used - 5.01 GB"), not the 1.0 of run 7                                                    |
 
-Footnote (latency block): *ON-scrcpy ran the shipped default pacing (`legacy`); run
-34800933407's ON-scrcpy verbs ran `drift`, which was then the default.*
+Footnote (latency block): _ON-scrcpy ran the shipped default pacing (`legacy`); run
+34800933407's ON-scrcpy verbs ran `drift`, which was then the default._
 
 ### Fling status row (run 34813849446) — supersedes the run-7 "open loses" fling row; status stays OPEN
 
@@ -245,9 +245,9 @@ Footnote (latency block): *ON-scrcpy ran the shipped default pacing (`legacy`); 
 > `2026-09-14-open-server-phase3k1-fling-status-open.md` — per-cell **two-sided**
 > `|scrcpy/uia − 1| ≤ 0.15` AND `|scrcpy/off − 1| ≤ 0.15`, **blocking, no whitelist**,
 > reference-bimodality exclusion keyed on the **reference arms only** (`q25(uia|off) ≤
-> 0.175 + eps`, never on scrcpy), power floor **n ≥ 10 on every arm**. Verdict on this run:
+0.175 + eps`, never on scrcpy), power floor **n ≥ 10 on every arm**. Verdict on this run:
 > `FAIL (per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist, over 4 informative
-> cell(s); 2 of 6 non-informative at the metric floor)` — offenders 150/0.3 (0.644/0.515),
+cell(s); 2 of 6 non-informative at the metric floor)` — offenders 150/0.3 (0.644/0.515),
 > 400/0.3 (0.675/0.699), 400/0.5 (0.813/0.717). **22 gate unit tests**
 > (`.github/bench-ci/gates.test.js`, `unit-tests.yml`; 21 in the reference run, +1 after
 > Part 1), of which the two fling regression tests run on **byte-identical copies of the
@@ -283,19 +283,19 @@ Footnote (latency block): *ON-scrcpy ran the shipped default pacing (`legacy`); 
 
 ### Screen-graph rows (run 34813849446; supersede the D.2 run-33964414774 table and restate the D.4.1 run-34801849653 table, naming all three run ids)
 
-| row | value |
-|---|---|
-| success, Wilson (n=100) + paired task-cluster bootstrap (n=20 tasks, B=10000, seed `0x5eedc0de`) | B1 100/100 [96,100] · B2 100/100 · O1 100/100 · O2 100/100 · O3 100/100 · O4 100/100 · O5 100/100 — **success is at parity across all seven configs; the differentiator is tokens, not success.** Replication: run 34801849653, same code, 99/100 on O2 and 100/100 elsewhere |
-| B1 caveat (D41-H2, sourced to its own runs) | B1 100/100 holds under a harness that performs an explicit post-action settle for every config and splits B1's collapsed `"<title> / <summary>"` describe labels into text/cd before resolution. The same B1 code without those two was 81/100 (run 34788497583) and 82/100 (run 34794414764); the D.4 82 % is not a capability gap |
-| tokens/agent-step, o200k p50, n=155 non-launch steps each | B1 657 · B2 651 · O1 179 · **O2 54** · O3 627 · O4 21 · O5 21. Launch-step observation excluded; each config observes its own sequence. Same-code run-to-run spread (D.4.1 runs): O1 138–179, O2 **54–68**, O3 598–627 |
-| RTT count/step, p50, same n | B1 2 · B2 2 · O1 2 · O2 2 · O3 2 · O4 1 · O5 1. Not a latency column; modelled as action + observation, excludes the settle RPC |
-| H1 tokens ratio | O1/B2 o200k p50 over all non-launch steps = 179/651 = **0.275×** (target ≤ 0.5×), PASS — identical to run 34801849653 |
-| H2 | p50 over all non-launch steps: B2 − O2 = 0, **FAIL (structural)**. Same-screen steps (n=50 per arm): p50 2 − 1 = 1, PASS; means B2 2.00 vs O2 **1.20** (34801849653: 1.22) |
-| H3 warm/cold | O4/O3 o200k p50 = 21/627 = **0.033×** (target ≤ 0.2×), PASS |
-| H4 non-inferiority, paired task-cluster bootstrap, B=10000, seed `0x5eedc0de`, n=100 | vs B1 (100/100) and vs B2 (100/100): none inferior — O1/O2/O3/O4/O5 all +0 [0,0]. Every arm is 100/100 here, so this is unremarkable by construction; the informative version is run 34801849653 (O2 −1 [−3,0]) |
-| invariants gate | Store invariants OK: 0 duplicate screens, 0 multi-destination edges (`sg-matrix.log:197`); `skippedNoIdHash` 0; three stores — `com.android.settings` **10 nodes / 9 edges, max out-degree 8, mean 0.9**, `com.android.chrome` 1/1, `com.google.android.settings.intelligence` 2/1. (Run 34801849653 built 11/10/9 for settings — the store shape is not run-stable) |
-| O5 routing coverage, n=60 known-target taps | **60/60 one-step routed** · 0 zero-step no-op · 0 mis-landed · **0 diverged** · 0 no-route · 0 nav fallbacks (run 34801849653: 59/60 with one hash-mismatch divergence) |
-| O5 measured RPCs per one-step routed tap, n=60 | min 7 / p50 7 / max 7 — a LOWER bound |
+| row                                                                                              | value                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| success, Wilson (n=100) + paired task-cluster bootstrap (n=20 tasks, B=10000, seed `0x5eedc0de`) | B1 100/100 [96,100] · B2 100/100 · O1 100/100 · O2 100/100 · O3 100/100 · O4 100/100 · O5 100/100 — **success is at parity across all seven configs; the differentiator is tokens, not success.** Replication: run 34801849653, same code, 99/100 on O2 and 100/100 elsewhere                                                                                        |
+| B1 caveat (D41-H2, sourced to its own runs)                                                      | B1 100/100 holds under a harness that performs an explicit post-action settle for every config and splits B1's collapsed `"<title> / <summary>"` describe labels into text/cd before resolution. The same B1 code without those two was 81/100 (run 34788497583) and 82/100 (run 34794414764); the D.4 82 % is not a capability gap                                  |
+| tokens/agent-step, o200k p50, n=155 non-launch steps each                                        | B1 657 · B2 651 · O1 179 · **O2 54** · O3 627 · O4 21 · O5 21. Launch-step observation excluded; each config observes its own sequence. Same-code run-to-run spread (D.4.1 runs): O1 138–179, O2 **54–68**, O3 598–627                                                                                                                                               |
+| RTT count/step, p50, same n                                                                      | B1 2 · B2 2 · O1 2 · O2 2 · O3 2 · O4 1 · O5 1. Not a latency column; modelled as action + observation, excludes the settle RPC                                                                                                                                                                                                                                      |
+| H1 tokens ratio                                                                                  | O1/B2 o200k p50 over all non-launch steps = 179/651 = **0.275×** (target ≤ 0.5×), PASS — identical to run 34801849653                                                                                                                                                                                                                                                |
+| H2                                                                                               | p50 over all non-launch steps: B2 − O2 = 0, **FAIL (structural)**. Same-screen steps (n=50 per arm): p50 2 − 1 = 1, PASS; means B2 2.00 vs O2 **1.20** (34801849653: 1.22)                                                                                                                                                                                           |
+| H3 warm/cold                                                                                     | O4/O3 o200k p50 = 21/627 = **0.033×** (target ≤ 0.2×), PASS                                                                                                                                                                                                                                                                                                          |
+| H4 non-inferiority, paired task-cluster bootstrap, B=10000, seed `0x5eedc0de`, n=100             | vs B1 (100/100) and vs B2 (100/100): none inferior — O1/O2/O3/O4/O5 all +0 [0,0]. Every arm is 100/100 here, so this is unremarkable by construction; the informative version is run 34801849653 (O2 −1 [−3,0])                                                                                                                                                      |
+| invariants gate                                                                                  | Store invariants OK: 0 duplicate screens, 0 multi-destination edges (`sg-matrix.log:197`); `skippedNoIdHash` 0; three stores — `com.android.settings` **10 nodes / 9 edges, max out-degree 8, mean 0.9**, `com.android.chrome` 1/1, `com.google.android.settings.intelligence` 2/1. (Run 34801849653 built 11/10/9 for settings — the store shape is not run-stable) |
+| O5 routing coverage, n=60 known-target taps                                                      | **60/60 one-step routed** · 0 zero-step no-op · 0 mis-landed · **0 diverged** · 0 no-route · 0 nav fallbacks (run 34801849653: 59/60 with one hash-mismatch divergence)                                                                                                                                                                                              |
+| O5 measured RPCs per one-step routed tap, n=60                                                   | min 7 / p50 7 / max 7 — a LOWER bound                                                                                                                                                                                                                                                                                                                                |
 
 **Screen-graph rows explicitly NOT allowed from this run:** the D41-H1 **post-action-wait
 symmetry** row ("equal within 5 %") — on run 34813849446 `actionRttMs + settleMs` p50
@@ -326,19 +326,19 @@ slower one, so the asymmetry works against ON). Compact payload (3j) DISABLED
 (not output-preserving, review-3j). Transport on ON blocks: `redir` decided on
 device via `ro.kernel.qemu`.
 
-| verb, p50/p95 ms | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 | drift floor (OFF-1 vs OFF-2 p50) | verdict |
-|---|---|---|---|---|---|---|
-| describe (idle) | 52/53 | 39/56 | 36/53 | 52/56 | 0 | open never slower in 3 same-code runs (run 5: 32/33 vs 52; run 6: 53/50 vs 52; run 7: 39/36 vs 52); 13–19 ms faster in 2 of 3; **magnitude not reproducible**; 3i target ON ≤ OFF+10 met in all three |
-| gesture-tap (tap RPC only) | 52/54 | 77/91 | 51/52 | 52/53 | 0 | scrcpy **at parity** (−1 ms does not clear the floor); UiAutomation +25 slower. Row not like-for-like across ON variants: the flushInput drain is inline on UiAutomation/proprietary, deferred on scrcpy |
-| tap+describe (headline like-for-like tap; ON settle:false) | 305/817 | 455/673 | 298/810 (n=19) | 313/958 | 8 | scrcpy at parity (−7…−15, at the floor); UiAutomation +142…+150 slower |
-| gesture-swipe (250 ms) | 290/308 | 296/359 | 257/262 | 294/303 | 4 | **open wins (scrcpy −33…−37)**; UiAutomation equal |
-| gesture-pinch | 338/349 | 337/358 | 307/309 | 344/362 | 6 | **open wins (scrcpy −31…−37)**; UiAutomation equal |
-| await-screen-idle | 498/504 | 463/472 | 461/474 | 497/541 | 1 | **open wins (−35)** both ON variants |
-| await-ui-element | 72/76 | 32/38 | 31/36 | 73/77 | 1 | **open wins (−41)**, strongest ON win |
-| paste | 463/1217 | 327/892 | 289/867 | 573/1104 | 110 | directional only (−174…−284 clears a 110 ms floor barely) |
-| first-attempt tap landing (landed/checked) | 40/40 | 60/60 | 59/60 (98.3 %) | 40/40 | — | real scrcpy async drop ≈1.7 % (1/60 in runs 6 and 7); undiagnosed per iteration (no per-miss log yet) |
-| tokens (describe, o200k) | 657 | 657 | 657 | 657 | — | identical; fidelity Jaccard 1.0 |
-| fling fidelity (scroll distance ratio vs proprietary, 400 ms cells) | ref | ~1.0 | 0.64–0.66 (400/0.3), 0.57–0.58 (400/0.5) | ref | stable across runs 5 and 7 | **open loses**: scrcpy under-scrolls 35–42 % at long durations (inferred: host paces one injectTouch per frame, 26 frames at 400 ms). Fling parity gate red — the only red in run 7. Ticket 3k |
+| verb, p50/p95 ms                                                    | OFF-1    | ON-uiautomation | ON-scrcpy                                | OFF-2    | drift floor (OFF-1 vs OFF-2 p50) | verdict                                                                                                                                                                                                  |
+| ------------------------------------------------------------------- | -------- | --------------- | ---------------------------------------- | -------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| describe (idle)                                                     | 52/53    | 39/56           | 36/53                                    | 52/56    | 0                                | open never slower in 3 same-code runs (run 5: 32/33 vs 52; run 6: 53/50 vs 52; run 7: 39/36 vs 52); 13–19 ms faster in 2 of 3; **magnitude not reproducible**; 3i target ON ≤ OFF+10 met in all three    |
+| gesture-tap (tap RPC only)                                          | 52/54    | 77/91           | 51/52                                    | 52/53    | 0                                | scrcpy **at parity** (−1 ms does not clear the floor); UiAutomation +25 slower. Row not like-for-like across ON variants: the flushInput drain is inline on UiAutomation/proprietary, deferred on scrcpy |
+| tap+describe (headline like-for-like tap; ON settle:false)          | 305/817  | 455/673         | 298/810 (n=19)                           | 313/958  | 8                                | scrcpy at parity (−7…−15, at the floor); UiAutomation +142…+150 slower                                                                                                                                   |
+| gesture-swipe (250 ms)                                              | 290/308  | 296/359         | 257/262                                  | 294/303  | 4                                | **open wins (scrcpy −33…−37)**; UiAutomation equal                                                                                                                                                       |
+| gesture-pinch                                                       | 338/349  | 337/358         | 307/309                                  | 344/362  | 6                                | **open wins (scrcpy −31…−37)**; UiAutomation equal                                                                                                                                                       |
+| await-screen-idle                                                   | 498/504  | 463/472         | 461/474                                  | 497/541  | 1                                | **open wins (−35)** both ON variants                                                                                                                                                                     |
+| await-ui-element                                                    | 72/76    | 32/38           | 31/36                                    | 73/77    | 1                                | **open wins (−41)**, strongest ON win                                                                                                                                                                    |
+| paste                                                               | 463/1217 | 327/892         | 289/867                                  | 573/1104 | 110                              | directional only (−174…−284 clears a 110 ms floor barely)                                                                                                                                                |
+| first-attempt tap landing (landed/checked)                          | 40/40    | 60/60           | 59/60 (98.3 %)                           | 40/40    | —                                | real scrcpy async drop ≈1.7 % (1/60 in runs 6 and 7); undiagnosed per iteration (no per-miss log yet)                                                                                                    |
+| tokens (describe, o200k)                                            | 657      | 657             | 657                                      | 657      | —                                | identical; fidelity Jaccard 1.0                                                                                                                                                                          |
+| fling fidelity (scroll distance ratio vs proprietary, 400 ms cells) | ref      | ~1.0            | 0.64–0.66 (400/0.3), 0.57–0.58 (400/0.5) | ref      | stable across runs 5 and 7       | **open loses**: scrcpy under-scrolls 35–42 % at long durations (inferred: host paces one injectTouch per frame, 26 frames at 400 ms). Fling parity gate red — the only red in run 7. Ticket 3k           |
 
 Superseded within the same code line: run 5 (33963464784, fling single-sample)
 and run 6 (33969204089, strict landing gate) — per-block tables in the results
@@ -353,15 +353,15 @@ Source: `2026-09-03-screen-graph-results-ci.md` (D.2), reviews `…review-d1…`
 one oracle for every config, exclusions caused by a config's own action count as
 failures, launch step excluded from tokens (n=155 steps/config), o200k p50.
 
-| config | success (N=100) | cluster-bootstrap 95 % (n=20 tasks) | tokens/step p50 | RTT/step |
-|---|---|---|---|---|
-| B1 proprietary describe + tap | 98 | [94,100] | 657 | 2 |
-| B2 open full describe | 99 | [97,100] | 627 | 2 |
-| O1 open + query/diff | 99 | [97,100] | 179 (mean-ratio 0.220×; p50 bimodal) | 2 |
-| O2 open + compact tier | 100 | [97,100] | 54 | 2 |
-| O3 open + graph, graph-blind | 100 | [97,100] | 598 | 2 |
-| O4 open + graph, warm | 99 | [95,100] | 22 (tracks graph out-degree; ≤6-affordance summary) | 1 |
-| O5 open + navigate-to | 99 | [97,100] | 28 | measured ≥ 7 RPCs per routed tap (lower bound) |
+| config                        | success (N=100) | cluster-bootstrap 95 % (n=20 tasks) | tokens/step p50                                     | RTT/step                                       |
+| ----------------------------- | --------------- | ----------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| B1 proprietary describe + tap | 98              | [94,100]                            | 657                                                 | 2                                              |
+| B2 open full describe         | 99              | [97,100]                            | 627                                                 | 2                                              |
+| O1 open + query/diff          | 99              | [97,100]                            | 179 (mean-ratio 0.220×; p50 bimodal)                | 2                                              |
+| O2 open + compact tier        | 100             | [97,100]                            | 54                                                  | 2                                              |
+| O3 open + graph, graph-blind  | 100             | [97,100]                            | 598                                                 | 2                                              |
+| O4 open + graph, warm         | 99              | [95,100]                            | 22 (tracks graph out-degree; ≤6-affordance summary) | 1                                              |
+| O5 open + navigate-to         | 99              | [97,100]                            | 28                                                  | measured ≥ 7 RPCs per routed tap (lower bound) |
 
 H1 PASS (O1/B2 0.285× p50, 0.220× mean); H2 PASS on same-screen steps (1 RTT
 removed), FAIL over all steps; H3 PASS (0.037×, graph-density dependent); H4:
@@ -397,6 +397,7 @@ parity/loss and tap+describe is an open loss on the consolidated base (see "Goal
 status" and the run-34813849446 latency table above).
 
 ## Retractions added 2026-09-14 (run 34870686468 / 34888577404, phase 3n.1 flip + 3n.2 scrcpy removal)
+
 - "open wins swipe/pinch **via scrcpy**" — superseded: the shipped default is now
   `input-manager` (Kotlin on-device), and scrcpy was **removed** in 3n.2. The swipe/pinch
   wins are `input-manager`'s: swipe −41 / pinch −35.5 (34870686468), swipe −30.5 / pinch
@@ -415,12 +416,14 @@ status" and the run-34813849446 latency table above).
   / `otherMs` are measured and the stage clocks are unified on `SystemClock.uptimeMillis()`.
 
 ## Retractions added 2026-09-14 (run 34813849446, review 3k1)
+
 - "open describe idle never slower in 3 same-code runs / faster in 2 of 3" — falsified on run 34813849446: describe is at parity at p50 and **14–18 ms slower at p95**; the run-7 ON win (39/36 vs 52) did not reproduce (34806342684 reads the same). Direction-only claim retired.
 - "tap+describe(scrcpy) at parity" — on run 34813849446 the headline `tap+describe(settle:false)` is an **open loss** (ON +150…+230 ms vs OFF at a 57 ms floor); reproduces in 34806342684, so it is the screen-graph-d base, not a 3k/3k.1 regression, cause not established.
 - "fling fixed / resolved" (phase 3k) — retracted already; on run 34813849446 the deficit is **real and significant in 3 of 4 informative cells** in BOTH pacing arms, the paired legacy→drift test is null (p ≥ 0.13), and the gate is RED — status OPEN.
 - "the 400 ms deficit is not present in run 34800933407" and the 8-frame / VelocityTracker frame-count mechanism as a finding — the deficit WAS present in 34800933407 (p=0.001), and the 8-frame explanation is ruled out (uia sends the same 8 frames, `uia/off` 1.037 at 400/0.3).
 
 ## Retractions added 2026-09-05
+
 - 3h "DOWN-MOVE-UP fixes the scrcpy tap" — the bench oracle was the bug; MOVE reverted and now forbidden by the parity gate.
 - "open describe faster, 36/53 vs 52/56" as a magnitude — not reproducible across runs 5/6/7 (direction only).
 - "ON-scrcpy beats OFF on tap" — at parity (0 ms drift floor).
@@ -444,42 +447,43 @@ OFF-1/OFF-2 drift. The screen-graph section does NOT share that methodology:
 
 ## Per-verb latency, p50 ms
 
-| verb | proprietary (OFF) | open (ON) | status | source |
-|---|---|---|---|---|
-| gesture-pinch (300 ms) | 355 | 329 | open faster (0.93×) | v4 |
-| gesture-swipe (250 ms) | 298 | 278 | open faster | v4 |
-| await-screen-idle | 515 | 478 | open faster at p50 (p95 524 vs 526, equal) | v4 |
-| await-ui-element | 76 | 76 | equal | v4 |
-| describe (idle) | 77 (v4) / 77–78 (v6) | 80 (v4) / 77 (v6) | equal; tokens identical 657/657 (o200k) | v4/v6 |
-| paste | 78–101 | 63 | open faster (clipboard-unsupported cache) | v6 |
-| gesture-tap | 53 | 61 | open +8 ms (UiAutomation inject; scrcpy path pending) | v6 |
-| tap+describe, immediate read | ~138 (v5: 129/148) → 247/802 (v6, bimodal) | 286 (v5) → 185 (v6) | v5 measured 2.07× slower; v6 open is faster than both OFF readings but OFF is bimodal so no ratio is claimed; cause of 286→185 unattributed | v5/v6 |
-| tap+describe, settled read | proprietary has no settled mode | 684 → 833 (regressed, unexplained) | open-only feature | v5/v6 |
+| verb                         | proprietary (OFF)                          | open (ON)                          | status                                                                                                                                      | source |
+| ---------------------------- | ------------------------------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| gesture-pinch (300 ms)       | 355                                        | 329                                | open faster (0.93×)                                                                                                                         | v4     |
+| gesture-swipe (250 ms)       | 298                                        | 278                                | open faster                                                                                                                                 | v4     |
+| await-screen-idle            | 515                                        | 478                                | open faster at p50 (p95 524 vs 526, equal)                                                                                                  | v4     |
+| await-ui-element             | 76                                         | 76                                 | equal                                                                                                                                       | v4     |
+| describe (idle)              | 77 (v4) / 77–78 (v6)                       | 80 (v4) / 77 (v6)                  | equal; tokens identical 657/657 (o200k)                                                                                                     | v4/v6  |
+| paste                        | 78–101                                     | 63                                 | open faster (clipboard-unsupported cache)                                                                                                   | v6     |
+| gesture-tap                  | 53                                         | 61                                 | open +8 ms (UiAutomation inject; scrcpy path pending)                                                                                       | v6     |
+| tap+describe, immediate read | ~138 (v5: 129/148) → 247/802 (v6, bimodal) | 286 (v5) → 185 (v6)                | v5 measured 2.07× slower; v6 open is faster than both OFF readings but OFF is bimodal so no ratio is claimed; cause of 286→185 unattributed | v5/v6  |
+| tap+describe, settled read   | proprietary has no settled mode            | 684 → 833 (regressed, unexplained) | open-only feature                                                                                                                           | v5/v6  |
 
 ## Correctness / footprint
 
-| dimension | proprietary | open |
-|---|---|---|
-| freshness of describe right after a navigating tap | 15–25 % (v5), 45–55 % (v6) | immediate 0 %; settled 95–100 % |
-| fling fidelity vs proprietary | — | 0.925 / 0.902 / 0.889 (±15 % pass; 3 of 6 cells reliable, 3 at the survivor-median floor) — v3 |
-| host process per device | ~62 MB simulator-server | none (server on device) |
-| closed binaries required | yes (`bin/simulator-server`, ADT apk, dylibs — LICENSE "proprietary binary components") | no |
-| physical Android input | Android Studio's Apache-2.0 screen-sharing-agent (per 3f ticket; not benched) | UiAutomation today; scrcpy backend built, unbenched (v7) |
+| dimension                                          | proprietary                                                                             | open                                                                                           |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| freshness of describe right after a navigating tap | 15–25 % (v5), 45–55 % (v6)                                                              | immediate 0 %; settled 95–100 %                                                                |
+| fling fidelity vs proprietary                      | —                                                                                       | 0.925 / 0.902 / 0.889 (±15 % pass; 3 of 6 cells reliable, 3 at the survivor-median floor) — v3 |
+| host process per device                            | ~62 MB simulator-server                                                                 | none (server on device)                                                                        |
+| closed binaries required                           | yes (`bin/simulator-server`, ADT apk, dylibs — LICENSE "proprietary binary components") | no                                                                                             |
+| physical Android input                             | Android Studio's Apache-2.0 screen-sharing-agent (per 3f ticket; not benched)           | UiAutomation today; scrcpy backend built, unbenched (v7)                                       |
 
 ## Structural (screen-graph, Phase C pass 1 — tokens per agent step)
 
-| config | tokens/step p50 | RTT/step |
-|---|---|---|
-| open, full describe (B2) | 629 | 2 |
-| open + query/diff (O1) | 67 (0.107×) | 2 |
-| open + screen graph, cold (O3) | 629 | 2 |
-| open + screen graph, warm (O4) | 40 (0.064×) | 1 |
+| config                         | tokens/step p50 | RTT/step |
+| ------------------------------ | --------------- | -------- |
+| open, full describe (B2)       | 629             | 2        |
+| open + query/diff (O1)         | 67 (0.107×)     | 2        |
+| open + screen graph, cold (O3) | 629             | 2        |
+| open + screen graph, warm (O4) | 40 (0.064×)     | 1        |
 
 H1 PASS, H3 PASS, H2 FAIL on navigation-only tasks (re-stated over
 same-screen steps in C.1), H4 NOT MEASURED (baseline oracle invalid; C.1).
 No proprietary equivalent of O1/O4 was benched (B1/B2 are the only proprietary-path configs, and B1 is invalid).
 
 ## Retractions so far
+
 - v2 "open wins tap/pinch" — hold/duration artifacts (retracted in v3).
 - v6 "R2 window prune explains tap+describe gain" — prune never fired.
 - CI run 4 "scrcpy tap 51 vs 52 beats proprietary" — tap never landed (0/20 effect); retracted 2026-09-03.
@@ -491,18 +495,18 @@ NOT comparable to the local arm64/HVF numbers above; only OFF vs ON within
 this run is like-for-like. Single run. Adversarial review (2026-09-03)
 findings applied below.
 
-| verb | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 | status |
-|---|---|---|---|---|---|
-| gesture-swipe | 306/317 | 288/326 | **258/259** | 297/303 | open wins (scrcpy) |
-| gesture-pinch | 346/363 | 345/395 | **307/310** | 348/357 | open wins (scrcpy) |
-| paste | 494/1241 | **288/756** | 317/760 | 434/1109 | open wins — open-server property (one typeText RPC vs clipboard + `adb shell input keyevent` spawn); ASCII-only, emoji falls back |
-| cold start median (N=3) | 774 | 360 | **386** | 767 | open wins — open-server property (backend restart → first describe; no install either side; scrcpy not included) |
-| await-screen-idle | 490/529 | 499/537 | 498/527 | 490/532 | equal |
-| await-ui-element | 72/76 | 76/76 | 72/76 | 72/76 | equal |
-| describe (idle) | 72/76 | 108/132 | 112/132 | 68/72 | **open loses**; server stages ≈ 22 ms, ~90 ms is host/transport in the open path |
-| gesture-tap | 52/53 | 78/148 | 51/52 | 52/53 | **NOT REPORTED**: ON-scrcpy tap failed its on-device effect check in the same run (0/20 navigations, zero-pixel diff; hidden by `continue-on-error`) — timed injections that did not land |
-| tap+describe | 568/1006 | 595/661 (settle:false) | 432/810 (settle:false) | 565/1151 | **NOT REPORTED** for ON-scrcpy (same reason); ON-uiautomation 595 vs OFF 565–568 ≈ equal |
-| tokens (describe) | 657 | 657 | 657 | 657 | identical |
+| verb                    | OFF-1    | ON-uiautomation        | ON-scrcpy              | OFF-2    | status                                                                                                                                                                                    |
+| ----------------------- | -------- | ---------------------- | ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| gesture-swipe           | 306/317  | 288/326                | **258/259**            | 297/303  | open wins (scrcpy)                                                                                                                                                                        |
+| gesture-pinch           | 346/363  | 345/395                | **307/310**            | 348/357  | open wins (scrcpy)                                                                                                                                                                        |
+| paste                   | 494/1241 | **288/756**            | 317/760                | 434/1109 | open wins — open-server property (one typeText RPC vs clipboard + `adb shell input keyevent` spawn); ASCII-only, emoji falls back                                                         |
+| cold start median (N=3) | 774      | 360                    | **386**                | 767      | open wins — open-server property (backend restart → first describe; no install either side; scrcpy not included)                                                                          |
+| await-screen-idle       | 490/529  | 499/537                | 498/527                | 490/532  | equal                                                                                                                                                                                     |
+| await-ui-element        | 72/76    | 76/76                  | 72/76                  | 72/76    | equal                                                                                                                                                                                     |
+| describe (idle)         | 72/76    | 108/132                | 112/132                | 68/72    | **open loses**; server stages ≈ 22 ms, ~90 ms is host/transport in the open path                                                                                                          |
+| gesture-tap             | 52/53    | 78/148                 | 51/52                  | 52/53    | **NOT REPORTED**: ON-scrcpy tap failed its on-device effect check in the same run (0/20 navigations, zero-pixel diff; hidden by `continue-on-error`) — timed injections that did not land |
+| tap+describe            | 568/1006 | 595/661 (settle:false) | 432/810 (settle:false) | 565/1151 | **NOT REPORTED** for ON-scrcpy (same reason); ON-uiautomation 595 vs OFF 565–568 ≈ equal                                                                                                  |
+| tokens (describe)       | 657      | 657                    | 657                    | 657      | identical                                                                                                                                                                                 |
 
 Review caveats: `fastInjectFallbacks == 0` proves no exception, not
 delivery; the gesture-parity gate compares a shared constant (cannot detect
@@ -513,11 +517,11 @@ artifact (dot-dir excluded; fixed later).
 
 ### 3g-b (run 33738386658, same CI environment, ON-uiautomation only — ON-scrcpy void, tap did not land)
 
-| stage / verb | before (33729614337) | after (3g-b, vc22) | OFF |
-|---|---|---|---|
-| rootMs after tap p50/p95 | 210/285 | **140/221** | n/a |
-| describe idle p50 | 132 | **108** | 72 |
-| tap+describe settle:false p50/p95 | — | 662/757 | 515/1155 (no settle variant) |
+| stage / verb                      | before (33729614337) | after (3g-b, vc22) | OFF                          |
+| --------------------------------- | -------------------- | ------------------ | ---------------------------- |
+| rootMs after tap p50/p95          | 210/285              | **140/221**        | n/a                          |
+| describe idle p50                 | 132                  | **108**            | 72                           |
+| tap+describe settle:false p50/p95 | —                    | 662/757            | 515/1155 (no settle variant) |
 
 Residual persists: `AccessibilityWindowInfo.getRoot()` still blocks ~140 ms
 mid-transition; idle describe still 36 ms over OFF, of which server stages
@@ -525,14 +529,14 @@ are ≈22 ms total → the remaining ~90 ms is host/transport (phase 3i).
 
 ### CI run 5 (33743850196, same environment, complete artifacts) — confirms run 4
 
-| verb p50/p95 | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 |
-|---|---|---|---|---|
-| gesture-swipe | 298/314 | 303/353 | **258/260** | 300/310 |
-| gesture-pinch | 320/331 | 327/335 | **307/307** | 319/337 |
-| paste | 576/950 | **395/807** | 358/806 | 636/1318 |
-| describe (idle) | 76/80 | 132/165 | 136/160 | 80/82 |
-| gesture-tap | 53/55 | 81/105 | 52/54 (VOID: device test "fast-inject tap navigates" FAILED again) | 53/54 |
-| tap+describe settle:false | 720/1116 (as-is) | 690/905 | 636/923 (VOID) | 532/1090 (as-is) |
+| verb p50/p95              | OFF-1            | ON-uiautomation | ON-scrcpy                                                          | OFF-2            |
+| ------------------------- | ---------------- | --------------- | ------------------------------------------------------------------ | ---------------- |
+| gesture-swipe             | 298/314          | 303/353         | **258/260**                                                        | 300/310          |
+| gesture-pinch             | 320/331          | 327/335         | **307/307**                                                        | 319/337          |
+| paste                     | 576/950          | **395/807**     | 358/806                                                            | 636/1318         |
+| describe (idle)           | 76/80            | 132/165         | 136/160                                                            | 80/82            |
+| gesture-tap               | 53/55            | 81/105          | 52/54 (VOID: device test "fast-inject tap navigates" FAILED again) | 53/54            |
+| tap+describe settle:false | 720/1116 (as-is) | 690/905         | 636/923 (VOID)                                                     | 532/1090 (as-is) |
 
 Screen-graph C.2 CI run (33742435496): the needle fix did NOT land — pre-flight
 still lists the same 14 PROBLEM needles and the matrix ran anyway; success
@@ -545,6 +549,7 @@ RTT/step removed)**, H2 FAIL over all steps. The proprietary path has no
 O1/O2/O4 equivalent.
 
 ## Pending (blocked on host memory, then AVD queue C.1 → 3f → 3g)
+
 - 3f bench: OFF / ON-uiautomation / ON-scrcpy — tap tail and per-event
   inject cost with the scrcpy backend.
 - 3g: stage timings inside describe during transitions; popup/dialog

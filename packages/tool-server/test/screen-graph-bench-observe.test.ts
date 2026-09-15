@@ -116,7 +116,8 @@ describe("parseDescribeLocate — B1 live describe+tap locate (C.4 work item A)"
   });
 
   it("finds a row that carries a subtitle value (exact label match)", () => {
-    const display = '  AXButton "Display" "Dark theme, font size, brightness" id="title" [clickable]  (0.000, 0.400, 1.000, 0.070)';
+    const display =
+      '  AXButton "Display" "Dark theme, font size, brightness" id="title" [clickable]  (0.000, 0.400, 1.000, 0.070)';
     const loc = parseDescribeLocate(display, { text: "Display" });
     expect(loc.found).toBe(true);
     expect(loc.yNorm).toBeCloseTo(0.435, 3);

@@ -26,7 +26,12 @@ import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
 const ANDROID_SERIAL = "emulator-5554";
 
 const CONTENT = [
-  { index: 1, className: "android.widget.Button", text: "OK", bounds: { x1: 0, y1: 0, x2: 100, y2: 50 } },
+  {
+    index: 1,
+    className: "android.widget.Button",
+    text: "OK",
+    bounds: { x1: 0, y1: 0, x2: 100, y2: 50 },
+  },
 ];
 const INFO = {
   screenWidth: 1000,
@@ -76,10 +81,11 @@ describe("await-screen-idle → open-device-server awaitChange (Screen-graph Pha
     };
     const tool = makeTool(openApi);
 
-    const result = await tool.execute(
-      {},
-      { udid: ANDROID_SERIAL, timeoutMs: 2000, minStableMs: 100 } as never
-    );
+    const result = await tool.execute({}, {
+      udid: ANDROID_SERIAL,
+      timeoutMs: 2000,
+      minStableMs: 100,
+    } as never);
 
     expect(result.settled).toBe(true);
     expect(openApi.awaitChange).toHaveBeenCalledTimes(1);
@@ -103,10 +109,11 @@ describe("await-screen-idle → open-device-server awaitChange (Screen-graph Pha
     };
     const tool = makeTool(openApi);
 
-    const result = await tool.execute(
-      {},
-      { udid: ANDROID_SERIAL, timeoutMs: 2000, minStableMs: 50 } as never
-    );
+    const result = await tool.execute({}, {
+      udid: ANDROID_SERIAL,
+      timeoutMs: 2000,
+      minStableMs: 50,
+    } as never);
 
     expect(result.settled).toBe(true);
     expect(openApi.awaitChange).toHaveBeenCalledTimes(2);
@@ -126,10 +133,11 @@ describe("await-screen-idle → open-device-server awaitChange (Screen-graph Pha
     };
     const tool = makeTool(openApi);
 
-    const result = await tool.execute(
-      {},
-      { udid: ANDROID_SERIAL, timeoutMs: 300, minStableMs: 50 } as never
-    );
+    const result = await tool.execute({}, {
+      udid: ANDROID_SERIAL,
+      timeoutMs: 300,
+      minStableMs: 50,
+    } as never);
 
     expect(result.settled).toBe(false);
   });

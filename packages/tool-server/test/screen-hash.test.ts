@@ -26,12 +26,20 @@ describe("screen-hash flags", () => {
   });
 
   it("treats known scroll containers and the scrollable flag as recyclers", () => {
-    expect(isScrollingContainer(node({ class: "RecyclerView", bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))).toBe(true);
-    expect(isScrollingContainer(node({ class: "ViewPager2", bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))).toBe(true);
     expect(
-      isScrollingContainer(node({ class: "FrameLayout", scrollable: true, bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))
+      isScrollingContainer(node({ class: "RecyclerView", bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))
     ).toBe(true);
-    expect(isScrollingContainer(node({ class: "FrameLayout", bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))).toBe(false);
+    expect(
+      isScrollingContainer(node({ class: "ViewPager2", bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))
+    ).toBe(true);
+    expect(
+      isScrollingContainer(
+        node({ class: "FrameLayout", scrollable: true, bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } })
+      )
+    ).toBe(true);
+    expect(
+      isScrollingContainer(node({ class: "FrameLayout", bounds: { x1: 0, y1: 0, x2: 1, y2: 1 } }))
+    ).toBe(false);
   });
 });
 
@@ -42,7 +50,14 @@ describe("structuralHash / stateHash", () => {
       bounds: { x1: 0, y1: 0, x2: 1080, y2: 1920 },
       children: [
         node({ class: "TextView", text: "Wi-Fi", bounds: { x1: 0, y1: 100, x2: 500, y2: 200 } }),
-        node({ class: "Switch", id: "toggle", checkable: true, clickable: true, enabled: true, bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 } }),
+        node({
+          class: "Switch",
+          id: "toggle",
+          checkable: true,
+          clickable: true,
+          enabled: true,
+          bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 },
+        }),
       ],
     }),
   ];
@@ -63,8 +78,19 @@ describe("structuralHash / stateHash", () => {
         class: "FrameLayout",
         bounds: { x1: 0, y1: 0, x2: 1080, y2: 1920 },
         children: [
-          node({ class: "TextView", text: "Bluetooth", bounds: { x1: 0, y1: 100, x2: 500, y2: 200 } }),
-          node({ class: "Switch", id: "toggle", checkable: true, clickable: true, enabled: true, bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 } }),
+          node({
+            class: "TextView",
+            text: "Bluetooth",
+            bounds: { x1: 0, y1: 100, x2: 500, y2: 200 },
+          }),
+          node({
+            class: "Switch",
+            id: "toggle",
+            checkable: true,
+            clickable: true,
+            enabled: true,
+            bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 },
+          }),
         ],
       }),
     ];
@@ -80,7 +106,14 @@ describe("structuralHash / stateHash", () => {
         bounds: { x1: 0, y1: 0, x2: 1080, y2: 1920 },
         children: [
           node({ class: "TextView", text: "Wi-Fi", bounds: { x1: 0, y1: 100, x2: 500, y2: 200 } }),
-          node({ class: "Switch", id: "toggle", checkable: true, clickable: false, enabled: true, bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 } }),
+          node({
+            class: "Switch",
+            id: "toggle",
+            checkable: true,
+            clickable: false,
+            enabled: true,
+            bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 },
+          }),
         ],
       }),
     ];
@@ -94,7 +127,14 @@ describe("structuralHash / stateHash", () => {
         bounds: { x1: 0, y1: 0, x2: 1080, y2: 1920 },
         children: [
           node({ class: "TextView", text: "Wi-Fi", bounds: { x1: 2, y1: 101, x2: 501, y2: 201 } }),
-          node({ class: "Switch", id: "toggle", checkable: true, clickable: true, enabled: true, bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 } }),
+          node({
+            class: "Switch",
+            id: "toggle",
+            checkable: true,
+            clickable: true,
+            enabled: true,
+            bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 },
+          }),
         ],
       }),
     ];
@@ -109,7 +149,14 @@ describe("structuralHash / stateHash", () => {
         bounds: { x1: 0, y1: 0, x2: 1080, y2: 1920 },
         children: [
           node({ class: "TextView", text: "Wi-Fi", bounds: { x1: 0, y1: 500, x2: 500, y2: 600 } }),
-          node({ class: "Switch", id: "toggle", checkable: true, clickable: true, enabled: true, bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 } }),
+          node({
+            class: "Switch",
+            id: "toggle",
+            checkable: true,
+            clickable: true,
+            enabled: true,
+            bounds: { x1: 900, y1: 100, x2: 1000, y2: 200 },
+          }),
         ],
       }),
     ];
@@ -140,7 +187,13 @@ describe("structuralHash recycler rule", () => {
         node({
           class: i === 0 ? firstClass : "LinearLayout",
           bounds: { x1: 0, y1: i * 100, x2: 1080, y2: (i + 1) * 100 },
-          children: [node({ class: "TextView", text: `item ${i}`, bounds: { x1: 0, y1: i * 100, x2: 1080, y2: (i + 1) * 100 } })],
+          children: [
+            node({
+              class: "TextView",
+              text: `item ${i}`,
+              bounds: { x1: 0, y1: i * 100, x2: 1080, y2: (i + 1) * 100 },
+            }),
+          ],
         })
       ),
     }),
@@ -155,6 +208,8 @@ describe("structuralHash recycler rule", () => {
   });
 
   it("H changes when the first child's class differs", () => {
-    expect(structuralHash(list(5, "CardView"), W, H)).not.toBe(structuralHash(list(5, "LinearLayout"), W, H));
+    expect(structuralHash(list(5, "CardView"), W, H)).not.toBe(
+      structuralHash(list(5, "LinearLayout"), W, H)
+    );
   });
 });

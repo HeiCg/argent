@@ -81,12 +81,14 @@ export function observeAfterAction(config: BenchConfigId, ctx: StepContext = {})
       return { observations: ["query"], useNavigate: false };
     case "O2": {
       // The outcome is the observation. Only a screen change costs a read.
-      if (ctx.outcome && !ctx.outcome.changed) return { observations: ["none"], useNavigate: false };
+      if (ctx.outcome && !ctx.outcome.changed)
+        return { observations: ["none"], useNavigate: false };
       return { observations: ["query"], useNavigate: false };
     }
     case "O3":
     case "O4": {
-      if (ctx.outcome && !ctx.outcome.changed) return { observations: ["none"], useNavigate: false };
+      if (ctx.outcome && !ctx.outcome.changed)
+        return { observations: ["none"], useNavigate: false };
       if (ctx.knownScreen) return { observations: ["graph-lookup"], useNavigate: false };
       // Cold path: render the new screen once to insert it into the graph.
       return { observations: ["describe"], useNavigate: false };
@@ -96,7 +98,8 @@ export function observeAfterAction(config: BenchConfigId, ctx: StepContext = {})
         // Plan + execute the route; verification of arrival is a graph lookup.
         return { observations: ["graph-lookup"], useNavigate: true };
       }
-      if (ctx.outcome && !ctx.outcome.changed) return { observations: ["none"], useNavigate: false };
+      if (ctx.outcome && !ctx.outcome.changed)
+        return { observations: ["none"], useNavigate: false };
       if (ctx.knownScreen) return { observations: ["graph-lookup"], useNavigate: false };
       return { observations: ["describe"], useNavigate: false };
     }

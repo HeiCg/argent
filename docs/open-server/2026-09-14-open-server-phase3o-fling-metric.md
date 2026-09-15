@@ -7,6 +7,7 @@ run 34870686468); every fling verdict so far rests on it. The 3n.2 removal delet
 old fling harness on purpose; this ticket rebuilds the instrument first, then measures.
 
 ## Instrument (pre-registered before any arm comparison)
+
 1. **Optical scroll metric**: pixel offset of the scrollable region between a pre-swipe
    and a post-settle screenshot by strip cross-correlation (1-D along the scroll axis on a
    downscaled grayscale strip; sub-pixel peak; report the peak's correlation as
@@ -27,6 +28,7 @@ old fling harness on purpose; this ticket rebuilds the instrument first, then me
    permutation p per arm pair.
 
 ## Then
+
 Answer, per cell: does `input-manager` under-scroll vs proprietary on a metric that
 measures? If yes, the device-side mechanism candidates from
 `2026-09-14-review-3n-run1-findings.md` (§ Fling mechanism candidates) get their one

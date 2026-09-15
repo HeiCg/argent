@@ -3,7 +3,7 @@
 Status: dispatched 2026-09-14. `open/main` @ 86fe554b has 3n.2 merged; the planner
 regenerated `package-lock.json` at the root (next commit: only the `@yume-chan/*` +
 fetch-scrcpy-server download subtree dropped; a few entries flipped to `"dev": true` by
-dedup). Read first: `2026-09-14-review-3n2-findings.md` in full (every 3N2-H*/M*/L* is a
+dedup). Read first: `2026-09-14-review-3n2-findings.md` in full (every 3N2-H*/M*/L\* is a
 work item; "Scoreboard/README corrections" gives exact wording; "Post-merge steps" is the
 checklist), then the 3n.2 ticket + Result.
 
@@ -13,6 +13,7 @@ npm install / gradle / emulator; vitest `--maxWorkers=2`; `node --test
 .github/bench-ci/gates.test.js`).
 
 ## Work
+
 1. **3N2-H1 — a real fallback gate.** `merge-blocks.js` gates on the on-device
    `injectStrategyCounts["unavailable"]` (and any `fellBackTo`) reported per block via
    `getInfo`, not on the dead host counter; the block JSON carries the counts; Q4's
@@ -45,12 +46,13 @@ npm install / gradle / emulator; vitest `--maxWorkers=2`; `node --test
    green on both jobs, the new fallback gate wired (PASS with 0 unavailable), artifact
    stamped with its own run id, invariants line for this run. Polling: one `gh run view`
    per 10 min as a single `run_in_background` Bash call `sleep 540; gh run view <id>
-   --json status,conclusion,jobs`; never loop; one `gh run download` per artifact. Also
+--json status,conclusion,jobs`; never loop; one `gh run download` per artifact. Also
    confirm `unit-tests.yml` ran green on the branch push (one `gh run list` is allowed).
 6. Docs site: `packages/docs` unchanged by 3n.2 (verified by the review); say so.
 
 ## Result
-Append `## Result (3n.3)` here: commits, finding-by-finding (3N2-H1…L*), run id, the two
+
+Append `## Result (3n.3)` here: commits, finding-by-finding (3N2-H1…L\*), run id, the two
 workflows' outcomes, the stamped-artifact evidence, the invariants line with run id, and
 anything not done. Do not fast-forward `open/main`; the planner merges after a short
 check (no full re-review unless a number changes).
@@ -62,6 +64,7 @@ Branch `fix/open-server-3n3-post-merge` off `open/main` @ `00c10536`, worktree
 worktree). `open/main` NOT fast-forwarded.
 
 ### Commits (in order)
+
 1. `78cbb79a` **Work 1 / 3N2-H1** — real fallback gate: `merge-blocks.js` reads on-device
    `injectStrategyCounts["unavailable"]` + a missing/zero denominator; `bench-open-vs-proprietary.ts`
    carries the raw counts, total and `measuredInjectRpcs`; `scoreboard.js` prints Q4 as numbers.
@@ -74,6 +77,7 @@ worktree). `open/main` NOT fast-forwarded.
 8. `95e08ed0` **Work 3 followup 2** — sg-matrix.log first-line stamp + job-start fallback (not CI-re-verified).
 
 ### Run of record — 34904658366 (head `8740e197`, `workflow_dispatch`, `suite=both`, `sg_mode=matrix`, blocks OFF-1/ON-uiautomation/ON-input-manager/OFF-2, N=20)
+
 **Conclusion `success` — BOTH jobs green:** Latency bench (device suite + 4-block bench +
 merge + scoreboard + Enforce) **success**; Screen-graph matrix **success**. A first
 dispatch (34903589838) was **VOID** — my own `set -u` bug (`$BENCH_OUT` unset in the matrix
@@ -87,6 +91,7 @@ one-line fix (`8740e197`). So exactly one run of record.
   lockfile-integrity proof for now (3N2-H2). `gates.test.js` **17/17** locally.
 
 ### Finding-by-finding
+
 - **3N2-H1 (fallback gate)** — `merge-blocks.js:194-231` now gates ON-input-manager on
   `im.injectStrategyCounts["unavailable"] > 0` **and** a zero/absent total; carries
   `strategyUnavailable`/`strategyTotal`/`measuredInjectRpcs` into the merged JSON
@@ -95,9 +100,9 @@ one-line fix (`8740e197`). So exactly one run of record.
   block). `scoreboard.js:314-330` prints Q4 as numbers. Kotlin unchanged — `InfoHandler.kt:42-46`
   already exposes `injectStrategyCounts` from `InjectStrategyCounter.snapshot()`, so no Kotlin
   change was needed. **Tests** (`gates.test.js`): `fallback gate FIRES on on-device
-  injectStrategyCounts.unavailable (3n.3)` ({input-manager:150, unavailable:11} → fail);
+injectStrategyCounts.unavailable (3n.3)` ({input-manager:150, unavailable:11} → fail);
   `fallback gate does NOT fire on host verb.fallbacks (the dead counter, 3n.3)`; `fallback
-  gate FIRES on a missing/zero on-device inject denominator (3n.3)`. **Run evidence:** merged
+gate FIRES on a missing/zero on-device inject denominator (3n.3)`. **Run evidence:** merged
   JSON `strategyUnavailable 0 / strategyTotal 158 / measuredInjectRpcs 100`; block
   `injectStrategyCounts {"input-manager":158}` — the gate READ the on-device count and the
   green run proves it fires on real data.
@@ -126,7 +131,7 @@ one-line fix (`8740e197`). So exactly one run of record.
 - **3N2-H4 diagnosis of run 34888577404 (Work 3)** — from the job LOG (one
   `gh run view 34888577404 --log`): `[bench-sg] wrote …/bench-sg-2026-09-14T19-51-14-817Z.json`
   (21:30:05.939Z, THIS run's fresh JSON), immediately followed by `[bench-sg] store
-  invariants OK: 0 duplicate screens, 0 multi-destination edges` (21:30:05.947Z). **So run
+invariants OK: 0 duplicate screens, 0 multi-destination edges` (21:30:05.947Z). **So run
   34888577404's OWN store invariants WERE OK** — the uploaded `results-ci.md`/`graph-store`
   were a foreign 14:11 execution's, but the live job proved this run's invariants clean.
 - **3N2-M1 (comparator)** — 3n.2 Result Q3 row + verb table: swipe/pinch labelled **vs
@@ -152,7 +157,7 @@ one-line fix (`8740e197`). So exactly one run of record.
   matches the body at `:43-52`.
 - **3N2-M6 (denominator)** — `measuredInjectRpcs` is a number on the block + merged JSON
   (**100** this run: 5 inject verbs × N=20); Q4 states `100 of 158 process-wide (+ warmups +
-  oracle + describe-split + locate/restore)`.
+oracle + describe-split + locate/restore)`.
 - **3N2-M7 (flush seam) — DECISION: KEEP + restore test.** The host `flush`/`flushInput`
   seam is retained (the Kotlin FlushInputHandler is live — `HierarchyHandler`/`StateHandler`
   call it — and an out-of-process injector can request the inline drain). The deleted wire
@@ -181,12 +186,14 @@ one-line fix (`8740e197`). So exactly one run of record.
   review itself marked "the part that mattered" (P9 on three RPCs) done; left as-is.
 
 ### The four scoreboard edits (verbatim, one adaptation)
+
 Applied verbatim to the 3n.2 row: (1) Q1/Q2 byte-identical replacement, (2) headline ratio
 note, (3) Q4 counts wording, (4) Q6 invariants-from-log qualifier. **One adaptation:** the
 Q1/Q2 edit's trailing "no cross-run CI was computed" is replaced by the computed CIs (Work 4
 requires the CIs). Also filled describe p95 (L1) and the 21/22 device wording (L2).
 
 ### Screen-graph Q6 (run 34904658366, green)
+
 B1 100/100 (o200k 657) · B2 100/100 (651) · O1 **98/100** (138) · O2 100/100 (54) · O3
 99/100 (627) · O4 100/100 (21) · O5 100/100 (21); store invariants OK (run 34904658366),
 `com.android.settings` **11 nodes / 11 edges** (store shape is not run-stable — 34888577404
@@ -195,12 +202,14 @@ swipe/pinch win, tap parity; both ON headlines lower this run. Job green ⇒ P0�
 gate + the new fallback gate all passed.
 
 ### Docs site (Work 6)
+
 `packages/docs/` is unchanged by 3n.2 and 3n.3 — no page under `packages/docs/` mentions
 scrcpy, `@yume-chan`, `open-device-server-fast-inject` or any sub-flag (verified by grep). No
 docs-site content change needed; `npx docusaurus build` / `npm run format` were not run in
 the worktree (they run in the main checkout only, per project `CLAUDE.md`).
 
 ### GitHub API usage
+
 One bench run of record (34904658366) + one void mis-dispatch (34903589838, cancelled); two
 `gh run list` (one per dispatch, to capture each run id) plus the list that also confirmed
 unit-tests.yml did not trigger; one `gh run view 34888577404 --log` (H4 diagnosis); polling
@@ -211,6 +220,7 @@ screen-graph for the H4 diagnosis), 34904658366 (latency + screen-graph). `gh ru
 once on the void dispatch.
 
 ### Not verified / open
+
 - unit-tests.yml green: not run (branch off `open/main`, not `main`). The bench jobs' green
   `npm ci` is the lockfile proof; unit-tests.yml runs at PR/merge to `main`.
 - The `95e08ed0` log-first-line + job-start-time fix is not CI-re-verified (single run spent);

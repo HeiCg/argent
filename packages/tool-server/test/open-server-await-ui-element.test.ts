@@ -90,7 +90,12 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
 
     const result = await tool.execute(
       {} as never,
-      { udid: ANDROID_SERIAL, condition: "exists", selector: { text: "OK" }, timeoutMs: 2000 } as never
+      {
+        udid: ANDROID_SERIAL,
+        condition: "exists",
+        selector: { text: "OK" },
+        timeoutMs: 2000,
+      } as never
     );
 
     expect(result.success).toBe(true);
@@ -118,7 +123,12 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
 
     const result = await tool.execute(
       {} as never,
-      { udid: ANDROID_SERIAL, condition: "visible", selector: { text: "OK" }, timeoutMs: 2000 } as never
+      {
+        udid: ANDROID_SERIAL,
+        condition: "visible",
+        selector: { text: "OK" },
+        timeoutMs: 2000,
+      } as never
     );
 
     expect(result.success).toBe(true);
@@ -153,7 +163,13 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
           9
         )
       ),
-      awaitChange: vi.fn(async () => ({ version: 9, hash: "h9", stateHash: "s9", changed: false, timedOut: true })),
+      awaitChange: vi.fn(async () => ({
+        version: 9,
+        hash: "h9",
+        stateHash: "s9",
+        changed: false,
+        timedOut: true,
+      })),
     };
     const tool = makeTool(openApi);
 
@@ -162,7 +178,12 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
     // below regardless; here we just confirm a positive identifier match works.
     const result = await tool.execute(
       {} as never,
-      { udid: ANDROID_SERIAL, condition: "exists", selector: { identifier: "submit" }, timeoutMs: 1000 } as never
+      {
+        udid: ANDROID_SERIAL,
+        condition: "exists",
+        selector: { identifier: "submit" },
+        timeoutMs: 1000,
+      } as never
     );
 
     expect(result.success).toBe(true);
@@ -183,7 +204,12 @@ describe("await-ui-element → open-device-server awaitChange (Screen-graph Phas
 
     const result = await tool.execute(
       {} as never,
-      { udid: ANDROID_SERIAL, condition: "exists", selector: { text: "OK" }, timeoutMs: 500 } as never
+      {
+        udid: ANDROID_SERIAL,
+        condition: "exists",
+        selector: { text: "OK" },
+        timeoutMs: 500,
+      } as never
     );
 
     expect(result.success).toBe(false);

@@ -6,6 +6,7 @@ faster/smaller/more reliable than argent's proprietary path (flag OFF:
 simulator-server Rust binary + argent-android-devtools APK)?
 
 ## Inputs
+
 - Fork checkout (open server): argent-p3 at
   /private/tmp/claude-501/-Users-heicg-Desktop-projects-device-farm-device-stream/f494020d-4d6d-4533-9918-a025d7c363ad/scratchpad/argent-p3
   branch feat/android-open-server @ 93fd5b17 (pushed). Kept device test
@@ -30,6 +31,7 @@ simulator-server Rust binary + argent-android-devtools APK)?
 - Physical device `ZF524RZBHD` is attached — never target it.
 
 ## Method
+
 Prefer driving the real tools (`describe`, `screenshot`, `gesture-tap`,
 `gesture-swipe`, `await-ui-element`, `await-screen-idle`, `paste`,
 `gesture-pinch`) through the tool-server registry with the device object,
@@ -44,6 +46,7 @@ text; Chrome example.com for pinch), interleaving configs is NOT possible
 drift), report the two OFF blocks separately and merged.
 
 Measure:
+
 - wall latency per call (ms): p50, p95, max.
 - `describe`: output bytes and token estimate (use the same tokenizer/
   estimator the token-bench harness uses; if none, chars/4), element count,
@@ -61,6 +64,7 @@ Measure:
   process beyond adb — say so).
 
 ## Output
+
 - Raw JSON per run under a throwaway dir in the argent-p3 checkout (do not
   commit), plus a Markdown report written to
   `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results.md`
@@ -71,10 +75,11 @@ Measure:
 - Keep the bench script if reasonably clean as
   `packages/tool-server/scripts/bench-open-vs-proprietary.ts` (opt-in, no
   test), commit locally `chore(android-open-server): backend benchmark
-  script`; do not push.
+script`; do not push.
 - Tear the emulator down.
 
 ## Acceptance
+
 - Report file exists with real numbers from ≥20 iterations per verb per
   config (or an explicit reason a config/verb could not run).
 - No changes to server/tool code (measurement only). If a defect is found,

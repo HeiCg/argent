@@ -80,7 +80,8 @@ function block(name, over = {}) {
       ...(isOff
         ? {}
         : {
-            injectStrategyCounts: name === "ON-uiautomation" ? { default: 161 } : { "input-manager": 161 },
+            injectStrategyCounts:
+              name === "ON-uiautomation" ? { default: 161 } : { "input-manager": 161 },
             injectStrategyTotal: 161,
             measuredInjectRpcs: 100,
           }),
@@ -90,7 +91,8 @@ function block(name, over = {}) {
 }
 
 function writeBlocks(out, blocks) {
-  for (const b of blocks) fs.writeFileSync(path.join(out, `bench-block-${b.block.block}.json`), JSON.stringify(b));
+  for (const b of blocks)
+    fs.writeFileSync(path.join(out, `bench-block-${b.block.block}.json`), JSON.stringify(b));
 }
 
 // Phase 3n.1 fixture helpers: a verb with a per-sample array symmetric around p50
@@ -98,13 +100,26 @@ function writeBlocks(out, blocks) {
 function mkVerb(verb, p50, over = {}) {
   const s = [];
   for (let i = -8; i <= 8; i++) s.push(p50 + i); // 17 samples, median == p50, ±8 spread
-  return { verb, latency: { p50, p95: p50 + 8 }, latencySamples: s, errors: 0, fallbacks: 0, ...over };
+  return {
+    verb,
+    latency: { p50, p95: p50 + 8 },
+    latencySamples: s,
+    errors: 0,
+    fallbacks: 0,
+    ...over,
+  };
 }
 // A 3n.1 latency block with the four gated verbs. v = {tap, swipe, pinch, headline}.
 function block31(name, v, over = {}) {
-  const verbs = [mkVerb("gesture-tap", v.tap), mkVerb("gesture-swipe", v.swipe), mkVerb("gesture-pinch", v.pinch)];
+  const verbs = [
+    mkVerb("gesture-tap", v.tap),
+    mkVerb("gesture-swipe", v.swipe),
+    mkVerb("gesture-pinch", v.pinch),
+  ];
   if (v.headline != null) {
-    verbs.push(mkVerb(name.startsWith("OFF") ? "tap+describe" : "tap+describe(settle:false)", v.headline));
+    verbs.push(
+      mkVerb(name.startsWith("OFF") ? "tap+describe" : "tap+describe(settle:false)", v.headline)
+    );
   }
   return block(name, { verbs, ...over });
 }
@@ -120,7 +135,12 @@ const RUN2 = (over = {}) => [
 ];
 const RUN2ENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2" };
 
-const FOUR = () => [block("OFF-1"), block("ON-uiautomation"), block("ON-input-manager"), block("OFF-2")];
+const FOUR = () => [
+  block("OFF-1"),
+  block("ON-uiautomation"),
+  block("ON-input-manager"),
+  block("OFF-2"),
+];
 const ALLENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2" };
 
 /* ------------------------------- merge-blocks ----------------------------- */
@@ -136,7 +156,12 @@ test("merge-blocks: healthy four-block run passes", () => {
 test("merge-blocks: tap-timeline parity FIRES on a MOVE frame", () => {
   const out = freshOut();
   const bs = FOUR();
-  bs[2].block.injectedTapTimeline = { holdMs: 50, frameCount: 3, hasMoveFrame: true, backend: "ON-input-manager" };
+  bs[2].block.injectedTapTimeline = {
+    holdMs: 50,
+    frameCount: 3,
+    hasMoveFrame: true,
+    backend: "ON-input-manager",
+  };
   writeBlocks(out, bs);
   const r = run(MERGE_BLOCKS, out, ALLENV);
   assert.strictEqual(r.code, 1);
@@ -189,7 +214,7 @@ test("merge-blocks: fallback gate FIRES on on-device injectStrategyCounts.unavai
   // bs[2] is ON-input-manager: 11 of 161 injections fell back to uia-async on-device
   // (hiddenapi). The AUTHORITATIVE signal is injectStrategyCounts.unavailable, NOT the
   // dead host `verb.fallbacks` counter (structurally 0 after the scrcpy removal, 3N2-H1).
-  bs[2].block.injectStrategyCounts = { "input-manager": 150, unavailable: 11 };
+  bs[2].block.injectStrategyCounts = { "input-manager": 150, "unavailable": 11 };
   bs[2].block.injectStrategyTotal = 161;
   writeBlocks(out, bs);
   const r = run(MERGE_BLOCKS, out, ALLENV);
@@ -202,7 +227,9 @@ test("merge-blocks: fallback gate does NOT fire on host verb.fallbacks (the dead
   const bs = FOUR();
   // The dead host counter reads non-zero but the on-device counts are clean — the run
   // is a clean input-manager arm. The old gate would have fired here; the new one must not.
-  bs[2].block.verbs = [{ verb: "gesture-tap", latency: { p50: 52, p95: 54 }, errors: 0, fallbacks: 2 }];
+  bs[2].block.verbs = [
+    { verb: "gesture-tap", latency: { p50: 52, p95: 54 }, errors: 0, fallbacks: 2 },
+  ];
   writeBlocks(out, bs);
   const r = run(MERGE_BLOCKS, out, ALLENV);
   assert.strictEqual(r.code, 0, r.stderr);
@@ -280,7 +307,9 @@ test("scoreboard: P1 — a verb with no OFF comparator floors as N/A, never ±2"
   const out = freshOut();
   // Drop tap+describe from the OFF blocks so the headline row has no comparator.
   const bs = RUN2();
-  for (const b of bs) if (b.block.block.startsWith("OFF")) b.block.verbs = b.block.verbs.filter((v) => !/tap\+describe/.test(v.verb));
+  for (const b of bs)
+    if (b.block.block.startsWith("OFF"))
+      b.block.verbs = b.block.verbs.filter((v) => !/tap\+describe/.test(v.verb));
   writeBlocks(out, bs);
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
@@ -301,7 +330,17 @@ test("merge-blocks: P0 — ON-input-manager without the ON-uiautomation control 
 test("scoreboard: 3n.1 gate FAILS when input-manager is distinguishably slower beyond the floor", () => {
   const out = freshOut();
   // input-manager swipe 340 vs OFF min 300, floor 7 → clearly slower beyond floor.
-  writeBlocks(out, RUN2({ verbs: [mkVerb("gesture-tap", 55), mkVerb("gesture-swipe", 340), mkVerb("gesture-pinch", 323), mkVerb("tap+describe(settle:false)", 400)] }));
+  writeBlocks(
+    out,
+    RUN2({
+      verbs: [
+        mkVerb("gesture-tap", 55),
+        mkVerb("gesture-swipe", 340),
+        mkVerb("gesture-pinch", 323),
+        mkVerb("tap+describe(settle:false)", 400),
+      ],
+    })
+  );
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
@@ -313,7 +352,9 @@ test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", 
   const bs = FOUR();
   bs[2].block.effectZeroTotal = 1;
   bs[2].block.firstTapNoEffectTotal = 1;
-  bs[2].block.noEffectSamples = ["i=7 verb='tap+describe(settle:false)' tapMs=41 coord=(0.5000,0.3200) via=describe originFp='act:Settings' finalFp='act:Settings'"];
+  bs[2].block.noEffectSamples = [
+    "i=7 verb='tap+describe(settle:false)' tapMs=41 coord=(0.5000,0.3200) via=describe originFp='act:Settings' finalFp='act:Settings'",
+  ];
   writeBlocks(out, bs);
   assert.strictEqual(run(MERGE_BLOCKS, out, ALLENV).code, 0);
   const r = run(SCOREBOARD, out);
@@ -325,7 +366,9 @@ test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", 
 
 // ── Fling merge (ticket 3o): self-test-first, report-only ────────────────────
 const MERGE_FLING = path.join(HERE, "merge-fling.js");
-const FLING_CELLS = [150, 250, 400].flatMap((d) => [0.3, 0.5].map((dist) => ({ durationMs: d, distance: dist })));
+const FLING_CELLS = [150, 250, 400].flatMap((d) =>
+  [0.3, 0.5].map((dist) => ({ durationMs: d, distance: dist }))
+);
 
 // A fling block whose every cell has `n` samples with a chosen median (px). Samples
 // are spread ±3 px around the target so the median is exactly the target and the
@@ -350,13 +393,27 @@ function flingBlock(name, strategy, medFor, n = 16) {
       const offs = samples.map((s) => s.offsetPx).sort((a, b) => a - b);
       const mid = Math.floor(offs.length / 2);
       // rewrite samples so the median equals `med` exactly
-      const fixed = offs.map((_, i) => ({ offsetPx: med + (i - mid), confidence: 0.99, peakShift: med }));
-      return { durationMs: c.durationMs, distance: c.distance, config: name, n, medianPx: med, iqrPx: [med - 3, med + 3], samples: fixed, drops: [] };
+      const fixed = offs.map((_, i) => ({
+        offsetPx: med + (i - mid),
+        confidence: 0.99,
+        peakShift: med,
+      }));
+      return {
+        durationMs: c.durationMs,
+        distance: c.distance,
+        config: name,
+        n,
+        medianPx: med,
+        iqrPx: [med - 3, med + 3],
+        samples: fixed,
+        drops: [],
+      };
     }),
   };
 }
 function writeFling(out, blocks) {
-  for (const b of blocks) fs.writeFileSync(path.join(out, `fling-block-${b.config}.json`), JSON.stringify(b));
+  for (const b of blocks)
+    fs.writeFileSync(path.join(out, `fling-block-${b.config}.json`), JSON.stringify(b));
 }
 
 test("merge-fling: self-test OK grades arms; input-manager parity → PASS, always exit 0", () => {
@@ -419,6 +476,9 @@ test("merge-fling: input-manager under-scroll vs proprietary is detected (ratio<
   const r = run(MERGE_FLING, out);
   assert.strictEqual(r.code, 0, r.stderr);
   assert.match(r.stdout, /SELF-TEST VERDICT: INSTRUMENT-OK/);
-  assert.match(r.stdout, /UNDER-SCROLL: input-manager under-scrolls vs proprietary on \d+ powered cell/);
+  assert.match(
+    r.stdout,
+    /UNDER-SCROLL: input-manager under-scrolls vs proprietary on \d+ powered cell/
+  );
   assert.match(r.stdout, /ON-input-manager VERDICT: FAIL/); // 0.6 ratio is outside ±0.15
 });

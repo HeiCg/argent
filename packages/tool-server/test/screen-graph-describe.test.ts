@@ -14,7 +14,14 @@ function node(hash: string, over: Partial<ScreenNode> = {}): ScreenNode {
 }
 
 function edge(from: string, to: string, count: number, text: string): Edge {
-  return { from, to, action: { kind: "tap", target: { text } }, count, successes: count, lastSeen: NOW };
+  return {
+    from,
+    to,
+    action: { kind: "tap", target: { text } },
+    count,
+    successes: count,
+    lastSeen: NOW,
+  };
 }
 
 // Android Settings root fixture (mirrors the Phase A screen-hash Settings tree
@@ -77,7 +84,10 @@ describe("summary tier", () => {
 describe("compact tier cache reconciliation", () => {
   const cached = node("h1", { compact: "CACHED TREE", stateHash: "s1" });
 
-  function deps(): CompactTierDeps & { patch: ReturnType<typeof vi.fn>; refresh: ReturnType<typeof vi.fn> } {
+  function deps(): CompactTierDeps & {
+    patch: ReturnType<typeof vi.fn>;
+    refresh: ReturnType<typeof vi.fn>;
+  } {
     return {
       patch: vi.fn(async () => "PATCHED TREE"),
       refresh: vi.fn(async () => "REFRESHED TREE"),

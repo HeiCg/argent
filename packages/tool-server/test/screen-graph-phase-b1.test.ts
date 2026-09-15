@@ -36,7 +36,12 @@ describe("Phase B1 — version stored on the node (item 1)", () => {
 
   it("buildScreenPayload carries the version through to the fetched screen", () => {
     const els: OpenServerElement[] = [
-      { index: 1, className: "android.widget.TextView", text: "Hi", bounds: { x1: 0, y1: 0, x2: 10, y2: 10 } },
+      {
+        index: 1,
+        className: "android.widget.TextView",
+        text: "Hi",
+        bounds: { x1: 0, y1: 0, x2: 10, y2: 10 },
+      },
     ];
     const payload = buildScreenPayload(els, 100, 200, "MainActivity", "state-hash", 42);
     expect(payload.version).toBe(42);
@@ -78,7 +83,9 @@ describe("Phase B1 — password redaction from the device flag (item 2)", () => 
 
 describe("Phase B1 — selector key round-trip", () => {
   it("parseSelectorKey reverses selectorKeyForId / selectorKeyForText", () => {
-    expect(parseSelectorKey(selectorKeyForId("com.example:id/ok"))).toEqual({ id: "com.example:id/ok" });
+    expect(parseSelectorKey(selectorKeyForId("com.example:id/ok"))).toEqual({
+      id: "com.example:id/ok",
+    });
     expect(parseSelectorKey(selectorKeyForText("Sign in"))).toEqual({ text: "Sign in" });
     expect(parseSelectorKey("garbage")).toBeNull();
   });
@@ -103,7 +110,9 @@ describe("Phase B1 — navigate-to bucket guard (item 3)", () => {
         version: 1,
         hash: "h",
         stateHash: "s",
-        nodes: [{ class: "Button", bounds: { x1: 120, y1: 120, x2: 220, y2: 220 }, flags: 0, path: [0] }],
+        nodes: [
+          { class: "Button", bounds: { x1: 120, y1: 120, x2: 220, y2: 220 }, flags: 0, path: [0] },
+        ],
       })),
     } as never;
     const point = await resolveTapPoint(server, SIZE, bucketAction, index);
@@ -120,7 +129,12 @@ describe("Phase B1 — navigate-to bucket guard (item 3)", () => {
 
   it("diverges when nothing was indexed in the bucket cell", async () => {
     const server = { query: vi.fn() } as never;
-    const point = await resolveTapPoint(server, SIZE, { kind: "tap", bucket: { x: 9, y: 9 } }, index);
+    const point = await resolveTapPoint(
+      server,
+      SIZE,
+      { kind: "tap", bucket: { x: 9, y: 9 } },
+      index
+    );
     expect(point).toEqual({ diverge: true });
     expect((server as { query: ReturnType<typeof vi.fn> }).query).not.toHaveBeenCalled();
   });

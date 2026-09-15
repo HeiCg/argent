@@ -19,6 +19,7 @@ boot with `-grpc 8554 -grpc-use-token`); never the physical device
 `ZF524RZBHD`.
 
 Additional required measurements (from the adversarial review of phase 3):
+
 - Every config must assert hold/duration parity in the script itself
   (same `holdMs`, same `durationMs` on both backends) and fail loudly if
   a config deviates.
@@ -26,6 +27,7 @@ Additional required measurements (from the adversarial review of phase 3):
 - Tokens with `js-tiktoken` o200k_base (primary) and chars/4 (secondary).
 
 ## Configurations
+
 B1 argent proprietary (flag off, vendored 0.22.1 binaries as in the baseline
 bench); B2 open server, no graph; O1 open + query/diff observations (agent
 asks `query`/`diff` instead of `describe`); O2 O1 + outcomes (no explicit
@@ -34,6 +36,7 @@ screen graph cold (empty store); O4 = O3 re-run warm (store persisted from
 O3); O5 O4 + `navigate-to` for tasks with a known target.
 
 ## Tasks (scripted, deterministic — no LLM in the loop for this phase)
+
 Encode 10 Settings navigation/form tasks + 5 Chrome tasks as step lists
 (the same tasks for every config; the "agent" is a scripted policy that
 issues the observation calls each config allows and then the next action).
@@ -41,6 +44,7 @@ Each task ends with an assertion via `query` (element present) — success
 = assertion true.
 
 ## Metrics per step and per task
+
 tokens of every observation payload as the agent would see it (render
 exactly what the tool returns; count with `js-tiktoken` o200k_base — add as
 devDependency in tool-server if absent), RTTs to device, wall time, device
@@ -51,11 +55,13 @@ O2 removes ≥1 RTT/step; H3 O4 ≤ 0.2× O3 tokens on revisited screens; H4
 success non-inferior.
 
 ## Output
+
 `packages/tool-server/scripts/bench-screen-graph.ts` (opt-in), raw JSON
 under `.bench-results/screen-graph/`, Markdown report at
 `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md`
 (English, terse, numbers only), commit script locally.
 
 ## Acceptance
+
 Report exists with all configs × tasks × ≥3 repetitions; hypotheses table;
 emulator torn down.

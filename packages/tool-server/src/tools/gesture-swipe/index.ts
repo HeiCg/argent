@@ -222,9 +222,10 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       }
 
       const ref = simulatorServerRef(device);
-      const api = shouldUseOpenServer(device) || shouldUseIosOpenServer(device)
-        ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
-        : (services.simulatorServer as SimulatorServerApi);
+      const api =
+        shouldUseOpenServer(device) || shouldUseIosOpenServer(device)
+          ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+          : (services.simulatorServer as SimulatorServerApi);
       // No sample floor on this ramp, unlike `momentum: false` above: a fast swipe
       // is delivered as fast as it was authored. At durationMs 16 the whole travel
       // is one Move, the hardest flick either OS can be handed, but the fling

@@ -3,11 +3,13 @@
 Design: `docs/specs/2026-09-02-screen-graph-architecture.md` §2.1, §3, §7.
 Repo: /Users/heicg/Desktop/projects/device-farm, branch `fix/ci-failures`
 (clean). Targets:
+
 - Kotlin: `device-stream/native-servers/android-device-server/src/androidTest/java/com/devicestream/server/` (JsonRpcHandler.kt, handlers/, accessibility/NodeSerializer.kt, TreeCompressor.kt, StateHandler.kt)
 - TS: `device-stream/packages/dsl/src/drivers/android-rpc.ts`, `drivers/android.ts`, `drivers/types.ts`, `session.ts`, `types.ts`, `index.ts`
-Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 + SDK present). Tests: `npx vitest run packages/dsl` from `device-stream/`. Do not commit; do not edit .md except `packages/dsl/README.md` (document new verbs). Do not touch the argent checkouts.
+  Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 + SDK present). Tests: `npx vitest run packages/dsl` from `device-stream/`. Do not commit; do not edit .md except `packages/dsl/README.md` (document new verbs). Do not touch the argent checkouts.
 
 ## A1 Versioned tree + AX-event versioning (Kotlin)
+
 - Add `TreeStore` singleton: `version: Long`, `lastTree: SerializedTree?`,
   `lastBuiltAtVersion`. Subscribe via
   `UiAutomation.setOnAccessibilityEventListener` to
@@ -22,6 +24,7 @@ Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 
   `waitForIdle`.
 
 ## A2 Structural and state hashes (Kotlin)
+
 - `H` = 64-bit FNV-1a (or xxHash if available without new deps) over DFS
   sequence of `(className, resourceId, quantBounds, flags)` where
   `quantBounds` = bounds divided by (screenW/32, screenH/32) integer-floored,
@@ -30,12 +33,13 @@ Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 
 - Recycler/list handling: for nodes whose class is a known scrolling
   container (`RecyclerView`, `ListView`, `ScrollView`, `ViewPager*`,
   `HorizontalScrollView`, or `scrollable` flag), hash the container node
-  itself plus the *class sequence of its first child only*, not all
+  itself plus the _class sequence of its first child only_, not all
   children — for `H`. `H_text` still includes all children.
 - Include `hash`, `stateHash`, `version` in `getState`, `getAccessibilityTree`
   responses.
 
 ## A3 Query, diff, awaitChange RPCs (Kotlin)
+
 - `query {selector, limit?, fields?}`: selector JSON = DSL selector shape
   (`id`, `text` as string | `{contains|regex|equals, caseInsensitive?}`,
   `class`, `containsDescendant` (nested selector), `index`, `visible`).
@@ -44,31 +48,33 @@ Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 
   child-index path from root (stable within a version).
 - `diff {sinceVersion}`: keep the previous serialized tree; keyed diff on
   `(class, resourceId, indexInParent)` → `{version, hash, stateHash,
-  added:[node+path], removed:[path], changed:[path+changedFields]}`. If
+added:[node+path], removed:[path], changed:[path+changedFields]}`. If
   `sinceVersion == version` → empty lists, no traversal. Keep only one
   previous snapshot (memory bound).
 - `awaitChange {fromVersion, timeoutMs, until?}`: block on a condition
   variable notified by the AX listener; return as soon as `version >
-  fromVersion` (and, if `until` selector given, when it matches — re-check
+fromVersion` (and, if `until` selector given, when it matches — re-check
   on each event). Return `{version, hash, stateHash, changed: bool,
-  timedOut: bool}`. Must not hold the RPC dispatch thread hostage for other
+timedOut: bool}`. Must not hold the RPC dispatch thread hostage for other
   clients: run awaits on a separate executor / ensure the server handles
   concurrent connections (check current JsonRpcHandler threading; if
   single-threaded, note the limitation and implement with a max concurrent
   awaits = 4).
 
 ## A4 Action outcomes (Kotlin)
+
 - `tap`, `longPress`, `swipe`, `typeText`, `clearText`, `key`: accept
   `outcome?: {idleTimeoutMs?: number (default 300)}`. When present, record
   `before = {version, hash}` (cached if available, else build), perform the
   action, wait for idle bounded by `idleTimeoutMs` (use the AX-event clock:
   wait until no event for 80 ms or timeout), then compute `after = {version,
-  hash, stateHash}` and return `{success, before, after, changed:
-  before.hash != after.hash || before.stateHash != after.stateHash,
-  newScreen: before.hash != after.hash, idleMs}`. Without `outcome`, behaviour
+hash, stateHash}` and return `{success, before, after, changed:
+before.hash != after.hash || before.stateHash != after.stateHash,
+newScreen: before.hash != after.hash, idleMs}`. Without `outcome`, behaviour
   unchanged.
 
 ## A5 DSL driver + session (TS)
+
 - `android-rpc.ts`: typed methods `query`, `diff`, `awaitChange`, and
   outcome-capable variants of the action methods.
 - `drivers/types.ts` Driver interface: add `query(selector)`, `diff(since)`,
@@ -82,15 +88,16 @@ Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 
   produced by the Kotlin code, or document that they are separate spaces if
   cross-platform equality is not achievable).
 - `session.ts`: `ElementHandle.tap()/fill()/longPress()` and `Session.swipe()/
-  pressKey()` return an `Outcome` object `{changed, newScreen, before, after,
-  idleMs}` (additive: still awaitable as before; existing callers that
+pressKey()` return an `Outcome` object `{changed, newScreen, before, after,
+idleMs}` (additive: still awaitable as before; existing callers that
   ignore the return keep working). `awaitUntil(...).toAppear()/toDisappear()/
-  changeTo()` use `driver.awaitChange` with `until` where possible, falling
+changeTo()` use `driver.awaitChange` with `until` where possible, falling
   back to the current poll loop on drivers that lack it.
 - `Session.query(selector)`, `Session.diff(since)`, `Session.state()` public.
 - Export types; document in `packages/dsl/README.md`.
 
 ## Tests
+
 - Kotlin: unit-test hash + diff on synthetic node lists if the module has a
   JVM test source set; else TS golden tests only (state which).
 - TS (vitest): hash determinism + recycler rule; diff/patch property on
@@ -107,6 +114,7 @@ Build Kotlin with `npm run build:android-server` from `device-stream/` (Java 17 
   Tear the emulator down.
 
 ## Acceptance
+
 - All tests green; Kotlin builds; README updated.
 - Report: RPC list with shapes, measured smoke numbers (cache-hit describe
   latency vs traversal, awaitChange latency), deviations.

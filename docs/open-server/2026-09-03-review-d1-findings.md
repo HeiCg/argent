@@ -93,8 +93,8 @@ rather than a measurement (D1-H2), and one stated statistic is simply wrong
 
 - **D1-L1 · One pre-flight needle passes without destination verification.**
   `logs/sg-preflight.log` (33958064084): `settings-display needle="Brightness
-  level" :: ok (absent from launch; destination unreachable — presence NOT
-  verified)`. `bench-preflight.ts:474-483` treats that case as `ok` by design.
+level" :: ok (absent from launch; destination unreachable — presence NOT
+verified)`. `bench-preflight.ts:474-483` treats that case as `ok` by design.
   `PROBLEM needles: 0` is quoted in the doc without this exception. False-pass
   risk is low (the needle is absent from the launch screen), but C.4's C-M2 is
   19/20 closed, not 20/20 — and `settings-display` is one of the two tasks
@@ -135,7 +135,7 @@ rather than a measurement (D1-H2), and one stated statistic is simply wrong
 - Workflow (`feat/bench-ci-d`): the screen-graph job checks out the **branch
   head** (`ref: feat/screen-graph-d`), and both the pre-flight and matrix steps
   run `set -euo pipefail` with **no `continue-on-error`**. No hidden-failure
-  void. (The `continue-on-error: true` at line 249 is the *other* job's
+  void. (The `continue-on-error: true` at line 249 is the _other_ job's
   open-server device smoke test, outside D/D.1 scope — but note it is back on
   that branch after 3h required it removed.)
 - Tasks and needles are **identical** between C.4 (33806639520) and D.1: the set
@@ -176,14 +176,14 @@ tree `feat/screen-graph-d` @ `757956c57`, 7 configs × 20 tasks × 5 reps,
 exactly. Required label on every token row: **per-step observation payload,
 launch step excluded (n = 155 of 255 steps), oracle assertion query excluded.**
 
-| Statistic | N | B1 | B2 | O1 | O2 | O3 | O4 | O5 |
-|---|---|---|---|---|---|---|---|---|
-| success, exclusions-as-failures | 100 runs | 98 | 99 | 99 | 99 | 97 | 98 | 99 |
-| cluster bootstrap 95 %, n=20 tasks, B=10 000 | 20 | [94,100] | [97,100] | [97,100] | [97,100] | [92,100] | [95,100] | [97,100] |
-| obs tokens/step o200k p50 | 155 | 657 | 627 | 138 | 54 | 598 | 22 | 29 |
-| obs tokens/step o200k p95 | 155 | 4161 | 4510 | 515 | 515 | 4510 | 110 | 110 |
-| obs tokens/step chars/4 p50 | 155 | 473 | 447 | 77 | 33 | 397 | 20 | 24 |
-| obs RTT ms/step p50 | 155 | 503 | 90 | 4 | 3 | 87 | 44 | 46 |
+| Statistic                                    | N        | B1       | B2       | O1       | O2       | O3       | O4       | O5       |
+| -------------------------------------------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| success, exclusions-as-failures              | 100 runs | 98       | 99       | 99       | 99       | 97       | 98       | 99       |
+| cluster bootstrap 95 %, n=20 tasks, B=10 000 | 20       | [94,100] | [97,100] | [97,100] | [97,100] | [92,100] | [95,100] | [97,100] |
+| obs tokens/step o200k p50                    | 155      | 657      | 627      | 138      | 54       | 598      | 22       | 29       |
+| obs tokens/step o200k p95                    | 155      | 4161     | 4510     | 515      | 515      | 4510     | 110      | 110      |
+| obs tokens/step chars/4 p50                  | 155      | 473      | 447      | 77       | 33       | 397      | 20       | 24       |
+| obs RTT ms/step p50                          | 155      | 503      | 90       | 4        | 3        | 87       | 44       | 46       |
 
 - **O5 navigate-to, over all 60 attempted known-target taps:** routed **45**,
   mis-landed **0**, diverged-after-tap **0**, no-route **15** (ambiguous-target

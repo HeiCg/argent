@@ -12,7 +12,14 @@ import {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-type CustomEvent = { type: "Down" | "Move" | "Up"; x: number; y: number; x2?: number; y2?: number; delayMs?: number };
+type CustomEvent = {
+  type: "Down" | "Move" | "Up";
+  x: number;
+  y: number;
+  x2?: number;
+  y2?: number;
+  delayMs?: number;
+};
 
 /**
  * Map a custom event list to synchronized open-server pointer paths, or null
@@ -43,7 +50,12 @@ function toOpenPointerPaths(events: CustomEvent[]): NormalizedPointerPath[] | nu
       return null;
     }
   }
-  return twoFinger ? [{ id: 0, points: p0 }, { id: 1, points: p1 }] : [{ id: 0, points: p0 }];
+  return twoFinger
+    ? [
+        { id: 0, points: p0 },
+        { id: 1, points: p1 },
+      ]
+    : [{ id: 0, points: p0 }];
 }
 
 const eventSchema = z.object({
@@ -103,14 +115,14 @@ const capability: ToolCapability = {
 
 export function createGestureCustomTool(registry: Registry): ToolDefinition<Params, Result> {
   return {
-  id: "gesture-custom",
-  interaction: {
-    startedMsg: () => "Performing custom gesture",
-    completedMsg: () => "Performed custom gesture",
-    failedMsg: ({ failureSignal }) =>
-      `Failed to perform custom gesture: ${failureSignal.error_code}`,
-  },
-  description: `Send a sequence of touch events for complex gestures.
+    id: "gesture-custom",
+    interaction: {
+      startedMsg: () => "Performing custom gesture",
+      completedMsg: () => "Performed custom gesture",
+      failedMsg: ({ failureSignal }) =>
+        `Failed to perform custom gesture: ${failureSignal.error_code}`,
+    },
+    description: `Send a sequence of touch events for complex gestures.
 Use for: long press, drag-and-drop, custom scroll, pinch (second touch point).
 For simple taps use the gesture-tap tool. For straight-line scrolling use the gesture-swipe tool.
 For pinch gestures use gesture-pinch. For rotation gestures use gesture-rotate.
@@ -130,57 +142,57 @@ Example pinch-to-zoom (with interpolate:10 for smoothness):
   events: [{"type":"Down","x":0.4,"y":0.5,"x2":0.6,"y2":0.5},
            {"type":"Up","x":0.2,"y":0.5,"x2":0.8,"y2":0.5}]
   interpolate: 10`,
-  zodSchema,
-  capability,
-  services: (params): Record<string, ServiceRef> => {
-    const device = resolveDevice(params.udid);
-    // Skip the proprietary server when the open path is active; resolved lazily
-    // in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
-    if (shouldUseOpenServer(device)) return {};
-    return { simulatorServer: simulatorServerRef(device) };
-  },
-  async execute(services, params) {
-    const device = resolveDevice(params.udid);
-    const events =
-      params.interpolate && params.interpolate > 0
-        ? interpolateEvents(params.events, params.interpolate)
-        : params.events;
+    zodSchema,
+    capability,
+    services: (params): Record<string, ServiceRef> => {
+      const device = resolveDevice(params.udid);
+      // Skip the proprietary server when the open path is active; resolved lazily
+      // in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
+      if (shouldUseOpenServer(device)) return {};
+      return { simulatorServer: simulatorServerRef(device) };
+    },
+    async execute(services, params) {
+      const device = resolveDevice(params.udid);
+      const events =
+        params.interpolate && params.interpolate > 0
+          ? interpolateEvents(params.events, params.interpolate)
+          : params.events;
 
-    if (shouldUseOpenServer(device)) {
-      const pointers = toOpenPointerPaths(events as CustomEvent[]);
-      // Only route a gesture the injector can represent one-for-one; anything
-      // irregular falls through to the simulator-server event train.
-      if (pointers) {
-        try {
-          await openServerGesture(registry, device, pointers);
-          return { events: events.length };
-        } catch (err) {
-          console.debug(
-            `[gesture-custom] open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+      if (shouldUseOpenServer(device)) {
+        const pointers = toOpenPointerPaths(events as CustomEvent[]);
+        // Only route a gesture the injector can represent one-for-one; anything
+        // irregular falls through to the simulator-server event train.
+        if (pointers) {
+          try {
+            await openServerGesture(registry, device, pointers);
+            return { events: events.length };
+          } catch (err) {
+            console.debug(
+              `[gesture-custom] open-device-server failed, falling back to simulator-server: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+          }
         }
       }
-    }
 
-    const ref = simulatorServerRef(device);
-    const api = shouldUseOpenServer(device)
-      ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
-      : (services.simulatorServer as SimulatorServerApi);
+      const ref = simulatorServerRef(device);
+      const api = shouldUseOpenServer(device)
+        ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+        : (services.simulatorServer as SimulatorServerApi);
 
-    for (const event of events) {
-      await sleep(event.delayMs ?? 16);
-      await sendCommand(api, {
-        cmd: "touch",
-        type: event.type,
-        x: event.x,
-        y: event.y,
-        second_x: event.x2 ?? null,
-        second_y: event.y2 ?? null,
-      });
-    }
-    return { events: events.length };
-  },
+      for (const event of events) {
+        await sleep(event.delayMs ?? 16);
+        await sendCommand(api, {
+          cmd: "touch",
+          type: event.type,
+          x: event.x,
+          y: event.y,
+          second_x: event.x2 ?? null,
+          second_y: event.y2 ?? null,
+        });
+      }
+      return { events: events.length };
+    },
   };
 }

@@ -27,24 +27,24 @@ screenshot. Node `bounds` are `{x1,y1,x2,y2}` in screen points.
 
 ## Methods (iOS-1)
 
-| method | params | result |
-|---|---|---|
-| `ping` | — | `{status:"ok"}` |
-| `getInfo` | — | `{bundleId, orientation, keyboardVisible, screenWidth, screenHeight, scale, version}` |
-| `getScreenSize` | — | `{screenWidth, screenHeight, scale}` |
-| `getState` | `includeScreenshot?`, `maxElements?` (1500) | `{tree, truncated, info, version, timings, screenshot?}` |
-| `getNestedState` | `maxElements?` | as `getState`, never a screenshot |
-| `tap` | `x, y, clickCount?, holdMs?, gapMs?` | `{success, dropped:false, dropReporting:"unsupported"}` |
-| `longPress` | `x, y, durationMs?` | `{success}` |
-| `swipe` | `startX, startY, endX, endY, steps?, holdEndMs?, durationMs?` | `{success}` |
-| `typeText` | `text` | `{success, charsTyped}` |
-| `key` | `key` (return/delete/escape or home/volumeUp/volumeDown/actionButton) | `{success}` |
-| `screenshot` | `format?` (png/jpeg), `quality?`, `scale?` | `{data, mimeType, width, height}` |
-| `launchApp` | `bundleId` | `{success, bundleId}` |
-| `terminateApp` | `bundleId?` | `{success, bundleId}` |
-| `flushInput` | — | `{success}` (ack no-op) |
-| `batch` | `actions:[{method,params}]` | `{results:[…]}` |
-| `shutdown` | — | `{status:"ok"}`, then the session ends |
+| method           | params                                                                | result                                                                                |
+| ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `ping`           | —                                                                     | `{status:"ok"}`                                                                       |
+| `getInfo`        | —                                                                     | `{bundleId, orientation, keyboardVisible, screenWidth, screenHeight, scale, version}` |
+| `getScreenSize`  | —                                                                     | `{screenWidth, screenHeight, scale}`                                                  |
+| `getState`       | `includeScreenshot?`, `maxElements?` (1500)                           | `{tree, truncated, info, version, timings, screenshot?}`                              |
+| `getNestedState` | `maxElements?`                                                        | as `getState`, never a screenshot                                                     |
+| `tap`            | `x, y, clickCount?, holdMs?, gapMs?`                                  | `{success, dropped:false, dropReporting:"unsupported"}`                               |
+| `longPress`      | `x, y, durationMs?`                                                   | `{success}`                                                                           |
+| `swipe`          | `startX, startY, endX, endY, steps?, holdEndMs?, durationMs?`         | `{success}`                                                                           |
+| `typeText`       | `text`                                                                | `{success, charsTyped}`                                                               |
+| `key`            | `key` (return/delete/escape or home/volumeUp/volumeDown/actionButton) | `{success}`                                                                           |
+| `screenshot`     | `format?` (png/jpeg), `quality?`, `scale?`                            | `{data, mimeType, width, height}`                                                     |
+| `launchApp`      | `bundleId`                                                            | `{success, bundleId}`                                                                 |
+| `terminateApp`   | `bundleId?`                                                           | `{success, bundleId}`                                                                 |
+| `flushInput`     | —                                                                     | `{success}` (ack no-op)                                                               |
+| `batch`          | `actions:[{method,params}]`                                           | `{results:[…]}`                                                                       |
+| `shutdown`       | —                                                                     | `{status:"ok"}`, then the session ends                                                |
 
 `tree` is the **nested** shape: each node is
 `{type, label?, identifier?, value?, bounds{x1,y1,x2,y2}, enabled, hittable,

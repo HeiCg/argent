@@ -121,14 +121,14 @@ floor, no ratio fired.
 
 ### Self-test (uia-A vs uia-B, ±5 % of pooled median per cell, n≥12 both) — the decision
 
-| cell | uia-A med (n) | uia-B med (n) | pooled med | \|A−B\| | tol (5 %) | relDev | perm p | verdict |
-|---|---|---|---|---|---|---|---|---|
-| 150/0.3 | 613.5 (16) | 771.4 (16) | 746.4 | 157.9 | 37.3 | **0.212** | 0.394 | **FAIL** |
-| 150/0.5 | 1010.885 (16) | 1010.885 (16) | 1010.885 | 0 | 50.5 | 0.000 | 1.00 | OK* |
-| 250/0.3 | 712.0 (16) | 847.0 (16) | 775.5 | 135.0 | 38.8 | **0.174** | 0.469 | **FAIL** |
-| 250/0.5 | 854.0 (16) | 953.9 (16) | 893.5 | 100.0 | 44.7 | **0.112** | 0.548 | **FAIL** |
-| 400/0.3 | 694.5 (16) | 743.5 (16) | 732.5 | 49.0 | 36.6 | **0.067** | 0.525 | **FAIL** |
-| 400/0.5 | 916.0 (16) | 608.0 (16) | 867.5 | 308.0 | 43.4 | **0.355** | 0.437 | **FAIL** |
+| cell    | uia-A med (n) | uia-B med (n) | pooled med | \|A−B\| | tol (5 %) | relDev    | perm p | verdict  |
+| ------- | ------------- | ------------- | ---------- | ------- | --------- | --------- | ------ | -------- |
+| 150/0.3 | 613.5 (16)    | 771.4 (16)    | 746.4      | 157.9   | 37.3      | **0.212** | 0.394  | **FAIL** |
+| 150/0.5 | 1010.885 (16) | 1010.885 (16) | 1010.885   | 0       | 50.5      | 0.000     | 1.00   | OK\*     |
+| 250/0.3 | 712.0 (16)    | 847.0 (16)    | 775.5      | 135.0   | 38.8      | **0.174** | 0.469  | **FAIL** |
+| 250/0.5 | 854.0 (16)    | 953.9 (16)    | 893.5      | 100.0   | 44.7      | **0.112** | 0.548  | **FAIL** |
+| 400/0.3 | 694.5 (16)    | 743.5 (16)    | 732.5      | 49.0    | 36.6      | **0.067** | 0.525  | **FAIL** |
+| 400/0.5 | 916.0 (16)    | 608.0 (16)    | 867.5      | 308.0   | 43.4      | **0.355** | 0.437  | **FAIL** |
 
 \* 150/0.5 is end-of-list **saturation**, not reproducibility: every arm (OFF,
 input-manager, uiautomation, uia-A, uia-B) reads exactly **1010.885 px** — the fling ran
@@ -136,7 +136,7 @@ the Settings list to its bottom, so the measurable ROI displacement is capped th
 
 **SELF-TEST VERDICT: INSTRUMENT-UNRESOLVED** — two identical-code arms diverge 7–35 % on
 the five non-saturated cells. The permutation p per cell is non-significant (0.39–0.55),
-i.e. the divergence is not *demonstrated* significant at n=16 — it demonstrates that the
+i.e. the divergence is not _demonstrated_ significant at n=16 — it demonstrates that the
 underlying **fling distance on this emulator is not reproducible enough** to grade a
 ±0.15 arm difference (the same class of finding review 3N1-M7 flagged for the old metric,
 now shown with an uncensored metric and the raw distributions). Per the pre-registered
@@ -144,14 +144,14 @@ rule and the ticket, **no arm is graded and we STOP — no second run to "get a 
 
 ### Per cell-arm raw offset median + IQR + n (drops = 0 everywhere)
 
-| cell | OFF | ON-input-manager | ON-uiautomation | uia-A | uia-B |
-|---|---|---|---|---|---|
-| 150/0.3 | 624.0 [523,911] | 937.0 [700,1055] | 748.0 [475,844] | 613.5 [483,903] | 771.4 [518,1011] |
+| cell    | OFF                | ON-input-manager   | ON-uiautomation    | uia-A              | uia-B              |
+| ------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| 150/0.3 | 624.0 [523,911]    | 937.0 [700,1055]   | 748.0 [475,844]    | 613.5 [483,903]    | 771.4 [518,1011]   |
 | 150/0.5 | 1010.9 [1011,1011] | 1010.9 [1011,1011] | 1010.9 [1011,1011] | 1010.9 [1000,1011] | 1010.9 [1011,1011] |
-| 250/0.3 | 1021.0 [868,1087] | 964.0 [829,1011] | 991.0 [713,1035] | 712.0 [544,1011] | 847.0 [698,1064] |
-| 250/0.5 | 758.5 [444,937] | 884.9 [669,1006] | 681.9 [485,1022] | 854.0 [585,1011] | 953.9 [746,1011] |
-| 400/0.3 | 840.5 [711,877] | 732.0 [661,785] | 731.0 [679,764] | 694.5 [519,808] | 743.5 [633,793] |
-| 400/0.5 | 369.0 [245,425] | 969.4 [382,1112] | 439.0 [327,1077] | 916.0 [602,1011] | 608.0 [254,1011] |
+| 250/0.3 | 1021.0 [868,1087]  | 964.0 [829,1011]   | 991.0 [713,1035]   | 712.0 [544,1011]   | 847.0 [698,1064]   |
+| 250/0.5 | 758.5 [444,937]    | 884.9 [669,1006]   | 681.9 [485,1022]   | 854.0 [585,1011]   | 953.9 [746,1011]   |
+| 400/0.3 | 840.5 [711,877]    | 732.0 [661,785]    | 731.0 [679,764]    | 694.5 [519,808]    | 743.5 [633,793]    |
+| 400/0.5 | 369.0 [245,425]    | 969.4 [382,1112]   | 439.0 [327,1077]   | 916.0 [602,1011]   | 608.0 [254,1011]   |
 
 n=16, drops=0 for every cell-arm (px, IQR = [q25, q75]).
 
@@ -160,7 +160,7 @@ n=16, drops=0 for every cell-arm (px, IQR = [q25, q75]).
 - **Arm gate (ON/OFF ±0.15, report-only) + paired permutation p:** NOT computed. The
   self-test failed, so per the pre-registration no arm is graded.
 - **Does `input-manager` under-scroll vs proprietary on this metric?** Cannot be answered
-  (instrument unresolved). Descriptively — NOT a graded finding — input-manager did *not*
+  (instrument unresolved). Descriptively — NOT a graded finding — input-manager did _not_
   under-scroll: its medians sit at or ABOVE OFF in most cells (150/0.3 937 vs 624; 250/0.5
   885 vs 758; 400/0.5 969 vs 369), the opposite of an under-scroll, but the IQRs overlap
   entirely and the instrument is unresolved, so no claim is made.
@@ -172,11 +172,11 @@ n=16, drops=0 for every cell-arm (px, IQR = [q25, q75]).
 ### Disposition
 
 Fling stays **OPEN**, pinned to **34813849446**. No scoreboard row enters. The one
-sentence this run may add after adversarial review: *"a rebuilt, uncensored optical
+sentence this run may add after adversarial review: _"a rebuilt, uncensored optical
 scroll metric (proven ±1 px on synthetic images, 0 clamp/floor/ratio, 0 refused samples
 on-device) still fails a per-sample-interleaved same-code A/B self-test — identical arms
 diverge 7–35 % of the median (perm p 0.39–0.55) — so the emulator's fling distance is not
 reproducible enough at N=16 to grade a ±0.15 arm difference; INSTRUMENT-UNRESOLVED, no arm
-graded."* Next options for a future ticket (not this one): much larger N per cell, or a
+graded."_ Next options for a future ticket (not this one): much larger N per cell, or a
 different, more deterministic scroll target than the momentum fling (the variance is in
 the fling physics, not the metric).

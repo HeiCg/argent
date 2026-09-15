@@ -34,7 +34,12 @@ interface StoreDoc {
 }
 interface RootTree {
   screen: { width: number; height: number };
-  nodes: Array<{ id?: string; text?: string; cd?: string; bounds: { x1: number; y1: number; x2: number; y2: number } }>;
+  nodes: Array<{
+    id?: string;
+    text?: string;
+    cd?: string;
+    bounds: { x1: number; y1: number; x2: number; y2: number };
+  }>;
 }
 
 const FIX = join(__dirname, "fixtures");
@@ -123,12 +128,16 @@ describe("phase D.1 Fix A — every root→sub edge resolves to ONE row on the c
   // case-insensitive CONTAINS matcher resolveTapPoint sends (like the device).
   const server: any = {
     query: async (sel: { id?: any; text?: any }, opts?: { limit?: number }) => {
-      const val = (m: any): string => (typeof m === "object" && m ? m.contains ?? m.equals ?? "" : m ?? "");
+      const val = (m: any): string =>
+        typeof m === "object" && m ? (m.contains ?? m.equals ?? "") : (m ?? "");
       const idm = val(sel.id).toLowerCase();
       const tm = val(sel.text).toLowerCase();
       const matched = rootTree.nodes.filter((n) => {
         if (sel.id) return (n.id ?? "").toLowerCase().includes(idm);
-        if (sel.text) return (n.text ?? "").toLowerCase().includes(tm) || (n.cd ?? "").toLowerCase().includes(tm);
+        if (sel.text)
+          return (
+            (n.text ?? "").toLowerCase().includes(tm) || (n.cd ?? "").toLowerCase().includes(tm)
+          );
         return false;
       });
       return { nodes: matched.slice(0, opts?.limit ?? 20) };
@@ -202,15 +211,35 @@ describe("phase D.1 Fix A — every root→sub edge resolves to ONE row on the c
 
 describe("phase D.2 HIGH-1 — store duplicate-screen invariant", () => {
   function freshStore(): ScreenGraphStore {
-    return new ScreenGraphStore({ packageName: "com.test", versionCode: "1", now: () => NOW, debounceMs: 1_000_000 });
+    return new ScreenGraphStore({
+      packageName: "com.test",
+      versionCode: "1",
+      now: () => NOW,
+      debounceMs: 1_000_000,
+    });
   }
 
   it("duplicateScreens() flags two nodes with identical compact + resourceIds + stateHash", () => {
     const s = freshStore();
     // Two different H_id keys for one screen — the transient-node bug.
-    s.upsertNode({ hash: "idA", compact: "NET-INTERNET", stateHash: "t1", resourceIds: ["title", "recycler_view"] });
-    s.upsertNode({ hash: "idB", compact: "NET-INTERNET", stateHash: "t1", resourceIds: ["title", "recycler_view"] });
-    s.upsertNode({ hash: "idC", compact: "SOUND", stateHash: "t2", resourceIds: ["title", "seekbar"] });
+    s.upsertNode({
+      hash: "idA",
+      compact: "NET-INTERNET",
+      stateHash: "t1",
+      resourceIds: ["title", "recycler_view"],
+    });
+    s.upsertNode({
+      hash: "idB",
+      compact: "NET-INTERNET",
+      stateHash: "t1",
+      resourceIds: ["title", "recycler_view"],
+    });
+    s.upsertNode({
+      hash: "idC",
+      compact: "SOUND",
+      stateHash: "t2",
+      resourceIds: ["title", "seekbar"],
+    });
     const dups = s.duplicateScreens();
     s.dispose();
     expect(dups.length).toBe(1);
@@ -251,7 +280,12 @@ describe("phase D.2 HIGH-1 — store duplicate-screen invariant", () => {
 
 describe("phase D.3 (D2-M2) — edge-destination invariant", () => {
   function freshStore(): ScreenGraphStore {
-    return new ScreenGraphStore({ packageName: "com.test", versionCode: "1", now: () => NOW, debounceMs: 1_000_000 });
+    return new ScreenGraphStore({
+      packageName: "com.test",
+      versionCode: "1",
+      now: () => NOW,
+      debounceMs: 1_000_000,
+    });
   }
 
   it("duplicateEdgeTargets() flags one (from, action) with two destinations", () => {
@@ -259,7 +293,9 @@ describe("phase D.3 (D2-M2) — edge-destination invariant", () => {
     const action = { kind: "tap" as const, target: { text: "Apps" } };
     s.observe("root", action, "apps", { success: true }); // real edge
     s.observe("root", action, "root", { success: true }); // competing self-edge (bug)
-    s.observe("root", { kind: "tap" as const, target: { text: "Battery" } }, "battery", { success: true });
+    s.observe("root", { kind: "tap" as const, target: { text: "Battery" } }, "battery", {
+      success: true,
+    });
     const dups = s.duplicateEdgeTargets();
     s.dispose();
     expect(dups.length).toBe(1);

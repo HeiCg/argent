@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { activityShortName, deriveLabel, titleText, type LabelNode } from "../src/screen-graph/label";
+import {
+  activityShortName,
+  deriveLabel,
+  titleText,
+  type LabelNode,
+} from "../src/screen-graph/label";
 
 const b = (y1: number, y2: number): LabelNode["bounds"] => ({ x1: 0, y1, x2: 1000, y2 });
 
@@ -45,7 +50,13 @@ describe("deriveLabel", () => {
   it("combines activity short name and title", () => {
     const label = deriveLabel({
       activity: "com.android.settings.SubSettings",
-      nodes: [{ id: "com.android.settings:id/action_bar", text: "Network & internet", bounds: b(40, 120) }],
+      nodes: [
+        {
+          id: "com.android.settings:id/action_bar",
+          text: "Network & internet",
+          bounds: b(40, 120),
+        },
+      ],
       screenHeight: 1920,
     });
     expect(label).toBe("SubSettings: Network & internet");

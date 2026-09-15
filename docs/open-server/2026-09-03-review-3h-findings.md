@@ -28,14 +28,14 @@ runs 33790646124 and 33804707586. `await-ui-element` used `selector="Settings"`
 `ensureSettings` at `bench-open-vs-proprietary.ts:1061`. OFF-2 of the same run
 carries `"paste: could not locate Settings search field; measured on current focus"`
 with paste p50 **71** ms vs 480–850 elsewhere. Both OFF blocks were on the wrong
-screen for part of the block. *Fix:* rerun; do not quote OFF rows from this run.
+screen for part of the block. _Fix:_ rerun; do not quote OFF rows from this run.
 
 **A2 — HIGH — the effect gate passes vacuously on an unarmed block.**
 `.github/bench-ci/scoreboard.js:159-168` prints only the numerator ("no-effect taps
 | 0") and computes `effect gate … PASS` from `effectZeroByBlock` alone. OFF-1 and
 OFF-2 rendered "0" while truly 0/0. `merge-blocks.js:74-82` gates only
 `effectZeroTotal > 0` on ON blocks; nothing requires `effectCheckedTotal > 0`
-anywhere. *Fix:* print `zero/checked`; gate on `checked > 0 && zero === 0`.
+anywhere. _Fix:_ print `zero/checked`; gate on `checked > 0 && zero === 0`.
 
 **A3 — HIGH — "the proprietary root did not yield a parseable nav target" is a
 description, not a cause; the derive is flaky, not structurally OFF-only.**
@@ -171,16 +171,16 @@ per-cell 2/6 out of tolerance, gate non-blocking".
 
 Statistic p50/p95 in ms. **Every row below must carry its run id and label.**
 
-| claim | value | block | N | run | label required |
-| --- | --- | --- | --- | --- | --- |
-| gesture-tap, open scrcpy | **51 / 52** | ON-scrcpy | 20 | 33812265077 | effect-checked 20/20, fallbacks 0 |
-| gesture-tap, open UiAutomation | **83 / 125** | ON-uiautomation | 20 | 33812265077 | effect-checked 20/20 |
-| gesture-tap, proprietary | **53 / 61** | OFF-2 | 20 | **33804707586** | effect-checked 0/40, target "Network & internet" |
-| tap+describe, proprietary | **645 / 1194** | OFF-2 | 20 | **33804707586** | destination-visible 0/20 |
-| tap+describe settle:false, open uia | **638 / 890** | ON-uiautomation | 20 | **33804707586** | destination-visible 0/20 |
-| tap+describe settle:false, open scrcpy | **571 / 725** | ON-scrcpy | 20 | **33804707586** | destination-visible 0/20 |
-| fling parity | aggregate median **1.000** | — | 12/cell | 33812265077 | 6 informative cells, **2 outside ±0.15**, gate non-blocking |
-| device suite | **17/17** | — | — | 33812265077 | enforced by the `if: always()` gate |
+| claim                                  | value                      | block           | N       | run             | label required                                              |
+| -------------------------------------- | -------------------------- | --------------- | ------- | --------------- | ----------------------------------------------------------- |
+| gesture-tap, open scrcpy               | **51 / 52**                | ON-scrcpy       | 20      | 33812265077     | effect-checked 20/20, fallbacks 0                           |
+| gesture-tap, open UiAutomation         | **83 / 125**               | ON-uiautomation | 20      | 33812265077     | effect-checked 20/20                                        |
+| gesture-tap, proprietary               | **53 / 61**                | OFF-2           | 20      | **33804707586** | effect-checked 0/40, target "Network & internet"            |
+| tap+describe, proprietary              | **645 / 1194**             | OFF-2           | 20      | **33804707586** | destination-visible 0/20                                    |
+| tap+describe settle:false, open uia    | **638 / 890**              | ON-uiautomation | 20      | **33804707586** | destination-visible 0/20                                    |
+| tap+describe settle:false, open scrcpy | **571 / 725**              | ON-scrcpy       | 20      | **33804707586** | destination-visible 0/20                                    |
+| fling parity                           | aggregate median **1.000** | —               | 12/cell | 33812265077     | 6 informative cells, **2 outside ±0.15**, gate non-blocking |
+| device suite                           | **17/17**                  | —               | —       | 33812265077     | enforced by the `if: always()` gate                         |
 
 **VOID from run 33812265077:** every OFF row (A1). Specifically void as a proprietary
 baseline: gesture-tap 53/59 and 53/60, tap+describe 640/1077 and 598/828,
@@ -205,7 +205,7 @@ In `packages/tool-server/scripts/bench-open-vs-proprietary.ts`:
 1. **Derive the target off a source independent of the backend under test.**
    Replace the `reg.invokeTool("describe")` at `:664` (root) and `:694` (settled
    destination) with an untimed helper that reads `adb -s $SERIAL shell uiautomator
-   dump /dev/tty`, matches `NAV_CANDIDATES` against `text=`/`content-desc=`, and
+dump /dev/tty`, matches `NAV_CANDIDATES` against `text=`/`content-desc=`, and
    converts `bounds=[l,t][r,b]` to normalized centre coordinates. The timed tap keeps
    going through `reg.invokeTool("gesture-tap")` on the proprietary path, so nothing
    about the measurement changes — only the oracle stops depending on the backend

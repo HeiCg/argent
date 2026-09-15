@@ -85,7 +85,13 @@ export function stat(samples: number[]): StageStat {
   const n = samples.length;
   if (n === 0) return { p50: NaN, p95: NaN, mean: NaN, min: NaN, n: 0 };
   const mean = samples.reduce((a, b) => a + b, 0) / n;
-  return { p50: percentile(samples, 50), p95: percentile(samples, 95), mean, min: Math.min(...samples), n };
+  return {
+    p50: percentile(samples, 50),
+    p95: percentile(samples, 95),
+    mean,
+    min: Math.min(...samples),
+    n,
+  };
 }
 
 export interface HostBenchPayload {

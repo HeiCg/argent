@@ -12,7 +12,13 @@ const screen = (label: string, extra: HashNode[] = []): HashNode[] => [
     bounds: { x1: 0, y1: 0, x2: 1080, y2: 1920 },
     children: [
       node({ class: "TextView", text: label, bounds: { x1: 0, y1: 0, x2: 500, y2: 100 } }),
-      node({ class: "Button", id: "next", clickable: true, enabled: true, bounds: { x1: 0, y1: 200, x2: 300, y2: 300 } }),
+      node({
+        class: "Button",
+        id: "next",
+        clickable: true,
+        enabled: true,
+        bounds: { x1: 0, y1: 200, x2: 300, y2: 300 },
+      }),
       ...extra,
     ],
   }),
@@ -30,7 +36,9 @@ describe("flatten", () => {
 describe("diffTrees", () => {
   it("reports an added node", () => {
     const a = screen("A");
-    const b = screen("A", [node({ class: "TextView", text: "extra", bounds: { x1: 0, y1: 400, x2: 500, y2: 500 } })]);
+    const b = screen("A", [
+      node({ class: "TextView", text: "extra", bounds: { x1: 0, y1: 400, x2: 500, y2: 500 } }),
+    ]);
     const d = diffTrees(a, b);
     expect(d.added.map((n) => n.path)).toEqual([[0, 2]]);
     expect(d.added[0]!.text).toBe("extra");
@@ -39,7 +47,9 @@ describe("diffTrees", () => {
   });
 
   it("reports a removed node by path", () => {
-    const a = screen("A", [node({ class: "TextView", text: "extra", bounds: { x1: 0, y1: 400, x2: 500, y2: 500 } })]);
+    const a = screen("A", [
+      node({ class: "TextView", text: "extra", bounds: { x1: 0, y1: 400, x2: 500, y2: 500 } }),
+    ]);
     const b = screen("A");
     const d = diffTrees(a, b);
     expect(d.removed).toEqual([[0, 2]]);
@@ -69,12 +79,28 @@ describe("patch(a, diff(a,b)) deep-equals flatten(b)", () => {
   const cases: Array<[string, HashNode[], HashNode[]]> = [
     ["identity", screen("A"), screen("A")],
     ["text change", screen("Pending"), screen("Done")],
-    ["add node", screen("A"), screen("A", [node({ class: "TextView", text: "x", bounds: { x1: 0, y1: 400, x2: 9, y2: 500 } })])],
-    ["remove node", screen("A", [node({ class: "TextView", text: "x", bounds: { x1: 0, y1: 400, x2: 9, y2: 500 } })]), screen("A")],
+    [
+      "add node",
+      screen("A"),
+      screen("A", [
+        node({ class: "TextView", text: "x", bounds: { x1: 0, y1: 400, x2: 9, y2: 500 } }),
+      ]),
+    ],
+    [
+      "remove node",
+      screen("A", [
+        node({ class: "TextView", text: "x", bounds: { x1: 0, y1: 400, x2: 9, y2: 500 } }),
+      ]),
+      screen("A"),
+    ],
     [
       "mixed add/remove/change",
-      screen("Pending", [node({ class: "ImageView", id: "old", bounds: { x1: 0, y1: 500, x2: 50, y2: 550 } })]),
-      screen("Done", [node({ class: "ProgressBar", id: "new", bounds: { x1: 0, y1: 600, x2: 50, y2: 650 } })]),
+      screen("Pending", [
+        node({ class: "ImageView", id: "old", bounds: { x1: 0, y1: 500, x2: 50, y2: 550 } }),
+      ]),
+      screen("Done", [
+        node({ class: "ProgressBar", id: "new", bounds: { x1: 0, y1: 600, x2: 50, y2: 650 } }),
+      ]),
     ],
     ["empty to populated", [], screen("Fresh")],
     ["populated to empty", screen("Gone"), []],

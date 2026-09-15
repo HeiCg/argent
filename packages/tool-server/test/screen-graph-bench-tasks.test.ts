@@ -123,7 +123,10 @@ describe("screen-graph bench tasks", () => {
         id: "bad",
         app: "settings",
         description: "navTarget == assertion",
-        steps: [{ action: { kind: "launch" } }, { action: { kind: "tap", selector: { text: "X" } } }],
+        steps: [
+          { action: { kind: "launch" } },
+          { action: { kind: "tap", selector: { text: "X" } } },
+        ],
         assertion: { text: "Y" },
         navTarget: { text: "Y" },
       },

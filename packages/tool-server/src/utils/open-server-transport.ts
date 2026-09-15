@@ -70,10 +70,16 @@ export function decideTransport(opts: {
   redirOk: boolean;
 }): TransportDecision {
   if (!isEmulatorSerial(opts.serial)) {
-    return { transport: "adb-forward", reason: `physical device (serial '${opts.serial}' is not emulator-N)` };
+    return {
+      transport: "adb-forward",
+      reason: `physical device (serial '${opts.serial}' is not emulator-N)`,
+    };
   }
   if (opts.allPort === undefined) {
-    return { transport: "adb-forward", reason: "server has no 0.0.0.0 listener (emulator bind not active)" };
+    return {
+      transport: "adb-forward",
+      reason: "server has no 0.0.0.0 listener (emulator bind not active)",
+    };
   }
   if (!opts.tokenExists) {
     return { transport: "adb-forward", reason: "no emulator console auth token file" };
@@ -168,6 +174,10 @@ export async function redirAdd(
 }
 
 /** `redir del tcp:<hostPort>` over the emulator console (best-effort cleanup). */
-export async function redirDel(consolePort: number, hostPort: number, token: string): Promise<void> {
+export async function redirDel(
+  consolePort: number,
+  hostPort: number,
+  token: string
+): Promise<void> {
   await emulatorConsole(consolePort, [`redir del tcp:${hostPort}`], token);
 }

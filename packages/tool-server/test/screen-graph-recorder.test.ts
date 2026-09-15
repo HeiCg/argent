@@ -59,7 +59,11 @@ describe("recordObservation", () => {
 
   it("marks the target redacted when a secret preceded the observation", async () => {
     const s = store();
-    const fetchScreen = vi.fn(async () => ({ compact: "should-not-persist", stateHash: "st", index: {} }));
+    const fetchScreen = vi.fn(async () => ({
+      compact: "should-not-persist",
+      stateHash: "st",
+      index: {},
+    }));
     await recordObservation({
       store: s,
       action: { kind: "typeText" },
@@ -99,7 +103,11 @@ describe("recordObservation — empty-tree guard (3M-H1)", () => {
       action: INTERNET_TAP,
       // `284ef0302b28c5de` is the real origin; `b2fbe9151b60b485` the empty-frame id.
       before: { hash: "284ef0302b28c5de" },
-      after: { hash: "b2fbe9151b60b485", stateHash: EMPTY_TREE_HASH, structuralHash: EMPTY_TREE_HASH },
+      after: {
+        hash: "b2fbe9151b60b485",
+        stateHash: EMPTY_TREE_HASH,
+        structuralHash: EMPTY_TREE_HASH,
+      },
       fetchScreen,
     });
     // No node minted, no edge recorded, no fetch — the empty frame is not a screen.
@@ -131,7 +139,12 @@ describe("recordObservation — empty-tree guard (3M-H1)", () => {
       action: INTERNET_TAP,
       before: { hash: "284ef0302b28c5de" },
       after: { hash: "af75c426f98239d2", stateHash: "realstate", structuralHash: "realstruct" },
-      fetchScreen: async () => ({ compact: "Internet screen", stateHash: "realstate", structuralHash: "realstruct", index: {} }),
+      fetchScreen: async () => ({
+        compact: "Internet screen",
+        stateHash: "realstate",
+        structuralHash: "realstruct",
+        index: {},
+      }),
     });
     // ...and the empty-frame re-observation of the SAME (from, action) is refused,
     // so the edge keeps exactly one destination (the D.3 invariant stays green).
@@ -139,8 +152,17 @@ describe("recordObservation — empty-tree guard (3M-H1)", () => {
       store: s,
       action: INTERNET_TAP,
       before: { hash: "284ef0302b28c5de" },
-      after: { hash: "b2fbe9151b60b485", stateHash: EMPTY_TREE_HASH, structuralHash: EMPTY_TREE_HASH },
-      fetchScreen: async () => ({ compact: "", stateHash: EMPTY_TREE_HASH, structuralHash: EMPTY_TREE_HASH, index: {} }),
+      after: {
+        hash: "b2fbe9151b60b485",
+        stateHash: EMPTY_TREE_HASH,
+        structuralHash: EMPTY_TREE_HASH,
+      },
+      fetchScreen: async () => ({
+        compact: "",
+        stateHash: EMPTY_TREE_HASH,
+        structuralHash: EMPTY_TREE_HASH,
+        index: {},
+      }),
     });
     expect(s.hasNode("af75c426f98239d2")).toBe(true);
     expect(s.hasNode("b2fbe9151b60b485")).toBe(false);

@@ -18,10 +18,7 @@ vi.mock("../src/utils/ios-devices", async (importOriginal) => {
 });
 
 import { describeAndroidViaOpenState } from "../src/utils/open-server-describe";
-import {
-  describeAndroid,
-  settleToWaitTimeoutMs,
-} from "../src/tools/describe/platforms/android";
+import { describeAndroid, settleToWaitTimeoutMs } from "../src/tools/describe/platforms/android";
 import { createAwaitUiElementTool } from "../src/tools/await-ui-element";
 import { resolveDevice } from "../src/utils/device-info";
 import { formatDescribeTree } from "../src/tools/describe/format-tree";
@@ -128,7 +125,9 @@ describe("describeAndroidViaOpenState (T8 helper, F12)", () => {
   it("rejects when getNestedState fails, so the caller can fall back", async () => {
     const openApi = makeOpenApi();
     openApi.getNestedState.mockRejectedValueOnce(new Error("boom"));
-    await expect(describeAndroidViaOpenState(makeRegistry(openApi), device)).rejects.toThrow("boom");
+    await expect(describeAndroidViaOpenState(makeRegistry(openApi), device)).rejects.toThrow(
+      "boom"
+    );
   });
 });
 
@@ -221,16 +220,13 @@ describe("await-ui-element → open-device-server getNestedState (T8)", () => {
     const openApi = makeOpenApi();
     const tool = createAwaitUiElementTool(makeRegistry(openApi));
 
-    const result = await tool.execute(
-      {},
-      {
-        udid: ANDROID_SERIAL,
-        selector: { text: "Login" },
-        condition: "visible",
-        timeoutMs: 1000,
-        pollIntervalMs: 50,
-      } as never
-    );
+    const result = await tool.execute({}, {
+      udid: ANDROID_SERIAL,
+      selector: { text: "Login" },
+      condition: "visible",
+      timeoutMs: 1000,
+      pollIntervalMs: 50,
+    } as never);
 
     expect(result.success).toBe(true);
     expect(openApi.getNestedState).toHaveBeenCalled();

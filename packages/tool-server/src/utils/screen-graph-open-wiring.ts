@@ -10,7 +10,10 @@
  */
 import { isFlagEnabled } from "@argent/configuration-core";
 import type { DeviceInfo } from "@argent/registry";
-import type { OpenDeviceServerApi, OpenServerActionOutcome } from "../blueprints/android-open-server";
+import type {
+  OpenDeviceServerApi,
+  OpenServerActionOutcome,
+} from "../blueprints/android-open-server";
 import { adbShell } from "./adb";
 import {
   EMPTY_TREE_HASH,
@@ -264,7 +267,11 @@ export async function recordOpenServerObservation(
     // (run 33958064084 minted a second "Network & internet: Internet" node that
     // two different taps landed on). The node's content is built from the SAME
     // settled read, so key and content are consistent.
-    const settled = await server.getState({ includeScreenshot: false, waitTimeoutMs: RECORD_SETTLE_TIMEOUT_MS, fingerprints: true });
+    const settled = await server.getState({
+      includeScreenshot: false,
+      waitTimeoutMs: RECORD_SETTLE_TIMEOUT_MS,
+      fingerprints: true,
+    });
     const afterId = settled.idHash;
     // Phase 3m.1 (3M-H1): same empty-tree guard on the settled after-read. The
     // settled `getState` waits for idle, but a screen that stays transient (or a

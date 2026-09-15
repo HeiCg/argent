@@ -61,7 +61,6 @@ export function makeIosImpl(
         try {
           return await typeIosOpenServer(registry, device, params);
         } catch (err) {
-          // eslint-disable-next-line no-console
           console.debug(
             `[keyboard] open ios-device-server failed, falling back to simulator-server: ${
               err instanceof Error ? err.message : String(err)

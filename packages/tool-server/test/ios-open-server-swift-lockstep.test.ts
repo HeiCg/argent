@@ -54,7 +54,10 @@ describe("iOS open-server describe adapter ↔ Swift runner lockstep", () => {
   it("every RUNNER_TYPE_TO_ROLE key is a wire type the runner can emit", () => {
     const wireNames = new Set(typeNames.values());
     for (const key of Object.keys(RUNNER_TYPE_TO_ROLE)) {
-      expect(wireNames.has(key), `RUNNER_TYPE_TO_ROLE key '${key}' is not an emitted wire type`).toBe(true);
+      expect(
+        wireNames.has(key),
+        `RUNNER_TYPE_TO_ROLE key '${key}' is not an emitted wire type`
+      ).toBe(true);
     }
   });
 });

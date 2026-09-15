@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - open/main
     paths:
       - "packages/skills/skills/**/SKILL.md"
       - "scripts/grade-skills.mjs"

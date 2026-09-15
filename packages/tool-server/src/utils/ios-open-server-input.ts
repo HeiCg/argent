@@ -36,7 +36,11 @@ function withServer<T>(
   });
 }
 
-function toPoints(size: { width: number; height: number }, xNorm: number, yNorm: number): { x: number; y: number } {
+function toPoints(
+  size: { width: number; height: number },
+  xNorm: number,
+  yNorm: number
+): { x: number; y: number } {
   return {
     x: Math.max(0, Math.min(1, xNorm)) * size.width,
     y: Math.max(0, Math.min(1, yNorm)) * size.height,
@@ -96,7 +100,11 @@ export function iosOpenServerSwipe(
 }
 
 /** Type text into the focused input via the open iOS server. */
-export function iosOpenServerTypeText(registry: Registry, device: DeviceInfo, text: string): Promise<void> {
+export function iosOpenServerTypeText(
+  registry: Registry,
+  device: DeviceInfo,
+  text: string
+): Promise<void> {
   const ref = iosOpenServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
@@ -105,7 +113,11 @@ export function iosOpenServerTypeText(registry: Registry, device: DeviceInfo, te
 }
 
 /** Press a named key (return/delete/escape) or hardware button. */
-export function iosOpenServerKey(registry: Registry, device: DeviceInfo, key: string): Promise<void> {
+export function iosOpenServerKey(
+  registry: Registry,
+  device: DeviceInfo,
+  key: string
+): Promise<void> {
   const ref = iosOpenServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
@@ -126,7 +138,10 @@ export function captureIosScreenshotViaOpenServer(
   const ref = iosOpenServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
-    const shot = await server.screenshot({ format: "png", ...(scale !== undefined ? { scale } : {}) });
+    const shot = await server.screenshot({
+      format: "png",
+      ...(scale !== undefined ? { scale } : {}),
+    });
     const bytes = Buffer.from(shot.data, "base64");
     const file = path.join(
       os.tmpdir(),
@@ -143,12 +158,19 @@ export function captureIosScreenshotViaOpenServer(
  * describe tool uses. Throws on any failure; the caller falls back to the
  * ax-service / native-devtools describe chain.
  */
-export function describeIosViaOpenServer(registry: Registry, device: DeviceInfo): Promise<DescribeTreeData> {
+export function describeIosViaOpenServer(
+  registry: Registry,
+  device: DeviceInfo
+): Promise<DescribeTreeData> {
   const ref = iosOpenServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
     const state = await server.getNestedState({});
-    const tree = openServerIosNestedToDescribeNode(state.tree, state.info.screenWidth, state.info.screenHeight);
+    const tree = openServerIosNestedToDescribeNode(
+      state.tree,
+      state.info.screenWidth,
+      state.info.screenHeight
+    );
     return { tree, source: "xcuitest-runner" };
   });
 }

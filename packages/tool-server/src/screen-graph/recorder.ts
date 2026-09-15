@@ -84,7 +84,11 @@ export async function recordObservation(ctx: ObserveContext): Promise<void> {
     const screen = await ctx.fetchScreen();
     store.upsertNode({
       hash: after.hash,
-      ...(after.structuralHash !== undefined ? { structuralHash: after.structuralHash } : screen.structuralHash !== undefined ? { structuralHash: screen.structuralHash } : {}),
+      ...(after.structuralHash !== undefined
+        ? { structuralHash: after.structuralHash }
+        : screen.structuralHash !== undefined
+          ? { structuralHash: screen.structuralHash }
+          : {}),
       compact: screen.compact,
       stateHash: screen.stateHash,
       ...(screen.version !== undefined ? { version: screen.version } : {}),

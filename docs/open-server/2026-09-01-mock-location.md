@@ -18,8 +18,9 @@ depends on the android-device-server package, so merge `feat/android-open-server
 commits, push, no PR.
 
 Mechanism (real system mock location, not emulator console injection):
+
 1. **On-device server (Kotlin)**: new JSON-RPC method `setMockLocation({latitude,
-   longitude, altitude?, accuracy?})` and `clearMockLocation()`. Implement with
+longitude, altitude?, accuracy?})` and `clearMockLocation()`. Implement with
    `LocationManager.addTestProvider` + `setTestProviderEnabled` +
    `setTestProviderLocation` for both `gps` and `network` providers (the standard
    Android test-provider API). The instrumentation process already runs with a
@@ -37,12 +38,13 @@ Mechanism (real system mock location, not emulator console injection):
    `open-device-server` flag is on and the device kind is `device`. Emulator keeps
    `adb emu geo fix`. Add an optional `clear` path if the schema allows it cheaply;
    otherwise a separate follow-up. Update capability to include `android:{ device:
-   true }` for the server-backed path; document the flag requirement in the
+true }` for the server-backed path; document the flag requirement in the
    description (mind SpiderShield headroom).
 4. Failure codes: `ANDROID_MOCK_LOCATION_FAILED` (+ the appops-missing case mapped
    to a recovery-guidance message). Register in failure-codes.ts.
 
 Tests:
+
 - Kotlin (if JVM-side test setup allows, as P3 established): method parses args,
   builds Location, provider fallback. Otherwise document the gap.
 - TS: tool routes emulator vs physical correctly by device kind + flag; appops
@@ -61,10 +63,11 @@ catalog count unchanged since no new tool id), docs row/skill updated. Push bran
 Dispatch a researcher (separate, parallel) — do NOT implement yet. Question: what
 is the cheapest correct way to set location on a physical iOS device that fits
 argent's stack, NOT device-stream's go-ios?
+
 - iOS <17: `com.apple.dt.simulatelocation` DT service over DeveloperDiskImage.
 - iOS 17+: `DVTLocationSimulation` via RemoteXPC / CoreDevice tunnel.
 - Map against argent's unmerged `origin/feat/ios-physical-devices` branch
-  (XCUITest + usbmux, packages/tool-server/src/utils/ios-device/*): does its
+  (XCUITest + usbmux, packages/tool-server/src/utils/ios-device/\*): does its
   usbmux/devicectl layer already expose or could cheaply expose a location
   service? Is there a `devicectl` location command? Does XCUITest have any
   location API usable from the runner?

@@ -26,6 +26,7 @@ for touch/screen. Same pattern as phase 1: `shouldUseOpenServer(...)` guard,
 try open server, on error log + fall back to legacy.
 
 ## T1 `screenshot` → open server
+
 `tools/screenshot/index.ts:191` resolves `simulatorServerRef` inline. Add the
 open-server branch for Android: call `screenshot` RPC (add to the client API
 in the blueprint; confirm request/response shape from the Kotlin
@@ -33,11 +34,13 @@ ScreenshotHandler — likely `{quality, scale}` → base64 PNG/JPEG). Preserve
 the tool's output contract (format, dimensions metadata). Fallback to SS.
 
 ## T2 `screenshot-diff` live capture → open server
+
 `tools/screenshot-diff/index.ts:121` — reuse T1's capture helper (extract a
 shared `captureAndroidScreenshot(device, services)` util so T1/T2 don't
 duplicate the branch).
 
 ## T3 `gesture-custom` / `gesture-pinch` / `gesture-rotate`
+
 `tools/gesture-custom/index.ts:88`, `gesture-pinch/index.ts:89`,
 `gesture-rotate/index.ts:97`. These need multi-pointer paths. Check whether the
 Kotlin server's `swipe`/gesture support accepts multi-pointer input; if not,
@@ -50,21 +53,25 @@ with a clear TODO + throw `-32601` unimplemented, and document in the report —
 the fallback keeps behaviour intact.
 
 ## T4 `paste` (android) → open server
+
 `tools/paste/platforms/android.ts:33` uses SS. Route to `typeText` RPC (or a
 dedicated `paste` RPC if the server should set clipboard + paste; check the
 Kotlin handler; `typeText` is acceptable for phase 2).
 
 ## T5 `longPress` exposure
+
 Client API already has `longPress`; verify whether any tool exposes a long
 press (`gesture-tap` with duration? `gesture-custom`?). Route it if a tool
 maps to it; otherwise no-op and note it.
 
 ## T6 flow tree adapter
+
 `flows/flow-android-tree.ts:205` still resolves `androidDevtoolsRef` directly.
 Route through the same describe source selection used by
 `tools/describe/platforms/android/index.ts` so flows honour the flag.
 
 ## T7 swipe semantics parity
+
 `tools/gesture-swipe/index.ts:133-156` — open path is one RPC with
 server-side interpolation; `momentum: false` and mid-gesture abort semantics
 of the SS per-frame loop are lost. Either: (a) add `momentum`/`holdEndMs`
@@ -74,6 +81,7 @@ false` and open server lacks support, fall back to SS for that call. Prefer
 (a) if Kotlin is editable; document the choice.
 
 ## T8 `getState` / `batch` usage (latency win)
+
 `await-screen-idle` / `await-ui-element` poll `describe`
 (`utils/poll-describe-tree.ts`). When the open server is active, use
 `waitForIdle` RPC before the first describe read, and use `getState` (idle +
@@ -81,12 +89,14 @@ tree + info in one RTT) where the poll loop currently does describe+info
 separately. Keep output identical.
 
 ## Tests
+
 Follow existing phase-1 test style (find tests for gesture-tap/describe open
 branches under `packages/tool-server/test/`). For each routed tool: flag on →
 open client called with expected args; open client throws → legacy path used
 and a warning logged; flag off → open client never touched.
 
 ## Acceptance
+
 - `packages/tool-server` vitest green; `tsc --noEmit` clean; repo `npm run lint`
   if fast enough.
 - Kotlin: `npm run build:android-device-server` if Android SDK + Java 17

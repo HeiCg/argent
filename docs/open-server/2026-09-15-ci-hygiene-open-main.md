@@ -14,6 +14,7 @@ tsconfig extends `@docusaurus/tsconfig`, not installed in the root `node_modules
 `npm ci` installs it.
 
 ## Work
+
 1. `npm run format` (prettier --write) once on the branch — expect ~156 files; commit as
    one mechanical commit "style: prettier over the open-server work"; no content changes.
    Check that `docs/open-server/*.md` tables survive (prettier reflows markdown; if a
@@ -40,6 +41,7 @@ tsconfig extends `@docusaurus/tsconfig`, not installed in the root `node_modules
    planner already removed the single uncited one).
 
 ## Process
+
 Branch `chore/ci-hygiene-open-main` off `open/main` (HEAD ≥ b5be6a9a), worktree
 `../argent-fork-wt-hygiene` (never /tmp; root `node_modules` symlinked; no npm install /
 gradle / Xcode; vitest `--maxWorkers=2`). Wait for the two bench agents (`wt-ios2`,
@@ -50,3 +52,145 @@ the tree; to avoid conflicts, do NOT format files under `packages/ios-sim-input/
 Polling of hygiene runs: they finish in minutes; one `gh run list -L 10` per 10 min max.
 Append `## Result` here: commits, per-workflow outcome on the branch with run ids, what
 was fixed, files excluded from formatting and why. Do not fast-forward `open/main`.
+
+## Result
+
+Branch `chore/ci-hygiene-open-main` off `open/main` @ `2663f479` (3o merged; HEAD ≥ the 3o
+merge), worktree `../argent-fork-wt-hygiene`, root `node_modules` symlinked, no install/build,
+pushed over SSH, PR #1 → `open/main`. `@docusaurus/tsconfig` is absent from the root
+`node_modules`, so the full `npm run lint` / docs typecheck were deferred to CI as the ticket
+directs; every other verdict below is from the CI run on the branch.
+
+### Commits (ticket order)
+
+1. `286b1a5e` **style: prettier over the open-server work** — `prettier --write .` over the tree.
+   163 files reformatted + `.prettierignore`. No content changes: the ordered multiset of every
+   digit-sequence in every changed doc is identical before/after (benchmark numbers intact) and
+   every results table survived the reflow (verified `2026-09-03-scoreboard.md` and the
+   `configuration.mdx` table). The only non-formatting changes prettier made are emphasis-delimiter
+   normalisation (`*x*`→`_x_`, `__x__`→`**x**`), bare-`*` escaping and bullet-marker/blank-line
+   normalisation.
+2. `fe786c03` **fix(lint): drop unused eslint-disable directives and dead helper** — see below.
+3. `bd0d498c` **ci: fire the hygiene workflows on open/main** — triggers, see below.
+4. `83c8c378` **style: prettier second pass on three non-idempotent files** — `prettier --write .`
+   is not idempotent on `2026-09-03-open-server-phase3h-scrcpy-tap.md`,
+   `2026-09-03-open-vs-proprietary-results-ci.md` and `scripts/bench-open-vs-proprietary.ts`
+   (emphasis-escape interaction + a TS signature reflow), so commit 1's single pass left them one
+   step short and `prettier --check .` still flagged them. Second pass → `prettier --check .` clean
+   tree-wide. No numbers changed.
+
+### Prettier
+
+163 files reformatted (commit 1); 3 of those needed a second pass (commit 4). `.prettierignore`
+gained exactly one entry: `docs/open-server/2026-09-14-ios-phase2-bench.md` — it is owned by the
+in-flight ios-2 agent and unformatted on `open/main`; `Format` runs `prettier --check .` with no
+paths filter, so ignoring it keeps Format green without editing the ios-2 file. No file was ignored
+for table breakage (none broke).
+
+### ESLint fixes
+
+`no-console` is enabled nowhere in `eslint.config.mjs`, and the config sets
+`reportUnusedDisableDirectives: "error"`, so every `// eslint-disable-next-line no-console` in the
+open-server work is an unused-directive error the moment Lint runs on `open/main`. Removed all 30
+(the ticket estimated 3 — the tree grew after the iOS-1 and 3o merges landed): ios-open-server
+`.device.test.ts` (6), android-open-server `.device.test.ts` (8), `scripts/bench-fling-fidelity.ts`
+(5), `blueprints/android-open-server.ts` (3), `.github/bench-ci/run-bench.js` (6),
+`tools/describe/platforms/ios/index.ts` (1), `tools/keyboard/platforms/ios.ts` (1). Also removed the
+dead `quantile` helper in `.github/bench-ci/merge-fling.js` (`no-unused-vars`). Bench-CI gate tests
+still pass 21/21, so the removals are behaviour-neutral.
+
+### Triggers changed per workflow (paths filters unchanged)
+
+- `open/main` added to **both** `push.branches` and `pull_request.branches`: `format.yml`,
+  `lint.yml`, `unit-tests.yml`, `knip.yml`, `lockfile.yml`, `repo-hygiene.yml`, `docs-build.yml`.
+- `open/main` added to `push.branches` only: `tool-description-quality.yml`,
+  `skill-description-quality.yml` — their `pull_request` is paths-only (no `branches` filter), so it
+  already fires for a PR to any base branch, `open/main` included.
+- Bench / device-test workflows (`bench-open-vs-proprietary.yml`, `ios-open-server-device-test.yml`,
+  `e2e-device-smoke.yml`, `wayland-e2e.yml`, `windows-e2e.yml`, `vega-vvd-e2e.yml`) left
+  `workflow_dispatch` / untouched.
+
+### Per-workflow outcome on the branch (PR #1)
+
+- **Format** `34922260062` — **green**. (`prettier --check .` also clean locally.)
+- **Repo Hygiene** `34922260103` — **green**. (Locally: no conflict markers, no `.only`, workspace
+  versions synced at 0.22.1.)
+- **Lockfile** `34922260164` — **green** (lock untouched; planner regenerated it).
+- **Tool Description Quality** `34922260126` — **green** (fired: my diff touches
+  `tool-server/src/tools/**`; tool descriptions themselves unchanged).
+- **Docs build** `34922260147` — **green**.
+- **Skill Description Quality** — **did not run**: no change under
+  `packages/skills/skills/**/SKILL.md` or `scripts/grade-skills.mjs`, and its `pull_request` is
+  paths-only. The `push.branches` addition means it will run when `open/main` is next pushed with a
+  skill change. Nothing to verify on this PR.
+- **Lint** `34922260198` — **RED, pre-existing**. 13 errors, none introduced by this branch (proven:
+  `git diff open/main..HEAD` adds/removes none of the flagged symbols). 9 are mechanical
+  (`@typescript-eslint/no-unused-vars`: `IosOpenServerClient`, `ScreenGraphStore`, `nestedLabelHash`,
+  `pollFingerprintChanged`, `beforeEach`, `planToSelector`; `no-useless-assignment`: `redirOk`,
+  `tree`, `evidence`). 4 are `Parsing error: file not found in any project` — the
+  `packages/tool-server/scripts/*.ts` bench scripts live in `scripts/tsconfig.json` (module
+  `esnext`), which is NOT in eslint's `parserOptions.project` (`packages/*/tsconfig.json` +
+  `tsconfig.test.json` = `src`+`test` only), so eslint's type-aware parser rejects them.
+- **Unit Tests** `34922260124` — **RED, pre-existing**. `typecheck:tests` fails
+  `TS1343: 'import.meta' … only allowed when '--module' is es2020/…` at
+  `scripts/bench-describe-host.ts:43,290`. `test/bench-describe-host.test.ts` imports that script,
+  pulling it into the `tsconfig.test.json` compile whose module setting rejects `import.meta`. Both
+  files are fork-only. The pure-Node steps I could run locally are green: bench-CI gates 21/21, root
+  scripts 92/92.
+- **Dead Code (knip)** `34922260092` — **RED, pre-existing on `main` too**. Confirmed by running knip
+  on a detached `origin/main` (`e25c851b`) worktree: pass 1 already fails there (`ts-node` unlisted in
+  `run-bench.js`/`run-fling.js`, `vitest` unlisted binary, unresolved imports for the fork-only bench
+  `.ts`). On `open/main` knip pass 1 = 8 unused files (`run-fling.js`, `merge-fling.js`, and 6
+  `tool-server/scripts/*` bench/preflight scripts — all reached only through `node -e`/`path.join`
+  strings knip cannot trace) + `ts-node` unlisted + 2 `vitest` unlisted binaries; pass 2 = ~71 unused
+  exports/types across `screen-graph/`, `ios-open-server-*`, `optical-scroll.ts` and the bench
+  scripts. `knip.jsonc` is byte-identical on `main` and this branch.
+
+### Pre-existing failures and why they are out of this ticket's scope
+
+Running Lint / Unit Tests / knip on `open/main` for the first time surfaced substantial PRE-EXISTING
+open-server debt in fork-only files that no CI ever checked (the workflows only triggered on `main`).
+`git diff open/main..HEAD` introduces none of it — the branch is formatting + `no-console`/dead-code
+removal + triggers only. Fully greening these three needs decisions beyond a formatting/lint-hygiene
+pass, so per "do not widen the ticket; report what you find" they are recorded here rather than fixed:
+
+- **Lint** — the 9 unused-symbol errors are mechanical, but the 4 parse errors need an eslint
+  architecture decision: add `packages/*/scripts/tsconfig.json` to `parserOptions.project` (or a
+  dedicated eslint block for `scripts/**`). That decision would also change what gets linted in the
+  scripts repo-wide (likely surfacing more findings), so it belongs in its own change.
+- **Unit Tests** — reconcile `test/bench-describe-host.test.ts` importing a `scripts/` file: either
+  compile the test project with an `import.meta`-capable module, or stop importing the bench script
+  from a unit test. Touches `tsconfig` module settings — repo-wide risk.
+- **knip** — pass 1 (8 unused files + `ts-node` + `vitest`) is a contained `knip.jsonc` "mark"
+  (declare the bench entry points; add `ts-node` to the root `ignoreDependencies` and `vitest` to
+  `ignoreBinaries`), but pass 2 is a ~71-symbol dead-code audit across screen-graph/iOS/bench source
+  where `knip.jsonc`'s own notes warn that a wrong delete breaks a cross-workspace or argent-private
+  consumer silently. Recommend a dedicated knip-paydown ticket; until then the planner may prefer to
+  revert the `knip.yml` trigger so the gate is not red on every `open/main` PR.
+
+### Files excluded from formatting (owned by the in-flight ios-2 agent, worktree `wt-ios2`)
+
+Never formatted or touched; listed for the record. Only the last one exists on this base — the rest
+live on `feat/ios-open-server-2-bench`, not on `open/main`, so prettier never saw them:
+
+- `packages/ios-sim-input/**` (absent on base)
+- `packages/tool-server/scripts/bench-ios-*` (absent)
+- `packages/tool-server/src/utils/ios-sim-input-service.ts` + its test (absent)
+- `.github/bench-ci/{merge-blocks-ios,scoreboard-ios,run-bench-ios}.js` (absent)
+- `.github/workflows/bench-ios-open-vs-proprietary.yml` (absent)
+- `docs/open-server/2026-09-14-ios-bench-results-ci.md` (absent)
+- `docs/open-server/2026-09-14-ios-phase2-bench.md` (present, unformatted) → added to
+  `.prettierignore` so Format stays green; ios-2 formats and un-ignores it on merge.
+
+3o/fling files (`merge-fling.js`, `run-fling.js`, `bench-fling-fidelity.ts`, `optical-scroll.ts`, the
+3o docs) were NOT excluded: the planner merged 3o into `open/main` before this ran and there is no
+active 3o worktree, so per the dispatch's exclusion list (ios-2 only) they were formatted like the
+rest — which is what keeps Format green.
+
+### Not verified locally (relied on CI)
+
+Full `npm run lint` and docs typecheck (no `@docusaurus/tsconfig` in the symlinked root
+`node_modules`), the full vitest suite and `typecheck:tests`/`typecheck:scripts` (need `tsc --build`,
+not run in the worktree per resource policy), Tool Description Quality (SpiderShield), Lockfile
+(`npm install --package-lock-only` is blocked in a worktree). All of these came back green on CI
+except the three noted above.

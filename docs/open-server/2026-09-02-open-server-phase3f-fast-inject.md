@@ -9,6 +9,7 @@ Commit locally; do not push. AVD `bench-api35` (`-grpc 8554
 other agents (screen-graph Phase C, phase 3e) may hold the AVD.
 
 ## Why
+
 Argent's proprietary Android path injects via (a) emulator gRPC
 `EmulatorController.sendTouch` on emulators and (b) Android Studio's
 Apache-2.0 `screen-sharing-agent` (shell-uid `app_process` →
@@ -25,13 +26,15 @@ scrcpy-server from the scrcpy release (`fetch-scrcpy-server 3.3.1`) or from
 device-farm's node_modules.
 
 ## Step 0 — go/no-go spike (≤ 2 h, on device)
+
 In a throwaway script under the fork (`packages/tool-server/scripts/spike-scrcpy-control.ts`,
 keep it, opt-in): connect with `@yume-chan/adb` (TangoADB) to
 `emulator-5554`, push/start scrcpy-server 3.3.1 via `AdbScrcpyClient.start`
 with `{ video: false, audio: false, control: true }` (use
 `AdbScrcpyOptionsLatest`), obtain `controller`, and:
+
 1. `injectTouch` DOWN/UP at the centre of a Settings row with `videoWidth/
-   videoHeight` = real display size (from `wm size`), `pointerId: 0n`; verify
+videoHeight` = real display size (from `wm size`), `pointerId: 0n`; verify
    navigation happened (adb `dumpsys activity` top activity changes).
 2. Two-pointer pinch: interleave `injectTouch` for `pointerId 0n/1n` with
    ACTION_DOWN, ACTION_POINTER_DOWN, MOVEs, POINTER_UP, UP at 16 ms cadence
@@ -42,14 +45,16 @@ with `{ video: false, audio: false, control: true }` (use
 4. Check coexistence: scrcpy-server (shell uid, `app_process`) running at
    the same time as our instrumentation server; both must work; note any
    `INJECT_EVENTS`/SELinux denials in logcat on API 35.
-If 1 or 2 fails on API 35, STOP, report exactly what failed, and propose
-option (a) emulator-gRPC as the fallback design — do not implement it in
-this ticket.
+   If 1 or 2 fails on API 35, STOP, report exactly what failed, and propose
+   option (a) emulator-gRPC as the fallback design — do not implement it in
+   this ticket.
 
 ## Step 1 — backend behind the blueprint seam
+
 `packages/tool-server/src/blueprints/android-open-server.ts` factory option
 `fastInject: 'off' | 'scrcpy'` (default `'off'`; flag
 `open-device-server-fast-inject`, default off). When `'scrcpy'`:
+
 - New `utils/scrcpy-inject-backend.ts`: lifecycle (start server via
   `AdbScrcpyClient` control-only, reconnect on drop, dispose kills it),
   `tap(x,y,{holdMs, clickCount, gapMs})`, `swipe(points…)`, `gesture(pointers)`
@@ -73,6 +78,7 @@ this ticket.
   collide with the NDJSON forward; dispose both.
 
 ## Step 2 — tests
+
 - Unit: backend timelines equal MotionInjector's for tap/multi-tap/swipe
   (momentum + holdEndMs)/pinch (frame count, tMs, pointer ids); flag off →
   closures untouched; dispose stops the server.
@@ -82,6 +88,7 @@ this ticket.
   zooms, swipe momentum:false < default, coexistence with instrumentation.
 
 ## Step 3 — bench + report
+
 Like-for-like bench (N=20, OFF-1 / ON(uiautomation) / ON(scrcpy) / OFF-2),
 all verbs. Append "v7 / phase 3f" to
 `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results-v4.md`

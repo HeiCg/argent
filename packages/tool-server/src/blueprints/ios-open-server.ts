@@ -51,14 +51,22 @@ export interface IosOpenDeviceServerApi {
   ping(): Promise<{ status: string }>;
   getInfo(bundleId?: string): Promise<IosOpenServerInfo>;
   getScreenSize(): Promise<IosOpenServerScreenSize>;
-  getState(opts?: { includeScreenshot?: boolean; maxElements?: number; bundleId?: string }): Promise<IosOpenServerState>;
+  getState(opts?: {
+    includeScreenshot?: boolean;
+    maxElements?: number;
+    bundleId?: string;
+  }): Promise<IosOpenServerState>;
   getNestedState(opts?: { maxElements?: number; bundleId?: string }): Promise<IosOpenServerState>;
   tap(
     x: number,
     y: number,
     opts?: { clickCount?: number; holdMs?: number; gapMs?: number; bundleId?: string }
   ): Promise<{ success: boolean; dropped: boolean; dropReporting: string }>;
-  longPress(x: number, y: number, opts?: { durationMs?: number; bundleId?: string }): Promise<{ success: boolean }>;
+  longPress(
+    x: number,
+    y: number,
+    opts?: { durationMs?: number; bundleId?: string }
+  ): Promise<{ success: boolean }>;
   swipe(
     startX: number,
     startY: number,
@@ -68,7 +76,11 @@ export interface IosOpenDeviceServerApi {
   ): Promise<{ success: boolean }>;
   typeText(text: string, bundleId?: string): Promise<{ success: boolean; charsTyped: number }>;
   key(key: string, bundleId?: string): Promise<{ success: boolean }>;
-  screenshot(opts?: { format?: "png" | "jpeg"; quality?: number; scale?: number }): Promise<IosOpenServerScreenshot>;
+  screenshot(opts?: {
+    format?: "png" | "jpeg";
+    quality?: number;
+    scale?: number;
+  }): Promise<IosOpenServerScreenshot>;
   launchApp(bundleId: string): Promise<{ success: boolean; bundleId: string }>;
   terminateApp(bundleId?: string): Promise<{ success: boolean; bundleId: string }>;
   flushInput(): Promise<{ success: boolean }>;
@@ -78,7 +90,8 @@ export interface IosOpenDeviceServerApi {
 function targetForDevice(device: DeviceInfo): IosRunnerTarget {
   // iOS-1 is simulator-first. A physical device is opted into with
   // ARGENT_IOS_TEAM_ID (base B's signing gate); absent it, treat as a simulator.
-  const kind: IosRunnerTarget["kind"] = process.env.ARGENT_IOS_OPEN_SERVER_PHYSICAL === "1" ? "device" : "simulator";
+  const kind: IosRunnerTarget["kind"] =
+    process.env.ARGENT_IOS_OPEN_SERVER_PHYSICAL === "1" ? "device" : "simulator";
   return { udid: device.id, kind };
 }
 
@@ -148,7 +161,8 @@ export const iosOpenServerBlueprint: ServiceBlueprint<IosOpenDeviceServerApi, De
       getNestedState: (stateOpts = {}) => client.getNestedState(stateOpts),
       tap: (x, y, tapOpts = {}) => client.tap(x, y, tapOpts),
       longPress: (x, y, lpOpts = {}) => client.longPress(x, y, lpOpts),
-      swipe: (startX, startY, endX, endY, swOpts = {}) => client.swipe(startX, startY, endX, endY, swOpts),
+      swipe: (startX, startY, endX, endY, swOpts = {}) =>
+        client.swipe(startX, startY, endX, endY, swOpts),
       typeText: (text, bundleId) => client.typeText(text, bundleId),
       key: (key, bundleId) => client.key(key, bundleId),
       screenshot: (ssOpts = {}) => client.screenshot(ssOpts),
@@ -165,7 +179,9 @@ export const iosOpenServerBlueprint: ServiceBlueprint<IosOpenDeviceServerApi, De
         try {
           await Promise.race([
             client.shutdown(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("shutdown timeout")), 1_000)),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("shutdown timeout")), 1_000)
+            ),
           ]);
         } catch {
           /* fall through to force-kill */

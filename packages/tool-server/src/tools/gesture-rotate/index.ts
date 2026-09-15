@@ -86,138 +86,138 @@ const capability: ToolCapability = {
 
 export function createGestureRotateTool(registry: Registry): ToolDefinition<Params, Result> {
   return {
-  id: "gesture-rotate",
-  interaction: {
-    startedMsg: ({ params }) => {
-      const degrees = Math.abs(params.endAngle - params.startAngle);
-      const direction = params.endAngle > params.startAngle ? "clockwise" : "counterclockwise";
-      return `Rotating gesture ${degrees}° ${direction}`;
+    id: "gesture-rotate",
+    interaction: {
+      startedMsg: ({ params }) => {
+        const degrees = Math.abs(params.endAngle - params.startAngle);
+        const direction = params.endAngle > params.startAngle ? "clockwise" : "counterclockwise";
+        return `Rotating gesture ${degrees}° ${direction}`;
+      },
+      completedMsg: ({ params }) => {
+        const degrees = Math.abs(params.endAngle - params.startAngle);
+        const direction = params.endAngle > params.startAngle ? "clockwise" : "counterclockwise";
+        return `Rotated gesture ${degrees}° ${direction}`;
+      },
+      failedMsg: ({ failureSignal }) => `Failed to rotate gesture: ${failureSignal.error_code}`,
     },
-    completedMsg: ({ params }) => {
-      const degrees = Math.abs(params.endAngle - params.startAngle);
-      const direction = params.endAngle > params.startAngle ? "clockwise" : "counterclockwise";
-      return `Rotated gesture ${degrees}° ${direction}`;
-    },
-    failedMsg: ({ failureSignal }) => `Failed to rotate gesture: ${failureSignal.error_code}`,
-  },
-  description: `Send a two-finger circular arc gesture to rotate on-screen content by a specified angle. Two fingers are placed opposite each other at a fixed radius from the center, then swept from startAngle to endAngle degrees. All positions and radii are normalized 0.0–1.0 (fractions of screen width/height, not pixels)—same coordinate space as gesture-tap and gesture-swipe.
+    description: `Send a two-finger circular arc gesture to rotate on-screen content by a specified angle. Two fingers are placed opposite each other at a fixed radius from the center, then swept from startAngle to endAngle degrees. All positions and radii are normalized 0.0–1.0 (fractions of screen width/height, not pixels)—same coordinate space as gesture-tap and gesture-swipe.
 endAngle > startAngle = clockwise rotation. Typical values: radius 0.15, startAngle 0, endAngle 90 for a 90° clockwise turn. A single radius applies to both axes, so on a non-square screen it traces a physical ellipse (finger separation varies through the turn); pass radiusX+radiusY (fractions of width/height with radiusX·width = radiusY·height) for a physically circular orbit instead.
 Auto-generates interpolated frames at ~60fps.
 Unlike gesture-pinch which moves fingers linearly to zoom, this orbits fingers in an arc to change orientation.
 Use when you need to rotate a map, image picker, or any rotateable UI element. Returns { rotated: true, timestampMs }. Fails if the simulator-server / emulator backend is not reachable for the given device.
 Size the orbit with radius, or with radiusX and radiusY together (the pair overrides radius); one half of the pair alone, or none of the three, is rejected.`,
-  zodSchema,
-  capability,
-  services: (params): Record<string, ServiceRef> => {
-    const device = resolveDevice(params.udid);
-    // Skip the proprietary server when the open path is active; resolved lazily
-    // in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
-    if (shouldUseOpenServer(device)) return {};
-    return { simulatorServer: simulatorServerRef(device) };
-  },
-  async execute(services, params, ctx?: ToolContext) {
-    const device = resolveDevice(params.udid);
-    const duration = params.durationMs ?? 300;
-    const steps = Math.max(1, Math.round(duration / 16));
-    // Refines guarantee radius is set whenever the per-axis pair is absent.
-    const radiusX = params.radiusX ?? params.radius!;
-    const radiusY = params.radiusY ?? params.radius!;
+    zodSchema,
+    capability,
+    services: (params): Record<string, ServiceRef> => {
+      const device = resolveDevice(params.udid);
+      // Skip the proprietary server when the open path is active; resolved lazily
+      // in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
+      if (shouldUseOpenServer(device)) return {};
+      return { simulatorServer: simulatorServerRef(device) };
+    },
+    async execute(services, params, ctx?: ToolContext) {
+      const device = resolveDevice(params.udid);
+      const duration = params.durationMs ?? 300;
+      const steps = Math.max(1, Math.round(duration / 16));
+      // Refines guarantee radius is set whenever the per-axis pair is absent.
+      const radiusX = params.radiusX ?? params.radius!;
+      const radiusY = params.radiusY ?? params.radius!;
 
-    // Open path: one gesture RPC, so the per-frame abort below cannot apply —
-    // only an already-aborted signal is honored, matching the swipe open path.
-    if (shouldUseOpenServer(device)) {
-      const timestampMs = Date.now();
-      if (ctx?.signal?.aborted) {
-        const err = new Error("gesture-rotate aborted — cancelled before dispatch");
-        err.name = "AbortError";
-        throw err;
-      }
-      try {
-        const p0: NormalizedPointerPath["points"] = [];
-        const p1: NormalizedPointerPath["points"] = [];
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          const angleDeg = params.startAngle + (params.endAngle - params.startAngle) * t;
-          const angleRad = (angleDeg * Math.PI) / 180;
-          const tMs = i * FRAME_MS;
-          p0.push({
-            x: params.centerX + radiusX * Math.cos(angleRad),
-            y: params.centerY + radiusY * Math.sin(angleRad),
-            tMs,
-          });
-          p1.push({
-            x: params.centerX - radiusX * Math.cos(angleRad),
-            y: params.centerY - radiusY * Math.sin(angleRad),
-            tMs,
-          });
+      // Open path: one gesture RPC, so the per-frame abort below cannot apply —
+      // only an already-aborted signal is honored, matching the swipe open path.
+      if (shouldUseOpenServer(device)) {
+        const timestampMs = Date.now();
+        if (ctx?.signal?.aborted) {
+          const err = new Error("gesture-rotate aborted — cancelled before dispatch");
+          err.name = "AbortError";
+          throw err;
         }
-        await openServerGesture(registry, device, [
-          { id: 0, points: p0 },
-          { id: 1, points: p1 },
-        ]);
-        return { rotated: true, timestampMs };
-      } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") throw err;
-        console.debug(
-          `[gesture-rotate] open-device-server failed, falling back to simulator-server: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
-      }
-    }
-
-    const ref = simulatorServerRef(device);
-    const api = shouldUseOpenServer(device)
-      ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
-      : (services.simulatorServer as SimulatorServerApi);
-
-    let timestampMs = 0;
-    // Last dispatched positions, so an abort lifts from where the fingers are.
-    let lastX1 = 0;
-    let lastY1 = 0;
-    let lastX2 = 0;
-    let lastY2 = 0;
-
-    for (let i = 0; i <= steps; i++) {
-      if (ctx?.signal?.aborted) {
-        const err = new Error(
-          `gesture-rotate aborted — cancelled mid-gesture after ${i} of ${steps + 1} frames`
-        );
-        err.name = "AbortError";
-        // Fingers are on the glass from i=0 on; lift them so a cancelled run
-        // doesn't leave them held down. Best effort, as in gesture-swipe: a
-        // refused lift rides along as `cause` instead of masking the abort.
-        if (i > 0) {
-          try {
-            await sendTouchEvent(api, "Up", lastX1, lastY1, lastX2, lastY2);
-          } catch (liftErr) {
-            err.cause = liftErr;
+        try {
+          const p0: NormalizedPointerPath["points"] = [];
+          const p1: NormalizedPointerPath["points"] = [];
+          for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const angleDeg = params.startAngle + (params.endAngle - params.startAngle) * t;
+            const angleRad = (angleDeg * Math.PI) / 180;
+            const tMs = i * FRAME_MS;
+            p0.push({
+              x: params.centerX + radiusX * Math.cos(angleRad),
+              y: params.centerY + radiusY * Math.sin(angleRad),
+              tMs,
+            });
+            p1.push({
+              x: params.centerX - radiusX * Math.cos(angleRad),
+              y: params.centerY - radiusY * Math.sin(angleRad),
+              tMs,
+            });
           }
+          await openServerGesture(registry, device, [
+            { id: 0, points: p0 },
+            { id: 1, points: p1 },
+          ]);
+          return { rotated: true, timestampMs };
+        } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") throw err;
+          console.debug(
+            `[gesture-rotate] open-device-server failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
         }
-        throw err;
       }
 
-      const t = i / steps;
-      const angleDeg = params.startAngle + (params.endAngle - params.startAngle) * t;
-      const angleRad = (angleDeg * Math.PI) / 180;
+      const ref = simulatorServerRef(device);
+      const api = shouldUseOpenServer(device)
+        ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+        : (services.simulatorServer as SimulatorServerApi);
 
-      const x1 = params.centerX + radiusX * Math.cos(angleRad);
-      const y1 = params.centerY + radiusY * Math.sin(angleRad);
-      const x2 = params.centerX - radiusX * Math.cos(angleRad);
-      const y2 = params.centerY - radiusY * Math.sin(angleRad);
+      let timestampMs = 0;
+      // Last dispatched positions, so an abort lifts from where the fingers are.
+      let lastX1 = 0;
+      let lastY1 = 0;
+      let lastX2 = 0;
+      let lastY2 = 0;
 
-      const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
-      if (i === 0) timestampMs = Date.now();
+      for (let i = 0; i <= steps; i++) {
+        if (ctx?.signal?.aborted) {
+          const err = new Error(
+            `gesture-rotate aborted — cancelled mid-gesture after ${i} of ${steps + 1} frames`
+          );
+          err.name = "AbortError";
+          // Fingers are on the glass from i=0 on; lift them so a cancelled run
+          // doesn't leave them held down. Best effort, as in gesture-swipe: a
+          // refused lift rides along as `cause` instead of masking the abort.
+          if (i > 0) {
+            try {
+              await sendTouchEvent(api, "Up", lastX1, lastY1, lastX2, lastY2);
+            } catch (liftErr) {
+              err.cause = liftErr;
+            }
+          }
+          throw err;
+        }
 
-      await sendTouchEvent(api, type, x1, y1, x2, y2);
-      lastX1 = x1;
-      lastY1 = y1;
-      lastX2 = x2;
-      lastY2 = y2;
-      if (i < steps) await sleep(16);
-    }
+        const t = i / steps;
+        const angleDeg = params.startAngle + (params.endAngle - params.startAngle) * t;
+        const angleRad = (angleDeg * Math.PI) / 180;
 
-    return { rotated: true, timestampMs };
-  },
+        const x1 = params.centerX + radiusX * Math.cos(angleRad);
+        const y1 = params.centerY + radiusY * Math.sin(angleRad);
+        const x2 = params.centerX - radiusX * Math.cos(angleRad);
+        const y2 = params.centerY - radiusY * Math.sin(angleRad);
+
+        const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
+        if (i === 0) timestampMs = Date.now();
+
+        await sendTouchEvent(api, type, x1, y1, x2, y2);
+        lastX1 = x1;
+        lastY1 = y1;
+        lastX2 = x2;
+        lastY2 = y2;
+        if (i < steps) await sleep(16);
+      }
+
+      return { rotated: true, timestampMs };
+    },
   };
 }

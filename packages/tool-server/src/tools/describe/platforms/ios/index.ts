@@ -13,7 +13,10 @@ import { parseNativeDescribeScreenResult } from "../../../native-devtools/native
 import { DescribeTreeData, parseDescribeResult, type DescribeNode } from "../../contract";
 import { adaptAXDescribeToDescribeResult } from "./ios-ax-adapter";
 import { adaptNativeDescribeToDescribeResult } from "./ios-native-adapter";
-import { shouldUseIosOpenServer, describeIosViaOpenServer } from "../../../../utils/ios-open-server-input";
+import {
+  shouldUseIosOpenServer,
+  describeIosViaOpenServer,
+} from "../../../../utils/ios-open-server-input";
 
 // `degraded` means the pre-boot accessibility prefs were never written — the one
 // thing boot-device does that an external `xcrun simctl boot` cannot. It
@@ -145,7 +148,6 @@ export async function describeIos(
     try {
       return await describeIosViaOpenServer(registry, device);
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.debug(
         `[describe-ios] open ios-device-server failed, falling back to ax-service: ${
           err instanceof Error ? err.message : String(err)

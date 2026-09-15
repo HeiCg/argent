@@ -28,16 +28,16 @@ corrected:
 
 ## Environment
 
-| Item | Value |
-|---|---|
-| Host | macOS (Darwin 25.6.0), Apple Silicon |
-| Emulator | AVD `bench-api35`, Android 15 (API 35), arm64-v8a, 1080×2400 @ 420dpi, `-no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token` |
-| Emulator serial | `emulator-5554` (all adb calls `-s emulator-5554`) |
-| Physical device | `ZF524RZBHD` — **never targeted** (attached but the bench refuses any non-`emulator-` serial and this deny-serial) |
+| Item                 | Value                                                                                                                                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host                 | macOS (Darwin 25.6.0), Apple Silicon                                                                                                                                                                                                                      |
+| Emulator             | AVD `bench-api35`, Android 15 (API 35), arm64-v8a, 1080×2400 @ 420dpi, `-no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token`                                                                                                                    |
+| Emulator serial      | `emulator-5554` (all adb calls `-s emulator-5554`)                                                                                                                                                                                                        |
+| Physical device      | `ZF524RZBHD` — **never targeted** (attached but the bench refuses any non-`emulator-` serial and this deny-serial)                                                                                                                                        |
 | Proprietary binaries | vendored published package **@swmansion/argent v0.22.1** (`bin/argent-android-devtools-0.1.0.apk`, `bin/darwin/simulator-server`, `dylibs/`), via `ARGENT_SIMULATOR_SERVER_DIR` / `ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR` / `ARGENT_NATIVE_DEVTOOLS_DIR` |
-| Open server | Kotlin `@argent/android-device-server` rebuilt to versionCode 14 (`gradlew assembleDebug`, APK 1.22 MB), reinstalled via the version gate |
-| Token estimator | **js-tiktoken `o200k_base`** (primary) + chars/4 (secondary) — F22 |
-| Path confirmation | `describe.source` = `android-devtools` every OFF block, `open-device-server` every ON block; **0 masked fallbacks** |
+| Open server          | Kotlin `@argent/android-device-server` rebuilt to versionCode 14 (`gradlew assembleDebug`, APK 1.22 MB), reinstalled via the version gate                                                                                                                 |
+| Token estimator      | **js-tiktoken `o200k_base`** (primary) + chars/4 (secondary) — F22                                                                                                                                                                                        |
+| Path confirmation    | `describe.source` = `android-devtools` every OFF block, `open-device-server` every ON block; **0 masked fallbacks**                                                                                                                                       |
 
 ## Latency per verb — p50 / p95 / max (ms)
 
@@ -45,16 +45,16 @@ Blocks OFF-1 → ON → OFF-2, N=20 after 3 warm-ups, feature flag toggled per b
 Every tap/swipe iteration resets to a known screen first (F5, untimed). All cells
 below are **0 errors, 0 fallbacks** — 480 calls, 0/0 total.
 
-| Verb | OFF-1 (prop) | **ON (open)** | OFF-2 (prop) | verdict (like-for-like) |
-|---|---|---|---|---|
-| describe (Settings root) | 76 / 79 / 81 | 77 / 82 / 84 | 76 / 80 / 81 | ≈ equal |
-| gesture-tap | 52 / 53 / 54 | **61 / 63 / 72** | 53 / 53 / 54 | **ON slower ~+9 ms** (now a real 50 ms hold) |
-| tap+describe (F4) | 667 / 706 / 914 | **1394 / 1476 / 1572** | 621 / 686 / 703 | **ON ~2.1× slower** (see below) |
-| gesture-swipe (250 ms) | 283 / 285 / 288 | 277 / 293 / 293 | 284 / 299 / 313 | ≈ equal (ON p50 slightly lower) |
-| await-screen-idle | 511 / 524 / 524 | 505 / 527 / 675 | 509 / 524 / 529 | ≈ equal |
-| await-ui-element | 73 / 77 / 80 | 80 / 85 / 88 | 75 / 80 / 81 | **ON slower ~+7 ms** (F12 nested tree per poll) |
-| paste | 63 / 106 / 145 | 102 / 200 / 214 | 83 / 136 / 152 | **ON slower** (clipboard attempt + type; see F20) |
-| gesture-pinch (300 ms) | 340 / 364 / 373 | **806 / 1029 / 1035** | 340 / 347 / 352 | **ON ~2.4× slower** (cap removed, F2) |
+| Verb                     | OFF-1 (prop)    | **ON (open)**          | OFF-2 (prop)    | verdict (like-for-like)                           |
+| ------------------------ | --------------- | ---------------------- | --------------- | ------------------------------------------------- |
+| describe (Settings root) | 76 / 79 / 81    | 77 / 82 / 84           | 76 / 80 / 81    | ≈ equal                                           |
+| gesture-tap              | 52 / 53 / 54    | **61 / 63 / 72**       | 53 / 53 / 54    | **ON slower ~+9 ms** (now a real 50 ms hold)      |
+| tap+describe (F4)        | 667 / 706 / 914 | **1394 / 1476 / 1572** | 621 / 686 / 703 | **ON ~2.1× slower** (see below)                   |
+| gesture-swipe (250 ms)   | 283 / 285 / 288 | 277 / 293 / 293        | 284 / 299 / 313 | ≈ equal (ON p50 slightly lower)                   |
+| await-screen-idle        | 511 / 524 / 524 | 505 / 527 / 675        | 509 / 524 / 529 | ≈ equal                                           |
+| await-ui-element         | 73 / 77 / 80    | 80 / 85 / 88           | 75 / 80 / 81    | **ON slower ~+7 ms** (F12 nested tree per poll)   |
+| paste                    | 63 / 106 / 145  | 102 / 200 / 214        | 83 / 136 / 152  | **ON slower** (clipboard attempt + type; see F20) |
+| gesture-pinch (300 ms)   | 340 / 364 / 373 | **806 / 1029 / 1035**  | 340 / 347 / 352 | **ON ~2.4× slower** (cap removed, F2)             |
 
 Screenshot has **no latency row** (F6): the two backends return different-sized
 frames, so a side-by-side latency is not like-for-like (dims below).
@@ -66,8 +66,8 @@ agreement plus the p95/max spread, not on a single p50.
 
 ### Why `tap+describe` and `gesture-pinch` are much slower on ON
 
-- **tap+describe (F4).** The standalone `describe` on the *light* Settings root is
-  ≈ equal (77 vs 76). But `tap+describe` taps into a *content-heavy* sub-screen and
+- **tap+describe (F4).** The standalone `describe` on the _light_ Settings root is
+  ≈ equal (77 vs 76). But `tap+describe` taps into a _content-heavy_ sub-screen and
   then describes it. The open describe path serializes the **full, un-pruned nested
   accessibility tree across all windows** and runs the v2 trim host-side; the
   proprietary path ships a `--compressed` `uiautomator dump`. On a heavy screen the
@@ -84,34 +84,34 @@ agreement plus the p95/max spread, not on a single p50.
 
 ## describe output size — Settings root (F22 tokens)
 
-| Metric | OFF (android-devtools) | ON (open-device-server) |
-|---|---|---|
-| bytes | 1892 | 1894 |
-| tokens — **o200k_base** | **657** | **657** |
-| tokens — chars/4 (secondary) | 473 | 473 |
-| rendered elements | 14 | 14 |
+| Metric                       | OFF (android-devtools) | ON (open-device-server) |
+| ---------------------------- | ---------------------- | ----------------------- |
+| bytes                        | 1892                   | 1894                    |
+| tokens — **o200k_base**      | **657**                | **657**                 |
+| tokens — chars/4 (secondary) | 473                    | 473                     |
+| rendered elements            | 14                     | 14                      |
 
 Byte-near-identical (1892 vs 1894) and **token-identical on o200k_base (657/657)**.
 
 ## Fidelity — Settings root
 
-| Metric | Value |
-|---|---|
+| Metric                                        | Value     |
+| --------------------------------------------- | --------- |
 | raw Jaccard OFF vs ON (`resource-id \| text`) | **1.000** |
-| labels/ids only in OFF | 0 |
-| labels/ids only in ON | 0 |
+| labels/ids only in OFF                        | 0         |
+| labels/ids only in ON                         | 0         |
 
 The open describe and the proprietary describe render the identical interactable
 set on the root. F12 additionally makes `await-ui-element` / `await-screen-idle`
-render through the *same* nested tree + trim as `describe` (unit-tested: the two
+render through the _same_ nested tree + trim as `describe` (unit-tested: the two
 paths now produce byte-identical `DescribeNode` trees for one fixture).
 
 ## Screenshot (not apples-to-apples — row removed, F6)
 
-| | OFF (android-devtools) | ON (open-device-server) |
-|---|---|---|
-| dims | 270 × 600 (stream frame) | 1080 × 2400 (full capture) |
-| bytes | ~70 KB | ~137 KB |
+|       | OFF (android-devtools)   | ON (open-device-server)    |
+| ----- | ------------------------ | -------------------------- |
+| dims  | 270 × 600 (stream frame) | 1080 × 2400 (full capture) |
+| bytes | ~70 KB                   | ~137 KB                    |
 
 OFF returns a scaled stream frame; ON a full-resolution capture. Timing the encode
 of very different pixel counts is not a like-for-like latency, so v3 drops the row
@@ -132,19 +132,19 @@ anchor row after a plain (momentum) swipe, N=12 per cell, over
 `durationMs ∈ {150, 250, 400}` × `distance ∈ {0.3, 0.5}`, OFF vs ON.
 
 N=10 per cell. The metric is the **survivor-median**: the median downward shift,
-over the rows found in the describe *both* before and after the swipe, of rows that
+over the rows found in the describe _both_ before and after the swipe, of rows that
 moved more than 0.02 screen — sticky chrome (the search bar and title, which don't
 move) is thereby excluded; if the fling clears every list row the swipe counts as a
 full screen (1.0). All values are normalized fractions of screen height.
 
-| dur (ms) | dist | OFF median [IQR] | ON median [IQR] | ON/OFF | reliable? | ±15%? |
-|---|---|---|---|---|---|---|
-| 150 | 0.3 | 0.465 [0.462, 0.465] | 0.176 [0.176, 0.176] | 0.378 | no (floor) | — |
-| 150 | 0.5 | 0.176 [0.176, 0.176] | 0.176 [0.176, 0.176] | 1.00 | no (floor) | — |
-| 250 | 0.3 | 0.468 [0.455, 0.482] | 0.433 [0.399, 0.480] | 0.925 | yes | **PASS** |
-| 250 | 0.5 | 0.176 [0.176, 0.176] | 0.176 [0.176, 0.176] | 1.00 | no (floor) | — |
-| 400 | 0.3 | 0.366 [0.359, 0.368] | 0.330 [0.320, 0.353] | 0.902 | yes | **PASS** |
-| 400 | 0.5 | 0.656 [0.656, 0.656] | 0.583 [0.580, 0.587] | 0.889 | yes | **PASS** |
+| dur (ms) | dist | OFF median [IQR]     | ON median [IQR]      | ON/OFF | reliable?  | ±15%?    |
+| -------- | ---- | -------------------- | -------------------- | ------ | ---------- | -------- |
+| 150      | 0.3  | 0.465 [0.462, 0.465] | 0.176 [0.176, 0.176] | 0.378  | no (floor) | —        |
+| 150      | 0.5  | 0.176 [0.176, 0.176] | 0.176 [0.176, 0.176] | 1.00   | no (floor) | —        |
+| 250      | 0.3  | 0.468 [0.455, 0.482] | 0.433 [0.399, 0.480] | 0.925  | yes        | **PASS** |
+| 250      | 0.5  | 0.176 [0.176, 0.176] | 0.176 [0.176, 0.176] | 1.00   | no (floor) | —        |
+| 400      | 0.3  | 0.366 [0.359, 0.368] | 0.330 [0.320, 0.353] | 0.902  | yes        | **PASS** |
+| 400      | 0.5  | 0.656 [0.656, 0.656] | 0.583 [0.580, 0.587] | 0.889  | yes        | **PASS** |
 
 No cell is **noisy** — every IQR span is well under 25 % of its median (the widest
 is ON 250/0.3 at ~19 %).
@@ -155,7 +155,7 @@ is ON 250/0.3 at ~19 %).
 - **Floor cells (3, unreliable):** every cell whose median is **0.176** has
   bottomed out the metric. At distance 0.5 (and at 150 ms / 0.3) the fling clears
   most of the visible Settings list, so only a fixed pair of near-top rows survives
-  in both describes and the survivor-median collapses to the same 0.176 for *either*
+  in both describes and the survivor-median collapses to the same 0.176 for _either_
   backend. 0.176 is a measurement floor, not a scroll distance, so the ratios there
   (0.378 at 150/0.3, 1.00 at the two 0.5 cells) say nothing about fling parity — the
   150/0.3 "0.378" in particular does **not** mean ON flung less; it means ON's fling
@@ -205,31 +205,31 @@ better path first.
 
 ## Per-finding status (F1–F23)
 
-| # | Finding | Status | Where |
-|---|---|---|---|
-| F1 | tap hold: DOWN@0 / UP@holdMs (50) | **fixed** | `TapHandler` + `MotionInjector.injectTaps`; `open-server-tap.test.ts` |
-| F2 | pinch duration cap removed; honour `durationMs` | **fixed** | `gesture-pinch`; `open-server-pinch-duration.test.ts` |
-| F3 | final-event sync parity (UP dispatched before return) | **fixed** | `MotionInjector` (final UP `sync=true`); Swipe/Gesture handlers |
-| F4 | `tap+describe` bench verb | **fixed** | `bench-open-vs-proprietary.ts` |
-| F5 | reset to known screen before each tap/swipe iteration | **fixed** | bench `timeCalls` untimed `setup` |
-| F6 | screenshot row removed (not scale-matched) | **fixed** | bench (dims kept, latency row dropped) |
-| F7 | report ranges, not single p50 | **fixed** | OFF-1/OFF-2 drift + p95/max presented |
-| F8 | tap hold parity | **fixed** | same as F1 |
-| F9 | multi-tap timeline built server-side (`clickCount`+`gapMs`) | **fixed** | `TapHandler`; `open-server-tap.test.ts` |
-| F10 | *(not enumerated in the ticket)* | not applicable | source review doc not in this checkout |
-| F11 | window order deterministic (active first, then layer) | **fixed** | `NestedWindowSerializer`; golden test dialog+IME order |
-| F12 | describe vs await-* tree unified (same nested tree + trim) | **fixed** | `getNestedState`; `open-server-describe.ts`; `open-server-await-getstate.test.ts` |
-| F13 | truncation flag surfaced as a describe hint | **fixed** | `NodeSerializer.serializeNested` + describe hint; test |
-| F14 | golden trim tests (XML vs nested; + dialog/IME fixture) | **fixed** | `open-server-trim-golden.test.ts` |
-| F15 | fling grid N≥10, median + IQR | **fixed** | `bench-fling-fidelity.ts` |
-| F16 | fling sweep duration × distance | **fixed** | grid {150,250,400}×{0.3,0.5} |
-| F17 | MotionInjector real-clock pacing; true `eventTime` | **fixed** | `MotionInjector` |
-| F18 | downsampling time-uniform, keep keyframes + dwell; documented | **fixed** | `GestureHandler.resample`; `gesture-custom` schema note |
-| F19 | *(not enumerated in the ticket)* | not applicable | source review doc not in this checkout |
-| F20 | paste via `setClipboard` + KEYCODE_PASTE; fallback | **fixed (with API-35 caveat)** | `ClipboardHandler`; `paste/platforms/android.ts`; see Paste above |
-| F21 | screen-size cache keyed by `(deviceId, rotation)` + dispose invalidation | **fixed** | `open-server-screen-cache.ts`; `open-server-screen-cache.test.ts` |
-| F22 | js-tiktoken `o200k_base` (primary), chars/4 secondary | **fixed** | bench estimator |
-| F23 | *(not enumerated in the ticket)* | not applicable | source review doc not in this checkout |
+| #   | Finding                                                                  | Status                         | Where                                                                             |
+| --- | ------------------------------------------------------------------------ | ------------------------------ | --------------------------------------------------------------------------------- |
+| F1  | tap hold: DOWN@0 / UP@holdMs (50)                                        | **fixed**                      | `TapHandler` + `MotionInjector.injectTaps`; `open-server-tap.test.ts`             |
+| F2  | pinch duration cap removed; honour `durationMs`                          | **fixed**                      | `gesture-pinch`; `open-server-pinch-duration.test.ts`                             |
+| F3  | final-event sync parity (UP dispatched before return)                    | **fixed**                      | `MotionInjector` (final UP `sync=true`); Swipe/Gesture handlers                   |
+| F4  | `tap+describe` bench verb                                                | **fixed**                      | `bench-open-vs-proprietary.ts`                                                    |
+| F5  | reset to known screen before each tap/swipe iteration                    | **fixed**                      | bench `timeCalls` untimed `setup`                                                 |
+| F6  | screenshot row removed (not scale-matched)                               | **fixed**                      | bench (dims kept, latency row dropped)                                            |
+| F7  | report ranges, not single p50                                            | **fixed**                      | OFF-1/OFF-2 drift + p95/max presented                                             |
+| F8  | tap hold parity                                                          | **fixed**                      | same as F1                                                                        |
+| F9  | multi-tap timeline built server-side (`clickCount`+`gapMs`)              | **fixed**                      | `TapHandler`; `open-server-tap.test.ts`                                           |
+| F10 | _(not enumerated in the ticket)_                                         | not applicable                 | source review doc not in this checkout                                            |
+| F11 | window order deterministic (active first, then layer)                    | **fixed**                      | `NestedWindowSerializer`; golden test dialog+IME order                            |
+| F12 | describe vs await-\* tree unified (same nested tree + trim)              | **fixed**                      | `getNestedState`; `open-server-describe.ts`; `open-server-await-getstate.test.ts` |
+| F13 | truncation flag surfaced as a describe hint                              | **fixed**                      | `NodeSerializer.serializeNested` + describe hint; test                            |
+| F14 | golden trim tests (XML vs nested; + dialog/IME fixture)                  | **fixed**                      | `open-server-trim-golden.test.ts`                                                 |
+| F15 | fling grid N≥10, median + IQR                                            | **fixed**                      | `bench-fling-fidelity.ts`                                                         |
+| F16 | fling sweep duration × distance                                          | **fixed**                      | grid {150,250,400}×{0.3,0.5}                                                      |
+| F17 | MotionInjector real-clock pacing; true `eventTime`                       | **fixed**                      | `MotionInjector`                                                                  |
+| F18 | downsampling time-uniform, keep keyframes + dwell; documented            | **fixed**                      | `GestureHandler.resample`; `gesture-custom` schema note                           |
+| F19 | _(not enumerated in the ticket)_                                         | not applicable                 | source review doc not in this checkout                                            |
+| F20 | paste via `setClipboard` + KEYCODE_PASTE; fallback                       | **fixed (with API-35 caveat)** | `ClipboardHandler`; `paste/platforms/android.ts`; see Paste above                 |
+| F21 | screen-size cache keyed by `(deviceId, rotation)` + dispose invalidation | **fixed**                      | `open-server-screen-cache.ts`; `open-server-screen-cache.test.ts`                 |
+| F22 | js-tiktoken `o200k_base` (primary), chars/4 secondary                    | **fixed**                      | bench estimator                                                                   |
+| F23 | _(not enumerated in the ticket)_                                         | not applicable                 | source review doc not in this checkout                                            |
 
 F10/F19/F23 are not referenced anywhere in the ticket and the adversarial-review
 document enumerating all 23 findings is not present in this checkout, so they are
@@ -253,7 +253,7 @@ emulator, N=20 per verb, 0 errors and 0 fallbacks across 480 calls, describe is
 byte-near-identical and **token-identical (657/657 o200k_base)** with a **Jaccard
 1.0** interactable set, and the open path carries **no host-side process** (vs a
 ~62 MB `simulator-server` per device). `gesture-swipe` latency is ≈ equal (ON p50
-277 vs OFF 283), and fling *distance* matches the proprietary path within ±15 % on
+277 vs OFF 283), and fling _distance_ matches the proprietary path within ±15 % on
 the three reliable grid cells (250/400 ms; ratios 0.925/0.902/0.889) — the three
 distance-0.5 / 150 ms cells bottomed out the measurement and are inconclusive, not a
 proven regression. `describe` (light root) and `await-screen-idle` are ≈ equal.

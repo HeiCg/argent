@@ -14,7 +14,10 @@ import { isTvOsSimulator } from "../../utils/ios-devices";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { shouldUseOpenServer, captureAndroidScreenshot } from "../../utils/open-server-input";
-import { shouldUseIosOpenServer, captureIosScreenshotViaOpenServer } from "../../utils/ios-open-server-input";
+import {
+  shouldUseIosOpenServer,
+  captureIosScreenshotViaOpenServer,
+} from "../../utils/ios-open-server-input";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -195,7 +198,11 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
       // `xcrun simctl io <udid> screenshot`, then to the simulator-server below.
       if (device.platform === "ios" && shouldUseIosOpenServer(device)) {
         try {
-          const { path: openPath } = await captureIosScreenshotViaOpenServer(registry, device, params.scale);
+          const { path: openPath } = await captureIosScreenshotViaOpenServer(
+            registry,
+            device,
+            params.scale
+          );
           const image = await requireArtifacts(ctx).register({
             hostPath: openPath,
             kind: "screenshot",

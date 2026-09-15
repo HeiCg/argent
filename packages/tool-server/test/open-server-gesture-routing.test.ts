@@ -37,7 +37,11 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
-    getScreenSize: vi.fn(async () => ({ screenWidth: SCREEN.width, screenHeight: SCREEN.height, displayRotation: 0 })),
+    getScreenSize: vi.fn(async () => ({
+      screenWidth: SCREEN.width,
+      screenHeight: SCREEN.height,
+      displayRotation: 0,
+    })),
     gesture: vi.fn(async () => ({ success: true })),
   };
 }
@@ -112,7 +116,9 @@ describe("gesture-pinch → open-device-server (T3)", () => {
 
     expect(openApi.gesture).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendTouchEvent)).toHaveBeenCalled();
-    expect(debug).toHaveBeenCalledWith(expect.stringContaining("[gesture-pinch] open-device-server"));
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining("[gesture-pinch] open-device-server")
+    );
   });
 });
 
@@ -224,16 +230,13 @@ describe("gesture-custom → open-device-server (T3)", () => {
     const openApi = makeOpenApi();
     const tool = createGestureCustomTool(makeRegistry(openApi));
 
-    await tool.execute(
-      { simulatorServer: {} } as never,
-      {
-        udid: ANDROID_SERIAL,
-        events: [
-          { type: "Down", x: 0.5, y: 0.5 },
-          { type: "Up", x: 0.5, y: 0.5 },
-        ],
-      }
-    );
+    await tool.execute({ simulatorServer: {} } as never, {
+      udid: ANDROID_SERIAL,
+      events: [
+        { type: "Down", x: 0.5, y: 0.5 },
+        { type: "Up", x: 0.5, y: 0.5 },
+      ],
+    });
 
     expect(openApi.gesture).not.toHaveBeenCalled();
     expect(vi.mocked(sendCommand)).toHaveBeenCalled();

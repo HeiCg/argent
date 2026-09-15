@@ -46,7 +46,7 @@ JSON (D2-M5).
   on the current screen, `reached` and `present` are both true before anything
   happens. D.1's "routing cannot be faked" property holds against a FALLBACK
   (`navFallback` false on all 60; `strategy:"navigate"` requires `reached &&
-  present`) but not against a NO-ACTION route. **Fix:** require
+present`) but not against a NO-ACTION route. **Fix:** require
   `completedSteps > 0` for a step to count as routed, or score zero-step routes
   in their own row.
 - **D2-H3 · `settings-network-internet` never reaches the Internet screen in ANY
@@ -57,7 +57,7 @@ JSON (D2-M5).
   `locateNorm` taps `q.nodes[0]` (`:475-481`), so `t("Internet")` matches the
   collapsing-toolbar title "Network & internet" first. The store records exactly
   that tap: `284ef030 --tap{"text":"Network & internet"} bucket 2,1--> 284ef030
-  count 25 successes 25` (`graph-store/com.android.settings/34.json`). The oracle
+count 25 successes 25` (`graph-store/com.android.settings/34.json`). The oracle
   needle `SIMs` lives on the Network & internet screen, so the dead step passes
   for everyone. Pre-flight cannot catch it: it verifies the needle on the screen
   reached after both taps, which is the same screen. This predates D.2 but is now
@@ -169,7 +169,7 @@ JSON (D2-M5).
   bootstrap (B=10 000, seed `0x5eedc0de`) match; H4 deltas match to the digit.
 - **M1 closed:** `env.bootstrapB = 10000` is in the JSON and the doc reads it.
 - **M2 closed:** `env.settingsGraph = {nodes:10, edges:19, maxOutDegree:14,
-  meanOutDegree:1.9}` is in the JSON and matches the doc's H3 label.
+meanOutDegree:1.9}` is in the JSON and matches the doc's H3 label.
 - **Store invariants hold.** Across all four package stores: no two nodes share
   `compact` + `resourceIds` + `stateHash`; no node is keyed by its
   `structuralHash`; `env.skippedNoIdHash` 0.
@@ -211,19 +211,19 @@ All from run **33964414774**, workflow `bench-open-vs-proprietary.yml`, bench tr
 **per-step observation payload, launch step excluded (n = 155 of 255 steps),
 oracle assertion query excluded.**
 
-| Statistic | N | B1 | B2 | O1 | O2 | O3 | O4 | O5 |
-|---|---|---|---|---|---|---|---|---|
-| success, exclusions-as-failures | 100 runs | 98 | 99 | 99 | 100 | 100 | 99 | 99 |
-| cluster bootstrap 95 %, n=20 tasks, B=10 000 | 20 | [95,100] | [97,100] | [97,100] | [100,100] | [100,100] | [97,100] | [97,100] |
-| Wilson 95 % | 100 | [93,99] | [95,100] | [95,100] | [96,100] | [96,100] | **[95,100]** | [95,100] |
-| obs tokens/step o200k p50 | 155 | 657 | 627 | 179 | 54 | 598 | 22 | 28 |
-| obs tokens/step o200k p95 | 155 | 4161 | 4510 | 515 | 515 | 4510 | 114 | 114 |
-| obs tokens/step chars/4 p50 | 155 | 473 | 447 | 103 | 33 | 397 | 20 | 24 |
-| obs RTT ms/step p50 | 155 | 447 | 90 | 4 | 3 | 86 | 43 | 46 |
-| RTT count/step p50 (MODELLED) | 155 | 2 | 2 | 2 | 2 | 2 | 1 | 1 |
-| action wall ms/step p50 (includes recordMs) | 155 | 190 | 1406 | 1441 | 1465 | 1381 | 1359 | 1553 |
-| recordMs/step p50 | 155 | 0 | 387 | 368 | 361 | 355 | 374 | 8 |
-| action wall − recordMs, p50 | 155 | 190 | 1038 | 1068 | 1066 | 1033 | 1028 | 1184 |
+| Statistic                                    | N        | B1       | B2       | O1       | O2        | O3        | O4           | O5       |
+| -------------------------------------------- | -------- | -------- | -------- | -------- | --------- | --------- | ------------ | -------- |
+| success, exclusions-as-failures              | 100 runs | 98       | 99       | 99       | 100       | 100       | 99           | 99       |
+| cluster bootstrap 95 %, n=20 tasks, B=10 000 | 20       | [95,100] | [97,100] | [97,100] | [100,100] | [100,100] | [97,100]     | [97,100] |
+| Wilson 95 %                                  | 100      | [93,99]  | [95,100] | [95,100] | [96,100]  | [96,100]  | **[95,100]** | [95,100] |
+| obs tokens/step o200k p50                    | 155      | 657      | 627      | 179      | 54        | 598       | 22           | 28       |
+| obs tokens/step o200k p95                    | 155      | 4161     | 4510     | 515      | 515       | 4510      | 114          | 114      |
+| obs tokens/step chars/4 p50                  | 155      | 473      | 447      | 103      | 33        | 397       | 20           | 24       |
+| obs RTT ms/step p50                          | 155      | 447      | 90       | 4        | 3         | 86        | 43           | 46       |
+| RTT count/step p50 (MODELLED)                | 155      | 2        | 2        | 2        | 2         | 2         | 1            | 1        |
+| action wall ms/step p50 (includes recordMs)  | 155      | 190      | 1406     | 1441     | 1465      | 1381      | 1359         | 1553     |
+| recordMs/step p50                            | 155      | 0        | 387      | 368      | 361       | 355       | 374          | 8        |
+| action wall − recordMs, p50                  | 155      | 190      | 1038     | 1068     | 1066      | 1033      | 1028         | 1184     |
 
 - **O5 navigate-to, all 60 attempted known-target taps:** routed **60**, of which
   **55 one-step** and **5 zero-step (no tap issued, D2-H1)**; mis-landed 0,

@@ -45,7 +45,7 @@ reproduce (0.9118 / 0.7654 / 0.8322). The fling instrument grid reproduces exact
 
 Diffed literally. **P0–P10 are byte-identical** to
 `2026-09-14-review-3n-run1-findings.md:459-511`. The **only** deviation is that the
-six-line *preamble* above P0 was not copied (see 3N1-M4) — the lines carrying "Every gate
+six-line _preamble_ above P0 was not copied (see 3N1-M4) — the lines carrying "Every gate
 below is graded against the PROPRIETARY blocks, never against ON-scrcpy" and "every Δ is
 reported with a 10 000-sample bootstrap 95 % CI".
 
@@ -90,7 +90,7 @@ Where the Result is not honest enough:
 Also: the Result's "the screen-graph job runs with no strategy env, so 3n's code is inert
 on it" is now **false** — post-flip the O1–O5 configs inject through `input-manager`
 (`bench-screen-graph.ts:1169` → `gesture-tap` tool → `openServerTap` → `injectOpt()`).
-That is good news for the flip (the graph is green *with* input-manager) and bad news for
+That is good news for the flip (the graph is green _with_ input-manager) and bad news for
 the sentence.
 
 Code review is otherwise clean. The default flip and the `default`/`uia` sentinel are
@@ -112,19 +112,19 @@ uia-arm leak is fixed or the fling rows are explicitly excluded.**
 
 ## Gate status (P0–P10, recomputed)
 
-| gate | Result says | recomputed | note |
-|---|---|---|---|
-| **P0** control present | PASS | **PASS** | 5 blocks in `bench-merged-1789407736358.json`; control ran the pre-3n.1 wire (no `inject` key) — proven by `resolveInjectStrategy()` returning `undefined` for `default` and by the on-device counter `default: 161/161` |
-| **P1** measured floor | PASS | **PASS** | tap `|53−53|`=0, swipe `|305−303|`=2, pinch `|353−354|`=1, headline `|408−486|`=78. `measuredFloor()` returns `null`→`**N/A**` when a comparator is missing (`scoreboard.js:115-118`); covered by a test |
-| **P2** tap vs proprietary | PASS | **FAIL by 1 ms as written** | 54 ≤ 53+0 is false. Pooled CI **[0, 1]** (mine [0,1]); vs max(OFF)=OFF-1 CI **[−1, +1]**. PASS only under the implemented `CI lo ≤ floor` rule |
-| **P3** swipe | PASS | **PASS (win)** | 263 ≤ 303+2. Δ vs pooled −41, CI **[−45, −34]**; vs min(OFF) Δ −40, CI [−45.5, −30] |
-| **P4** pinch | PASS | **PASS (win)** | 318 ≤ 353+1. Δ vs pooled −35.5, CI **[−43.5, −34]**; vs min(OFF) Δ −35, CI [−45, −33.5] |
-| **P5** headline ≤ 1.15 | PASS | **PASS** | 372/408 = 0.912, 372/486 = 0.765, 372/447 = 0.832. (Control also passes: 480/447 = 1.074) |
-| **P6** no regression vs control | PASS | **PASS** | im −32 / −43 / −28 / −108 vs `ON-uiautomation`. Note the rule is vacuous on the headline row (CI [−266, −14], floor 78) |
-| **P7** landing + fallbacks + echo | PASS | **PASS on substance, denominator mislabelled** | landing 40/40, 60/60, 60/60, 60/60, 40/40, oracle pass on every block; 0 `unavailable`. `161/161` is the **process-wide** injection count, not the 100 measured gesture RPCs (3N1-M2) |
-| **P8** instrument-first | INSTRUMENT-UNRESOLVED, non-gating, step exit 0 | **verdict correct, arms mislabelled** | abDev 0.41 at 400/0.5 fires the rule; `arms: []` in `fling-ab-1789409881273.json`; `gating:false`; step 16 success. But A and B are input-manager (3N1-H1), and the 0.41 divergence is itself not significant (permutation p = **0.19**) |
-| **P9** availability + fallback | PASS | **PASS, with a portability correction** | no `hidden_api_policy` write anywhere in the tree (comments only); device case `3n.1 P9 forced-fallback`: `strategy=unavailable fellBackTo=uia-async; tap still navigated (+/-42 labels); reset → input-manager`; host test `open-server-inject-strategy.test.ts:126`. **But** the API-34 holder is *denied* on this image; the legacy holder is what resolves (3N1-M5) |
-| **P10** screen-graph | PASS | **PASS on substance, incomplete as reported** | 100/100 × 7, `skippedNoIdHash` **0**, invariants OK, Settings store 10 nodes / 9 edges, three stores. Missing from the Result: per-config tokens (only O2), the H4 paired-cluster intervals, and 34840929610's counter, all of which P10 asked for |
+| gate                              | Result says                                    | recomputed                                     | note                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ---------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------ | ------- | ------------ | ------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **P0** control present            | PASS                                           | **PASS**                                       | 5 blocks in `bench-merged-1789407736358.json`; control ran the pre-3n.1 wire (no `inject` key) — proven by `resolveInjectStrategy()` returning `undefined` for `default` and by the on-device counter `default: 161/161`                                                                                                                                                |
+| **P1** measured floor             | PASS                                           | **PASS**                                       | tap `                                                                                                                                                                                                                                                                                                                                                                   | 53−53 | `=0, swipe ` | 305−303 | `=2, pinch ` | 353−354 | `=1, headline ` | 408−486 | `=78. `measuredFloor()`returns`null`→`**N/A**` when a comparator is missing (`scoreboard.js:115-118`); covered by a test |
+| **P2** tap vs proprietary         | PASS                                           | **FAIL by 1 ms as written**                    | 54 ≤ 53+0 is false. Pooled CI **[0, 1]** (mine [0,1]); vs max(OFF)=OFF-1 CI **[−1, +1]**. PASS only under the implemented `CI lo ≤ floor` rule                                                                                                                                                                                                                          |
+| **P3** swipe                      | PASS                                           | **PASS (win)**                                 | 263 ≤ 303+2. Δ vs pooled −41, CI **[−45, −34]**; vs min(OFF) Δ −40, CI [−45.5, −30]                                                                                                                                                                                                                                                                                     |
+| **P4** pinch                      | PASS                                           | **PASS (win)**                                 | 318 ≤ 353+1. Δ vs pooled −35.5, CI **[−43.5, −34]**; vs min(OFF) Δ −35, CI [−45, −33.5]                                                                                                                                                                                                                                                                                 |
+| **P5** headline ≤ 1.15            | PASS                                           | **PASS**                                       | 372/408 = 0.912, 372/486 = 0.765, 372/447 = 0.832. (Control also passes: 480/447 = 1.074)                                                                                                                                                                                                                                                                               |
+| **P6** no regression vs control   | PASS                                           | **PASS**                                       | im −32 / −43 / −28 / −108 vs `ON-uiautomation`. Note the rule is vacuous on the headline row (CI [−266, −14], floor 78)                                                                                                                                                                                                                                                 |
+| **P7** landing + fallbacks + echo | PASS                                           | **PASS on substance, denominator mislabelled** | landing 40/40, 60/60, 60/60, 60/60, 40/40, oracle pass on every block; 0 `unavailable`. `161/161` is the **process-wide** injection count, not the 100 measured gesture RPCs (3N1-M2)                                                                                                                                                                                   |
+| **P8** instrument-first           | INSTRUMENT-UNRESOLVED, non-gating, step exit 0 | **verdict correct, arms mislabelled**          | abDev 0.41 at 400/0.5 fires the rule; `arms: []` in `fling-ab-1789409881273.json`; `gating:false`; step 16 success. But A and B are input-manager (3N1-H1), and the 0.41 divergence is itself not significant (permutation p = **0.19**)                                                                                                                                |
+| **P9** availability + fallback    | PASS                                           | **PASS, with a portability correction**        | no `hidden_api_policy` write anywhere in the tree (comments only); device case `3n.1 P9 forced-fallback`: `strategy=unavailable fellBackTo=uia-async; tap still navigated (+/-42 labels); reset → input-manager`; host test `open-server-inject-strategy.test.ts:126`. **But** the API-34 holder is _denied_ on this image; the legacy holder is what resolves (3N1-M5) |
+| **P10** screen-graph              | PASS                                           | **PASS on substance, incomplete as reported**  | 100/100 × 7, `skippedNoIdHash` **0**, invariants OK, Settings store 10 nodes / 9 edges, three stores. Missing from the Result: per-config tokens (only O2), the H4 paired-cluster intervals, and 34840929610's counter, all of which P10 asked for                                                                                                                      |
 
 **Promotion acceptance (P0–P7 + P9 + P10)**: met on substance; **P2 is met only under the
 implemented CI rule, not under its own pre-registered inequality.**
@@ -168,8 +168,8 @@ two halves of the same pre-registration, resolved silently in favour of the loos
 Two further defects of the implemented rule, independent of the outcome: it is the wrong
 tail (an arm with Δ +292 and CI [−50, +400] would PASS), and applied to P6's headline row
 (CI [−266, −14], floor 78) it can never fail. The honest line for the Result and the
-scoreboard is: *tap is +1 ms vs proprietary on a measured floor of 0; the pre-registered
-inequality fails by 1 ms; the difference is not material and the planner accepted it* —
+scoreboard is: _tap is +1 ms vs proprietary on a measured floor of 0; the pre-registered
+inequality fails by 1 ms; the difference is not material and the planner accepted it_ —
 not "PASS".
 
 **3N1-H3 — "The screen-graph job runs with no strategy env, so 3n's code is inert on it" is
@@ -177,7 +177,7 @@ false after the flip.** `bench-screen-graph.ts:1169` invokes the `gesture-tap` t
 routes through `openServerTap` → `injectOpt()` for every open config; `bench-screen-graph.ts`
 contains no `ARGENT_OPEN_INJECT_STRATEGY` assignment (verified by grep over the repo: the
 only writers are `bench-open-vs-proprietary.ts:1886` and `bench-fling-fidelity.ts`). So
-O1–O5 in run 2 injected through `input-manager`. This *strengthens* P10 as evidence (the
+O1–O5 in run 2 injected through `input-manager`. This _strengthens_ P10 as evidence (the
 graph is 100/100 **with** the new default, vs run 1's 97–100 on the old one) and it is the
 only place in the run where input-manager is exercised across 500 open task-runs — but the
 Result's attribution sentence must be inverted, and the claim "nothing here is attributable
@@ -190,7 +190,7 @@ OFF `tap+describe` p50 across runs: **354/297** (reference 34813849446,
 `ON-scrcpy` moved 529 → 349 (−34 %) **with no change to the scrcpy path**. P5's pass is
 therefore driven by (a) the proprietary comparator getting ~37 % slower and (b) a
 base-level improvement that predates 3n.1 (it is already in run 1, whose base is 3m.1).
-The within-run gate is valid; the *claim* "open now beats proprietary on the headline" is
+The within-run gate is valid; the _claim_ "open now beats proprietary on the headline" is
 not supported by this run, and the within-run OFF↔OFF drift on that row is still **78 ms**
 on a 372 ms measurement.
 
@@ -213,7 +213,7 @@ instrumentation process; `bench-open-vs-proprietary.ts:2455-2468` renders it as
 gesture RPCs (5 verbs × 20) are a subset; the remaining 61 are warmups, oracle self-test,
 locate/restore navigations and the `tap+describe` setup taps. Two consequences: (a) the
 denominator is self-referential — `161/161` says "every injection this process made was
-input-manager", which is *stronger* than P7's ask but not checkable against any published
+input-manager", which is _stronger_ than P7's ask but not checkable against any published
 denominator; (b) P7's literal requirement that "the `strategy` echo is recorded on **every**
 measured tap/swipe/gesture reply" is not verified anywhere — the bench reads the aggregate
 from `getInfo`, never the per-reply field. The strongest available reading of the evidence
@@ -247,7 +247,7 @@ one.** `logcat-fling-ON-uiautomation.txt:833-835` (and every other probe site):
 `system-images;android-34;google_apis;x86_64`, and the availability claim rests entirely on
 the **deprecated `InputManager.getInstance()` holder**, which AOSP removed the guts of at
 API 34 and which greylist policy can drop at any release. This inverts review 3N-L3 ("the
-≤33 branch was never exercised"): the ≤33 branch is the *only* one that has ever run. Any
+≤33 branch was never exercised"): the ≤33 branch is the _only_ one that has ever run. Any
 "input-manager is available" scoreboard row must name the holder, not just the image. The
 fallback is correct and exercised, so the risk is degradation to `uia-async`, not breakage.
 
@@ -263,20 +263,20 @@ reference floors on three verbs. It also inflates the P6 margin.
 **3N1-M7 — P8's trigger is a divergence that is not itself significant, while a much larger
 same-code divergence goes unreported.** At 400/0.5 uia-A 0.509 (n=12) vs uia-B 0.360 (n=12):
 ratio 1.412, two-sided permutation **p = 0.186** — the pre-registered ±0.15 rule fires
-correctly, but the data do not *demonstrate* non-reproducibility, they demonstrate
+correctly, but the data do not _demonstrate_ non-reproducibility, they demonstrate
 insufficient precision at n = 12. Meanwhile, because all three open non-scrcpy arms are the
 same code (3N1-H1), the run contains a **2.64× spread between identical arms** at 150/0.3
 (uia-A 0.175, uia-B 0.175, im 0.462, off 0.464; p = 0.41 — bimodal, 3N-H3's censoring at
 work) which is never mentioned. Recomputed full grid (median (n) [q25,q75]):
 
-| cell | OFF | uia-A | uia-B | input-manager | scrcpy |
-|---|---|---|---|---|---|
-| 150/0.3 | 0.464 (12) | 0.175 (12) | 0.175 (12) | 0.462 (12) | 0.417 (12) |
-| 150/0.5 | 0.175 (11) | 0.175 (11) | 0.175 (12) | 0.175 (12) | 0.175 (12) |
-| 250/0.3 | 0.478 (11) | 0.441 (12) | 0.435 (12) | 0.427 (12) | 0.365 (12) |
-| 250/0.5 | 0.175 (11) | 0.175 (12) | 0.175 (12) | 0.175 (12) | 0.316 (12) |
-| 400/0.3 | 0.364 (12) | 0.309 (11) | 0.296 (12) | 0.303 (12) | 0.314 (12) |
-| 400/0.5 | 0.657 (11) | 0.509 (12) | 0.360 (12) | 0.575 (12) | 0.486 (12) |
+| cell    | OFF        | uia-A      | uia-B      | input-manager | scrcpy     |
+| ------- | ---------- | ---------- | ---------- | ------------- | ---------- |
+| 150/0.3 | 0.464 (12) | 0.175 (12) | 0.175 (12) | 0.462 (12)    | 0.417 (12) |
+| 150/0.5 | 0.175 (11) | 0.175 (11) | 0.175 (12) | 0.175 (12)    | 0.175 (12) |
+| 250/0.3 | 0.478 (11) | 0.441 (12) | 0.435 (12) | 0.427 (12)    | 0.365 (12) |
+| 250/0.5 | 0.175 (11) | 0.175 (12) | 0.175 (12) | 0.175 (12)    | 0.316 (12) |
+| 400/0.3 | 0.364 (12) | 0.309 (11) | 0.296 (12) | 0.303 (12)    | 0.314 (12) |
+| 400/0.5 | 0.657 (11) | 0.509 (12) | 0.360 (12) | 0.575 (12)    | 0.486 (12) |
 
 Ratios vs OFF with permutation p: 150/0.3 A 0.377 (0.093) · B 0.377 (0.027) · im 0.996
 (0.40) · scr 0.900 (0.28); 250/0.3 A 0.922 (0.022) · B 0.910 (0.020) · im 0.894 (0.023) ·
@@ -326,7 +326,7 @@ entirely on the scrcpy channel — but it reads as if a control ran.
 
 **3N1-L4 — 3N-L2 is unfixed.** `InputManagerInjector.injectAsync` still catches `Throwable`
 and returns `false` (`InputManagerInjector.kt:78-86`), so a per-call `SecurityException`
-*after* a successful probe surfaces as `dropped=true`, never as `strategy:"unavailable"`.
+_after_ a successful probe surfaces as `dropped=true`, never as `strategy:"unavailable"`.
 Errors and fallbacks are 0 on every verb of every block this run, so it did not bite.
 
 **3N1-L5 — `scoreboard.md` still renders an empty fling table** ("OFF reference present:
@@ -362,13 +362,13 @@ construction: the async-UP drain happens in **step 0** of `StateHandler.execute`
 (`StateHandler.kt:119-128`), **before** `captureStart` (`:138`), so `drainAsyncUp` /
 `flushInput` can never enter `captureMs` for any strategy.
 
-What *is* inside `captureMs` and in no stage, in order of suspicion:
+What _is_ inside `captureMs` and in no stage, in order of suspicion:
 
 1. **A second full accessibility-window enumeration.** `isKeyboardVisible()`
    (`StateHandler.kt:306-312`) calls `uiAutomation.windows` — a separate IPC round-trip
    from the serializer's own enumeration (which is `windowsMs`,
    `NestedWindowSerializer.kt:113-121`) — and it sits in the untimed `info` block at
-   `StateHandler.kt:226-233`. *(Inference, not measured:)* on an idle screen the window set
+   `StateHandler.kt:226-233`. _(Inference, not measured:)_ on an idle screen the window set
    is stable and this is ~0–1 ms; on the after-tap `waitTimeoutMs: 0` capture the window set
    is mid-churn, which is exactly where accessibility window queries cost several ms. That
    asymmetry matches the observed idle-pass / after-tap-fail split.
@@ -377,7 +377,7 @@ What *is* inside `captureMs` and in no stage, in order of suspicion:
    after `serializeMs` has already been closed — scales with tree size, and the after-tap
    tree is the larger one.
 4. **Untimed work inside the serializer loop**: the window `sortedWith`, the per-window
-   `getBoundsInScreen` + `shouldSerializeWindow` for *skipped* windows, and
+   `getBoundsInScreen` + `shouldSerializeWindow` for _skipped_ windows, and
    `active.getBoundsInScreen` (`NestedWindowSerializer.kt:114-137`) — none of it is in
    `windowsMs`, `rootsMs` or `serializeMs`.
 5. Clock mixing (3N1-L2) adds ±1 ms of pure bookkeeping noise on top.
@@ -430,31 +430,31 @@ Exact wording; anything not listed here does not enter.
 **May enter now (run 34870686468, head `bb3fbddf`, attempt 1, `system-images;android-34;
 google_apis;x86_64`, ubuntu-latest KVM x86_64, N = 20 per verb per block):**
 
-| row | statistic | N |
-|---|---|---|
-| Latency verb table, five blocks `OFF-1 / ON-uiautomation / ON-input-manager / ON-scrcpy / OFF-2` | p50/p95 ms with the measured OFF↔OFF drift floors stated per verb: describe 0, gesture-tap **0**, gesture-swipe **2**, gesture-pinch **1**, await-screen-idle 1, await-ui-element 0, paste 89, `tap+describe` **78** | 20 per verb per block |
-| gesture-tap vs proprietary | "`input-manager` **54** vs proprietary 53/53 at a measured floor of **0**: Δ +1 ms, bootstrap 95 % CI on the p50 difference **[0, +1]** vs pooled OFF. Parity in practice; the pre-registered P2 inequality (`≤ max(OFF) + floor`) fails by 1 ms and was accepted by the planner. The current UiAutomation default reads **86** on the same run." | 20 |
-| gesture-swipe vs proprietary | "`input-manager` **263** vs proprietary 305/303, floor ±2: Δ **−41** ms, CI **[−45, −34]** — **win**, CI clear of the floor. Control `ON-uiautomation` 306 (parity with proprietary)." | 20 |
-| gesture-pinch vs proprietary | "`input-manager` **318** vs proprietary 353/354, floor ±1: Δ **−35.5** ms, CI **[−43.5, −34]** — **win**, CI clear of the floor. Control `ON-uiautomation` 346." | 20 |
-| Headline `tap+describe(settle:false)` | "`input-manager` **372** ÷ OFF `tap+describe` = 0.91 (OFF-1 408) / 0.77 (OFF-2 486) / 0.83 (pooled 447) — all ≤ 1.15, gate P5 PASS. **Within-run OFF↔OFF drift on this row is 78 ms** and the OFF comparator moved 325 → 447 pooled since 34813849446 while `ON-scrcpy` moved 529 → 349 with no scrcpy change; this is a within-run ratio, **not** a claim that the open stack got faster on the headline." | 20 |
-| No-regression vs the current default | "`input-manager` is faster than the `ON-uiautomation` control on every gated verb in the same run: tap −32, swipe −43, pinch −28, headline −108 ms (P6)." | 20 per verb |
-| First-attempt landing | "OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60, ON-scrcpy 60/60, OFF-2 40/40 — **100 % on every block**; oracle self-test passed on every block; first-attempt no-effect 0 everywhere. No 'more reliable than scrcpy' wording — scrcpy did not miss a tap this run." | 40–60 per block |
-| Strategy echo / fallbacks | "`ON-input-manager` reported `input-manager: 161/161` and `ON-uiautomation` reported `default: 161/161` from the on-device per-RPC counter (`InjectStrategyCounter`, one record per `inject`/`injectTaps` call); **0** `unavailable` fallbacks. 161 is the process-wide injection count for the block (measured RPCs + warmups + oracle + restore taps), identical across the two ON blocks. `ON-scrcpy` recorded 0 Kotlin injections, confirming it ran entirely on the scrcpy channel." | 161 per ON block |
-| `input-manager` availability | "The reflective `InputManager.injectInputEvent(InputEvent, int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on `system-images;android-34;google_apis;x86_64` with **no** `hidden_api_policy` change and no `-e disable-hidden-api-checks`. On this image `InputManagerGlobal.getInstance()` is **denied** by hiddenapi policy; the pipe resolves through the legacy `InputManager.getInstance()` holder. Availability is a property of this image and this holder, not of Android devices in general." | 161 injections + 6 device cases |
-| Forced-fallback (P9) | "`input-manager` forced unavailable on-device: `strategy == \"unavailable\"`, `fellBackTo == \"uia-async\"`, tap still navigated (+/−42 labels), next request resolved back to `input-manager`. Exercised on the `tap` RPC only." | 1 device case + 1 host test |
-| Device-test outcome row | "All six 3n strategy cases PASS with `ranAs` == requested; the 3n.1 P9 case PASSES. **The 3m.1 stage-accounting gate `|captureMs − Σ(stages)| ≤ 10` FAILED at an after-tap 20-sample median of 11 ms** (idle passed); diagnosed as unaccounted work inside `captureMs` (second window enumeration in `isKeyboardVisible`, `DisplayReader.read`, forest `recycle`), not a 3n regression." | 20 samples per phase |
-| Screen-graph row | "Success 100/100 on all seven configs (B1/B2/O1/O2/O3/O4/O5), exclusions-as-failures; tokens o200k p50 B1 657 · B2 651 · O1 179 · O2 54 · O3 627 · O4 22 · O5 22; H1 0.275× PASS, H2 0 FAIL / same-screen n=50 = 1 PASS, H3 0.035× PASS, H4 every Δ +0 pp [0, 0] vs both baselines; O5 one-step routed **60/60**, hash-mismatch 0; store invariants OK (0 duplicate screens, 0 multi-destination edges), `com.android.settings` **10 nodes / 9 edges**, three stores; **`skippedNoIdHash` 0** (34813849446: 0; 34853156073: 2; 34840929610: still unrecorded). Back at the reference. **Run with `input-manager` as the injector** — the open configs inject through the flipped default." | n = 155 steps/config, 100 runs, 20 task clusters |
-| Process row | "Run 34870686468, attempt **1**, head `bb3fbddf`, `workflow_dispatch`, `suite=both`, `sg_mode=matrix`. Conclusion `failure`: the sole failing step is **#20 `Enforce device-test result`** (the 3m.1 residual gate); step #14 reports success despite one failed test, so a device-test failure is only visible through step 20. Screen-graph job success. Five latency blocks, three self-orchestrated by `run-bench.js` (no `workflow` OAuth scope); per-block logs staged for every arm. `gates.test.js` 26/26." | — |
+| row                                                                                              | statistic                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | N                                                |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| Latency verb table, five blocks `OFF-1 / ON-uiautomation / ON-input-manager / ON-scrcpy / OFF-2` | p50/p95 ms with the measured OFF↔OFF drift floors stated per verb: describe 0, gesture-tap **0**, gesture-swipe **2**, gesture-pinch **1**, await-screen-idle 1, await-ui-element 0, paste 89, `tap+describe` **78**                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 20 per verb per block                            |
+| gesture-tap vs proprietary                                                                       | "`input-manager` **54** vs proprietary 53/53 at a measured floor of **0**: Δ +1 ms, bootstrap 95 % CI on the p50 difference **[0, +1]** vs pooled OFF. Parity in practice; the pre-registered P2 inequality (`≤ max(OFF) + floor`) fails by 1 ms and was accepted by the planner. The current UiAutomation default reads **86** on the same run."                                                                                                                                                                                                                                                                                                                                          | 20                                               |
+| gesture-swipe vs proprietary                                                                     | "`input-manager` **263** vs proprietary 305/303, floor ±2: Δ **−41** ms, CI **[−45, −34]** — **win**, CI clear of the floor. Control `ON-uiautomation` 306 (parity with proprietary)."                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 20                                               |
+| gesture-pinch vs proprietary                                                                     | "`input-manager` **318** vs proprietary 353/354, floor ±1: Δ **−35.5** ms, CI **[−43.5, −34]** — **win**, CI clear of the floor. Control `ON-uiautomation` 346."                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 20                                               |
+| Headline `tap+describe(settle:false)`                                                            | "`input-manager` **372** ÷ OFF `tap+describe` = 0.91 (OFF-1 408) / 0.77 (OFF-2 486) / 0.83 (pooled 447) — all ≤ 1.15, gate P5 PASS. **Within-run OFF↔OFF drift on this row is 78 ms** and the OFF comparator moved 325 → 447 pooled since 34813849446 while `ON-scrcpy` moved 529 → 349 with no scrcpy change; this is a within-run ratio, **not** a claim that the open stack got faster on the headline."                                                                                                                                                                                                                                                                                | 20                                               |
+| No-regression vs the current default                                                             | "`input-manager` is faster than the `ON-uiautomation` control on every gated verb in the same run: tap −32, swipe −43, pinch −28, headline −108 ms (P6)."                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 20 per verb                                      |
+| First-attempt landing                                                                            | "OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60, ON-scrcpy 60/60, OFF-2 40/40 — **100 % on every block**; oracle self-test passed on every block; first-attempt no-effect 0 everywhere. No 'more reliable than scrcpy' wording — scrcpy did not miss a tap this run."                                                                                                                                                                                                                                                                                                                                                                                                          | 40–60 per block                                  |
+| Strategy echo / fallbacks                                                                        | "`ON-input-manager` reported `input-manager: 161/161` and `ON-uiautomation` reported `default: 161/161` from the on-device per-RPC counter (`InjectStrategyCounter`, one record per `inject`/`injectTaps` call); **0** `unavailable` fallbacks. 161 is the process-wide injection count for the block (measured RPCs + warmups + oracle + restore taps), identical across the two ON blocks. `ON-scrcpy` recorded 0 Kotlin injections, confirming it ran entirely on the scrcpy channel."                                                                                                                                                                                                  | 161 per ON block                                 |
+| `input-manager` availability                                                                     | "The reflective `InputManager.injectInputEvent(InputEvent, int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on `system-images;android-34;google_apis;x86_64` with **no** `hidden_api_policy` change and no `-e disable-hidden-api-checks`. On this image `InputManagerGlobal.getInstance()` is **denied** by hiddenapi policy; the pipe resolves through the legacy `InputManager.getInstance()` holder. Availability is a property of this image and this holder, not of Android devices in general."                                                                                                                                                                          | 161 injections + 6 device cases                  |
+| Forced-fallback (P9)                                                                             | "`input-manager` forced unavailable on-device: `strategy == \"unavailable\"`, `fellBackTo == \"uia-async\"`, tap still navigated (+/−42 labels), next request resolved back to `input-manager`. Exercised on the `tap` RPC only."                                                                                                                                                                                                                                                                                                                                                                                                                                                          | 1 device case + 1 host test                      |
+| Device-test outcome row                                                                          | "All six 3n strategy cases PASS with `ranAs` == requested; the 3n.1 P9 case PASSES. \*\*The 3m.1 stage-accounting gate `                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | captureMs − Σ(stages)                            | ≤ 10`FAILED at an after-tap 20-sample median of 11 ms** (idle passed); diagnosed as unaccounted work inside`captureMs`(second window enumeration in`isKeyboardVisible`, `DisplayReader.read`, forest `recycle`), not a 3n regression." | 20 samples per phase |
+| Screen-graph row                                                                                 | "Success 100/100 on all seven configs (B1/B2/O1/O2/O3/O4/O5), exclusions-as-failures; tokens o200k p50 B1 657 · B2 651 · O1 179 · O2 54 · O3 627 · O4 22 · O5 22; H1 0.275× PASS, H2 0 FAIL / same-screen n=50 = 1 PASS, H3 0.035× PASS, H4 every Δ +0 pp [0, 0] vs both baselines; O5 one-step routed **60/60**, hash-mismatch 0; store invariants OK (0 duplicate screens, 0 multi-destination edges), `com.android.settings` **10 nodes / 9 edges**, three stores; **`skippedNoIdHash` 0** (34813849446: 0; 34853156073: 2; 34840929610: still unrecorded). Back at the reference. **Run with `input-manager` as the injector** — the open configs inject through the flipped default." | n = 155 steps/config, 100 runs, 20 task clusters |
+| Process row                                                                                      | "Run 34870686468, attempt **1**, head `bb3fbddf`, `workflow_dispatch`, `suite=both`, `sg_mode=matrix`. Conclusion `failure`: the sole failing step is **#20 `Enforce device-test result`** (the 3m.1 residual gate); step #14 reports success despite one failed test, so a device-test failure is only visible through step 20. Screen-graph job success. Five latency blocks, three self-orchestrated by `run-bench.js` (no `workflow` OAuth scope); per-block logs staged for every arm. `gates.test.js` 26/26."                                                                                                                                                                        | —                                                |
 
 **Must wait / must not enter:**
 
 - **Any fling ratio, verdict or arm label from this run**, including `ON-uia-A` / `ON-uia-B`.
   The two "UiAutomation" control arms ran `input-manager` (3N1-H1). The fling status row
   stays pinned to **34813849446**, status **OPEN**, no new numbers. The only sentence this
-  run may add: *"a pre-registered same-code A/B instrument control was run; it did not
+  run may add: _"a pre-registered same-code A/B instrument control was run; it did not
   reproduce itself within ±0.15 on one of four informative cells (0.509 vs 0.361 at
   400 ms/0.5, permutation p = 0.19), so no arm was graded — and the control arms were
-  subsequently found to be mislabelled."*
+  subsequently found to be mislabelled."_
 - Any "`input-manager` beats proprietary on the headline / `tap+describe`" claim (3N1-H4).
 - Any durable-capability wording ("`input-manager` is faster than the proprietary driver")
   — one run, one image, one emulator. The swipe/pinch wins may enter as **this run's**
@@ -539,4 +539,3 @@ google_apis;x86_64`, ubuntu-latest KVM x86_64, N = 20 per verb per block):**
 >
 > **Acceptance is Q1–Q7 all green.** A Q1/Q2 miss means the removal changed behaviour and
 > must be explained before merge.
-

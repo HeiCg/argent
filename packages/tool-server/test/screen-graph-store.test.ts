@@ -26,7 +26,13 @@ function newStore(pkg = "com.android.settings", vc = "35"): ScreenGraphStore {
 describe("ScreenGraphStore observe / persist / load round-trip", () => {
   it("persists nodes and edges and reloads them", async () => {
     const store = newStore();
-    store.upsertNode({ hash: "aaaa", compact: "root screen", stateHash: "s1", index: {}, label: "Settings" });
+    store.upsertNode({
+      hash: "aaaa",
+      compact: "root screen",
+      stateHash: "s1",
+      index: {},
+      label: "Settings",
+    });
     store.upsertNode({ hash: "bbbb", compact: "network screen", stateHash: "s2", index: {} });
     store.observe("aaaa", TAP, "bbbb");
     await store.flush();
@@ -48,9 +54,7 @@ describe("ScreenGraphStore observe / persist / load round-trip", () => {
 
   it("keys the file path by package and versionCode", () => {
     const store = newStore("com.example.app", "1200");
-    expect(store.filePath()).toBe(
-      path.join(tmpDir, "com.example.app", "1200.json")
-    );
+    expect(store.filePath()).toBe(path.join(tmpDir, "com.example.app", "1200.json"));
   });
 
   it("aggregates repeated observations into one edge with counts", async () => {
@@ -84,7 +88,12 @@ describe("ScreenGraphStore observe / persist / load round-trip", () => {
 describe("ScreenGraphStore secret redaction", () => {
   it("never persists compact text for a node flagged secret", async () => {
     const store = newStore();
-    store.upsertNode({ hash: "sek", compact: "user@example.com hunter2", stateHash: "s", secret: true });
+    store.upsertNode({
+      hash: "sek",
+      compact: "user@example.com hunter2",
+      stateHash: "s",
+      secret: true,
+    });
     expect(store.getNode("sek")?.redacted).toBe(true);
     expect(store.getNode("sek")?.compact).toBe("");
     await store.flush();
@@ -106,7 +115,12 @@ describe("ScreenGraphStore secret redaction", () => {
     store.upsertNode({
       hash: "pwd",
       compact: "secret-field-text",
-      index: { [selectorKeyForId("password")]: { bounds: { x1: 0, y1: 0, x2: 1, y2: 1 }, flags: FLAG_PASSWORD } },
+      index: {
+        [selectorKeyForId("password")]: {
+          bounds: { x1: 0, y1: 0, x2: 1, y2: 1 },
+          flags: FLAG_PASSWORD,
+        },
+      },
     });
     await store.flush();
     const raw = await fsp.readFile(store.filePath(), "utf8");

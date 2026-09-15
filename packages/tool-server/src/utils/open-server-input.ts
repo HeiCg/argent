@@ -19,7 +19,10 @@ import {
   setCachedScreenSize,
   __resetOpenServerScreenSizeCache,
 } from "./open-server-screen-cache";
-import { recordOpenServerObservation, screenGraphRecordingEnabled } from "./screen-graph-open-wiring";
+import {
+  recordOpenServerObservation,
+  screenGraphRecordingEnabled,
+} from "./screen-graph-open-wiring";
 import type { EdgeSelector } from "../screen-graph";
 import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
 
@@ -90,10 +93,20 @@ function tappedSelectorFromTree(
   }
   if (!best) return undefined;
   const bucket = {
-    x: Math.min(EDGE_BUCKET_GRID - 1, Math.max(0, Math.floor((x * EDGE_BUCKET_GRID) / Math.max(1, size.width)))),
-    y: Math.min(EDGE_BUCKET_GRID - 1, Math.max(0, Math.floor((y * EDGE_BUCKET_GRID) / Math.max(1, size.height)))),
+    x: Math.min(
+      EDGE_BUCKET_GRID - 1,
+      Math.max(0, Math.floor((x * EDGE_BUCKET_GRID) / Math.max(1, size.width)))
+    ),
+    y: Math.min(
+      EDGE_BUCKET_GRID - 1,
+      Math.max(0, Math.floor((y * EDGE_BUCKET_GRID) / Math.max(1, size.height)))
+    ),
   };
-  const sel: EdgeSelector = { className: best.className, indexInParent: best.index, boundsBucket: bucket };
+  const sel: EdgeSelector = {
+    className: best.className,
+    indexInParent: best.index,
+    boundsBucket: bucket,
+  };
   const id = best.resourceId?.trim();
   if (id) sel.resourceId = id;
   const text = best.text?.trim();
@@ -437,7 +450,8 @@ export function openServerTypeTextWithOutcome(
   opts: { secretsUsed?: boolean; idleTimeoutMs?: number } = {}
 ): Promise<OpenServerActionOutcome> {
   const ref = openDeviceServerRef(device);
-  const outcomeOpts = opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : undefined;
+  const outcomeOpts =
+    opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : undefined;
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     const outcome = toOutcome(await server.typeTextWithOutcome(text, outcomeOpts));

@@ -37,7 +37,11 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
-    getScreenSize: vi.fn(async () => ({ screenWidth: 1000, screenHeight: 2000, displayRotation: 0 })),
+    getScreenSize: vi.fn(async () => ({
+      screenWidth: 1000,
+      screenHeight: 2000,
+      displayRotation: 0,
+    })),
     swipeWithOutcome: vi.fn(async () => ({ success: true, ...OUTCOME })),
   };
 }
@@ -73,7 +77,15 @@ describe("gesture-swipe momentum → open-device-server holdEndMs (T7)", () => {
 
     expect(openApi.swipeWithOutcome).toHaveBeenCalledTimes(1);
     // startX,startY,endX,endY,steps,holdEndMs,outcomeOpts — 500,1400,500,400,10,undefined,undefined
-    expect(openApi.swipeWithOutcome).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined, undefined);
+    expect(openApi.swipeWithOutcome).toHaveBeenCalledWith(
+      500,
+      1400,
+      500,
+      400,
+      10,
+      undefined,
+      undefined
+    );
     // The fingerprint delta rides back additively on the tool result.
     expect((result as { outcome?: unknown }).outcome).toEqual(OUTCOME);
   });

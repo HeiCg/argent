@@ -27,7 +27,7 @@ tree afterwards. `feat/bench-ci-d` stays on origin as history; nothing to merge.
   locate, per-step navTarget) and the start of D.4 (symmetric locate resolver for B1).
 - Target: `open/main` = `feat/android-open-server-final` (driver phases 3h scrcpy tap,
   3i host transport, 3j compact payload — 3j is DISABLED by decision, keep it disabled)
-  + `feat/bench-ci-final` (workflow with all gates) + docs.
+  - `feat/bench-ci-final` (workflow with all gates) + docs.
 - `git merge-tree --write-tree open/main origin/feat/screen-graph-d` reports content
   conflicts in exactly these 11 files:
   - `packages/android-device-server/assets/manifest.json`
@@ -41,9 +41,9 @@ tree afterwards. `feat/bench-ci-d` stays on origin as history; nothing to merge.
   - `packages/tool-server/src/tools/describe/index.ts`
   - `packages/tool-server/src/tools/paste/platforms/android.ts`
   - `packages/tool-server/src/utils/android-open-server-client.ts`
-  Three more files auto-merge but must be re-read for semantic sanity:
-  `describe/platforms/android/open-server-tree.ts`, `utils/open-server-input.ts`,
-  `test/open-server-paste.test.ts`.
+    Three more files auto-merge but must be re-read for semantic sanity:
+    `describe/platforms/android/open-server-tree.ts`, `utils/open-server-input.ts`,
+    `test/open-server-paste.test.ts`.
 
 ## Resolution rules
 
@@ -120,6 +120,7 @@ CI run id: **34788497583** (`gh workflow run bench-open-vs-proprietary.yml --ref
 merge/screen-graph-d -f suite=both -f sg_mode=matrix`).
 
 Per-job status:
+
 - **screen-graph (matrix, x86_64 KVM): success** — the merged tree built and the
   screen-graph matrix passed; the retargeted job (no more `ref: feat/screen-graph-d`
   checkout) built its own dispatched ref, confirming the workflow change.
@@ -147,6 +148,7 @@ screen-graph matrix); the sole red is the pre-existing, merge-invariant fling pa
 red as on the reference run.
 
 Local verification (worktree, root `node_modules` symlinked):
+
 - `tsc`: the R33 worktree guard blocks `tsc --build` (heavy-build class); verified type
   safety with an artifact-free `tsc --noEmit` over the merged `tool-server` +
   `configuration-core` (all `@argent/*` mapped to source) — **clean, 0 errors**. CI's

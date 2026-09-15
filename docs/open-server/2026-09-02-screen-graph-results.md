@@ -5,17 +5,17 @@ Generated 2026-09-03T01:24:03.574Z. Harness:
 
 ## Environment
 
-| Item | Value |
-|---|---|
-| serial | emulator-5554 |
-| reps | 3 |
-| tasks | 15 |
-| configs | O3,O4,O5 |
-| tokenizer | js-tiktoken o200k_base (primary), chars/4 (secondary) |
-| androidHome | /Users/heicg/Library/Android/sdk |
-| startedAt | 2026-09-03T01:14:35.645Z |
-| reran | O3,O4,O5 (this run, cold-store fix) |
-| reused | B1,B2,O1,O2 (from bench-sg-2026-09-03T00-21-25-804Z.pass1.json) |
+| Item        | Value                                                           |
+| ----------- | --------------------------------------------------------------- |
+| serial      | emulator-5554                                                   |
+| reps        | 3                                                               |
+| tasks       | 15                                                              |
+| configs     | O3,O4,O5                                                        |
+| tokenizer   | js-tiktoken o200k_base (primary), chars/4 (secondary)           |
+| androidHome | /Users/heicg/Library/Android/sdk                                |
+| startedAt   | 2026-09-03T01:14:35.645Z                                        |
+| reran       | O3,O4,O5 (this run, cold-store fix)                             |
+| reused      | B1,B2,O1,O2 (from bench-sg-2026-09-03T00-21-25-804Z.pass1.json) |
 
 ## Method & provenance
 
@@ -40,23 +40,23 @@ Generated 2026-09-03T01:24:03.574Z. Harness:
 ## Per-step observation tokens (o200k_base) — p50 / p95
 
 | Config | n steps | tok p50 | tok p95 | chars/4 p50 | RTT p50 (ms) | RTT count/step p50 | success |
-|---|---|---|---|---|---|---|---|
-| B1 | 45 | 657 | 669 | 473 | 177 | 2 | 33% |
-| B2 | 45 | 629 | 846 | 449 | 85 | 2 | 100% |
-| O1 | 45 | 67 | 514 | 53 | 2 | 2 | 100% |
-| O2 | 45 | 54 | 514 | 32 | 2 | 2 | 100% |
-| O3 | 45 | 629 | 846 | 449 | 83 | 2 | 98% |
-| O4 | 45 | 40 | 107 | 34 | 55 | 1 | 100% |
-| O5 | 45 | 40 | 115 | 34 | 79 | 1 | 100% |
+| ------ | ------- | ------- | ------- | ----------- | ------------ | ------------------ | ------- |
+| B1     | 45      | 657     | 669     | 473         | 177          | 2                  | 33%     |
+| B2     | 45      | 629     | 846     | 449         | 85           | 2                  | 100%    |
+| O1     | 45      | 67      | 514     | 53          | 2            | 2                  | 100%    |
+| O2     | 45      | 54      | 514     | 32          | 2            | 2                  | 100%    |
+| O3     | 45      | 629     | 846     | 449         | 83           | 2                  | 98%     |
+| O4     | 45      | 40      | 107     | 34          | 55           | 1                  | 100%    |
+| O5     | 45      | 40      | 115     | 34          | 79           | 1                  | 100%    |
 
 ## Hypotheses
 
-| Hypothesis | Target | Measured | Verdict |
-|---|---|---|---|
-| H1 O1 tokens/step vs B2 (unchanged steps) | ≤ 0.5× | 0.107× | PASS |
-| H2 O2 removes ≥1 RTT/step vs B2 | ≥ 1 | 0 | FAIL |
-| H3 O4 tokens/step vs O3 (revisited) | ≤ 0.2× | 0.064× | PASS |
-| H4 success non-inferior (±2 pp) to B1 | ≥ base − 2pp | **NOT MEASURED** (B1 baseline invalid — see note) | INCONCLUSIVE; vs B2 (100%): all O configs 100% / O3 97.8% |
+| Hypothesis                                | Target       | Measured                                          | Verdict                                                   |
+| ----------------------------------------- | ------------ | ------------------------------------------------- | --------------------------------------------------------- |
+| H1 O1 tokens/step vs B2 (unchanged steps) | ≤ 0.5×       | 0.107×                                            | PASS                                                      |
+| H2 O2 removes ≥1 RTT/step vs B2           | ≥ 1          | 0                                                 | FAIL                                                      |
+| H3 O4 tokens/step vs O3 (revisited)       | ≤ 0.2×       | 0.064×                                            | PASS                                                      |
+| H4 success non-inferior (±2 pp) to B1     | ≥ base − 2pp | **NOT MEASURED** (B1 baseline invalid — see note) | INCONCLUSIVE; vs B2 (100%): all O configs 100% / O3 97.8% |
 
 ## Cold vs warm (O3 vs O4)
 
@@ -68,27 +68,27 @@ Generated 2026-09-03T01:24:03.574Z. Harness:
 
 ## Per-rep ranges across the 3 repetitions
 
-| Config | tokens/step p50 per rep | success % per rep |
-|---|---|---|
-| B1 | 657 / 657 / 439 (range 439–657) | 33 / 33 / 33 |
-| B2 | 629 / 629 / 629 (range 629–629) | 100 / 100 / 100 |
-| O1 | 67 / 67 / 67 (range 67–67) | 100 / 100 / 100 |
-| O2 | 54 / 0 / 54 (range 0–54) | 100 / 100 / 100 |
-| O3 | 629 / 629 / 621 (range 621–629) | 100 / 100 / 93 |
-| O4 | 40 / 40 / 40 (range 40–40) | 100 / 100 / 100 |
-| O5 | 40 / 40 / 40 (range 40–40) | 100 / 100 / 100 |
+| Config | tokens/step p50 per rep         | success % per rep |
+| ------ | ------------------------------- | ----------------- |
+| B1     | 657 / 657 / 439 (range 439–657) | 33 / 33 / 33      |
+| B2     | 629 / 629 / 629 (range 629–629) | 100 / 100 / 100   |
+| O1     | 67 / 67 / 67 (range 67–67)      | 100 / 100 / 100   |
+| O2     | 54 / 0 / 54 (range 0–54)        | 100 / 100 / 100   |
+| O3     | 629 / 629 / 621 (range 621–629) | 100 / 100 / 93    |
+| O4     | 40 / 40 / 40 (range 40–40)      | 100 / 100 / 100   |
+| O5     | 40 / 40 / 40 (range 40–40)      | 100 / 100 / 100   |
 
 ## Per-config wall time / task (ms) — p50 / p95 / range
 
-| Config | p50 | p95 | range |
-|---|---|---|---|
-| B1 | 4261 | 5299 | 3746–6209 |
-| B2 | 4343 | 5789 | 3914–5909 |
-| O1 | 4221 | 5511 | 3728–5725 |
-| O2 | 5089 | 13138 | 3761–17760 |
-| O3 | 4179 | 5322 | 3384–5843 |
-| O4 | 4223 | 5219 | 3321–5265 |
-| O5 | 4259 | 5342 | 3355–5608 |
+| Config | p50  | p95   | range      |
+| ------ | ---- | ----- | ---------- |
+| B1     | 4261 | 5299  | 3746–6209  |
+| B2     | 4343 | 5789  | 3914–5909  |
+| O1     | 4221 | 5511  | 3728–5725  |
+| O2     | 5089 | 13138 | 3761–17760 |
+| O3     | 4179 | 5322  | 3384–5843  |
+| O4     | 4223 | 5219  | 3321–5265  |
+| O5     | 4259 | 5342  | 3355–5608  |
 
 ## Notes
 

@@ -5,7 +5,10 @@ import {
   resetSkippedNoIdHash,
 } from "../src/utils/screen-graph-open-wiring";
 import { EMPTY_TREE_HASH } from "../src/utils/screen-hash";
-import type { OpenDeviceServerApi, OpenServerActionOutcome } from "../src/blueprints/android-open-server";
+import type {
+  OpenDeviceServerApi,
+  OpenServerActionOutcome,
+} from "../src/blueprints/android-open-server";
 import type { ActionInvocation } from "../src/screen-graph";
 import type { DeviceInfo } from "@argent/registry";
 
@@ -93,7 +96,12 @@ describe("recordOpenServerObservation — empty-tree guard (3M-H1)", () => {
       SIZE,
       INVOCATION,
       // before has a truthy (package-only) idHash but an EMPTY_TREE_HASH stateHash.
-      outcome({ version: 6, hash: EMPTY_TREE_HASH, stateHash: EMPTY_TREE_HASH, idHash: "b2fbe9151b60b485" })
+      outcome({
+        version: 6,
+        hash: EMPTY_TREE_HASH,
+        stateHash: EMPTY_TREE_HASH,
+        idHash: "b2fbe9151b60b485",
+      })
     );
 
     expect(getState).not.toHaveBeenCalled(); // caught before the settled read

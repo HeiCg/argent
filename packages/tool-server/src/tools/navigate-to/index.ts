@@ -255,7 +255,9 @@ export async function resolveTapPoint(
   fromIndex?: ScreenNode["index"],
   selector?: EdgeSelector
 ): Promise<TapResolution> {
-  const centreOf = (n: { bounds: { x1: number; y1: number; x2: number; y2: number } }): TapResolution => ({
+  const centreOf = (n: {
+    bounds: { x1: number; y1: number; x2: number; y2: number };
+  }): TapResolution => ({
     cx: Math.round((n.bounds.x1 + n.bounds.x2) / 2),
     cy: Math.round((n.bounds.y1 + n.bounds.y2) / 2),
   });
@@ -306,9 +308,7 @@ export async function resolveTapPoint(
           : { text: { contains: c.value, caseInsensitive: true } };
       const q = await server.query(sel, { limit: 20 });
       const exact = q.nodes.filter((n) =>
-        c.field === "id"
-          ? norm(n.id) === want
-          : norm(n.text) === want || norm(n.cd) === want
+        c.field === "id" ? norm(n.id) === want : norm(n.text) === want || norm(n.cd) === want
       );
       if (exact.length === 1) return centreOf(exact[0]!);
       if (exact.length > 1) sawAmbiguous = true;
@@ -394,15 +394,12 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
     // The `screen-graph` gate is enforced by the registry; the open server is
     // this tool's only backend, so refuse clearly when it is off.
     if (!isFlagEnabled("open-device-server")) {
-      throw new FailureError(
-        "navigate-to requires the `open-device-server` flag (its backend).",
-        {
-          error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
-          failure_stage: "navigate_to_backend",
-          failure_area: "tool_server",
-          error_kind: "validation",
-        }
-      );
+      throw new FailureError("navigate-to requires the `open-device-server` flag (its backend).", {
+        error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+        failure_stage: "navigate_to_backend",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      });
     }
 
     const ref = openDeviceServerRef(device);
@@ -442,9 +439,7 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       // rather than route to an arbitrary one.
       if (params.target.selector) {
         const keys = selectorKeys(params.target.selector);
-        const holders = Object.values(graph.nodes).filter((n) =>
-          keys.some((k) => k in n.index)
-        );
+        const holders = Object.values(graph.nodes).filter((n) => keys.some((k) => k in n.index));
         if (holders.length > 1) {
           const { name, summary } = finalSummary(store, currentHash);
           return {
@@ -469,7 +464,8 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       const planned: PlanResult | null = params.target.screen
         ? plan(graph, currentHash, params.target.screen)
         : stablePlan;
-      const fromVia = stablePlan?.fromVia ?? (currentHash && graph.nodes[currentHash] ? "exact" : "none");
+      const fromVia =
+        stablePlan?.fromVia ?? (currentHash && graph.nodes[currentHash] ? "exact" : "none");
       const fromScore = stablePlan?.fromScore;
 
       if (!planned) {

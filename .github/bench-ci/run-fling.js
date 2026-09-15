@@ -17,4 +17,9 @@ require("ts-node").register({
     ignoreDeprecations: "6.0",
   },
 });
-require(require("node:path").resolve(process.cwd(), "packages/tool-server/scripts/bench-fling-fidelity.ts"));
+require(
+  require("node:path").resolve(
+    process.cwd(),
+    "packages/tool-server/scripts/bench-fling-fidelity.ts"
+  )
+);

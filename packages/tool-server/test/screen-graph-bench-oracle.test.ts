@@ -74,20 +74,20 @@ describe("screen-graph bench oracle — matching rules (ticket C.1 §3)", () => 
     expect(evaluateAssertion(nodes, "battery", { screen: SCREEN, mode: "equals" }).matched).toBe(
       false
     );
-    expect(evaluateAssertion(nodes, "battery saver", { screen: SCREEN, mode: "equals" }).matched).toBe(
-      true
-    );
+    expect(
+      evaluateAssertion(nodes, "battery saver", { screen: SCREEN, mode: "equals" }).matched
+    ).toBe(true);
     // default (contains) still matches the substring.
     expect(evaluateAssertion(nodes, "battery", { screen: SCREEN }).matched).toBe(true);
   });
 
   it("an empty needle never matches", () => {
-    expect(evaluateAssertion([{ text: "x", bounds: onScreen() }], "", { screen: SCREEN }).matched).toBe(
-      false
-    );
-    expect(evaluateAssertion([{ text: "x", bounds: onScreen() }], "   ", { screen: SCREEN }).matched).toBe(
-      false
-    );
+    expect(
+      evaluateAssertion([{ text: "x", bounds: onScreen() }], "", { screen: SCREEN }).matched
+    ).toBe(false);
+    expect(
+      evaluateAssertion([{ text: "x", bounds: onScreen() }], "   ", { screen: SCREEN }).matched
+    ).toBe(false);
   });
 
   it("returns every visible match, not just the first", () => {

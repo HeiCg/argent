@@ -7,7 +7,7 @@ Reviewer: read-only researcher agent, 2026-09-05. Code branch `feat/android-open
 ## Verdict: REJECT
 
 Two blocking reasons. (1) `compact:true` is **not** output-preserving — four constructed
-counterexamples make the host trim emit a *different* DescribeNode from the compacted
+counterexamples make the host trim emit a _different_ DescribeNode from the compacted
 payload, and compact is ON BY DEFAULT for every describe (`android/index.ts:108`). The
 "byte-identical" claim is proven only on the one idle-Settings screen. (2) **Neither run
 executed the reviewed head.** 07f0999d (the commit that adds the `benchDebug` double gate
@@ -31,7 +31,7 @@ non-interactive, no label) and zero-area empty leaf drop. The two dropped rules 
 where it breaks.
 
 1. CRITICAL — **scroll-clip is defeated by the hoist.** `pruneSubtree` (`uiautomator-parser.ts:
-   380-392`) hands each node the clip it must enforce *on its own children*, so a scrollable
+380-392`) hands each node the clip it must enforce _on its own children_, so a scrollable
    N's clip fires one level down, at N's scaffold child. Compact removes that child
    (`open-server-tree.ts:251`), the grandchildren become N's direct children, and the clip
    never fires. Reproduced offline against the shipped sources: ScrollView[0,0,1080,1000] →
@@ -112,7 +112,7 @@ where it breaks.
 ### D. A/B validity, timed window, run hygiene (challenges 4, 5, 8)
 
 15. HIGH — **the four A/B arms are sequential, not interleaved** (`bench-open-vs-proprietary.ts:
-    1018-1030`), and two of them are the SAME configuration. `encodeOnce` and `compactOn` both
+1018-1030`), and two of them are the SAME configuration. `encodeOnce` and `compactOn` both
     send `{compact:true}` on the serialize-once path, so their difference is pure position
     drift: run 33814712705 ON-uia handle 21.85 vs 19.07 p50 (2.78 ms), run 33807101442 ON-uia
     31.50 vs 23.25 (8.25 ms), N=20 each. In 33807101442 the claimed compact gain
@@ -179,13 +179,13 @@ where it breaks.
 
 Run 33814712705, sha 64441a88 (NOT the branch head), x86_64 KVM hosted runner, N=20 per block.
 
-| metric | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 |
-|---|---|---|---|---|
-| describe idle p50/p95 ms, n=20 | 52/53 | 43/45 | 43/45 | 52/53 |
-| describe tokens o200k, 1 sample | 657 | 657 | 657 | 657 |
-| describe wire bytes p50, n=20 | n/a | 14967 | 14966 | n/a |
-| describe hostRecvMs p50/p95, n=20 | n/a | 0.244/0.349 | 0.279/0.412 | n/a |
-| ping p50/p95 ms, n=20 | n/a | 0.734/0.852 | — | n/a |
+| metric                            | OFF-1 | ON-uiautomation | ON-scrcpy   | OFF-2 |
+| --------------------------------- | ----- | --------------- | ----------- | ----- |
+| describe idle p50/p95 ms, n=20    | 52/53 | 43/45           | 43/45       | 52/53 |
+| describe tokens o200k, 1 sample   | 657   | 657             | 657         | 657   |
+| describe wire bytes p50, n=20     | n/a   | 14967           | 14966       | n/a   |
+| describe hostRecvMs p50/p95, n=20 | n/a   | 0.244/0.349     | 0.279/0.412 | n/a   |
+| ping p50/p95 ms, n=20             | n/a   | 0.734/0.852     | —           | n/a   |
 
 Fidelity Jaccard 1.0 on 17 keys (OFF-1 vs ON-uia). OFF-1 vs OFF-2 drift, p50 ms: describe 0,
 gesture-tap 0, gesture-pinch 0, swipe 8, await-screen-idle 2, await-ui-element 4,
@@ -198,7 +198,7 @@ server encodeMs 15 → 6. Transport recv gap, n=20 per arm: adb-forward p50/p95 
 Void: "compact output is byte-identical" (findings 1-3); the compact handle-time gain in run
 33807101442 (finding 15); any transfer of the A/B deltas to the describe row (finding 16);
 every ON verb row other than describe in these two runs as like-for-like with OFF (finding 17);
-the gating claim as *tested* (finding 13); "4/17 scrcpy family" (finding 24).
+the gating claim as _tested_ (finding 13); "4/17 scrcpy family" (finding 24).
 
 ## Minimum to re-run
 

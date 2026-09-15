@@ -46,7 +46,12 @@ import type {
 } from "../src/blueprints/android-open-server";
 import { resolveDevice } from "../src/utils/device-info";
 import { ALL_TASKS } from "../src/screen-graph/bench/tasks";
-import type { BenchApp, BenchSelector, BenchStep, BenchTask } from "../src/screen-graph/bench/types";
+import type {
+  BenchApp,
+  BenchSelector,
+  BenchStep,
+  BenchTask,
+} from "../src/screen-graph/bench/types";
 import { evaluateAssertion, type OracleNode } from "../src/screen-graph/bench/oracle";
 import { preflightVerdict, type NeedleEvalRow } from "../src/screen-graph/bench/preflight";
 import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/locate";
@@ -54,7 +59,8 @@ import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/lo
 const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
 const PHYSICAL_DENY = "ZF524RZBHD";
 if (SERIAL === PHYSICAL_DENY) throw new Error(`refuse to target ${PHYSICAL_DENY}`);
-if (!SERIAL.startsWith("emulator-")) throw new Error(`BENCH_SERIAL must be emulator-*, got ${SERIAL}`);
+if (!SERIAL.startsWith("emulator-"))
+  throw new Error(`BENCH_SERIAL must be emulator-*, got ${SERIAL}`);
 
 const CAPTURE = process.env.BENCH_CAPTURE === "1" || process.env.BENCH_CAPTURE === "true";
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results", "screen-graph");
@@ -99,7 +105,12 @@ async function dumpScreen(reg: Reg): Promise<ScreenDump> {
     /* default */
   }
   const res = await server.query({}, { limit: 1000 });
-  const nodes: OracleNode[] = res.nodes.map((n) => ({ id: n.id, text: n.text, cd: n.cd, bounds: n.bounds }));
+  const nodes: OracleNode[] = res.nodes.map((n) => ({
+    id: n.id,
+    text: n.text,
+    cd: n.cd,
+    bounds: n.bounds,
+  }));
   return { screen, nodes };
 }
 
@@ -152,9 +163,7 @@ async function dismissChromeFre(reg: Reg): Promise<void> {
       /url_bar|search_box_text|search or type/i.test(`${n.id ?? ""} ${n.text ?? ""}`)
     );
     const fre = nodes.find(
-      (n) =>
-        n.bounds &&
-        FRE_DISMISS.test(`${n.text ?? ""} ${n.cd ?? ""} ${n.id ?? ""}`)
+      (n) => n.bounds && FRE_DISMISS.test(`${n.text ?? ""} ${n.cd ?? ""} ${n.id ?? ""}`)
     );
     if (!fre) {
       if (hasOmnibox) return; // page chrome is up; nothing to dismiss
@@ -166,7 +175,9 @@ async function dismissChromeFre(reg: Reg): Promise<void> {
     const y = (b.y1 + b.y2) / 2 / screen.height;
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y }).catch(() => undefined);
     await sleep(1500);
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+      .catch(() => undefined);
   }
 }
 
@@ -177,22 +188,34 @@ async function launchAppPreflight(reg: Reg, app: BenchApp): Promise<void> {
     await sleep(400);
     adbTry(["shell", `am start -n ${SETTINGS}/.Settings`], 8_000);
     await sleep(1500);
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+      .catch(() => undefined);
     return;
   }
   // chrome
   adbTry(["shell", `am force-stop ${CHROME}`]);
   await sleep(400);
-  adbTry(["shell", `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`], 12_000);
+  adbTry(
+    ["shell", `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`],
+    12_000
+  );
   await sleep(3500);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+    .catch(() => undefined);
   await dismissChromeFre(reg);
   // If the FRE consumed the VIEW intent, re-issue it so the page actually loads.
   const dump = await dumpScreen(reg);
   if (!dump.nodes.some((n) => EXAMPLE_HEADING.test(n.text ?? ""))) {
-    adbTry(["shell", `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`], 12_000);
+    adbTry(
+      ["shell", `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`],
+      12_000
+    );
     await sleep(3500);
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+      .catch(() => undefined);
   }
 }
 
@@ -262,7 +285,9 @@ async function execCaptureStep(reg: Reg, step: BenchStep): Promise<void> {
     }
   }
   await sleep(600);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+    .catch(() => undefined);
 }
 
 interface CaptureScreen {
@@ -361,7 +386,9 @@ function textSetSimilarity(a: Set<string>, b: Set<string>): number {
 async function needlePresentFullTree(reg: Reg, needle: string): Promise<boolean> {
   let dest = await dumpScreen(reg);
   if (evaluateAssertion(dest.nodes, needle, { ignoreVisibility: true }).matched) return true;
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 1500 })
+    .catch(() => undefined);
   await sleep(300);
   dest = await dumpScreen(reg);
   return evaluateAssertion(dest.nodes, needle, { ignoreVisibility: true }).matched;
@@ -432,7 +459,9 @@ async function verifyDestinationPresence(
       }
     } catch (e) {
       unreachedOrThrew++;
-      process.stdout.write(`  [preflight] destination check for ${task.id} attempt ${attempt} threw: ${String(e)}\n`);
+      process.stdout.write(
+        `  [preflight] destination check for ${task.id} attempt ${attempt} threw: ${String(e)}\n`
+      );
     }
   }
   // Phase D.3 (D2-L4): print reachedDistinct/attempts so the gate summary shows
@@ -453,7 +482,15 @@ async function main(): Promise<number> {
     serial: string;
     settingsRoot?: ScreenDump;
     exampleCom?: ScreenDump;
-    needleEval: Array<NeedleEvalRow & { app: string; needle: string; navigates: boolean; matchesLaunch: boolean; launchMatchText: string }>;
+    needleEval: Array<
+      NeedleEvalRow & {
+        app: string;
+        needle: string;
+        navigates: boolean;
+        matchesLaunch: boolean;
+        launchMatchText: string;
+      }
+    >;
     // Phase D.2 M3: one full NESTED tree WITH the device H_id (+ H/H_text),
     // captured so a Kotlin ScreenHash.identity test and a host/device cross-check
     // can run OFFLINE against a real captured tree (committed as a fixture in the
@@ -520,7 +557,8 @@ async function main(): Promise<number> {
           ? "ok (launch == destination; needle present)"
           : "MISSING (launch-only task but needle not on screen)";
       } else if (r.matched) {
-        verdict = "BAD (needle in launch tree a navigating task leaves — false-pass risk, full-tree gate)";
+        verdict =
+          "BAD (needle in launch tree a navigating task leaves — false-pass risk, full-tree gate)";
       } else {
         // C-M2 (phase D §0.6): absence from launch is NOT enough — the needle must
         // ALSO be PRESENT on the DESTINATION dump, or a needle on NEITHER screen
@@ -550,7 +588,9 @@ async function main(): Promise<number> {
 
     // ---- Capture (optional): launch + destination per task ------------------
     if (CAPTURE) {
-      process.stdout.write("\n=== BENCH_CAPTURE: dumping launch + destination screens per task ===\n");
+      process.stdout.write(
+        "\n=== BENCH_CAPTURE: dumping launch + destination screens per task ===\n"
+      );
       for (const task of ALL_TASKS) {
         try {
           const entry = await captureTask(reg, task);
@@ -597,7 +637,12 @@ async function main(): Promise<number> {
   process.stdout.write(
     `\nPROBLEM needles: ${problemCount} — ${
       out.needleEval
-        .filter((e) => e.verdict.startsWith("BAD") || e.verdict.startsWith("MISSING") || e.verdict.startsWith("UNVERIFIED"))
+        .filter(
+          (e) =>
+            e.verdict.startsWith("BAD") ||
+            e.verdict.startsWith("MISSING") ||
+            e.verdict.startsWith("UNVERIFIED")
+        )
         .map((b) => b.task)
         .join(", ") || "none"
     }\n`

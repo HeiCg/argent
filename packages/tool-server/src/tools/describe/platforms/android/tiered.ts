@@ -11,7 +11,10 @@ import type { DeviceInfo, Registry } from "@argent/registry";
 import { isFlagEnabled } from "@argent/configuration-core";
 import type { DescribeResult } from "../../contract";
 import { formatDescribeTree } from "../../format-tree";
-import { openDeviceServerRef, type OpenDeviceServerApi } from "../../../../blueprints/android-open-server";
+import {
+  openDeviceServerRef,
+  type OpenDeviceServerApi,
+} from "../../../../blueprints/android-open-server";
 import { openDeviceServerMutex } from "../../../../utils/device-mutex";
 import {
   buildScreenPayload,
@@ -105,7 +108,11 @@ export async function describeAndroidTiered(
         // delta of the most recent transition — exactly a summary shown on
         // arrival wants.
         let changedSince: number | undefined;
-        if (node.version !== undefined && node.stateHash !== undefined && node.stateHash !== stateHash) {
+        if (
+          node.version !== undefined &&
+          node.stateHash !== undefined &&
+          node.stateHash !== stateHash
+        ) {
           try {
             const d = await server.diff(node.version);
             changedSince = d.added.length + d.removed.length + d.changed.length;
@@ -149,7 +156,10 @@ export async function describeAndroidTiered(
   }
 }
 
-async function describeAndroidResult(registry: Registry, device: DeviceInfo): Promise<DescribeResult> {
+async function describeAndroidResult(
+  registry: Registry,
+  device: DeviceInfo
+): Promise<DescribeResult> {
   const data = await describeAndroid(registry, device.id, undefined, false);
   const out: DescribeResult = {
     description: formatDescribeTree(data.tree, { source: data.source }),

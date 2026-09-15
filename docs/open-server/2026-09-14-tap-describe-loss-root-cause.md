@@ -32,25 +32,25 @@ The bench did **not** change how `tap+describe` is measured.
 
 `tap+describe` p50 / p95 / mean, N as shown. Source: `bench-block-*.json` → `verbs[]`.
 
-| run | arm | verb | p50 | p95 | mean | N |
-|---|---|---|---|---|---|---|
-| 33975063607 (pre-merge) | OFF-1 / OFF-2 | `tap+describe` | 305 / 313 | 817 / 958 | 393 / 406 | 20 / 20 |
-| 33975063607 | ON-scrcpy | `tap+describe(settle:false)` | **298** | 810 | 351 | 19 |
-| 33975063607 | ON-uiautomation | `tap+describe(settle:false)` | **455** | 673 | 469 | 20 |
-| 34813849446 | OFF-1 / OFF-2 | `tap+describe` | 354 / 297 | 831 / 654 | 445 / 356 | 20 / 20 |
-| 34813849446 | ON-scrcpy | `tap+describe(settle:false)` | **529** | 1029 | 518 | 19 (1 err) |
-| 34813849446 | ON-uiautomation | `tap+describe(settle:false)` | **505** | 728 | 529 | 19 (1 err) |
-| 34806342684 | ON-scrcpy / ON-uiaut. | `tap+describe(settle:false)` | 548 / 518 | 719 / 791 | 551 / 554 | 20 / 20 |
-| 34788497583 (outcome ON) | ON-scrcpy / ON-uiaut. | `tap+describe(settle:false)` | 971 / 942 | 1236 / 1072 | 951 / 949 | 20 / 20 |
+| run                      | arm                   | verb                         | p50       | p95         | mean      | N          |
+| ------------------------ | --------------------- | ---------------------------- | --------- | ----------- | --------- | ---------- |
+| 33975063607 (pre-merge)  | OFF-1 / OFF-2         | `tap+describe`               | 305 / 313 | 817 / 958   | 393 / 406 | 20 / 20    |
+| 33975063607              | ON-scrcpy             | `tap+describe(settle:false)` | **298**   | 810         | 351       | 19         |
+| 33975063607              | ON-uiautomation       | `tap+describe(settle:false)` | **455**   | 673         | 469       | 20         |
+| 34813849446              | OFF-1 / OFF-2         | `tap+describe`               | 354 / 297 | 831 / 654   | 445 / 356 | 20 / 20    |
+| 34813849446              | ON-scrcpy             | `tap+describe(settle:false)` | **529**   | 1029        | 518       | 19 (1 err) |
+| 34813849446              | ON-uiautomation       | `tap+describe(settle:false)` | **505**   | 728         | 529       | 19 (1 err) |
+| 34806342684              | ON-scrcpy / ON-uiaut. | `tap+describe(settle:false)` | 548 / 518 | 719 / 791   | 551 / 554 | 20 / 20    |
+| 34788497583 (outcome ON) | ON-scrcpy / ON-uiaut. | `tap+describe(settle:false)` | 971 / 942 | 1236 / 1072 | 951 / 949 | 20 / 20    |
 
 Neighbouring rows, same blocks:
 
-| run | arm | `describe` p50 | `gesture-tap` p50 | `tap+describe(settle:true)` p50 |
-|---|---|---|---|---|
-| 33975063607 | OFF-1 / OFF-2 | 52 / 52 | 52 / 52 | — |
-| 33975063607 | ON-scrcpy / ON-uiaut. | **36 / 39** | 51 / 77 | 774 / 788 |
-| 34813849446 | OFF-1 / OFF-2 | 52 / 52 | 53 / 54 | — |
-| 34813849446 | ON-scrcpy / ON-uiaut. | **53 / 53** | 51 / 78 | 842 / 843 |
+| run         | arm                   | `describe` p50 | `gesture-tap` p50 | `tap+describe(settle:true)` p50 |
+| ----------- | --------------------- | -------------- | ----------------- | ------------------------------- |
+| 33975063607 | OFF-1 / OFF-2         | 52 / 52        | 52 / 52           | —                               |
+| 33975063607 | ON-scrcpy / ON-uiaut. | **36 / 39**    | 51 / 77           | 774 / 788                       |
+| 34813849446 | OFF-1 / OFF-2         | 52 / 52        | 53 / 54           | —                               |
+| 34813849446 | ON-scrcpy / ON-uiaut. | **53 / 53**    | 51 / 78           | 842 / 843                       |
 
 Three things fall out of this table.
 
@@ -73,52 +73,52 @@ un-staged capture work.
 
 ### ON-scrcpy, describe **after a tap**
 
-| stage | run 33975063607 | run 34813849446 | Δ |
-|---|---|---|---|
-| `captureMs` | **245** | **374** | **+129** |
-| `idleMs` | 0 | 1 | +1 |
-| `rootMs` | 116 | 104 | −12 |
-| `windowsMs` | 0 | 0 | 0 |
-| `rootsMs` | 90 | 114 | +24 |
-| `serializeMs` | 43 | 98 | +55 |
-| `encodeMs` | 9 | 19 | +10 |
-| **residual (unstaged capture)** | **−13** | **+39** | **+52** |
-| `hostTtfbMs` p50 / p95 | 249 / 660 | 377 / 878 | +128 / +218 |
-| `hostRttMs` p50 | 267 | 379 | +112 |
-| `wireBytes` | 31 892 | 32 030 | +138 (+0.4 %) |
+| stage                           | run 33975063607 | run 34813849446 | Δ             |
+| ------------------------------- | --------------- | --------------- | ------------- |
+| `captureMs`                     | **245**         | **374**         | **+129**      |
+| `idleMs`                        | 0               | 1               | +1            |
+| `rootMs`                        | 116             | 104             | −12           |
+| `windowsMs`                     | 0               | 0               | 0             |
+| `rootsMs`                       | 90              | 114             | +24           |
+| `serializeMs`                   | 43              | 98              | +55           |
+| `encodeMs`                      | 9               | 19              | +10           |
+| **residual (unstaged capture)** | **−13**         | **+39**         | **+52**       |
+| `hostTtfbMs` p50 / p95          | 249 / 660       | 377 / 878       | +128 / +218   |
+| `hostRttMs` p50                 | 267             | 379             | +112          |
+| `wireBytes`                     | 31 892          | 32 030          | +138 (+0.4 %) |
 
 ### ON-uiautomation, describe **after a tap**
 
-| stage | run 33975063607 | run 34813849446 | Δ |
-|---|---|---|---|
-| `captureMs` | 296 | 360 | +64 |
-| `rootMs` | 148 | 204 | +56 |
-| `rootsMs` | 125 | 40 | −85 |
-| `serializeMs` | 18 | 61 | +43 |
-| `encodeMs` | 25 | 24 | −1 |
-| **residual** | **−20** | **+31** | **+51** |
+| stage         | run 33975063607 | run 34813849446 | Δ       |
+| ------------- | --------------- | --------------- | ------- |
+| `captureMs`   | 296             | 360             | +64     |
+| `rootMs`      | 148             | 204             | +56     |
+| `rootsMs`     | 125             | 40              | −85     |
+| `serializeMs` | 18              | 61              | +43     |
+| `encodeMs`    | 25              | 24              | −1      |
+| **residual**  | **−20**         | **+31**         | **+51** |
 
 ### Both arms, describe **at idle** (control)
 
-| stage | run7 scrcpy | 34813 scrcpy | run7 uiaut. | 34813 uiaut. |
-|---|---|---|---|---|
-| `captureMs` | 33 | 48 | 35 | 48 |
-| `rootMs` | 1 | 1 | 1 | 1 |
-| `rootsMs` | 1 | 2 | 1 | 2 |
-| `serializeMs` | 6 | 7 | 6 | 7 |
-| `encodeMs` | **26** | **36** | **27** | **36** |
-| **residual** | **−1** | **+2** | **0** | **+2** |
-| `wireBytes` | 31 886 | 32 020 | 31 886 | 32 020 |
+| stage         | run7 scrcpy | 34813 scrcpy | run7 uiaut. | 34813 uiaut. |
+| ------------- | ----------- | ------------ | ----------- | ------------ |
+| `captureMs`   | 33          | 48           | 35          | 48           |
+| `rootMs`      | 1           | 1            | 1           | 1            |
+| `rootsMs`     | 1           | 2            | 1           | 2            |
+| `serializeMs` | 6           | 7            | 6           | 7            |
+| `encodeMs`    | **26**      | **36**       | **27**      | **36**       |
+| **residual**  | **−1**      | **+2**       | **0**       | **+2**       |
+| `wireBytes`   | 31 886      | 32 020       | 31 886      | 32 020       |
 
 ### Back-to-back RPC floor, same blocks (`rpcBreakdowns`, N=20, idle)
 
-| metric | run7 scrcpy / uiaut. | 34788 scrcpy / uiaut. | 34813 scrcpy / uiaut. |
-|---|---|---|---|
-| `ping` p50 (no tree work at all) | 0.42 / 0.50 | 0.63 / 0.67 | **0.86 / 0.82** |
-| `getNestedState` host RTT p50 | 27.6 / 26.2 | 33.8 / 34.3 | 37.0 / 40.2 |
-| `getNestedState` server `captureMs` p50 | 25 / 24 | 31 / 31 | 34 / 37 |
-| `getNestedState` server `encodeMs` p50 | 17 / 16 | 21 / 21 | 23 / 24 |
-| `getNestedState` wireBytes | 31 886 | 32 018 | 32 021 |
+| metric                                  | run7 scrcpy / uiaut. | 34788 scrcpy / uiaut. | 34813 scrcpy / uiaut. |
+| --------------------------------------- | -------------------- | --------------------- | --------------------- |
+| `ping` p50 (no tree work at all)        | 0.42 / 0.50          | 0.63 / 0.67           | **0.86 / 0.82**       |
+| `getNestedState` host RTT p50           | 27.6 / 26.2          | 33.8 / 34.3           | 37.0 / 40.2           |
+| `getNestedState` server `captureMs` p50 | 25 / 24              | 31 / 31               | 34 / 37               |
+| `getNestedState` server `encodeMs` p50  | 17 / 16              | 21 / 21               | 23 / 24               |
+| `getNestedState` wireBytes              | 31 886               | 32 018                | 32 021                |
 
 Reading of the split, ON-scrcpy after-tap (+129 ms):
 
@@ -130,7 +130,7 @@ Reading of the split, ON-scrcpy after-tap (+129 ms):
   is +90 ms; observed +77 ms.
 
 Note that `ping` and the idle `encodeMs` are already degraded in **34788497583**, the
-same merged tree *before* the outcome-default-off fix. Cause 2 arrived with the merge,
+same merged tree _before_ the outcome-default-off fix. Cause 2 arrived with the merge,
 not with 3k or the outcome fix.
 
 ## 3. Ranked candidate causes
@@ -195,7 +195,7 @@ not with 3k or the outcome fix.
 `git diff 3da4aa7c..HEAD -- packages/tool-server/scripts/bench-open-vs-proprietary.ts`
 is −88/+53 and touches only: the F7 no-effect diagnostics
 (`bench-open-vs-proprietary.ts:560-620`), the F6 dump short-circuit note
-(`:1436-1460`), and the removal of `destinationVisibleRate`, which ran *after* the tap
+(`:1436-1460`), and the removal of `destinationVisibleRate`, which ran _after_ the tap
 rows. The timed window is unchanged: `tapDescribeAt` /
 `tapThenDescribeFixed` = tap RPC + describe RPC, locate / effect-poll / BACK outside it
 (`bench-open-vs-proprietary.ts:2010-2036`); the after-tap split still calls
@@ -265,14 +265,14 @@ back to ≈ 36 ms and `ping` back to ≈ 0.45 ms (C2 removed by item 4), which p
 One `bench-latency` run on a branch carrying items 1–4, reading only artifacts the
 bench already emits. Pre-register all six gates before the run:
 
-| gate | metric (source) | threshold | proves |
-|---|---|---|---|
-| G1 | `describeSplitAfterTap.stages.fingerprintMs` p50, both ON arms | ≤ 5 ms | fingerprints no longer forced |
-| G2 | `captureP50 − Σ p50(stages)` after-tap, both ON arms | ≤ 10 ms | nothing left hiding in the residual (item 3) |
-| G3 | `verbs[describe].latency.p50`, ON-scrcpy | ≤ 45 ms (OFF is ~52) | C2 gone; the pre-merge win is back |
-| G4 | `pingP50`, both ON arms | ≤ 0.60 ms | C2 gone, independent of any tree work |
-| G5 | `describeSplitIdle.stages.encodeMs` p50 | ≤ 30 ms | C2 gone, pure-CPU probe |
-| G6 | `verbs[tap+describe(settle:false)].p50` ON-scrcpy ÷ `verbs[tap+describe].p50` OFF-1, **same run** | ≤ 1.15 | the headline row, compared within-run only |
+| gate | metric (source)                                                                                   | threshold            | proves                                       |
+| ---- | ------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------- |
+| G1   | `describeSplitAfterTap.stages.fingerprintMs` p50, both ON arms                                    | ≤ 5 ms               | fingerprints no longer forced                |
+| G2   | `captureP50 − Σ p50(stages)` after-tap, both ON arms                                              | ≤ 10 ms              | nothing left hiding in the residual (item 3) |
+| G3   | `verbs[describe].latency.p50`, ON-scrcpy                                                          | ≤ 45 ms (OFF is ~52) | C2 gone; the pre-merge win is back           |
+| G4   | `pingP50`, both ON arms                                                                           | ≤ 0.60 ms            | C2 gone, independent of any tree work        |
+| G5   | `describeSplitIdle.stages.encodeMs` p50                                                           | ≤ 30 ms              | C2 gone, pure-CPU probe                      |
+| G6   | `verbs[tap+describe(settle:false)].p50` ON-scrcpy ÷ `verbs[tap+describe].p50` OFF-1, **same run** | ≤ 1.15               | the headline row, compared within-run only   |
 
 Two cheap additions make the run self-diagnosing and are worth one ticket:
 
@@ -295,7 +295,7 @@ residual (G1/G2), C2 only in the idle / no-tree probes (G3/G4/G5).
   the within-run OFF control, which is flat. Any gate written from this doc must be
   **within-run** (G6), not "beat run 7".
 - **N is small.** Stage splits are N=10 per arm (`describeSplitAfterTap.n`), verbs
-  N=19–20. The after-tap `serializeMs` p95 is 332–333 ms in *both* runs: the tail is
+  N=19–20. The after-tap `serializeMs` p95 is 332–333 ms in _both_ runs: the tail is
   dominated by mid-transition variance, so p95 gates on these stages would be noise.
 - **Residuals are p50-of-difference, not difference-of-p50.** Every "residual" figure
   here is `p50(capture) − Σ p50(stage)`. The per-sample residual is not in the
@@ -309,7 +309,7 @@ residual (G1/G2), C2 only in the idle / no-tree probes (G3/G4/G5).
   (`gesture-tap` 965/852 ms, `prevServerHandleMs` 544/504 ms), never for stage deltas.
 - **`prevServer*` is keyed by method**, not by connection
   (`JsonRpcHandler.kt:85,94,164-167`): `prevServerHandleMs` on a `getState` reply is
-  the *previous `getState`*, never the intervening tap. Any reading of these fields as
+  the _previous `getState`_, never the intervening tap. Any reading of these fields as
   "the tap took 411 ms" is wrong.
 - **Unanswered inside this scope.** The mechanism behind C2 is inferred from `ping`
   and idle `encodeMs`; nothing in the artifacts times the event listener or the

@@ -6,7 +6,12 @@ const SIZE = { width: 1080, height: 1920 };
 
 describe("canonicalAction target preference", () => {
   it("prefers resource-id over text over coordinates", () => {
-    expect(canonicalAction({ kind: "tap", target: { id: "com.x:id/ok", text: "OK" }, x: 10, y: 10 }, SIZE)).toEqual({
+    expect(
+      canonicalAction(
+        { kind: "tap", target: { id: "com.x:id/ok", text: "OK" }, x: 10, y: 10 },
+        SIZE
+      )
+    ).toEqual({
       kind: "tap",
       target: { id: "com.x:id/ok" },
     });
@@ -39,7 +44,9 @@ describe("canonicalAction swipe / key / back", () => {
     expect(swipeDirection(500, 300, 500, 1500)).toBe("down");
     expect(swipeDirection(900, 500, 100, 500)).toBe("left");
     expect(swipeDirection(100, 500, 900, 500)).toBe("right");
-    expect(canonicalAction({ kind: "swipe", startX: 500, startY: 1500, endX: 500, endY: 300 })).toEqual({
+    expect(
+      canonicalAction({ kind: "swipe", startX: 500, startY: 1500, endX: 500, endY: 300 })
+    ).toEqual({
       kind: "swipe",
       dir: "up",
     });
@@ -60,7 +67,10 @@ describe("actionSignature", () => {
     expect(actionSignature(a)).not.toBe(actionSignature(b));
 
     const id1 = canonicalAction({ kind: "tap", target: { id: "com.x:id/ok" }, x: 1, y: 1 }, SIZE);
-    const id2 = canonicalAction({ kind: "tap", target: { id: "com.x:id/ok" }, x: 999, y: 999 }, SIZE);
+    const id2 = canonicalAction(
+      { kind: "tap", target: { id: "com.x:id/ok" }, x: 999, y: 999 },
+      SIZE
+    );
     expect(actionSignature(id1)).toBe(actionSignature(id2));
   });
 });

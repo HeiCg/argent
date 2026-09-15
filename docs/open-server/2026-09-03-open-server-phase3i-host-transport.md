@@ -8,17 +8,20 @@ Most of this ticket is OFFLINE (fixture-driven micro-bench); CI only at the
 end via `feat/bench-ci-3i` + `gh workflow run … -f suite=latency`.
 
 ## Evidence (CI runs 33736918373 / 33738386658, x86_64)
+
 Idle `describe`: OFF 68–72 ms p50; ON 108–112 ms. Server-side stages on ON
 sum to ≈22 ms (rootMs 1–2, rootsMs 1–5, serializeMs 5–7, encodeMs 10–18,
 idleMs 0). So ~85–90 ms is outside the Kotlin handler: NDJSON write/read
 over `adb forward` TCP, host JSON.parse of the nested tree (1892 B rendered,
 but the wire payload is the FULL nested tree — how many KB?), `nestedToParsed`
-+ v2 trim + `formatDescribeTree`, the tool wrapper (registry, flags, mutex,
-service ref resolution), and `getScreenSize`/other side RPCs if any remain
-on the describe path. The proprietary path pays one HTTP call to a local
-Rust server that returns an already-trimmed XML.
+
+- v2 trim + `formatDescribeTree`, the tool wrapper (registry, flags, mutex,
+  service ref resolution), and `getScreenSize`/other side RPCs if any remain
+  on the describe path. The proprietary path pays one HTTP call to a local
+  Rust server that returns an already-trimmed XML.
 
 ## Findings so far (2026-09-03, offline mapping — start here)
+
 - Describe is already exactly ONE RPC (`getNestedState`); no side RPCs.
 - Host socket has `setNoDelay(true)` (android-open-server-client.ts:155);
   the Kotlin accepted socket has NO `tcpNoDelay` — quick win, set it in
@@ -45,6 +48,7 @@ Rust server that returns an already-trimmed XML.
   tsconfig (not typechecked in CI) — add a typecheck step when touching it.
 
 ## Work
+
 1. **Host micro-bench (offline, no device).** `packages/tool-server/scripts/bench-describe-host.ts`:
    load a captured nested-tree JSON fixture (add one from the goldens or
    capture in CI step and commit as fixture), and time N=200 each:
@@ -75,4 +79,4 @@ Rust server that returns an already-trimmed XML.
    with idle describe OFF vs ON p50/p95, the host stage table, wire bytes
    before/after. Target: ON idle describe ≤ OFF + 10 ms on the same run;
    tokens and goldens unchanged.
-Commit + push branches; report numbers and run URL.
+   Commit + push branches; report numbers and run URL.

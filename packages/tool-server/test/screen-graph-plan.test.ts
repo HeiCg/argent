@@ -12,24 +12,29 @@ import {
   planToSelectorStable,
   type PlanGraph,
 } from "../src/screen-graph/plan";
-import { selectorKeyForId, selectorKeyForText, type Edge, type ScreenNode } from "../src/screen-graph/types";
+import {
+  selectorKeyForId,
+  selectorKeyForText,
+  type Edge,
+  type ScreenNode,
+} from "../src/screen-graph/types";
 
 const NOW = 1_000_000_000_000;
 const DAY = 86_400_000;
 
-function node(
-  hash: string,
-  index: ScreenNode["index"] = {},
-  resourceIds?: string[]
-): ScreenNode {
-  return { hash, firstSeen: NOW, lastSeen: NOW, visits: 1, compact: "", index, ...(resourceIds ? { resourceIds } : {}) };
+function node(hash: string, index: ScreenNode["index"] = {}, resourceIds?: string[]): ScreenNode {
+  return {
+    hash,
+    firstSeen: NOW,
+    lastSeen: NOW,
+    visits: 1,
+    compact: "",
+    index,
+    ...(resourceIds ? { resourceIds } : {}),
+  };
 }
 
-function edge(
-  from: string,
-  to: string,
-  over: Partial<Edge> = {}
-): Edge {
+function edge(from: string, to: string, over: Partial<Edge> = {}): Edge {
   return {
     from,
     to,
@@ -114,8 +119,12 @@ describe("planToSelector", () => {
     const graph: PlanGraph = {
       nodes: {
         a: node("a"),
-        b: node("b", { [selectorKeyForText("Wi-Fi")]: { bounds: { x1: 0, y1: 0, x2: 1, y2: 1 }, flags: 0 } }),
-        c: node("c", { [selectorKeyForId("com.x:id/save")]: { bounds: { x1: 0, y1: 0, x2: 1, y2: 1 }, flags: 0 } }),
+        b: node("b", {
+          [selectorKeyForText("Wi-Fi")]: { bounds: { x1: 0, y1: 0, x2: 1, y2: 1 }, flags: 0 },
+        }),
+        c: node("c", {
+          [selectorKeyForId("com.x:id/save")]: { bounds: { x1: 0, y1: 0, x2: 1, y2: 1 }, flags: 0 },
+        }),
       },
       edges: [edge("a", "b"), edge("b", "c")],
     };
@@ -148,24 +157,45 @@ describe("planToSelector", () => {
 /* C.4 uploads the store so future runs can re-ground this fixture.            */
 /* -------------------------------------------------------------------------- */
 
-const repeat = (xs: string[], n: number): string[] =>
-  Array.from({ length: n }, () => xs).flat();
+const repeat = (xs: string[], n: number): string[] => Array.from({ length: n }, () => xs).flat();
 
 // Real captured Settings-root containers + a real settings row's id group.
 const ROOT_CONTAINERS = [
-  "content", "settings_homepage_container", "app_bar", "app_bar_container",
-  "homepage_app_bar_regular_phone_view", "account_avatar", "homepage_title",
-  "search_bar", "search_action_bar", "search_action_bar_title",
-  "main_content_scrollable_container", "homepage_container", "contextual_cards_content",
-  "main_content", "container_material", "list_container", "recycler_view", "statusBarBackground",
+  "content",
+  "settings_homepage_container",
+  "app_bar",
+  "app_bar_container",
+  "homepage_app_bar_regular_phone_view",
+  "account_avatar",
+  "homepage_title",
+  "search_bar",
+  "search_action_bar",
+  "search_action_bar_title",
+  "main_content_scrollable_container",
+  "homepage_container",
+  "contextual_cards_content",
+  "main_content",
+  "container_material",
+  "list_container",
+  "recycler_view",
+  "statusBarBackground",
 ];
 const ROOT_ROW = ["icon_frame", "icon", "text_frame", "title", "summary"];
 
 // Real captured Network & internet containers + its row id group.
 const SUB_CONTAINERS = [
-  "content", "content_parent", "app_bar", "collapsing_toolbar", "action_bar",
-  "content_frame", "main_content", "container_material", "list_container", "recycler_view",
-  "widget_frame", "switch_widget",
+  "content",
+  "content_parent",
+  "app_bar",
+  "collapsing_toolbar",
+  "action_bar",
+  "content_frame",
+  "main_content",
+  "container_material",
+  "list_container",
+  "recycler_view",
+  "widget_frame",
+  "switch_widget",
 ];
 const SUB_ROW = ["icon_frame", "icon", "title", "summary"];
 

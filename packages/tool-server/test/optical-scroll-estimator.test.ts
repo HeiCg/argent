@@ -52,10 +52,15 @@ describe("optical scroll estimator (ticket 3o)", () => {
     for (const N of [0, 7, 23, 60, 100, 150, 180]) {
       const after = scrolledPng(W, H, N); // content moved UP by N px
       const est = estimateScrollPx(before, after);
-      expect(est.refused, `N=${N} should not be refused (confidence ${est.confidence})`).toBe(false);
+      expect(est.refused, `N=${N} should not be refused (confidence ${est.confidence})`).toBe(
+        false
+      );
       expect(est.offsetPx, `N=${N} offset should be finite`).not.toBeNull();
       const err = Math.abs((est.offsetPx as number) - N);
-      expect(err, `N=${N}: estimated ${est.offsetPx}, error ${err.toFixed(3)} px`).toBeLessThanOrEqual(1);
+      expect(
+        err,
+        `N=${N}: estimated ${est.offsetPx}, error ${err.toFixed(3)} px`
+      ).toBeLessThanOrEqual(1);
       // A true match on this synthetic texture correlates very strongly.
       expect(est.confidence, `N=${N} confidence`).toBeGreaterThan(0.9);
     }

@@ -14,6 +14,7 @@ ms, swipe 292 vs 259 (proprietary 53 / 296–300). scrcpy's only remaining role 
 scrcpy's RPC latency with correct scroll fidelity, then scrcpy removed.
 
 ## Where the Kotlin path loses time (verify first, do not assume)
+
 - Tap: `TapHandler.kt` uses UiAutomator's tap with built-in sync (waits for the event
   to be fully dispatched) — scrcpy returns after the socket write and defers the drain
   to the next read (`flushInput`), which the bench already flags as an asymmetry
@@ -23,21 +24,22 @@ scrcpy's RPC latency with correct scroll fidelity, then scrcpy removed.
   the device test before changing anything; write the numbers in the Result.
 
 ## Work
+
 1. Injection strategies in the Kotlin server, selectable per RPC via `inject:
-   "uia-sync" | "uia-async" | "input-manager"` (default unchanged = today's behaviour):
+"uia-sync" | "uia-async" | "input-manager"` (default unchanged = today's behaviour):
    - `uia-async`: every frame including UP via `uiAutomation.injectInputEvent(ev,
-     sync=false)`; the RPC returns after the last injection call; the drain is folded
+sync=false)`; the RPC returns after the last injection call; the drain is folded
      into the next read exactly like scrcpy's `flushInput` (same `flush:true` semantics
      the reads already support), so the row is like-for-like with today's scrcpy row.
    - `input-manager`: reflection on `android.hardware.input.InputManager
-     .injectInputEvent(InputEvent, int)` with `INJECT_INPUT_EVENT_MODE_ASYNC`, device
+.injectInputEvent(InputEvent, int)` with `INJECT_INPUT_EVENT_MODE_ASYNC`, device
      timestamps from the timeline, same as scrcpy-server does. Guard it: if the hidden
      API is blocked in the instrumentation process (hiddenapi policy), the RPC reports
      `strategy: "unavailable"` with the exception text and falls back to `uia-async`. Do
      NOT change the device's `hidden_api_policy` silently; if CI needs it, it is a
      separate, documented workflow step and the report says so.
    - All three share `MotionInjector`'s timeline builder (device `eventTime` = down time
-     + offset). Tap, swipe (momentum and held), pinch/gesture all go through it.
+     - offset). Tap, swipe (momentum and held), pinch/gesture all go through it.
 2. Host: `open-server-input.ts` gains a strategy selector (flag
    `open-device-server-inject-strategy` in `configuration-core/src/flags.ts`, values as
    above, default = current) and threads it into tap/swipe/gesture RPCs. The scrcpy
@@ -72,6 +74,7 @@ scrcpy's RPC latency with correct scroll fidelity, then scrcpy removed.
    a run to prove nothing else broke: device test + latency + screen-graph green).
 
 ## Process
+
 Branch `feat/open-server-3n-kotlin-injector` off `open/main` (HEAD at dispatch:
 6c849ca8), worktree `../argent-fork-wt-3n` (never /tmp; root `node_modules` symlinked;
 no npm install/gradle/emulator; vitest `--maxWorkers=2`; Kotlin compiles only in CI —
@@ -87,6 +90,7 @@ arm, device-test outcome per strategy, what was removed, docs touched. Scoreboar
 untouched; `open/main` not fast-forwarded; adversarial review before any number lands.
 
 ## Acceptance
+
 One Kotlin strategy is the default, scrcpy is gone from the repo and the workflow, all
 pre-registered gates green on the run that proves it, screen-graph job green, docs
 updated — or an honest report that no strategy met the gates, with the hybrid default
@@ -111,14 +115,15 @@ outcomes per strategy.
 
 What IS measured, from the last accepted latency run **34813849446** (scoreboard, p50/p95):
 
-| verb | OFF-1 | ON-uia (default Kotlin) | ON-scrcpy | OFF-2 | drift floor | reading |
-|---|---|---|---|---|---|---|
-| gesture-tap (tap RPC) | 53/60 | **78/116** | 51/53 | 54/56 | 1 | UiAutomation +25 ms vs scrcpy; scrcpy at parity with OFF; NOT like-for-like (scrcpy defers the drain) |
-| tap+describe(settle:false) | 354/831 | 505/728 (n=19) | 529/1029 (n=19) | 297/654 | 57 | like-for-like headline; open loses +150…+230 on both ON variants |
-| gesture-swipe (250 ms) | 300/312 | 292/309 | 259/261 | 296/305 | 4 | UiAutomation at parity with OFF; scrcpy −37…−41 |
-| gesture-pinch | 358/373 | 346/372 | 307/311 | 346/365 | 12 | UiAutomation at parity with OFF; scrcpy −39…−51 |
+| verb                       | OFF-1   | ON-uia (default Kotlin) | ON-scrcpy       | OFF-2   | drift floor | reading                                                                                               |
+| -------------------------- | ------- | ----------------------- | --------------- | ------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| gesture-tap (tap RPC)      | 53/60   | **78/116**              | 51/53           | 54/56   | 1           | UiAutomation +25 ms vs scrcpy; scrcpy at parity with OFF; NOT like-for-like (scrcpy defers the drain) |
+| tap+describe(settle:false) | 354/831 | 505/728 (n=19)          | 529/1029 (n=19) | 297/654 | 57          | like-for-like headline; open loses +150…+230 on both ON variants                                      |
+| gesture-swipe (250 ms)     | 300/312 | 292/309                 | 259/261         | 296/305 | 4           | UiAutomation at parity with OFF; scrcpy −37…−41                                                       |
+| gesture-pinch              | 358/373 | 346/372                 | 307/311         | 346/365 | 12          | UiAutomation at parity with OFF; scrcpy −39…−51                                                       |
 
 Where the Kotlin default loses time (from the code, to be confirmed by the 3g split on the run):
+
 - **Tap**: `TapHandler`→`injectTaps` already returns on the async UP (default), so its ~25 ms
   vs scrcpy is the UiAutomation inject IPC per event, not a dispatch-wait. `uia-async`
   makes the tap row like-for-like with scrcpy (both defer the drain to the next read);
@@ -169,7 +174,7 @@ Where the Kotlin default loses time (from the code, to be confirmed by the 3g sp
 ### 3. Bench blocks/arms added
 
 - **Latency blocks** (`bench-open-vs-proprietary.ts`): `OFF-1, ON-uia-sync, ON-uia-async,
-  ON-input-manager, ON-scrcpy, OFF-2`. `runBlock` sets `ARGENT_OPEN_INJECT_STRATEGY` per
+ON-input-manager, ON-scrcpy, OFF-2`. `runBlock` sets `ARGENT_OPEN_INJECT_STRATEGY` per
   block and probes input-manager availability on-device (reads the `strategy` echo → notes
   `unavailable` + drops the block if the hiddenapi policy blocked it). `merge-blocks.js`
   ALL + generalized fidelity; `scoreboard.js` renders the strategy arms vs scrcpy/OFF at the
@@ -188,6 +193,7 @@ Where the Kotlin default loses time (from the code, to be confirmed by the 3g sp
 ### Pre-registered gates (written BEFORE the run that grades them)
 
 **A. To promote a Kotlin strategy to the default (all must hold on the run that proves it):**
+
 1. **tap RPC** p50 within the OFF-1↔OFF-2 drift floor of the **ON-scrcpy** block (or faster).
 2. **swipe RPC** p50 within the ON-scrcpy drift floor (or faster).
 3. **pinch RPC** p50 not slower than ON-scrcpy by more than the floor.
@@ -217,6 +223,7 @@ input-manager arm is graded informational until promotion.
 
 For each of `uia-sync` / `uia-async` / `input-manager`
 (`test/blueprints/android-open-server.device.test.ts`, gated by `OPEN_SERVER_DEVICE_TESTS=1`):
+
 - `3n-<strategy>` (enforced): tap navigates (screen changed), momentum swipe scrolls
   further than momentum-free, 2-pointer pinch delivers both pointers (visual zoom asserted
   when headless Chrome is zoomable, else measurement-only) — all via the `inject` param,
@@ -226,6 +233,7 @@ For each of `uia-sync` / `uia-async` / `input-manager`
   strategy, then the device MotionEvent cadence + N + delivered span from `dumpsys input`.
 
 ### Not done now (scope / blockers)
+
 - Items 5 (promote + remove `@yume-chan/*`, scrcpy backend/timeline, fast-inject flag,
   `fastInjectFallbacks`, docs) and 6 (the two CI runs) are the post-run step.
 - Workflow YAML edits are blocked by the missing `workflow` OAuth scope; `run-bench.js` /
@@ -271,14 +279,14 @@ separately (still running at write time).
 
 ### Verb latency p50 (ms), this run vs run 34813849446
 
-| verb | OFF-1 | ON-uia-sync | ON-uia-async | ON-input-manager | ON-scrcpy | OFF-2 | floor | 34813849446 (ON-uia / scrcpy) |
-|---|---|---|---|---|---|---|---|---|
-| gesture-tap | 53 | 84 | 86 | **55** | 52 | 53 | ±2 | 78 / 51 |
-| gesture-swipe | 307 | 311 | 291 | **268** | 258 | 300 | ±7 | 292 / 259 |
-| gesture-pinch | 351 | 347 | 340 | **323** | 307 | 356 | ±5 | 346 / 307 |
-| tap+describe(settle:false) | – | 437 | 422 | **400** | 340 | – | ±2 | 505 / 529 |
-| await-ui-element | 84 | 47 | 48 | 47 | 44 | 80 | – | 45 / 47 |
-| await-screen-idle | 509 | 314 | 312 | 312 | 310 | 504 | – | 294 / 294 |
+| verb                       | OFF-1 | ON-uia-sync | ON-uia-async | ON-input-manager | ON-scrcpy | OFF-2 | floor | 34813849446 (ON-uia / scrcpy) |
+| -------------------------- | ----- | ----------- | ------------ | ---------------- | --------- | ----- | ----- | ----------------------------- |
+| gesture-tap                | 53    | 84          | 86           | **55**           | 52        | 53    | ±2    | 78 / 51                       |
+| gesture-swipe              | 307   | 311         | 291          | **268**          | 258       | 300   | ±7    | 292 / 259                     |
+| gesture-pinch              | 351   | 347         | 340          | **323**          | 307       | 356   | ±5    | 346 / 307                     |
+| tap+describe(settle:false) | –     | 437         | 422          | **400**          | 340       | –     | ±2    | 505 / 529                     |
+| await-ui-element           | 84    | 47          | 48           | 47               | 44        | 80    | –     | 45 / 47                       |
+| await-screen-idle          | 509   | 314         | 312          | 312              | 310       | 504   | –     | 294 / 294                     |
 
 **Headline: `input-manager` closes the UiAutomation tap gap** — 55 ms vs scrcpy 52
 (the default UiAutomation tap was 78 in 34813849446), while the UiAutomation-pipe
@@ -289,16 +297,16 @@ fastest Kotlin arm on every gesture verb and was **available on-device**
 
 ### Pre-registered promotion gate — PASS/FAIL per strategy (deltas vs ON-scrcpy at the drift floor)
 
-| gate | uia-sync | uia-async | input-manager |
-|---|---|---|---|
-| 1. tap RPC within scrcpy floor (±2) | +32 **FAIL** | +34 **FAIL** | +3 **FAIL by 1 ms** |
-| 2. swipe RPC within floor (±7) | +53 **FAIL** | +33 **FAIL** | +10 **FAIL by 3 ms** |
-| 3. pinch not slower than scrcpy by > floor (±5) | +40 **FAIL** | +33 **FAIL** | +16 **FAIL by 11 ms** |
-| 4. tap+describe(settle:false) not worse than scrcpy | +97 **FAIL** | +82 **FAIL** | +60 **FAIL** |
-| 5. first-attempt landing ≥ 95% | 60/60 **PASS** | 60/60 **PASS** | 60/60 **PASS** (scrcpy 58/60 = 96.7%) |
-| 6. zero fallbacks | 0 **PASS** | 0 **PASS** | 0 **PASS** |
-| 7. fling gate PASS every informative cell | = ON-uia arm (fling FAIL this run) | = ON-uia arm | **FAIL** (OUT on all 3 informative, noisy) |
-| 8. input-manager available (not "unavailable") | n/a | n/a | **PASS** (confirmed on-device) |
+| gate                                                | uia-sync                           | uia-async      | input-manager                              |
+| --------------------------------------------------- | ---------------------------------- | -------------- | ------------------------------------------ |
+| 1. tap RPC within scrcpy floor (±2)                 | +32 **FAIL**                       | +34 **FAIL**   | +3 **FAIL by 1 ms**                        |
+| 2. swipe RPC within floor (±7)                      | +53 **FAIL**                       | +33 **FAIL**   | +10 **FAIL by 3 ms**                       |
+| 3. pinch not slower than scrcpy by > floor (±5)     | +40 **FAIL**                       | +33 **FAIL**   | +16 **FAIL by 11 ms**                      |
+| 4. tap+describe(settle:false) not worse than scrcpy | +97 **FAIL**                       | +82 **FAIL**   | +60 **FAIL**                               |
+| 5. first-attempt landing ≥ 95%                      | 60/60 **PASS**                     | 60/60 **PASS** | 60/60 **PASS** (scrcpy 58/60 = 96.7%)      |
+| 6. zero fallbacks                                   | 0 **PASS**                         | 0 **PASS**     | 0 **PASS**                                 |
+| 7. fling gate PASS every informative cell           | = ON-uia arm (fling FAIL this run) | = ON-uia arm   | **FAIL** (OUT on all 3 informative, noisy) |
+| 8. input-manager available (not "unavailable")      | n/a                                | n/a            | **PASS** (confirmed on-device)             |
 
 **No strategy meets the full promotion gate.** `input-manager` is by far the closest —
 within a few ms of scrcpy on every latency verb, cleaner reliability (100% landing vs
@@ -310,6 +318,7 @@ control arm itself FAILED its own fling parity gate, so scrcpy is not a clean wi
 ### Fling per-cell per arm (3k.1 rule; n per cell)
 
 Scrcpy control gate (BLOCKING, scrcpyPacing arm = drift) — **FAIL**, 3 informative / 3 non-informative:
+
 - 250/0.3: scrcpy/uia 0.973 OK · **scrcpy/off 0.662 dev 0.338 OUT**
 - 400/0.3: scrcpy/uia 1.088 · scrcpy/off 0.958 — OK
 - 400/0.5: scrcpy/uia 1.141 · **scrcpy/off 0.802 dev 0.198 OUT**
@@ -317,6 +326,7 @@ Scrcpy control gate (BLOCKING, scrcpyPacing arm = drift) — **FAIL**, 3 informa
 
 input-manager arm (INFORMATIONAL) — OUT on all 3 informative cells, and the metric is
 noisy this run:
+
 - 250/0.3: **im/uia 1.54** (uia read a low 0.30 median here) · im/off 1.048 — OUT on im/uia
 - 400/0.3: im/uia 0.959 · **im/off 0.844** (n=11) — OUT on im/off
 - 400/0.5: im/uia 1.132 · **im/off 0.796** — OUT on im/off (input-manager under-scrolls vs
@@ -327,11 +337,11 @@ noisy this run:
 
 ### Device tests per strategy (all PASS; `OPEN_SERVER_DEVICE_TESTS=1`, step 14 green)
 
-| strategy | ran as | tap navigates | fling > momentum-free | pinch zoom | 8-frame cadence (deliveredSpan, MOVE ms) |
-|---|---|---|---|---|---|
-| uia-sync | uia-sync | +2/−40 labels | 1168 > 540 px | 2.9% | 122 ms, [23,9,17,15,16,16,26] |
-| uia-async | uia-async | +2/−40 labels | 1168 > 631 px | 2.9% | 118 ms, [17,15,16,17,15,19,19] |
-| input-manager | **input-manager** | +2/−40 labels | 1168 > 566 px | 2.9% | 120 ms, [16,16,16,16,17,18,21] |
+| strategy      | ran as            | tap navigates | fling > momentum-free | pinch zoom | 8-frame cadence (deliveredSpan, MOVE ms) |
+| ------------- | ----------------- | ------------- | --------------------- | ---------- | ---------------------------------------- |
+| uia-sync      | uia-sync          | +2/−40 labels | 1168 > 540 px         | 2.9%       | 122 ms, [23,9,17,15,16,16,26]            |
+| uia-async     | uia-async         | +2/−40 labels | 1168 > 631 px         | 2.9%       | 118 ms, [17,15,16,17,15,19,19]           |
+| input-manager | **input-manager** | +2/−40 labels | 1168 > 566 px         | 2.9%       | 120 ms, [16,16,16,16,17,18,21]           |
 
 `input-manager` was **available** and delivered the cleanest ~16 ms MOVE cadence — the
 reflective ASYNC pipe preserves the timeline. (The 3g per-RPC inject-vs-dispatch-vs-serialize
@@ -403,13 +413,13 @@ constraints the gate package rests on):
 > a constant; a missing comparator makes the gate `N/A`, never `±2`.
 >
 > **P2 — tap RPC vs proprietary.** `ON-input-manager` `gesture-tap` p50 ≤ `max(OFF-1,
-> OFF-2)` + floor.
+OFF-2)` + floor.
 >
 > **P3 — swipe RPC vs proprietary.** `ON-input-manager` `gesture-swipe` p50 ≤ `min(OFF-1,
-> OFF-2)` + floor.
+OFF-2)` + floor.
 >
 > **P4 — pinch RPC vs proprietary.** `ON-input-manager` `gesture-pinch` p50 ≤ `min(OFF-1,
-> OFF-2)` + floor.
+OFF-2)` + floor.
 >
 > **P5 — headline, vs proprietary (restates 3m G6).** `ON-input-manager`
 > `tap+describe(settle:false)` p50 ÷ same-run OFF `tap+describe` p50 ≤ **1.15** against
@@ -448,13 +458,14 @@ constraints the gate package rests on):
 > green the default becomes `input-manager` and scrcpy removal ships in the following PR.
 
 Implementation summary (Work 1–5, all committed, gates.test 26/26, tsc clean): default flip
-+ `default` sentinel control (Work 1); P9 benchDebug `_forceInjectUnavailable` seam + host
-+ device tests; per-block strategy echo COUNTS on `getInfo` (Work 2, P7); per-sample
-latency arrays + 10 000-draw seeded bootstrap CI (Work 3, H5); run-2 blocks + fling A/B
-arms (Work 4); scoreboard P1 measured floor (no constant) + P2–P6 CI-based vs proprietary,
-merge-blocks P0 void, merge-fling 3n.1 instrument-first NON-GATING mode (Work 5). Wall-time
-estimate for the latency job (5 blocks + 5 fling arm-streams): ~90 min < 120 (run 1 was
-~95–100 min with 6 blocks); no split, N unchanged.
+
+- `default` sentinel control (Work 1); P9 benchDebug `_forceInjectUnavailable` seam + host
+- device tests; per-block strategy echo COUNTS on `getInfo` (Work 2, P7); per-sample
+  latency arrays + 10 000-draw seeded bootstrap CI (Work 3, H5); run-2 blocks + fling A/B
+  arms (Work 4); scoreboard P1 measured floor (no constant) + P2–P6 CI-based vs proprietary,
+  merge-blocks P0 void, merge-fling 3n.1 instrument-first NON-GATING mode (Work 5). Wall-time
+  estimate for the latency job (5 blocks + 5 fling arm-streams): ~90 min < 120 (run 1 was
+  ~95–100 min with 6 blocks); no split, N unchanged.
 
 ## Result (3n.1) — run 2 (CI 34870686468, head bb3fbddf) — PROMOTION ACCEPTED ON SUBSTANCE
 
@@ -478,19 +489,19 @@ I did NOT re-run (planner decides).
 
 ### P0–P10 (graded as pre-registered)
 
-| gate | verdict | evidence |
-|---|---|---|
-| **P0** control present | **PASS** | ON-uiautomation ran as a latency block |
-| **P1** floor measured, never defaulted | **PASS** | tap **0**, swipe **2**, pinch **1**, headline **78** ms — all `|OFF-1−OFF-2|`, no constant |
-| **P2** tap vs proprietary | **FAIL by 1 ms vs the pre-registered inequality — planner-accepted parity (3N1-H2/M1)** | im 54 vs max(OFF)=OFF-1 53 at floor 0: the point inequality `54 ≤ 53 + 0` FAILS by 1 ms. Δ +1, bootstrap 95 % CI **[0, +1] vs pooled OFF** (vs the max(OFF) comparator the gate uses: CI **[−1, +1]**). Parity in practice; accepted by the planner as a scoreboard NOTE, not graded PASS. The scoreboard prints `FAIL by 1`. (The retired `CI lo ≤ floor` rule had reported this as PASS.) |
-| **P3** swipe vs proprietary | **PASS** | im 263 vs min(OFF) 303, floor 2, Δ −40, **CI [−45,−34]** < −floor → **win** |
-| **P4** pinch vs proprietary | **PASS** | im 318 vs min(OFF) 353, floor 1, Δ −35, **CI [−43,−34]** < −floor → **win** |
-| **P5** headline ≤ 1.15 vs each OFF | **PASS** | 372/408 = 0.91 · 372/486 = 0.77 · 372/447 = 0.83 (all ≤ 1.15) |
-| **P6** no regression vs control | **PASS** | im ≤ ON-uiautomation + floor on every gated verb (uia 86/306/346/480) |
-| **P7** landing + fallbacks + echo | **PASS** | landing **100 %** every block (OFF 40/40, uia 60/60, im 60/60, scrcpy 60/60), oracle pass; **injectStrategyReported input-manager: 161/161** (0 fallbacks) |
-| **P8** fling instrument-first (reported, non-gating) | **INSTRUMENT-UNRESOLVED (arms mislabelled — 3N1-H1)** | `|uia-A/uia-B − 1|` = 0 / 0.014 / 0.044 / **0.41** on the 4 informative cells — same-code arms diverge 41 % at 400/0.5 (0.509 vs 0.361; permutation p = 0.19) → **no arm verdict issued**. Step exited 0. **Correction (3N1-H1): the `ON-uia-A`/`ON-uia-B` control arms actually ran `input-manager` — after the 3n.1 flip an unset env resolved to input-manager and the fling harness DELETED it; run 2 contains NO UiAutomation fling arm. The instrument verdict (same-code arms diverging) survives; the arm labels do NOT. Fixed in 3n.2 (the harness now pins `default`).** |
-| **P9** availability + fallback | **PASS** | input-manager resolved 161/161 with **no `hidden_api_policy` write**; forced-fallback device case: `strategy=="unavailable"`, `fellBackTo=="uia-async"`, tap still navigated, reset → input-manager |
-| **P10** screen-graph | **PASS** | job green; **100/100 on all 7 configs** (B1/B2/O1/O2/O3/O4/O5); invariants OK (0 duplicate, 0 multi-destination); **skippedNoIdHash 0** |
+| gate                                                 | verdict                                                                                 | evidence                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **P0** control present                               | **PASS**                                                                                | ON-uiautomation ran as a latency block                                                                                                                                                                                                                                                                                                                                                      |
+| **P1** floor measured, never defaulted               | **PASS**                                                                                | tap **0**, swipe **2**, pinch **1**, headline **78** ms — all `                                                                                                                                                                                                                                                                                                                             | OFF-1−OFF-2     | `, no constant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **P2** tap vs proprietary                            | **FAIL by 1 ms vs the pre-registered inequality — planner-accepted parity (3N1-H2/M1)** | im 54 vs max(OFF)=OFF-1 53 at floor 0: the point inequality `54 ≤ 53 + 0` FAILS by 1 ms. Δ +1, bootstrap 95 % CI **[0, +1] vs pooled OFF** (vs the max(OFF) comparator the gate uses: CI **[−1, +1]**). Parity in practice; accepted by the planner as a scoreboard NOTE, not graded PASS. The scoreboard prints `FAIL by 1`. (The retired `CI lo ≤ floor` rule had reported this as PASS.) |
+| **P3** swipe vs proprietary                          | **PASS**                                                                                | im 263 vs min(OFF) 303, floor 2, Δ −40, **CI [−45,−34]** < −floor → **win**                                                                                                                                                                                                                                                                                                                 |
+| **P4** pinch vs proprietary                          | **PASS**                                                                                | im 318 vs min(OFF) 353, floor 1, Δ −35, **CI [−43,−34]** < −floor → **win**                                                                                                                                                                                                                                                                                                                 |
+| **P5** headline ≤ 1.15 vs each OFF                   | **PASS**                                                                                | 372/408 = 0.91 · 372/486 = 0.77 · 372/447 = 0.83 (all ≤ 1.15)                                                                                                                                                                                                                                                                                                                               |
+| **P6** no regression vs control                      | **PASS**                                                                                | im ≤ ON-uiautomation + floor on every gated verb (uia 86/306/346/480)                                                                                                                                                                                                                                                                                                                       |
+| **P7** landing + fallbacks + echo                    | **PASS**                                                                                | landing **100 %** every block (OFF 40/40, uia 60/60, im 60/60, scrcpy 60/60), oracle pass; **injectStrategyReported input-manager: 161/161** (0 fallbacks)                                                                                                                                                                                                                                  |
+| **P8** fling instrument-first (reported, non-gating) | **INSTRUMENT-UNRESOLVED (arms mislabelled — 3N1-H1)**                                   | `                                                                                                                                                                                                                                                                                                                                                                                           | uia-A/uia-B − 1 | `= 0 / 0.014 / 0.044 / **0.41** on the 4 informative cells — same-code arms diverge 41 % at 400/0.5 (0.509 vs 0.361; permutation p = 0.19) → **no arm verdict issued**. Step exited 0. **Correction (3N1-H1): the`ON-uia-A`/`ON-uia-B`control arms actually ran`input-manager`— after the 3n.1 flip an unset env resolved to input-manager and the fling harness DELETED it; run 2 contains NO UiAutomation fling arm. The instrument verdict (same-code arms diverging) survives; the arm labels do NOT. Fixed in 3n.2 (the harness now pins`default`).\*\* |
+| **P9** availability + fallback                       | **PASS**                                                                                | input-manager resolved 161/161 with **no `hidden_api_policy` write**; forced-fallback device case: `strategy=="unavailable"`, `fellBackTo=="uia-async"`, tap still navigated, reset → input-manager                                                                                                                                                                                         |
+| **P10** screen-graph                                 | **PASS**                                                                                | job green; **100/100 on all 7 configs** (B1/B2/O1/O2/O3/O4/O5); invariants OK (0 duplicate, 0 multi-destination); **skippedNoIdHash 0**                                                                                                                                                                                                                                                     |
 
 **Promotion acceptance (P0–P7 + P9 + P10): MET on substance.** P2 fails its
 pre-registered inequality by 1 ms (parity in practice, planner-accepted as a note, not a
@@ -499,14 +510,14 @@ its arm labels are void (3N1-H1).
 
 ### Verb table vs OFF (with CIs) and vs run 34853156073 (p50/p95 ms)
 
-| verb | OFF-1 | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2 | floor | Δ(im−pooledOFF) 95% CI | 34853156073 im |
-|---|---|---|---|---|---|---|---|---|
-| gesture-tap | 53/60 | 86/134 | **54/55** | 52/53 | 53/60 | 0 | +1 [−1, 0] parity | 55 |
-| gesture-swipe | 305/322 | 306/345 | **263/285** | 258/259 | 303/315 | 2 | −41 [−45, −34] **win** | 268 |
-| gesture-pinch | 353/364 | 346/404 | **318/357** | 307/312 | 354/367 | 1 | −35.5 [−43.5, −34] **win** | 323 |
-| tap+describe(settle:false) | – | 480/831 | **372/616** | 349/655 | – | 78 | −75 [−227, 2.5] parity/win | 400 |
-| await-ui-element | 76/84 | 41/46 | 41/43 | 42/47 | 76/80 | – | – | 47 |
-| await-screen-idle | 499/505 | 304/307 | 305/310 | 304/308 | 498/506 | – | – | 312 |
+| verb                       | OFF-1   | ON-uiautomation | ON-input-manager | ON-scrcpy | OFF-2   | floor | Δ(im−pooledOFF) 95% CI     | 34853156073 im |
+| -------------------------- | ------- | --------------- | ---------------- | --------- | ------- | ----- | -------------------------- | -------------- |
+| gesture-tap                | 53/60   | 86/134          | **54/55**        | 52/53     | 53/60   | 0     | +1 [−1, 0] parity          | 55             |
+| gesture-swipe              | 305/322 | 306/345         | **263/285**      | 258/259   | 303/315 | 2     | −41 [−45, −34] **win**     | 268            |
+| gesture-pinch              | 353/364 | 346/404         | **318/357**      | 307/312   | 354/367 | 1     | −35.5 [−43.5, −34] **win** | 323            |
+| tap+describe(settle:false) | –       | 480/831         | **372/616**      | 349/655   | –       | 78    | −75 [−227, 2.5] parity/win | 400            |
+| await-ui-element           | 76/84   | 41/46           | 41/43            | 42/47     | 76/80   | –     | –                          | 47             |
+| await-screen-idle          | 499/505 | 304/307         | 305/310          | 304/308   | 498/506 | –     | –                          | 312            |
 
 The ON-uiautomation control (tap 86) confirms within-run that input-manager (54) is far
 faster than the current default UiAutomation path — the comparison run 1 could not make
@@ -529,8 +540,7 @@ move on a row whose within-run floor is 78 — 3N1-M9).
   ON-uiautomation **default: 161/161**, from the on-device `InjectStrategyCounter` (one
   record per `inject`/`injectTaps` call). **161 is the PROCESS-WIDE injection count for
   the block — measured gesture RPCs + warmups + oracle self-test + locate/restore taps —
-  identical across the two ON blocks (3N1-M2); the 100 measured gesture RPCs (5 verbs ×
-  20) are a subset.** `161/161` therefore proves every injection this process made ran the
+  identical across the two ON blocks (3N1-M2); the 100 measured gesture RPCs (5 verbs × 20) are a subset.** `161/161` therefore proves every injection this process made ran the
   block's strategy — stronger than P7's per-reply ask, but not checkable against a
   published measured-RPC denominator. 0 `unavailable` fallbacks on any block. ON-scrcpy
   recorded 0 Kotlin injections, confirming it ran entirely on the scrcpy channel.
@@ -545,16 +555,16 @@ repair is ticket 3o.
 
 ### Screen-graph vs 34813849446 and 34853156073 (side by side)
 
-| metric | 34813849446 (ref) | 34853156073 (run 1) | **34870686468 (run 2)** |
-|---|---|---|---|
-| success (B1/B2/O1/O2/O3/O4/O5) | 100/100 all | 100/97/99/100/99/98/98 | **100/100 all** |
-| skippedNoIdHash | 0 | 2 | **0** |
-| tokens o200k p50 (B1/B2/O1/O2/O3/O4/O5) | – | – | **657 / 651 / 179 / 54 / 627 / 22 / 22** |
-| H1 / H2 / H3 | – | H1 0.214× | **H1 0.275× PASS · H2 0 FAIL / same-screen n=50 1 PASS · H3 0.035× PASS** |
-| H4 paired-cluster Δ (vs both baselines) | – | – | **every Δ +0 pp [0, 0]** |
-| O5 one-step routed | – | – | **60/60, hash-mismatch 0** |
-| store (Settings nodes/edges) | – | – | **10 nodes / 9 edges, three stores** |
-| invariants | OK | OK | OK (0 dup, 0 multi-dest) |
+| metric                                  | 34813849446 (ref) | 34853156073 (run 1)    | **34870686468 (run 2)**                                                   |
+| --------------------------------------- | ----------------- | ---------------------- | ------------------------------------------------------------------------- |
+| success (B1/B2/O1/O2/O3/O4/O5)          | 100/100 all       | 100/97/99/100/99/98/98 | **100/100 all**                                                           |
+| skippedNoIdHash                         | 0                 | 2                      | **0**                                                                     |
+| tokens o200k p50 (B1/B2/O1/O2/O3/O4/O5) | –                 | –                      | **657 / 651 / 179 / 54 / 627 / 22 / 22**                                  |
+| H1 / H2 / H3                            | –                 | H1 0.214×              | **H1 0.275× PASS · H2 0 FAIL / same-screen n=50 1 PASS · H3 0.035× PASS** |
+| H4 paired-cluster Δ (vs both baselines) | –                 | –                      | **every Δ +0 pp [0, 0]**                                                  |
+| O5 one-step routed                      | –                 | –                      | **60/60, hash-mismatch 0**                                                |
+| store (Settings nodes/edges)            | –                 | –                      | **10 nodes / 9 edges, three stores**                                      |
+| invariants                              | OK                | OK                     | OK (0 dup, 0 multi-dest)                                                  |
 
 Run 2's screen-graph is back at the reference (100/100 everywhere, skippedNoIdHash 0) —
 better than run 1. **Correction (3N1-H3): the screen-graph job does NOT run "with no

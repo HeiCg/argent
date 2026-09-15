@@ -8,6 +8,7 @@ Read first: `2026-09-03-review-final-findings.md` (F2, F4–F7, F9–F16, F19) a
 `2026-09-03-open-vs-proprietary-results-final-ci.md`.
 
 ## A. The real loss: scrcpy under-scrolls at long durations
+
 Evidence (runs 33963464784 and 33975063607, scroll-distance ratio vs proprietary):
 400 ms/0.3 → 0.66 / 0.64; 400 ms/0.5 → 0.57 / 0.58; 150 ms cells at parity;
 deficit monotone in duration. Inferred mechanism (verify first): `gesture-swipe`
@@ -16,6 +17,7 @@ paces them HOST-side, awaiting one `injectTouch` write per frame over the socket
 (scrcpy-inject-backend.ts:306-326, `MOMENTUM_STEP_MS` 16 in scrcpy-inject-timeline.ts:109),
 so 26 frames at 400 ms stretch the gesture and lower the release velocity;
 UiAutomation and the proprietary path hand the whole gesture to the device in one call.
+
 1. Measure before changing: log per frame the intended `tMs` vs the actual wall-clock
    write time and the total gesture wall time for 150/250/400 ms swipes (host side),
    plus `MotionEvent` eventTime deltas from logcat (InputDispatcher verbose, device
@@ -32,6 +34,7 @@ UiAutomation and the proprietary path hand the whole gesture to the device in on
    one run, no whitelist; the gate's whitelist (merge-fling.js:57-60) removed.
 
 ## B. Bench honesty items queued by the final review (no numbers change)
+
 - F7: log the no-effect iteration's identity (block, verb, iteration, before/after
   fingerprints, timings) and capture logcat during bench blocks, so a 59/60 can be
   diagnosed.
@@ -51,6 +54,7 @@ UiAutomation and the proprietary path hand the whole gesture to the device in on
   drift floor for that verb.
 
 ## Output
+
 One CI latency run; results appended as "v12 / phase 3k" to
 `2026-09-02-open-vs-proprietary-results-v4.md` (working tree; no device-farm commits):
 the per-frame pacing measurement before/after, the six fling cells before/after with
@@ -96,14 +100,14 @@ perturbed the ON synced-inject and floored the uia fling arm; VERBOSE removed).
 **Fix works — the reproducible long-duration under-scroll is resolved.** Fling A/B, scrcpy
 before(legacy)→after(drift), scrcpy/uia (and scrcpy/off), N=12, median + IQR:
 
-| cell | uia (IQR) | scrcpy drift (IQR) | scrcpy legacy | off | scrcpy/uia leg→drift | scrcpy/off leg→drift | gate |
-|---|---|---|---|---|---|---|---|
-| 150/0.3 | 0.232 [0.175,0.461] | 0.320 [0.175,0.464] | 0.464 | 0.443 | 2.000→1.379 | 1.048→0.722 | **FAIL** |
-| 150/0.5 | 0.175 | 0.175 | 0.175 | 0.175 | 1.000→1.000 | 1.000→1.000 | excluded (floor) |
-| 250/0.3 | 0.473 | 0.459 | 0.442 | 0.467 | 0.934→0.970 | 0.947→0.983 | OK |
-| 250/0.5 | 0.175 | 0.175 [0.175,0.464] | 0.175 | 0.320 | 1.000→1.000 | 0.547→0.547 | excluded (uia+scrcpy floor) |
-| 400/0.3 | 0.313 | 0.319 | 0.324 | 0.360 | 1.035→1.019 | 0.900→0.886 | OK |
-| 400/0.5 | 0.585 | 0.635 | 0.581 | 0.657 | 0.993→1.085 | 0.884→0.967 | OK |
+| cell    | uia (IQR)           | scrcpy drift (IQR)  | scrcpy legacy | off   | scrcpy/uia leg→drift | scrcpy/off leg→drift | gate                        |
+| ------- | ------------------- | ------------------- | ------------- | ----- | -------------------- | -------------------- | --------------------------- |
+| 150/0.3 | 0.232 [0.175,0.461] | 0.320 [0.175,0.464] | 0.464         | 0.443 | 2.000→1.379          | 1.048→0.722          | **FAIL**                    |
+| 150/0.5 | 0.175               | 0.175               | 0.175         | 0.175 | 1.000→1.000          | 1.000→1.000          | excluded (floor)            |
+| 250/0.3 | 0.473               | 0.459               | 0.442         | 0.467 | 0.934→0.970          | 0.947→0.983          | OK                          |
+| 250/0.5 | 0.175               | 0.175 [0.175,0.464] | 0.175         | 0.320 | 1.000→1.000          | 0.547→0.547          | excluded (uia+scrcpy floor) |
+| 400/0.3 | 0.313               | 0.319               | 0.324         | 0.360 | 1.035→1.019          | 0.900→0.886          | OK                          |
+| 400/0.5 | 0.585               | 0.635               | 0.581         | 0.657 | 0.993→1.085          | 0.884→0.967          | OK                          |
 
 Verdict: `FAIL (1 informative cell outside ±0.15: 150ms/0.3=1.379)`. Run 7 (before) had
 400/0.3=0.717 and 400/0.5=0.710 vs uia (0.642/0.580 vs off); both are now at parity
@@ -165,11 +169,13 @@ stretched tail (452/439 ms for a 416 ms request, final MOVE→UP gap 46/35 ms vs
 417/17 ms). Mechanism unresolved; the 8-frame schedule alone is ruled out (3K1-H1).
 
 ### Pacing default byte-equal to pre-3k
+
 `scrcpyPacingMode()` defaults to `legacy`; `drift` is opt-in (`ARGENT_SCRCPY_PACING=drift`).
 The legacy branch of `injectTimeline` is byte-equal to `690e66bc` (whitespace-normalized
 diff of the loop body is empty, 18 lines each). The drift branch alone carries the trace.
 
 ### Gate rule tests (pre-registered, on real artifacts)
+
 `node --test .github/bench-ci/gates.test.js` → 22 passed (21 in the reference run;
 +1 after 3K1-M3 closed the `INCONCLUSIVE`-exits-0 hole). Fixtures are the downloaded
 `fling-block-*.json` of each run: run 7 (33975063607) → **FAIL**, 3 informative cells
@@ -187,22 +193,23 @@ gate itself grading only `drift` is a known hole (Part 1 did not change which ar
 grades — only the `INCONCLUSIVE` exit).
 
 ### Verb table — read like-for-like (ON vs OFF, this run), p50/p95 ms
+
 Blocks OFF-1 → ON-uiautomation → ON-scrcpy → OFF-2, N = 20 (n = 19 on the two ON
 `tap+describe(settle:false)` cells, one `uiautomator dump` parse error each — 3K1-M7). The
 verdict is judged against the **within-run OFF-1↔OFF-2 p50 drift floor** of that verb, not
 against another run. Run 7 (33975063607) and 34806342684 are cited only as replications.
 
-| verb | OFF-1 | ON-uia | ON-scrcpy | OFF-2 | drift floor | verdict (ON vs OFF, this run) |
-|---|---|---|---|---|---|---|
-| describe (idle) | 52/56 | 53/74 | 53/73 | 52/59 | 0 (p50) / 3 (p95) | **parity at p50 (+1), 14–18 ms SLOWER at p95** — the run-7 ON win (39/36 vs 52) is GONE; 34806342684 reads the same (ON-uia 55/74). "Never slower in 3 same-code runs" RETIRED (3K1-H3) |
-| gesture-tap | 53/60 | 78/116 | 51/53 | 54/56 | 1 | scrcpy **parity** (−2…−3); uia **+25 slower**. Not like-for-like across ON variants (scrcpy defers the input drain) |
-| tap+describe (settle:false, headline) | **354/831** | 505/728 (n=19) | 529/1029 (n=19) | **297/654** | **57** | **LOSS: ON +150…+230 ms** on both variants. Run 7 had ON-scrcpy at parity (298/810 vs OFF 305/313); present in 34806342684 (ON-scrcpy 548) → screen-graph-d base, not 3k/3k.1 — cause open (3K1-H3) |
-| gesture-swipe (250 ms) | 300/312 | 292/309 | 259/261 | 296/305 | 4 | **WIN (scrcpy −37…−41)**; uia parity. Reproduces run 7 (257), 34806342684 (258) |
-| gesture-pinch | 358/373 | 346/372 | 307/311 | 346/365 | 12 | **WIN (scrcpy −39…−51)**; uia parity. scrcpy 307 in all three runs |
-| await-screen-idle | 501/507 | 294/297 | 294/308 | 501/511 | 0 | **WIN −207**; the base changed with the screen-graph-d tree (34806342684 reads 292/293), NOT with 3k.1 — cause open |
-| await-ui-element | 80/84 | 45/51 | 47/53 | 80/81 | 0 | **WIN −33…−35** (34806342684 reads 43/43; both OFF and ON moved on this base) |
-| paste | 804/1122 | 291/1086 | 385/990 | 662/1057 | 142 | directional only: −277…−371 clears the floor; p95 does not separate |
-| tap+describe (settle:true, ON-only) | — | 843/981 | 842/990 | — | — | ON-only feature; vs 34806342684 878/839 (in range), > run 7 788/774 (base) |
+| verb                                  | OFF-1       | ON-uia         | ON-scrcpy       | OFF-2       | drift floor       | verdict (ON vs OFF, this run)                                                                                                                                                                       |
+| ------------------------------------- | ----------- | -------------- | --------------- | ----------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| describe (idle)                       | 52/56       | 53/74          | 53/73           | 52/59       | 0 (p50) / 3 (p95) | **parity at p50 (+1), 14–18 ms SLOWER at p95** — the run-7 ON win (39/36 vs 52) is GONE; 34806342684 reads the same (ON-uia 55/74). "Never slower in 3 same-code runs" RETIRED (3K1-H3)             |
+| gesture-tap                           | 53/60       | 78/116         | 51/53           | 54/56       | 1                 | scrcpy **parity** (−2…−3); uia **+25 slower**. Not like-for-like across ON variants (scrcpy defers the input drain)                                                                                 |
+| tap+describe (settle:false, headline) | **354/831** | 505/728 (n=19) | 529/1029 (n=19) | **297/654** | **57**            | **LOSS: ON +150…+230 ms** on both variants. Run 7 had ON-scrcpy at parity (298/810 vs OFF 305/313); present in 34806342684 (ON-scrcpy 548) → screen-graph-d base, not 3k/3k.1 — cause open (3K1-H3) |
+| gesture-swipe (250 ms)                | 300/312     | 292/309        | 259/261         | 296/305     | 4                 | **WIN (scrcpy −37…−41)**; uia parity. Reproduces run 7 (257), 34806342684 (258)                                                                                                                     |
+| gesture-pinch                         | 358/373     | 346/372        | 307/311         | 346/365     | 12                | **WIN (scrcpy −39…−51)**; uia parity. scrcpy 307 in all three runs                                                                                                                                  |
+| await-screen-idle                     | 501/507     | 294/297        | 294/308         | 501/511     | 0                 | **WIN −207**; the base changed with the screen-graph-d tree (34806342684 reads 292/293), NOT with 3k.1 — cause open                                                                                 |
+| await-ui-element                      | 80/84       | 45/51          | 47/53           | 80/81       | 0                 | **WIN −33…−35** (34806342684 reads 43/43; both OFF and ON moved on this base)                                                                                                                       |
+| paste                                 | 804/1122    | 291/1086       | 385/990         | 662/1057    | 142               | directional only: −277…−371 clears the floor; p95 does not separate                                                                                                                                 |
+| tap+describe (settle:true, ON-only)   | —           | 843/981        | 842/990         | —           | —                 | ON-only feature; vs 34806342684 878/839 (in range), > run 7 788/774 (base)                                                                                                                          |
 
 The tap/swipe **outcome-path** regression of 3k is **gone** on this base (tap ON-uia p50 78
 vs run 7's 77; swipe ON-uia 292 vs 296; ON-scrcpy 259 vs 257). But two verdicts the current
@@ -217,14 +224,15 @@ OFF-1↔OFF-2 floor of this run is 0–4 ms on every verb except paste (142) and
 tap+describe (57).
 
 ### Fling A/B — per-cell median + IQR + n per arm (interleaved, N=12)
-| cell | uia (IQR, n) | scrcpy drift (IQR, n) | scrcpy legacy (IQR, n) | off (IQR, n) | scrcpy/uia | scrcpy/off | gate |
-|---|---|---|---|---|---|---|---|
-| 150/0.3 | 0.464 [0.298,0.464] (12) | 0.299 [0.175,0.464] (12) | 0.319 [0.175,0.464] (12) | 0.581 [0.567,0.657] (12) | 0.644 | 0.515 | **FAIL** |
-| 150/0.5 | 0.175 [floor] (11) | 0.175 [floor] (12) | 0.175 (12) | 0.175 [floor] (12) | 1.000 | 1.000 | non-informative |
-| 250/0.3 | 0.442 [0.346,0.456] (12) | 0.402 [0.313,0.515] (12) | 0.456 [0.35,0.493] (12) | 0.447 [0.401,0.464] (12) | 0.910 | 0.899 | **PASS** |
-| 250/0.5 | 0.175 [floor] (12) | 0.175 [0.175,0.355] (12) | 0.441 [0.175,0.593] (12) | 0.175 [floor] (12) | 1.000 | 1.000 | non-informative (uia+off floored) |
-| 400/0.3 | 0.369 [0.349,0.408] (12) | 0.249 [0.227,0.314] (12) | 0.287 [0.257,0.409] (12) | 0.356 [0.35,0.367] (12) | 0.675 | 0.699 | **FAIL** |
-| 400/0.5 | 0.579 [0.352,0.595] (12) | 0.471 [0.357,0.52] (12) | 0.356 [0.175,0.501] (12) | 0.657 [0.643,0.657] (12) | 0.813 | 0.717 | **FAIL** |
+
+| cell    | uia (IQR, n)             | scrcpy drift (IQR, n)    | scrcpy legacy (IQR, n)   | off (IQR, n)             | scrcpy/uia | scrcpy/off | gate                              |
+| ------- | ------------------------ | ------------------------ | ------------------------ | ------------------------ | ---------- | ---------- | --------------------------------- |
+| 150/0.3 | 0.464 [0.298,0.464] (12) | 0.299 [0.175,0.464] (12) | 0.319 [0.175,0.464] (12) | 0.581 [0.567,0.657] (12) | 0.644      | 0.515      | **FAIL**                          |
+| 150/0.5 | 0.175 [floor] (11)       | 0.175 [floor] (12)       | 0.175 (12)               | 0.175 [floor] (12)       | 1.000      | 1.000      | non-informative                   |
+| 250/0.3 | 0.442 [0.346,0.456] (12) | 0.402 [0.313,0.515] (12) | 0.456 [0.35,0.493] (12)  | 0.447 [0.401,0.464] (12) | 0.910      | 0.899      | **PASS**                          |
+| 250/0.5 | 0.175 [floor] (12)       | 0.175 [0.175,0.355] (12) | 0.441 [0.175,0.593] (12) | 0.175 [floor] (12)       | 1.000      | 1.000      | non-informative (uia+off floored) |
+| 400/0.3 | 0.369 [0.349,0.408] (12) | 0.249 [0.227,0.314] (12) | 0.287 [0.257,0.409] (12) | 0.356 [0.35,0.367] (12)  | 0.675      | 0.699      | **FAIL**                          |
+| 400/0.5 | 0.579 [0.352,0.595] (12) | 0.471 [0.357,0.52] (12)  | 0.356 [0.175,0.501] (12) | 0.657 [0.643,0.657] (12) | 0.813      | 0.717      | **FAIL**                          |
 
 n per cell-arm is 11–12 (one uia drop at 150/0.5, reason recorded: `[Tool:describe] Failed
 to parse uiautomator dump output`). **Interleaving is ROUND-LEVEL, not per-cell round-robin
@@ -240,18 +248,21 @@ before legacy** in all 72 pairs, so any within-pair order effect maps onto the a
 (randomize the pair order next time).
 
 ### Paired legacy→drift permutation p per cell (20 000 draws) + scrcpy/off
-| cell | Δ(drift−legacy) | paired legacy→drift p | scrcpy(drift)/off p |
-|---|---|---|---|
-| 150/0.3 | −0.020 | 1.00 | **0.010** |
-| 250/0.3 | −0.053 | 0.63 | 0.43 |
-| 250/0.5 | −0.266 | 0.13 | 1.00 |
-| 400/0.3 | −0.038 | 0.31 | **0.001** |
-| 400/0.5 | +0.115 | 0.33 | **0.000** |
+
+| cell    | Δ(drift−legacy) | paired legacy→drift p | scrcpy(drift)/off p |
+| ------- | --------------- | --------------------- | ------------------- |
+| 150/0.3 | −0.020          | 1.00                  | **0.010**           |
+| 250/0.3 | −0.053          | 0.63                  | 0.43                |
+| 250/0.5 | −0.266          | 0.13                  | 1.00                |
+| 400/0.3 | −0.038          | 0.31                  | **0.001**           |
+| 400/0.5 | +0.115          | 0.33                  | **0.000**           |
+
 **No cell shows a distinguishable legacy→drift effect (all p ≥ 0.13)** — drift is neutral,
 even on a run where the deficit reproduced. The scrcpy under-scroll vs proprietary is real
 and significant at 150/0.3, 400/0.3 and 400/0.5.
 
 ### Gate verdict string
+
 `FAIL (per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist, over 4 informative
 cell(s); 2 of 6 non-informative at the metric floor)` — offenders 150/0.3 (0.644/0.515),
 400/0.3 (0.675/0.699), 400/0.5 (0.813/0.717); 250/0.3 passes (0.910/0.899).
@@ -268,21 +279,23 @@ simply fail to fling on a third to a half of the short/long swipes), not the rat
 medians on a two-level metric — which is also why `n ≥ 10` is insufficient power.
 
 ### Device pacing evidence (3K-H3) — dumpsys input MotionEvent cadence, N per arm
+
 Device suite **19 passed** (17 enforced + 2 measurement-only). The wire gesture is **8
 frames** (26 requested steps → 8 wire frames; the host trace reads `frames=8`, not
 "26-frame" — 3K1-M8). Source = `dumpsys input RecentQueue age=…ms`, **10 recent-input
 timestamps** the trailing ~8 of which sum to the gesture; the parser now filters to
 MotionEvent entries where the image labels them (else it says "event class NOT filtered").
 **N = 1 swipe per arm** (measurement-only, RecentQueue):
+
 - uia: dumpsys deltas sum to **417 ms**, final MOVE→UP gap **17 ms**; tail cadence
   ≈ 15/19/13/17 ms.
 - scrcpy drift: **452 ms**, final gap **46 ms**; tail cadence ≈ 14/14/22/46 ms.
 - scrcpy legacy: **439 ms**, final gap **35 ms**; tail cadence ≈ 21/8/19/35 ms.
-So on the single device sample per arm **both scrcpy arms delivered a stretched tail** for
-a 416 ms request, exactly where the velocity fit lives — this is the live open lead, not
-host pacing. The dumpsys RecentQueue holds global recent events, so the raw age span can
-overstate the gesture; the dense-tail deltas are the intra-swipe MOVE cadence (event class
-now filtered where labelled, N = 1 per arm).
+  So on the single device sample per arm **both scrcpy arms delivered a stretched tail** for
+  a 416 ms request, exactly where the velocity fit lives — this is the live open lead, not
+  host pacing. The dumpsys RecentQueue holds global recent events, so the raw age span can
+  overstate the gesture; the dense-tail deltas are the intra-swipe MOVE cadence (event class
+  now filtered where labelled, N = 1 per arm).
 
 **Host trace covers only the `drift` arm (3K1-H2).** `pacing-trace.txt` holds **72 lines,
 every one `mode=drift`** (12 samples × 6 cells); the `legacy`/default path is **not
@@ -303,6 +316,7 @@ first-attempt landing denominators are 59, not 60) and one fling sample dropped 
 reason recorded; same error class, **0 fast-inject fallbacks**.
 
 ### Screen-graph — recomputed from THIS run (34813849446), not copied from D.4.1
+
 7 configs × 20 tasks × 5 reps, n = 155 non-launch steps per config, o200k_base, seed
 `0x5eedc0de`. Every number recomputed from `bench-sg-…json` / `sg-matrix.log` of this run
 (3K1-M10); the D.4.1 whitelist wording is **not** copied.
@@ -335,6 +349,7 @@ carried here (3K1-M10).** `actionRttMs + settleMs` p50 spreads **2246 (B1) … 2
 cited only from run 34801849653 (with that run id), never as a property of 34813849446.
 
 ### Not done / open
+
 - Scoreboard updated separately (Part 2) to carry only review-accepted rows with
   34813849446 as the single reference; `open/main` **not** fast-forwarded.
 - Fling deficit stays **OPEN**: gate RED and paired legacy→drift not significant. Host

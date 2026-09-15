@@ -71,6 +71,7 @@ a 300 ms pinch).
    backends run identical `holdMs`/`durationMs`.
 
 ## Tests
+
 - Unit (vitest): describe open path issues exactly one RPC (`getNestedState`)
   with `waitTimeoutMs: 500`; serializer-omitted flags parse as false (golden
   outputs unchanged); bench parity assertion present.
@@ -83,6 +84,7 @@ a 300 ms pinch).
   screen and for tap+describe.
 
 ## Targets (measured, like-for-like, p50)
+
 - gesture-pinch ON ≤ 1.1× OFF (expected ~340 vs 340).
 - tap+describe ON ≤ 1.2× OFF (expected ~800 vs 700; if `captureMs` shows
   serialization is the residual, say so with the number — do not prune).
@@ -91,6 +93,7 @@ a 300 ms pinch).
 - 0 fallbacks; suite green; APK builds.
 
 ## Output
+
 Report v4: `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results-v4.md`
 (same layout as v3, plus `waitedMs/captureMs` table and the list of removed
 implicit-idle call sites). Tear down the emulator.
