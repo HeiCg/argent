@@ -11,8 +11,11 @@ import {
   type OpenInjectStrategy,
   type OpenServerActionOutcome,
   type OpenServerAwaitChangeResult,
+  type OpenServerBatchAction,
+  type OpenServerBatchStepResult,
   type OpenServerSelector,
 } from "../blueprints/android-open-server";
+import { buildIndexElements } from "../tools/describe/platforms/android/index-tier";
 import { openDeviceServerMutex } from "./device-mutex";
 import {
   getCachedScreenSize,
@@ -588,5 +591,310 @@ export function captureAndroidScreenshot(
     );
     await fs.writeFile(file, bytes);
     return { path: file, width: shot.width, height: shot.height };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Artemis A2 — element-index target + gesture-sequence burst
+// ---------------------------------------------------------------------------
+
+/** A `target: { index, version }` reference into the `index` describe tier. */
+export interface IndexTarget {
+  index: number;
+  /** The AX version the index tier was rendered at — must still be current. */
+  version: number;
+}
+
+/**
+ * Thrown when an index `target` cannot be honoured: `stale_index` when the device
+ * snapshot moved past `target.version` (the index the agent saw is no longer
+ * valid — re-describe), `index_out_of_range` when the index is not on the current
+ * screen. `code` is stable so callers/tests can branch on it.
+ */
+export class IndexTargetError extends Error {
+  constructor(
+    readonly code: "stale_index" | "index_out_of_range",
+    message: string
+  ) {
+    super(message);
+    this.name = "IndexTargetError";
+  }
+}
+
+/**
+ * Resolve a `target: { index, version }` against a freshly-read tree to the tap
+ * point (device-pixel centre of the element's bounds). Refuses with
+ * `IndexTargetError("stale_index")` when the live `version` moved off
+ * `target.version` (the ticket's stale-index rule — the index tier the agent read
+ * is out of date), and `index_out_of_range` when the index is absent on the
+ * current screen. Pure over `(tree, version)` so the sequence path and the single
+ * tap share it.
+ */
+export function resolveIndexTarget(
+  tree: OpenServerElement[],
+  liveVersion: number | undefined,
+  target: IndexTarget
+): { x: number; y: number } {
+  if (liveVersion !== undefined && liveVersion !== target.version) {
+    throw new IndexTargetError(
+      "stale_index",
+      `stale_index: the screen moved (index tier version ${target.version}, device now ${liveVersion}). Re-describe with tier:"index" and tap the fresh index.`
+    );
+  }
+  const elements = buildIndexElements(tree);
+  const el = elements[target.index];
+  if (!el) {
+    throw new IndexTargetError(
+      "index_out_of_range",
+      `index_out_of_range: index ${target.index} is not on the current screen (it has ${elements.length} interactive elements).`
+    );
+  }
+  const b = el.bounds;
+  return { x: Math.round((b.x1 + b.x2) / 2), y: Math.round((b.y1 + b.y2) / 2) };
+}
+
+/**
+ * Resolve an index `target` to a device-pixel tap point by reading the current
+ * device state (tree + fingerprints for the live `version`). Throws
+ * {@link IndexTargetError} on a stale or out-of-range index; any other failure is
+ * an RPC/transport error the caller falls back on.
+ */
+export function resolveTargetTapPoint(
+  registry: Registry,
+  device: DeviceInfo,
+  target: IndexTarget
+): Promise<{ x: number; y: number }> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const state = await server.getState({ includeScreenshot: false, fingerprints: true });
+    return resolveIndexTarget(state.tree, state.version, target);
+  });
+}
+
+/**
+ * Tap the element addressed by an index `target` (A2 §B): read the current state,
+ * verify the snapshot version (refuse `stale_index` if it moved), and tap the
+ * element's bounds centre — all in ONE device lock. Backs the additive `target`
+ * param on `gesture-tap`. Throws {@link IndexTargetError} on a stale/out-of-range
+ * index; throws on a dropped injection or RPC failure so the caller falls back.
+ */
+export function openServerTapAtIndex(
+  registry: Registry,
+  device: DeviceInfo,
+  target: IndexTarget,
+  clickCount: number
+): Promise<void> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const state = await server.getState({ includeScreenshot: false, fingerprints: true });
+    const { x, y } = resolveIndexTarget(state.tree, state.version, target);
+    const res = await server.tap(x, y, {
+      clickCount,
+      holdMs: TAP_HOLD_MS,
+      ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+      ...injectOpt(),
+    });
+    if (res.dropped || res.success === false) {
+      throw new Error("open-device-server tap was dropped by the input dispatcher");
+    }
+  });
+}
+
+// Swipe frame/hold conversion — kept in sync with the `gesture-swipe` host tool so
+// a sequenced swipe behaves like a single one (durationMs → interpolation steps;
+// momentum:false → a last-pointer hold that decays release velocity to ~0).
+const SEQ_DEFAULT_SWIPE_DURATION_MS = 300;
+const SEQ_MOMENTUM_FREE_HOLD_MS = 120;
+
+/** One normalized step of a {@link openServerSequence} burst (host-facing). */
+export type SequenceStep =
+  | {
+      kind: "tap";
+      x?: number;
+      y?: number;
+      clickCount?: number;
+      target?: IndexTarget;
+      delayMs?: number;
+    }
+  | {
+      kind: "swipe";
+      fromX: number;
+      fromY: number;
+      toX: number;
+      toY: number;
+      durationMs?: number;
+      momentum?: boolean;
+      delayMs?: number;
+    }
+  | { kind: "key"; key: string; delayMs?: number }
+  | { kind: "wait"; waitMs: number; delayMs?: number };
+
+/** One per-step result from {@link openServerSequence}. */
+export interface SequenceStepResult {
+  kind: string;
+  success: boolean;
+  dropped?: boolean;
+  skipped?: boolean;
+  ms?: number;
+  error?: string;
+}
+
+/** The whole burst result: per-step rows plus the end-to-end wall time. */
+export interface SequenceResult {
+  completed: number;
+  total: number;
+  totalMs: number;
+  steps: SequenceStepResult[];
+}
+
+/** RPC budget floor before per-step delays are added (§A burst). */
+const SEQ_BASE_BUDGET_MS = 15_000;
+
+/**
+ * Build the device-pixel `batch` payload for a burst (ticket A2 §A) and the RPC
+ * budget. Pure over `(steps, size, resolveTarget)` — the target resolver is
+ * injected so this is device-free and unit-testable; the live path passes a
+ * closure over the pre-burst read (which refuses a stale index before any action
+ * is built). `wait` steps become the `wait` pseudo-method whose `delayMs` is the
+ * pause; every tap/swipe threads the shipped inject strategy, matching a single
+ * `gesture-tap` / `gesture-swipe`.
+ */
+export function buildSequenceActions(
+  steps: SequenceStep[],
+  size: { width: number; height: number },
+  resolveTarget: (target: IndexTarget) => { x: number; y: number }
+): { actions: OpenServerBatchAction[]; budgetMs: number } {
+  const actions: OpenServerBatchAction[] = [];
+  let budgetMs = SEQ_BASE_BUDGET_MS;
+  for (const step of steps) {
+    const delayMs = step.delayMs;
+    if (delayMs && delayMs > 0) budgetMs += delayMs;
+    if (step.kind === "tap") {
+      const px =
+        step.target !== undefined
+          ? resolveTarget(step.target)
+          : toPixels(size, step.x ?? 0.5, step.y ?? 0.5);
+      const clickCount = step.clickCount ?? 1;
+      actions.push({
+        method: "tap",
+        params: {
+          x: px.x,
+          y: px.y,
+          ...(clickCount > 1 ? { clickCount, gapMs: MULTI_TAP_GAP_MS } : {}),
+          holdMs: TAP_HOLD_MS,
+          ...injectOpt(),
+        },
+        ...(delayMs !== undefined ? { delayMs } : {}),
+      });
+    } else if (step.kind === "swipe") {
+      const from = toPixels(size, step.fromX, step.fromY);
+      const to = toPixels(size, step.toX, step.toY);
+      const duration = step.durationMs ?? SEQ_DEFAULT_SWIPE_DURATION_MS;
+      const swipeSteps = Math.max(1, Math.round(duration / 16));
+      const momentumFree = step.momentum === false;
+      actions.push({
+        method: "swipe",
+        params: {
+          startX: from.x,
+          startY: from.y,
+          endX: to.x,
+          endY: to.y,
+          steps: swipeSteps,
+          ...(momentumFree ? { holdEndMs: SEQ_MOMENTUM_FREE_HOLD_MS } : {}),
+          ...injectOpt(),
+        },
+        ...(delayMs !== undefined ? { delayMs } : {}),
+      });
+    } else if (step.kind === "key") {
+      actions.push({
+        method: "key",
+        params: { key: step.key },
+        ...(delayMs !== undefined ? { delayMs } : {}),
+      });
+    } else {
+      // wait: a pure on-device pause; its duration rides `delayMs` (see the Kotlin
+      // executeBatch `wait` branch).
+      budgetMs += step.waitMs;
+      actions.push({ method: "wait", delayMs: step.waitMs });
+    }
+  }
+  return { actions, budgetMs };
+}
+
+/**
+ * Map the device's per-step batch results back to {@link SequenceStepResult} rows
+ * (pure). A `{skipped:true}` device row → `success:false, skipped:true`; an
+ * `error` row → `success:false` + the error string; otherwise `success` follows
+ * the device `success` (a bare success-less reply, e.g. from a method that only
+ * echoes, counts as success) and `dropped`/`ms` ride through.
+ */
+export function mapSequenceResults(
+  steps: SequenceStep[],
+  results: OpenServerBatchStepResult[],
+  totalMs: number
+): SequenceResult {
+  const stepResults: SequenceStepResult[] = steps.map((step, i) => {
+    const r = results[i];
+    if (!r) return { kind: step.kind, success: false, error: "no result for step" };
+    if (r.skipped) return { kind: step.kind, success: false, skipped: true };
+    const out: SequenceStepResult = {
+      kind: step.kind,
+      success: r.success === true || (r.error === undefined && r.success === undefined),
+      ...(r.dropped ? { dropped: true } : {}),
+      ...(typeof r.ms === "number" ? { ms: r.ms } : {}),
+    };
+    if (r.error !== undefined) {
+      out.success = false;
+      out.error = typeof r.error === "string" ? r.error : JSON.stringify(r.error);
+    }
+    return out;
+  });
+  return {
+    completed: stepResults.filter((s) => s.success).length,
+    total: steps.length,
+    totalMs,
+    steps: stepResults,
+  };
+}
+
+/**
+ * Run a `gesture-sequence` burst (ticket A2 §A) on the open server in ONE `batch`
+ * RPC: convert every normalized step to device pixels (and resolve any index
+ * `target` against a single pre-burst read — refusing a stale index before
+ * injecting anything), send them, and map the device's per-step
+ * `{ success, dropped?, ms, skipped? }` back. The `delayMs` on each step pauses
+ * ON-DEVICE, so the dismiss→revealed-tap beat costs no host round trip.
+ *
+ * Throws {@link IndexTargetError} when an index `target` is stale/out-of-range
+ * (nothing is injected in that case); any RPC failure throws so the tool can
+ * report it.
+ */
+export function openServerSequence(
+  registry: Registry,
+  device: DeviceInfo,
+  steps: SequenceStep[]
+): Promise<SequenceResult> {
+  const needsState = steps.some((s) => s.kind === "tap" && s.target !== undefined);
+  return withServer(registry, device, async (server, size) => {
+    // Resolve index targets against ONE pre-burst read (tree + live version): the
+    // burst acts on the screen the index tier was read from, so a stale index is
+    // refused here, before any injection.
+    let liveTree: OpenServerElement[] | undefined;
+    let liveVersion: number | undefined;
+    if (needsState) {
+      const state = await server.getState({ includeScreenshot: false, fingerprints: true });
+      liveTree = state.tree;
+      liveVersion = state.version;
+    }
+    const { actions, budgetMs } = buildSequenceActions(steps, size, (target) =>
+      resolveIndexTarget(liveTree ?? [], liveVersion, target)
+    );
+
+    const start = Date.now();
+    const { results } = await server.batch(actions, budgetMs);
+    const totalMs = Date.now() - start;
+    return mapSequenceResults(steps, results, totalMs);
   });
 }

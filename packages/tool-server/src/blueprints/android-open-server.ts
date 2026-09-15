@@ -283,6 +283,34 @@ export interface OutcomeOptions {
 }
 
 /**
+ * One action in a [OpenDeviceServerApi.batch] burst (ticket A2 §A). `method` is a
+ * server method name (`tap`/`swipe`/`key`/…) or the pseudo-method `"wait"` (a pure
+ * on-device pause); `params` are that method's device-pixel params; `delayMs` is
+ * the on-device pause AFTER the step (and, for a `wait`, IS the pause). Built by
+ * the `gesture-sequence` host tool from normalized steps.
+ */
+export interface OpenServerBatchAction {
+  method: string;
+  params?: Record<string, unknown>;
+  delayMs?: number;
+}
+
+/**
+ * One per-step result the device returns from [OpenDeviceServerApi.batch]. It is
+ * the underlying method's own reply (`success`, `dropped?`, …) plus `ms` (the
+ * on-device wall time of the step), or `{ skipped: true }` for a step that never
+ * ran because an earlier step failed, or `{ error, ms }` for a failed step.
+ */
+export interface OpenServerBatchStepResult {
+  success?: boolean;
+  dropped?: boolean;
+  skipped?: boolean;
+  ms?: number;
+  error?: unknown;
+  [k: string]: unknown;
+}
+
+/**
  * The method surface of the open-source on-device server. Coordinates for
  * tap/longPress/swipe are device PIXELS (the server drives UiAutomator directly);
  * callers holding normalized 0–1 points convert against [getInfo].
@@ -452,6 +480,17 @@ export interface OpenDeviceServerApi {
     // seam extended to gesture — forces `uia-async` fallback on a resolving device.
     opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
   ): Promise<{ success: boolean } & OpenInjectReport>;
+  /**
+   * Run a burst of actions back-to-back on the device in ONE round-trip (ticket
+   * A2 §A — the `gesture-sequence` tool). The device applies each step's `delayMs`
+   * on-device, skips the remaining steps on the first failure (reporting them as
+   * `{skipped:true}`), and stamps each result with `ms`. `timeoutMs` gives the RPC
+   * a budget past the on-device delays.
+   */
+  batch(
+    actions: OpenServerBatchAction[],
+    timeoutMs?: number
+  ): Promise<{ results: OpenServerBatchStepResult[] }>;
   /**
    * Synchronously drain the on-device input dispatcher's touch queue (phase 3f).
    * Retained generic plumbing to the Kotlin FlushInputHandler: a following
@@ -1053,6 +1092,14 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(gestureOpts?.inject !== undefined ? { inject: gestureOpts.inject } : {}),
           ...(gestureOpts?._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
+      batch: (actions, timeoutMs) =>
+        client.request<{ results: OpenServerBatchStepResult[] }>(
+          "batch",
+          { actions },
+          // The device runs the burst (with its per-step delays) inside this RPC,
+          // so give the socket a budget comfortably past the summed delays.
+          timeoutMs !== undefined ? { timeoutMs } : undefined
+        ),
       flushInput: () => client.request<{ success: boolean }>("flushInput"),
       typeText: (text) =>
         client.request<{ success: boolean; charsTyped: number }>("typeText", { text }),
