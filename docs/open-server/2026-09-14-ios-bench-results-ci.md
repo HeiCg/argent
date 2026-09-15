@@ -25,7 +25,7 @@ the iOS section there after adversarial review (ticket Deliverables).
   `app.snapshot()` AND input via XCUITest. Tree backend = **XCUITest snapshot**.
 - **ON-siminput** — the SAME runner tree (XCUITest snapshot), input via the
   `sim-input` HID digitizer (`packages/ios-sim-input/`, built with `swift build
-  -c release` and a pinned `DEVELOPER_DIR`) driven by the host driver
+-c release` and a pinned `DEVELOPER_DIR`) driven by the host driver
   `IosSimInputService`. Input and tree are independent on iOS: **describe is scored
   per TREE backend (ax-service vs XCUITest snapshot), never per input arm** — every
   table says so, and ON-xcuitest / ON-siminput share the one XCUITest describe row.
@@ -50,12 +50,12 @@ confidence-refusal count (no ratio gate this phase — the fling gate is 3o/iOS-
   loop: navDiff ≥ 0.02 AND BACK restores the root, rootDiff < navDiff). FATAL.
 - **G1 landing** — first-attempt landing ≥ 95 % on every block; 0 runner crashes;
   0 `sim-input` acks timed out. FATAL.
-- **G2 report-only** — tap / swipe / await-* / describe Δ vs pooled OFF with a
+- **G2 report-only** — tap / swipe / await-\* / describe Δ vs pooled OFF with a
   bootstrap 95 % CI on the p50 Δ and a verdict at the OFF-1↔OFF-2 drift floor
   (win = CI entirely below −floor; loss = entirely above +floor; else parity). NO
   promotion decision here — reported, not gated.
 - **G3 stage sums** — `Σ(stages) ≈ captureMs` for the open tree (`snapshotMs +
-  serializeMs + encodeMs` vs `captureMs`), ≤ 10 ms on 20 samples per ON block.
+serializeMs + encodeMs` vs `captureMs`), ≤ 10 ms on 20 samples per ON block.
   FATAL on the ON (XCUITest) blocks; N/A on the ax-service blocks (no stages).
 - **G4 tokens** — describe payload o200k tokens per TREE backend at an equal
   element cap (default 400): the cap AND the per-backend element count
@@ -83,7 +83,7 @@ iPhone 17** (`com.apple.CoreSimulator.SimDeviceType.iPhone-17`). Tokenizer
   simulator-server + ax-service downloaded fine), but the merge failed 2
   pre-registered gates and surfaced four bugs, fixed together:
   1. `G0`: `OFF-1 (self-test threw: Command failed: xcrun simctl io <udid>
-     screenshot ...)` — a transient `simctl io` blip on the first shot. Fix:
+screenshot ...)` — a transient `simctl io` blip on the first shot. Fix:
      retry `simctlScreenshot` up to 3×.
   2. `G0`: `ON-xcuitest (navDiff=0.1689 rootDiff=0.1689 ...)` and
      `ON-siminput (navDiff=0.0511 rootDiff=0.0521 ...)` — `navDiff==rootDiff`
@@ -102,23 +102,23 @@ iPhone 17** (`com.apple.CoreSimulator.SimDeviceType.iPhone-17`). Tokenizer
      until non-empty before the G4 sample. Also cut the tap effect poll from
      ~15 screenshots/iteration to ≤3 and shrank the diff raster (160 px) so the
      bench fits the 90-min cap comfortably (run 1's bench step took ~70 min).
-  G3 was GREEN in run 1 (Σstages−captureMs max 0.008/0.009 ms over 20 samples);
-  G4/G2/scoreboard all rendered with real numbers.
+     G3 was GREEN in run 1 (Σstages−captureMs max 0.008/0.009 ms over 20 samples);
+     G4/G2/scoreboard all rendered with real numbers.
 
 - **34914794345** (run 2) — all four blocks completed and merged. **G0 GREEN**
   (every block's oracle self-test passed — the goBack→relaunch fix worked;
   rootDiff 0 on ON arms), **G3 GREEN** (ON stageMaxDelta 0.003 ms/20 samples),
   OFF-1 warmed to 20/20 and its ax-service describe recovered, OFF gesture-swipe
-  + await-ui-element no longer error. **Only remaining failure: G1 landing 70 %
-  on ON-siminput (14/20).** Root cause found in the block JSON: all 6 no-effect
-  taps were the SAME coordinate `(0.628, 0.847)` — the bottom of the screen.
-  `findByLabel` returned the DFS-first "General", which is sometimes an
-  offscreen / non-hittable table cell (XCUITest reports below-the-fold cells with
-  bottom bounds). XCUITest's own coordinate tap still changed the screen there
-  (so ON-xcuitest read 20/20, masking it), but the sim-input HID tap on a
-  non-hittable spot did nothing → no-effect. Fix: `findTappableByLabel` prefers a
-  `hittable`, on-screen, topmost match; WARMUP trimmed 3→1 for runtime margin
-  (run 2's bench step finished at ~72 min, under the 90-min cap).
+  - await-ui-element no longer error. **Only remaining failure: G1 landing 70 %
+    on ON-siminput (14/20).** Root cause found in the block JSON: all 6 no-effect
+    taps were the SAME coordinate `(0.628, 0.847)` — the bottom of the screen.
+    `findByLabel` returned the DFS-first "General", which is sometimes an
+    offscreen / non-hittable table cell (XCUITest reports below-the-fold cells with
+    bottom bounds). XCUITest's own coordinate tap still changed the screen there
+    (so ON-xcuitest read 20/20, masking it), but the sim-input HID tap on a
+    non-hittable spot did nothing → no-effect. Fix: `findTappableByLabel` prefers a
+    `hittable`, on-screen, topmost match; WARMUP trimmed 3→1 for runtime margin
+    (run 2's bench step finished at ~72 min, under the 90-min cap).
 
 - **34920382022** (run 3, locate fix) — the bench step **completed failure** (the
   merge threw on a gate), but the job then **hung in the "Stop the runner and
@@ -166,36 +166,36 @@ the planner adds the iOS section after adversarial review, and G1 is red.
 
 **Verb latency per block (p50 / p95 ms; describe scored per TREE backend):**
 
-| verb | OFF-1 (ax-service) | ON-xcuitest (xcuitest) | ON-siminput (xcuitest) | OFF-2 (ax-service) |
-|---|---|---|---|---|
-| describe | 283/427 | 185/252 | 132/154 | 235/590 |
-| gesture-tap | 66/114 | 1038/1632 | 168/200 | 61/138 |
-| tap+describe(settle:false) | 2649/4821 | 2641/3085 | 5694/6670 | 4689/10376 |
-| gesture-swipe | 712/1094 | 1613/1771 | 1295/1475 | 873/1922 |
-| await-screen-idle | 573/738 | 728/863 | 803/1105 | 747/2674 |
-| await-ui-element | 236/395 | 139/197 | 205/281 | 306/478 |
-| paste | N/A (iOS-4) | N/A (iOS-4) | N/A (iOS-4) | N/A (iOS-4) |
-| gesture-pinch | N/A (iOS-4) | N/A (iOS-4) | N/A (iOS-4) | N/A (iOS-4) |
+| verb                       | OFF-1 (ax-service) | ON-xcuitest (xcuitest) | ON-siminput (xcuitest) | OFF-2 (ax-service) |
+| -------------------------- | ------------------ | ---------------------- | ---------------------- | ------------------ |
+| describe                   | 283/427            | 185/252                | 132/154                | 235/590            |
+| gesture-tap                | 66/114             | 1038/1632              | 168/200                | 61/138             |
+| tap+describe(settle:false) | 2649/4821          | 2641/3085              | 5694/6670              | 4689/10376         |
+| gesture-swipe              | 712/1094           | 1613/1771              | 1295/1475              | 873/1922           |
+| await-screen-idle          | 573/738            | 728/863                | 803/1105               | 747/2674           |
+| await-ui-element           | 236/395            | 139/197                | 205/281                | 306/478            |
+| paste                      | N/A (iOS-4)        | N/A (iOS-4)            | N/A (iOS-4)            | N/A (iOS-4)        |
+| gesture-pinch              | N/A (iOS-4)        | N/A (iOS-4)            | N/A (iOS-4)            | N/A (iOS-4)        |
 
 describe has TWO tree-backend rows: ax-service (OFF) vs XCUITest snapshot (both
 ON arms share it — ON-siminput is NOT a separate describe row).
 
 **G2 (report-only) — Δ vs pooled OFF per verb, drift floor, bootstrap 95 % CI on the p50 Δ, verdict:**
 
-| verb | OFF p50 (OFF-1/OFF-2) | floor | arm | ON p50 | Δ | CI95 | verdict |
-|---|---|---|---|---|---|---|---|
-| describe | 256 (283/235) | 48 | ON-xcuitest | 185 | −71 | [−108, −24] | parity |
-|  |  |  | ON-siminput | 132 | −124 | [−155, −102] | **win** |
-| gesture-tap | 63 (66/61) | 5 | ON-xcuitest | 1038 | +975 | [815, 1067] | **loss** |
-|  |  |  | ON-siminput | 168 | +105 | [73, 124] | **loss** |
-| tap+describe(settle:false) | 3496 (2649/4689) | 2040 | ON-xcuitest | 2641 | −855 | [−2103, −198] | parity |
-|  |  |  | ON-siminput | 5694 | +2198 | [1055, 2863] | parity |
-| gesture-swipe | 783 (712/873) | 161 | ON-xcuitest | 1613 | +830 | [703, 946] | **loss** |
-|  |  |  | ON-siminput | 1295 | +512 | [365, 602] | **loss** |
-| await-screen-idle | 698 (573/747) | 174 | ON-xcuitest | 728 | +30 | [−71, 159] | parity |
-|  |  |  | ON-siminput | 803 | +105 | [55, 184] | parity |
-| await-ui-element | 281 (236/306) | 70 | ON-xcuitest | 139 | −142 | [−173, −125] | **win** |
-|  |  |  | ON-siminput | 205 | −76 | [−105, −55] | parity |
+| verb                       | OFF p50 (OFF-1/OFF-2) | floor | arm         | ON p50 | Δ     | CI95          | verdict  |
+| -------------------------- | --------------------- | ----- | ----------- | ------ | ----- | ------------- | -------- |
+| describe                   | 256 (283/235)         | 48    | ON-xcuitest | 185    | −71   | [−108, −24]   | parity   |
+|                            |                       |       | ON-siminput | 132    | −124  | [−155, −102]  | **win**  |
+| gesture-tap                | 63 (66/61)            | 5     | ON-xcuitest | 1038   | +975  | [815, 1067]   | **loss** |
+|                            |                       |       | ON-siminput | 168    | +105  | [73, 124]     | **loss** |
+| tap+describe(settle:false) | 3496 (2649/4689)      | 2040  | ON-xcuitest | 2641   | −855  | [−2103, −198] | parity   |
+|                            |                       |       | ON-siminput | 5694   | +2198 | [1055, 2863]  | parity   |
+| gesture-swipe              | 783 (712/873)         | 161   | ON-xcuitest | 1613   | +830  | [703, 946]    | **loss** |
+|                            |                       |       | ON-siminput | 1295   | +512  | [365, 602]    | **loss** |
+| await-screen-idle          | 698 (573/747)         | 174   | ON-xcuitest | 728    | +30   | [−71, 159]    | parity   |
+|                            |                       |       | ON-siminput | 803    | +105  | [55, 184]     | parity   |
+| await-ui-element           | 281 (236/306)         | 70    | ON-xcuitest | 139    | −142  | [−173, −125]  | **win**  |
+|                            |                       |       | ON-siminput | 205    | −76   | [−105, −55]   | parity   |
 
 _G2 is report-only (no promotion). The floors are wide on some verbs (OFF-1↔OFF-2
 drift is large for the closed server — tap+describe floor 2040 ms), which is why
@@ -211,12 +211,12 @@ crashes, 0 sim-input ack timeouts on every block.
 
 **Optical scroll offset per arm (strip cross-correlation, px, no clamp):**
 
-| block | median dyPx | IQR (q1–q3) | confidence refusals | n accepted |
-|---|---|---|---|---|
-| OFF-1 | 38 | 38–58 (IQR 20) | 18 | 2 |
-| ON-xcuitest | 0 | 0–0 (IQR 0) | 0 | 20 |
-| ON-siminput | 0 | 0–0 (IQR 0) | 0 | 20 |
-| OFF-2 | 41 | 41–41 (IQR 0) | 19 | 1 |
+| block       | median dyPx | IQR (q1–q3)    | confidence refusals | n accepted |
+| ----------- | ----------- | -------------- | ------------------- | ---------- |
+| OFF-1       | 38          | 38–58 (IQR 20) | 18                  | 2          |
+| ON-xcuitest | 0           | 0–0 (IQR 0)    | 0                   | 20         |
+| ON-siminput | 0           | 0–0 (IQR 0)    | 0                   | 20         |
+| OFF-2       | 41          | 41–41 (IQR 0)  | 19                  | 1          |
 
 _The closed-server (OFF) swipes moved the list ~38–41 px but the cross-correlation
 was ambiguous on 18–19 of 20 (the closed server redraws chrome/status content that
