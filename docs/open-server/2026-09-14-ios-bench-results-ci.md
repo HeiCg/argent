@@ -72,7 +72,38 @@ verbatim by `scoreboard-ios.js` from the merged JSON; the gate verdicts are from
 
 ### CI runs
 
-_(run ids + per-run errors fixed verbatim recorded here as the run progresses.)_
+Environment (all runs): **Xcode 26.6 (Build 17F113), iOS 26.5 simulator,
+iPhone 17** (`com.apple.CoreSimulator.SimDeviceType.iPhone-17`). Tokenizer
+`js-tiktoken o200k_base`. macOS bills at 10× minutes.
+
+- **34907978510** (run 1) — harness shakedown; all four blocks completed and
+  merged (Set up → build sim-input → runner build all GREEN; the closed
+  simulator-server + ax-service downloaded fine), but the merge failed 2
+  pre-registered gates and surfaced four bugs, fixed together:
+  1. `G0`: `OFF-1 (self-test threw: Command failed: xcrun simctl io <udid>
+     screenshot ...)` — a transient `simctl io` blip on the first shot. Fix:
+     retry `simctlScreenshot` up to 3×.
+  2. `G0`: `ON-xcuitest (navDiff=0.1689 rootDiff=0.1689 ...)` and
+     `ON-siminput (navDiff=0.0511 rootDiff=0.0521 ...)` — `navDiff==rootDiff`
+     means `goBack()` (a tap at the top-left chevron) did NOT navigate back on
+     iOS. Fix: `goBack()` relaunches Settings (the only reliable iOS root
+     restore); drop the redundant per-iteration trailing restore.
+  3. `G1`: `landing 60.0% < 95% on ON-siminput (12/20)` — cascaded from the
+     broken back (iterations were measured, but the short effect-poll window
+     also under-counted slow sim-input navigations). Fix: goBack→relaunch and
+     widen the effect poll to 3×800 ms.
+  4. `gesture-swipe` errored 20/20 on OFF (`n=0, err=20`) — the tool takes
+     `fromX/fromY/toX/toY`, not `startX/endX`. `await-ui-element` errored 20/20
+     on OFF — the tool takes `{condition, selector:{text}}`, not `{label}`.
+     Fixes applied verbatim. Also: OFF-1's G4 describe sample was 0 elements
+     (ax-service cold before injection; OFF-2 recovered 29) → warm up describe
+     until non-empty before the G4 sample. Also cut the tap effect poll from
+     ~15 screenshots/iteration to ≤3 and shrank the diff raster (160 px) so the
+     bench fits the 90-min cap comfortably (run 1's bench step took ~70 min).
+  G3 was GREEN in run 1 (Σstages−captureMs max 0.008/0.009 ms over 20 samples);
+  G4/G2/scoreboard all rendered with real numbers.
+
+_(subsequent run ids appended as the runs progress.)_
 
 ### Scoreboard
 

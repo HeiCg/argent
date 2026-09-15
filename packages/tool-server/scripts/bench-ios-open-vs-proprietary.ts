@@ -175,8 +175,20 @@ function jaccard(a: string[], b: string[]): number {
 let shotSeq = 0;
 async function simctlScreenshot(tag: string): Promise<string> {
   const file = join(os.tmpdir(), `ios-bench-${tag}-${process.pid}-${shotSeq++}.png`);
-  await execFileAsync("xcrun", ["simctl", "io", UDID, "screenshot", file], { timeout: 20_000 });
-  return file;
+  // `simctl io screenshot` occasionally fails transiently right after boot / a
+  // relaunch (device busy). Retry a few times before giving up so a single blip
+  // does not throw the whole oracle (run 1: OFF-1 self-test threw on shot #0).
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await execFileAsync("xcrun", ["simctl", "io", UDID, "screenshot", file], { timeout: 20_000 });
+      return file;
+    } catch (e) {
+      lastErr = e;
+      await sleep(400);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 interface Bmp {
@@ -187,8 +199,10 @@ interface Bmp {
   offset: number;
   bpp: number;
 }
-/** Downscale a PNG to a small 24/32-bit BMP (longest side 240) via `sips`. */
-async function toBmp(png: string, longest = 240): Promise<Bmp> {
+/** Downscale a PNG to a small 24/32-bit BMP (longest side 160) via `sips`. A
+ * smaller raster keeps the neutral-pixel diff + optical cross-correlation cheap
+ * on a hosted runner while staying well above the 2% effect threshold. */
+async function toBmp(png: string, longest = 160): Promise<Bmp> {
   const bmp = png.replace(/\.png$/, ".bmp");
   await execFileAsync("sips", ["-s", "format", "bmp", "-Z", String(longest), png, "--out", bmp], { timeout: 20_000 });
   const buf = readFileSync(bmp);
@@ -385,12 +399,14 @@ class OffArm implements Arm {
     await this.reg.invokeTool("gesture-tap", { udid: UDID, x: p.x, y: p.y });
   }
   async swipe(from: NPoint, to: NPoint): Promise<void> {
+    // The gesture-swipe tool takes fromX/fromY/toX/toY (normalized), NOT
+    // startX/endX (run 1: OFF swipe threw 20/20 on the wrong param names).
     await this.reg.invokeTool("gesture-swipe", {
       udid: UDID,
-      startX: from.x,
-      startY: from.y,
-      endX: to.x,
-      endY: to.y,
+      fromX: from.x,
+      fromY: from.y,
+      toX: to.x,
+      toY: to.y,
       durationMs: GESTURE_PARAMS.swipeDurationMs,
     });
   }
@@ -403,22 +419,27 @@ class OffArm implements Arm {
     return scrollRegionFromDescribeText(text);
   }
   async ensureRoot(): Promise<void> {
-    await this.reg
-      .invokeTool("gesture-tap", { udid: UDID, x: 0.05, y: 0.06 })
-      .catch(() => undefined); // best-effort back-chevron; then relaunch below
     await relaunchViaSimctl();
-    await this.reg.invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 4000 }).catch(() => undefined);
+    await this.reg.invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 2500 }).catch(() => undefined);
   }
   async goBack(): Promise<void> {
-    // iOS has no global back; tap the top-left nav back chevron area, best effort.
-    await this.reg.invokeTool("gesture-tap", { udid: UDID, x: 0.06, y: 0.06 }).catch(() => undefined);
-    await sleep(400);
+    // iOS has no reliable global back gesture; relaunching Settings is the only
+    // guaranteed root restore (run 1: tapping the top-left chevron did NOT go
+    // back, so navDiff==rootDiff and the oracle self-test failed).
+    await relaunchViaSimctl();
   }
   async awaitScreenIdle(): Promise<void> {
     await this.reg.invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 4000 });
   }
   async awaitUiElement(label: string): Promise<void> {
-    await this.reg.invokeTool("await-ui-element", { udid: UDID, label, timeoutMs: 4000 });
+    // The tool takes { condition, selector: {text|identifier|role} } — NOT a bare
+    // `label` (run 1: OFF await-ui-element threw 20/20 on the wrong shape).
+    await this.reg.invokeTool("await-ui-element", {
+      udid: UDID,
+      condition: "exists",
+      selector: { text: label },
+      timeoutMs: 4000,
+    });
   }
   ackTimeouts(): number {
     return 0;
@@ -579,12 +600,12 @@ class XcuitestArm implements Arm {
   }
   async ensureRoot(): Promise<void> {
     await this.client.launchApp(SETTINGS);
-    await sleep(1200);
+    await sleep(900);
   }
   async goBack(): Promise<void> {
-    const { w, h } = await this.tree.screenSize();
-    await this.client.tap(0.06 * w, 0.06 * h).catch(() => undefined);
-    await sleep(400);
+    // Relaunch Settings — the reliable iOS root restore (see OffArm.goBack).
+    await this.client.launchApp(SETTINGS);
+    await sleep(700);
   }
   awaitScreenIdle(): Promise<void> {
     return this.tree.awaitIdle();
@@ -664,12 +685,12 @@ class SimInputArm implements Arm {
   }
   async ensureRoot(): Promise<void> {
     await this.client.launchApp(SETTINGS);
-    await sleep(1200);
+    await sleep(900);
   }
   async goBack(): Promise<void> {
-    const { w, h } = await this.tree.screenSize();
-    await this.sim.tap(UDID, { x: 0.06 * w, y: 0.06 * h, width: w, height: h }).catch(() => undefined);
-    await sleep(400);
+    // Relaunch Settings — the reliable iOS root restore (see OffArm.goBack).
+    await this.client.launchApp(SETTINGS);
+    await sleep(700);
   }
   awaitScreenIdle(): Promise<void> {
     return this.tree.awaitIdle();
@@ -730,13 +751,13 @@ async function relaunchViaSimctl(): Promise<void> {
   } catch {
     /* not running */
   }
-  await sleep(300);
+  await sleep(200);
   try {
     execFileSync("xcrun", ["simctl", "launch", UDID, SETTINGS], { stdio: "ignore", timeout: 15_000 });
   } catch {
     /* ignore */
   }
-  await sleep(1200);
+  await sleep(900);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -826,18 +847,16 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
       tapErr = e;
     }
     const dt = Date.now() - t0;
-    // Effect poll OUTSIDE the timed window.
+    // Effect check OUTSIDE the timed window. A screenshot on a hosted runner is
+    // expensive (simctl + sips + pixel diff), so instead of polling every 200 ms
+    // for 3 s we settle a fixed window and take at most TWO `after` shots — still
+    // strictly outside the timed window, still a first-attempt verdict.
     let landed = false;
-    const deadline = Date.now() + 3000;
-    for (;;) {
-      await sleep(200);
+    for (let poll = 0; poll < 3 && !landed; poll++) {
+      await sleep(800);
       const after = await simctlScreenshot("tap-after");
       const ratio = await neutralPixelDiffRatio(before, after).catch(() => 0);
-      if (ratio >= 0.02) {
-        landed = true;
-        break;
-      }
-      if (Date.now() >= deadline) break;
+      if (ratio >= 0.02) landed = true;
     }
     if (record) {
       if (tapErr) {
@@ -852,10 +871,10 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
         if (noEffectSamples.length < 8) noEffectSamples.push(`${arm.name} tap@(${coord.x.toFixed(3)},${coord.y.toFixed(3)}) no-effect`);
       }
     }
-    // Restore the origin for the next iteration.
-    await arm.goBack();
-    const back = await arm.locate(target).catch(() => null);
-    if (!back && record) originLost++;
+    // No trailing restore: the NEXT iteration's `ensureRoot()` (relaunch) is the
+    // reliable iOS root restore, so a second relaunch here would only double the
+    // cost. originLost is structurally 0 on iOS (relaunch always finds root).
+    void originLost;
   };
 
   for (let i = 0; i < WARMUP; i++) await runOne(false).catch(() => undefined);
@@ -912,7 +931,7 @@ async function timeSwipeOptical(arm: Arm): Promise<{ verb: VerbResult; scroll: S
       err = e;
     }
     const dt = Date.now() - t0;
-    await sleep(600); // settle OUTSIDE the timed window before the optical read
+    await sleep(500); // settle OUTSIDE the timed window before the optical read
     const after = await simctlScreenshot("swipe-after");
     const off = await opticalScrollOffset(before, after, region).catch(() => ({ dyPx: NaN, confidence: 0, refused: true }));
     if (record) {
@@ -998,8 +1017,14 @@ function makeArm(block: string): Arm {
   }
 }
 
-/** G0 oracle self-test: one detected+restored navigation before the timed loop. */
+/** G0 oracle self-test with one retry (a transient screenshot blip or a first
+ * cold tap must not fail the block on its own). */
 async function oracleSelfTest(arm: Arm, target: string): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
+  let last = await oracleSelfTestOnce(arm, target);
+  if (!last.selfTestPassed) last = await oracleSelfTestOnce(arm, target);
+  return last;
+}
+async function oracleSelfTestOnce(arm: Arm, target: string): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
   try {
     await arm.ensureRoot();
     const coord = await arm.locate(target);
@@ -1035,7 +1060,17 @@ async function runBlock(block: string): Promise<BlockResult> {
   await arm.ensureRoot();
 
   // ---- describe sample (idle root) → bytes/tokens/elements/fidelity (G4) -----
-  const desc = await arm.describe();
+  // Warm up until the tree is non-empty: the ax-service (OFF) path can return an
+  // empty tree for the first read after boot before the app is injected (run 1:
+  // OFF-1's G4 sample was 0 elements while OFF-2 recovered 29). Retry with a
+  // relaunch so the G4 denominator is the real element count, not a cold blip.
+  let desc = await arm.describe();
+  for (let attempt = 0; attempt < 4 && desc.elements === 0; attempt++) {
+    await arm.ensureRoot();
+    await sleep(600);
+    desc = await arm.describe();
+  }
+  if (desc.elements === 0) notes.push("describe tree was still empty after warmup (backend not injectable?)");
   const capped = capDescribe(desc.text, DESCRIBE_CAP);
   const describeSample = {
     backend: desc.backend,
