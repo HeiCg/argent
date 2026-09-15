@@ -336,9 +336,13 @@ export function openServerTapWithOutcome(
     // extra read is an internal RPC (not a counted bench round-trip) and only runs
     // while the graph flag is on.
     let actedSelector: EdgeSelector | undefined;
+    // Phase E: keep the before tree too, so the recorder can resolve the tap's
+    // scrollable container / item template host-side (design D1 option B).
+    let beforeTree: OpenServerElement[] | undefined;
     if (screenGraphRecordingEnabled()) {
       try {
         const before = await server.getState({ includeScreenshot: false });
+        beforeTree = before.tree;
         actedSelector = tappedSelectorFromTree(before.tree, x, y, size);
       } catch {
         /* best-effort — a coordinate edge without a selector still records */
@@ -358,14 +362,10 @@ export function openServerTapWithOutcome(
         ...injectOpt(),
       })
     );
-    await recordOpenServerObservation(
-      device,
-      server,
-      size,
-      { kind: "tap", x, y },
-      outcome,
-      actedSelector ? { actedSelector } : {}
-    );
+    await recordOpenServerObservation(device, server, size, { kind: "tap", x, y }, outcome, {
+      ...(actedSelector ? { actedSelector } : {}),
+      ...(beforeTree ? { beforeTree, point: { x, y } } : {}),
+    });
     return outcome;
   });
 }

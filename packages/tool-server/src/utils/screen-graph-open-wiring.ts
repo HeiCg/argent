@@ -31,6 +31,10 @@ import {
   canonicalAction,
   deriveLabel,
   recordObservation,
+  resolveTemplate,
+  stripId,
+  actedElementAt,
+  resolveContainer,
   selectorKeyForId,
   selectorKeyForText,
   type ActionInvocation,
@@ -38,9 +42,20 @@ import {
   type EdgeSelector,
   type FetchedScreen,
   type ScreenNode,
+  type TemplateElement,
 } from "../screen-graph";
 
 const SCREEN_GRAPH_FLAG = "screen-graph";
+
+/**
+ * Phase E (design D1): template edges + the bounded store are additionally gated
+ * behind `ARGENT_SG_TEMPLATES=1`, so every D.4.1 arm reproduces unchanged in the
+ * same job (non-regression gate E1-G5) and the churn OFF/control arm behaves
+ * exactly like today (E-0 §F4). Recording must also be enabled.
+ */
+export function screenGraphTemplatesEnabled(): boolean {
+  return screenGraphRecordingEnabled() && process.env.ARGENT_SG_TEMPLATES === "1";
+}
 
 /**
  * Phase D.2 HIGH-1: how long the recording's settled `getState` waits for the UI
@@ -151,7 +166,14 @@ function getStore(serial: string, pkg: string, versionCode: string): Promise<Scr
   const key = `${serial}|${pkg}|${versionCode}`;
   let store = storeCache.get(key);
   if (!store) {
-    store = ScreenGraphStore.load({ packageName: pkg, versionCode });
+    // Phase E: turn on the bounded-store behaviour (caps / LRU / decay /
+    // volatility) only under `ARGENT_SG_TEMPLATES=1` — off, the store persists
+    // byte-for-byte as before (D.4.1 non-regression, E1-G5).
+    store = ScreenGraphStore.load({
+      packageName: pkg,
+      versionCode,
+      enforceBounds: screenGraphTemplatesEnabled(),
+    });
     storeCache.set(key, store);
   }
   return store;
@@ -244,7 +266,14 @@ export async function recordOpenServerObservation(
   size: { width: number; height: number },
   invocation: ActionInvocation,
   outcome: OpenServerActionOutcome,
-  opts: { secret?: boolean; actedSelector?: EdgeSelector } = {}
+  opts: {
+    secret?: boolean;
+    actedSelector?: EdgeSelector;
+    /** Phase E: the source (pre-tap) flat tree, for host-side template resolution. */
+    beforeTree?: OpenServerElement[];
+    /** Phase E: the tapped device-pixel point, for geometric containment. */
+    point?: { x: number; y: number };
+  } = {}
 ): Promise<void> {
   if (!screenGraphRecordingEnabled()) return;
   const recordStart = Date.now();
@@ -324,6 +353,60 @@ export async function recordOpenServerObservation(
         // Pre-D.1 selector without `via`: legacy precedence (id, then text).
         if (id) action.target = { id };
         else if (text) action.target = { text };
+      }
+    }
+    // Phase E (design D1): when templates are enabled and the tap resolved INSIDE
+    // a scrollable container on the source screen, fold it onto ONE template edge
+    // to a synthetic template node instead of a per-item edge/node. This is what
+    // makes the graph's size independent of content states (E-0 §F5). Redacted
+    // (secret) taps skip templating and take the ordinary redaction path.
+    if (
+      screenGraphTemplatesEnabled() &&
+      !opts.secret &&
+      opts.beforeTree &&
+      opts.point &&
+      (action.kind === "tap" || action.kind === "longPress")
+    ) {
+      const before = opts.beforeTree as unknown as TemplateElement[];
+      const tpl = resolveTemplate(
+        before,
+        opts.point.x,
+        opts.point.y,
+        beforeId,
+        settled.tree as unknown as TemplateElement[],
+        pkg
+      );
+      if (tpl) {
+        const acted = actedElementAt(before, opts.point.x, opts.point.y);
+        const container = resolveContainer(before, opts.point.x, opts.point.y);
+        const actedEl = acted as unknown as OpenServerElement | null;
+        const itemText = actedEl?.text?.trim() || actedEl?.contentDesc?.trim() || "" || undefined;
+        const containerId = container ? stripId(container.resourceId) || undefined : undefined;
+        const templateAction: CanonicalAction = {
+          kind: action.kind,
+          template: { containerKey: tpl.containerKey, itemTemplate: tpl.itemTemplate },
+        };
+        const edge = store.observe(beforeId, templateAction, tpl.templateNodeHash, {
+          success: true,
+          ...(sel ? { selector: sel } : {}),
+          template: {
+            containerKey: tpl.containerKey,
+            itemTemplate: tpl.itemTemplate,
+            concreteTo: afterId,
+            ...(itemText ? { itemText } : {}),
+            ...(containerId ? { containerId } : {}),
+          },
+        });
+        store.upsertNode({
+          hash: tpl.templateNodeHash,
+          template: true,
+          compact: settledPayload.compact,
+          index: settledPayload.index,
+          resourceIds: tpl.destinationResourceIds,
+          instances: edge.template?.instances ?? 1,
+          ...(settledPayload.label !== undefined ? { label: `${settledPayload.label}:*` } : {}),
+        });
+        return;
       }
     }
     await recordObservation({
