@@ -14,8 +14,10 @@ await-idle 524/526, await-ui 80/82, describe 87/89 (tokens identical), paste
 settle:true —/684 (fresh 100%). Two residuals remain.
 
 ## R1 gesture-tap +8 ms
+
 Measured on-device: DOWN inject p50 14 ms, sync UP p50 10 ms, hold 50 ms.
 OFF is 54 = 50 hold + ~2 transport + ~2 inject. Ours: 50 + 14 + 10 ≈ 62+.
+
 - Make the final UP `sync=false` for `tap` too (keep 50 ms hold; UP is
   queued before the RPC returns; ordering vs a following describe is
   preserved by the input dispatcher + describe's own tree read — verify
@@ -29,14 +31,16 @@ OFF is 54 = 50 hold + ~2 transport + ~2 inject. Ours: 50 + 14 + 10 ≈ 62+.
   event after idle pays a wake-up cost; if `injectInputEvent(sync=false)`
   for DOWN is safe (it is — ordering is preserved), make DOWN async as well
   and only sync when the caller asks for an outcome.
-Target: gesture-tap ON ≤ OFF + 2 ms; A.1/3b device tests still green.
+  Target: gesture-tap ON ≤ OFF + 2 ms; A.1/3b device tests still green.
 
 ## R2 tap+describe settle:false 286 vs 138
+
 `captureMs` ~179 vs proprietary `getHierarchy` ~76 during the transition;
 idle screen capture is 12–15 ms. During a navigation there are 2+ windows
 (outgoing activity, incoming, possibly a transient overlay); we serialize
 ALL windows nested (phase-3 token-parity decision, needed for the IME
 window on the search screen).
+
 - Serialize the active window fully; for non-active windows serialize only
   if they are `TYPE_INPUT_METHOD` or `TYPE_SYSTEM`/dialog-like
   (`AccessibilityWindowInfo.type`), skipping other `TYPE_APPLICATION`
@@ -48,16 +52,18 @@ window on the search screen).
   outgoing window was the cost; if the residual is the active window's own
   size mid-animation, report the number and stop (no importance pruning in
   this ticket).
-Target: tap+describe settle:false ON ≤ 1.3× OFF; tokens identical; goldens
-green.
+  Target: tap+describe settle:false ON ≤ 1.3× OFF; tokens identical; goldens
+  green.
 
 ## R3 paste +10 ms
+
 The clipboard attempt (fails on API 35 from instrumentation) costs one RPC
 before the type fallback. Cache the "clipboard unsupported" result per
 server session after the first failure so subsequent pastes go straight to
 typing. Target: paste ON ≤ OFF + 3 ms.
 
 ## Bench + report
+
 Re-run the like-for-like bench (N=20, OFF-1/ON/OFF-2, all verbs incl.
 tap+describe settle:false/true) and append a "v6 / phase 3e" section to
 `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results-v4.md`

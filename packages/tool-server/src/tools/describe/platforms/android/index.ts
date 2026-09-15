@@ -156,9 +156,7 @@ export async function describeAndroid(
         };
       });
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
-      const openHint = result.truncated
-        ? [hint, TRUNCATION_HINT].filter(Boolean).join(" ")
-        : hint;
+      const openHint = result.truncated ? [hint, TRUNCATION_HINT].filter(Boolean).join(" ") : hint;
       // waitedMs/captureMs ride the result metadata (never the rendered text) so
       // the idle-gate-vs-serialization split of describe is measurable.
       return {
@@ -177,7 +175,9 @@ export async function describeAndroid(
         ...(result.hostFirstToLastByteMs !== undefined
           ? { hostFirstToLastByteMs: result.hostFirstToLastByteMs }
           : {}),
-        ...(result.hostRoundTripMs !== undefined ? { hostRoundTripMs: result.hostRoundTripMs } : {}),
+        ...(result.hostRoundTripMs !== undefined
+          ? { hostRoundTripMs: result.hostRoundTripMs }
+          : {}),
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
       };
     } catch (serverErr) {

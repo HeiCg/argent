@@ -131,7 +131,9 @@ describe("paste (android) → open-device-server (F20)", () => {
     expect(openApi.typeTextWithOutcome).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
-    expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining("[paste.android] open-device-server")
+    );
   });
 
   it("flag off: never touches the open server, sets clipboard + KEYCODE_PASTE", async () => {
@@ -162,7 +164,9 @@ describe("paste (android) → open-device-server (F20)", () => {
     expect(openApi.typeTextWithOutcome).not.toHaveBeenCalled();
     expect(vi.mocked(setSimulatorClipboardText)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(injectAndroidKeycode)).toHaveBeenCalledWith(ANDROID_SERIAL, KEYCODE_PASTE);
-    expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining("[paste.android] open-device-server")
+    );
   });
 
   it("R3: TWO consecutive definitive falses mark unsupported; the third paste skips setClipboard and types directly", async () => {
@@ -246,6 +250,8 @@ describe("paste (android) → open-device-server (F20)", () => {
     await tool.execute({}, { udid: ANDROID_SERIAL, text: "two" });
     expect(openApi.setClipboard).toHaveBeenCalledTimes(2);
     expect(openApi.setClipboard).toHaveBeenLastCalledWith("two");
-    expect(debug).toHaveBeenCalledWith(expect.stringContaining("[paste.android] open-device-server"));
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining("[paste.android] open-device-server")
+    );
   });
 });

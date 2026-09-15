@@ -13,7 +13,10 @@ import { parseNativeDescribeScreenResult } from "../../../native-devtools/native
 import { DescribeTreeData, parseDescribeResult, type DescribeNode } from "../../contract";
 import { adaptAXDescribeToDescribeResult } from "./ios-ax-adapter";
 import { adaptNativeDescribeToDescribeResult } from "./ios-native-adapter";
-import { shouldUseIosOpenServer, describeIosViaOpenServer } from "../../../../utils/ios-open-server-input";
+import {
+  shouldUseIosOpenServer,
+  describeIosViaOpenServer,
+} from "../../../../utils/ios-open-server-input";
 
 // `degraded` means the pre-boot accessibility prefs were never written — the one
 // thing boot-device does that an external `xcrun simctl boot` cannot. It

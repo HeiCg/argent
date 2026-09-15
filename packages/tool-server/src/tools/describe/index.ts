@@ -37,8 +37,10 @@ function withDescription(data: DescribeTreeData): DescribeResult {
   if (data.wireBytes !== undefined) out.wireBytes = data.wireBytes;
   if (data.hostParseMs !== undefined) out.hostParseMs = data.hostParseMs;
   if (data.hostRenderMs !== undefined) out.hostRenderMs = data.hostRenderMs;
-  if (data.hostSentToFirstByteMs !== undefined) out.hostSentToFirstByteMs = data.hostSentToFirstByteMs;
-  if (data.hostFirstToLastByteMs !== undefined) out.hostFirstToLastByteMs = data.hostFirstToLastByteMs;
+  if (data.hostSentToFirstByteMs !== undefined)
+    out.hostSentToFirstByteMs = data.hostSentToFirstByteMs;
+  if (data.hostFirstToLastByteMs !== undefined)
+    out.hostFirstToLastByteMs = data.hostFirstToLastByteMs;
   if (data.hostRoundTripMs !== undefined) out.hostRoundTripMs = data.hostRoundTripMs;
   // Phase 3j item 3d (fix h): the host↔device transport ("adb-forward" | "redir")
   // must ride the describe result too, or the bench records "transport metadata

@@ -51,14 +51,14 @@ and device-test suite match the reference base), re-run, and re-review.
 
 ## Contract status
 
-| # | Contract | Status | Evidence |
-|---|---|---|---|
-| 1 | Fingerprints opt-in on read RPCs; `version` always; absent ≠ empty | **MET (server), PARTIAL (host)** | `StateHandler.kt:100-104,266-277`, `HierarchyHandler.kt:33-35,112-120`; device test `logs/device-test.log:75` ("opt-out hash absent, opt-in hash present"); unit test `test/android-open-server-blueprint.test.ts` (9 passed locally). Partial: `unchanged`/`version` semantics changed (3M-H4); `HierarchyHandler` refuses fingerprints for `nested` while `StateHandler` allows them (3M-L2) |
-| 2 | Nothing on the capture path calls `rootInActiveWindow`; fingerprint rebuild reuses the capture root | **MET, with a harmful side effect** | `TreeStore.kt:171-186` (`ownsRoot` guard, no recycle of `providedRoot`); `StateHandler.kt:193-197`; device test `rootSource=windows`. Side effect: the identity hash now comes from the windows-snapshot root, which can be an empty/transient frame → 3M-H1 |
-| 3 | New `fingerprintMs` stage; device test asserts `|captureMs − Σ(stages)| ≤ 10` idle and after-tap | **MET** | `StateHandler.kt:251-252`, `HierarchyHandler.kt` timings; device test: idle residual med **1 ms**, after-tap med **6 ms** (`logs/device-test.log:75`). The bench p50-proxy (+102/+39) is not a residual — see 3M-M5 |
-| 4 | Lazy `armClock()`; `getInfo().traversals` exposed; 1 traversal after tap | **MET on device, weak as evidence** | `TreeStore.kt:109-125` (correct double-checked locking), arm sites `StateHandler.kt:104`, `HierarchyHandler.kt:35`, `QueryHandler.kt:22`, `DiffHandler.kt:18`, `AwaitChangeHandler.kt:34`, `JsonRpcHandler.kt:213`; device test traversals delta 1. "was 2" was never measured (3M-L1); the lazy arm introduces a lost-wakeup window (3M-H5) |
-| 5 | versionCode 26 / versionName 0.1.22, manifest in sync | **MET** | `packages/android-device-server/build.gradle.kts` and `assets/manifest.json` both 26 / 0.1.22 |
-| 6 | Screen-graph configs unaffected; success and tokens within run-spread | **NOT MET** | Store invariant FAILURE, `bench-screen-graph/logs/sg-matrix.log:199-200`; empty-tree node in `graph-store/com.android.settings/34.json`; `skippedNoIdHash` 1 (every documented prior run: 0). Tokens/success themselves ARE within spread (3M-L7) |
+| #   | Contract                                                                                            | Status                              | Evidence                                                                                                                                                                                                                                                                                                                                                                                       |
+| --- | --------------------------------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Fingerprints opt-in on read RPCs; `version` always; absent ≠ empty                                  | **MET (server), PARTIAL (host)**    | `StateHandler.kt:100-104,266-277`, `HierarchyHandler.kt:33-35,112-120`; device test `logs/device-test.log:75` ("opt-out hash absent, opt-in hash present"); unit test `test/android-open-server-blueprint.test.ts` (9 passed locally). Partial: `unchanged`/`version` semantics changed (3M-H4); `HierarchyHandler` refuses fingerprints for `nested` while `StateHandler` allows them (3M-L2) |
+| 2   | Nothing on the capture path calls `rootInActiveWindow`; fingerprint rebuild reuses the capture root | **MET, with a harmful side effect** | `TreeStore.kt:171-186` (`ownsRoot` guard, no recycle of `providedRoot`); `StateHandler.kt:193-197`; device test `rootSource=windows`. Side effect: the identity hash now comes from the windows-snapshot root, which can be an empty/transient frame → 3M-H1                                                                                                                                   |
+| 3   | New `fingerprintMs` stage; device test asserts `                                                    | captureMs − Σ(stages)               | ≤ 10` idle and after-tap                                                                                                                                                                                                                                                                                                                                                                       | **MET** | `StateHandler.kt:251-252`, `HierarchyHandler.kt` timings; device test: idle residual med **1 ms**, after-tap med **6 ms** (`logs/device-test.log:75`). The bench p50-proxy (+102/+39) is not a residual — see 3M-M5 |
+| 4   | Lazy `armClock()`; `getInfo().traversals` exposed; 1 traversal after tap                            | **MET on device, weak as evidence** | `TreeStore.kt:109-125` (correct double-checked locking), arm sites `StateHandler.kt:104`, `HierarchyHandler.kt:35`, `QueryHandler.kt:22`, `DiffHandler.kt:18`, `AwaitChangeHandler.kt:34`, `JsonRpcHandler.kt:213`; device test traversals delta 1. "was 2" was never measured (3M-L1); the lazy arm introduces a lost-wakeup window (3M-H5)                                                   |
+| 5   | versionCode 26 / versionName 0.1.22, manifest in sync                                               | **MET**                             | `packages/android-device-server/build.gradle.kts` and `assets/manifest.json` both 26 / 0.1.22                                                                                                                                                                                                                                                                                                  |
+| 6   | Screen-graph configs unaffected; success and tokens within run-spread                               | **NOT MET**                         | Store invariant FAILURE, `bench-screen-graph/logs/sg-matrix.log:199-200`; empty-tree node in `graph-store/com.android.settings/34.json`; `skippedNoIdHash` 1 (every documented prior run: 0). Tokens/success themselves ARE within spread (3M-L7)                                                                                                                                              |
 
 ## HIGH
 
@@ -87,18 +87,19 @@ screens, 0 multi-destination edges" — `2026-09-03-scoreboard.md:128`,
 
 Mechanism (fact up to the arrow, inference after it): pre-3m the settled read's hashes came
 from `TreeStore.ensure()` with no provided root, i.e. from `uiAutomation.rootInActiveWindow`
-— the call the phase-3g doc describes as *blocking ~170-210 ms mid-transition*, i.e. it
+— the call the phase-3g doc describes as _blocking ~170-210 ms mid-transition_, i.e. it
 waits and returns a settled root. Post-3m the hashes come from the capture's
 interactive-windows root (`StateHandler.kt:193-197`, `TreeStore.kt:175-186`), which returns
 immediately and can hand back a transient or empty active window. → the settled
 `getState({fingerprints:true})` at `src/utils/screen-graph-open-wiring.ts:249` can now
 return an identity computed over zero nodes. There is **no empty-tree guard on the host
-settled-read path**: `screen-graph-open-wiring.ts:250-254` only rejects a *missing*
+settled-read path**: `screen-graph-open-wiring.ts:250-254` only rejects a _missing_
 `afterId`, and `EMPTY_TREE_HASH` is a perfectly truthy string. The device-side
 `awaitNonEmptyTree` guard exists only on the `tapWithOutcome` path
 (`JsonRpcHandler.kt:228-231`), which still uses the root-less `ensure()`.
 
 Two secondary consequences of the same change, both new:
+
 - `idHash` is now **absent** when `rootNode == null` (`StateHandler.kt:177-204`: `fpSnap`
   stays null, the `fpSnap?.let` at :271 emits nothing). Pre-3m `ensure()` ran unconditionally
   before the hierarchy block and always produced a hash. That is a plausible source of the
@@ -133,7 +134,7 @@ documented as "ON-scrcpy ran the **shipped default** pacing (`legacy`)"
 `drift`.
 
 So `tap+describe(settle:false)` ON-scrcpy 529 → 262 mixes two changes: the fingerprints
-fix and a different tap-injection pacing. `legacy` awaits each frame's *consume* before
+fix and a different tap-injection pacing. `legacy` awaits each frame's _consume_ before
 returning; `drift` initiates the write without awaiting it, which changes exactly the thing
 that decides whether the following describe lands mid-transition (the R1 UP-ordering
 interaction at `StateHandler.kt:106-110`). The branch must be rebased onto `open/main` and
@@ -143,9 +144,9 @@ re-run before this number is attributable to 3m.
 
 Recomputed from `bench-block-*.json`, p50 ms, within-run OFF-1↔OFF-2 floor:
 
-| verb | 34813 ON-scrcpy | 34827 ON-scrcpy | Δ | 34813 ON-uia | 34827 ON-uia | Δ | floor |
-|---|---|---|---|---|---|---|---|
-| `tap+describe(settle:false)` | 529 (n=19) | 262 (n=20) | **−267 OUTSIDE** | 505 (n=19) | 475 (n=20) | **−30 INSIDE** | 57 |
+| verb                         | 34813 ON-scrcpy | 34827 ON-scrcpy | Δ                | 34813 ON-uia | 34827 ON-uia | Δ              | floor |
+| ---------------------------- | --------------- | --------------- | ---------------- | ------------ | ------------ | -------------- | ----- |
+| `tap+describe(settle:false)` | 529 (n=19)      | 262 (n=20)      | **−267 OUTSIDE** | 505 (n=19)   | 475 (n=20)   | **−30 INSIDE** | 57    |
 
 The forced `TreeStore.ensure()` rebuild lives in the Kotlin server and is identical for
 both ON arms. If removing it were the cause, both arms would move. Only scrcpy did.
@@ -177,6 +178,7 @@ put("unchanged", sinceVersion == TreeStore.version) // same
 ```
 
 Three consequences:
+
 1. **Lost-update window.** If an AX event lands during the capture, the host receives a
    `version` that is newer than the tree it got. A later `sinceVersion = thatVersion` then
    returns `unchanged: true` and the host never learns about the change it never saw. The
@@ -232,10 +234,10 @@ The ticket's pre-registered gates are, verbatim:
 The `## Result` gate table replaces the first with "`describe` p50, ON-scrcpy ≤ 45 ms" and
 the second with an ON-scrcpy-only cell. Recomputed against the pre-registration:
 
-| pre-registered gate | measured | verdict |
-|---|---|---|
-| ON describe idle ≤ OFF + 10 | scrcpy 50 ≤ 52+10 = 62 | **PASS** |
-| ON describe idle ≤ OFF + 10 | uia 72 > 62 | **FAIL** |
+| pre-registered gate                  | measured                                            | verdict        |
+| ------------------------------------ | --------------------------------------------------- | -------------- |
+| ON describe idle ≤ OFF + 10          | scrcpy 50 ≤ 52+10 = 62                              | **PASS**       |
+| ON describe idle ≤ OFF + 10          | uia 72 > 62                                         | **FAIL**       |
 | tap+describe ratio ≤ 1.15, both arms | scrcpy 262/369 = **0.710**; uia 475/369 = **1.287** | **FAIL** (uia) |
 
 The substitution runs in both directions (G3 is made harsher, G6 narrower). Neither
@@ -247,12 +249,12 @@ choice matters: against OFF-2 (319) the ratio is 0.821, and against the pooled O
 
 The `## Result` says the C2 tax is "unchanged from 34813". Recomputed:
 
-| metric | 34813 scrcpy → 34827 | 34813 uia → 34827 |
-|---|---|---|
-| ping p50 (ms) | 0.862 → 0.858 | 0.817 → **0.950** |
-| idle `encodeMs` p50 | 36 → 36 | 36 → **50** |
-| idle `captureMs` p50 | 48 → 47 | 48 → **65** |
-| `describe` p50/p95 | 53/73 → 50/75 | 53/74 → **72/106** |
+| metric               | 34813 scrcpy → 34827 | 34813 uia → 34827  |
+| -------------------- | -------------------- | ------------------ |
+| ping p50 (ms)        | 0.862 → 0.858        | 0.817 → **0.950**  |
+| idle `encodeMs` p50  | 36 → 36              | 36 → **50**        |
+| idle `captureMs` p50 | 48 → 47              | 48 → **65**        |
+| `describe` p50/p95   | 53/73 → 50/75        | 53/74 → **72/106** |
 
 The scrcpy arm is identical to the reference; the uiautomation arm got measurably worse on
 every one of them, while both OFF blocks are flat (describe 52/52 in both runs, both OFF
@@ -275,8 +277,8 @@ The branch does not contain 61556ee5 (`git merge-base --is-ancestor` → not an 
 `.github/bench-ci/merge-fling.js` is the pre-3k.1 version. The two `fling-ab-*.json` gate
 objects prove it: 34813's carries `rule`, `nonInformativeCells`, `totalCells` and two-sided
 `ratioUia`/`ratioOff` per cell; 34827's carries none of those and a single one-sided
-`ratio`. So the fling harness on this branch is *untouched by 3m* but *stale relative to
-the reference base* — the pre-registered reference-bimodality exclusion is simply not
+`ratio`. So the fling harness on this branch is _untouched by 3m_ but _stale relative to
+the reference base_ — the pre-registered reference-bimodality exclusion is simply not
 running.
 
 Recomputing the reported offender from the grid: 150 ms/0.3, scrcpy median 0.458 ÷ uia
@@ -286,14 +288,14 @@ at the 0.175 scroll-metric floor, i.e. `refStraddlesFloor` is true
 `open/main` that cell is **non-informative and excluded**. Re-running the 3k.1 rule over
 34827's grid by hand gives:
 
-| cell | informative under 3k.1? | scrcpy/uia | scrcpy/off | verdict |
-|---|---|---|---|---|
-| 150/0.3 | no — q25(uia)=0.175 at the floor | (2.617) | (0.774) | excluded |
-| 150/0.5 | no — all arms at the floor | — | — | excluded |
-| 250/0.3 | yes | 0.896 | 0.890 | PASS |
-| 250/0.5 | no — q25(uia) at the floor, off n=11 | — | — | excluded |
-| 400/0.3 | yes | 1.007 | **0.760** | FAIL (off side) |
-| 400/0.5 | yes | 0.919 | **0.727** | FAIL (off side) |
+| cell    | informative under 3k.1?              | scrcpy/uia | scrcpy/off | verdict         |
+| ------- | ------------------------------------ | ---------- | ---------- | --------------- |
+| 150/0.3 | no — q25(uia)=0.175 at the floor     | (2.617)    | (0.774)    | excluded        |
+| 150/0.5 | no — all arms at the floor           | —          | —          | excluded        |
+| 250/0.3 | yes                                  | 0.896      | 0.890      | PASS            |
+| 250/0.5 | no — q25(uia) at the floor, off n=11 | —          | —          | excluded        |
+| 400/0.3 | yes                                  | 1.007      | **0.760**  | FAIL (off side) |
+| 400/0.5 | yes                                  | 0.919      | **0.727**  | FAIL (off side) |
 
 So: **no fling regression from 3m**, but the run's published fling verdict is not
 comparable to the reference, and under the current rule it would still be RED — on the
@@ -318,12 +320,12 @@ Neither `bench-merged-*.json` nor `bench-block-*.json` stores per-sample stage v
 recompute from the bench artifacts is impossible.** What the `## Result` calls the residual
 is `captureP50 − Σ p50(stage)`, a sum-of-medians:
 
-| | cap p50 | Σ p50 | "residual" |
-|---|---|---|---|
-| 34827 scrcpy after-tap | 385 | 283 | +102 |
-| 34827 uia after-tap | 445 | 406 | +39 |
-| 34813 scrcpy after-tap | 374 | 335 | +39 |
-| 34813 uia after-tap | 360 | 329 | +31 |
+|                        | cap p50 | Σ p50 | "residual" |
+| ---------------------- | ------- | ----- | ---------- |
+| 34827 scrcpy after-tap | 385     | 283   | +102       |
+| 34827 uia after-tap    | 445     | 406   | +39        |
+| 34813 scrcpy after-tap | 374     | 335   | +39        |
+| 34813 uia after-tap    | 360     | 329   | +31        |
 
 With n=10 and violently skewed stages (34827 scrcpy `rootMs` p50 75 / p95 300;
 `serializeMs` 76/267; `rootsMs` 105/232), the median of each stage need not come from the
@@ -340,7 +342,7 @@ doc) a 170-210 ms rebuild was supposedly hiding in it.
 ### 3M-M6 — `ensure()`'s cache is now root-source-heterogeneous, and never invalidates while the clock is unarmed
 
 `ensure(providedRoot)` (`TreeStore.kt:163-205`) checks `lastBuiltAtVersion == version`
-*before* looking at `providedRoot`, and writes the result to the single `lastSnapshot`. So:
+_before_ looking at `providedRoot`, and writes the result to the single `lastSnapshot`. So:
 
 - A snapshot built from the **capture's windows-snapshot root** is served, at the same
   version, to `query` (`QueryHandler.kt:23`), `diff` (`DiffHandler.kt:19`) and the outcome
@@ -362,7 +364,7 @@ On the specific Kotlin questions asked: `providedRoot` is **not** recycled by `e
 into a use-after-recycle. `armClock()` is a textbook double-checked lock
 (`@Volatile clockArmed` + `synchronized(armLock)`, `TreeStore.kt:50-52,109-125`): idempotent
 and safe across concurrent connections. `version` monotonicity is preserved (it only ever
-`++`s at `TreeStore.kt:143`); what late arming breaks is not monotonicity but *fidelity* —
+`++`s at `TreeStore.kt:143`); what late arming breaks is not monotonicity but _fidelity_ —
 version 0 covers an unbounded amount of real change (3M-H4 point 3).
 
 ## LOW
@@ -392,7 +394,7 @@ version 0 covers an unbounded amount of real change (3M-H4 point 3).
   is not the same suite the reference base runs.
 - **3M-L6** — `results-ci.md`'s "Per-rep ranges across the 3 repetitions" table lists 5 reps.
   Pre-existing harness text, not a 3m regression.
-- **3M-L7** — *not* a regression, recorded so it is not used against the branch: the SG token
+- **3M-L7** — _not_ a regression, recorded so it is not used against the branch: the SG token
   and success deltas are inside the documented same-code spread. O1 tokens 138 vs the
   reference's 179 is within this run's own per-rep range (179/179/134/179/138) and inside the
   spread the scoreboard already publishes — "Same-code run-to-run spread (D.4.1 runs): O1
@@ -401,7 +403,7 @@ version 0 covers an unbounded amount of real change (3M-H4 point 3).
   is 1–2 task-runs out of 100 per config, with H1/H3/H4 all PASS and H4 non-inferior against
   both baselines. The SG problem is 3M-H1, not tokens.
 - **3M-L8** — merge status: **clean**. `git merge-tree --write-tree open/main
-  fix/open-server-fingerprints-opt-in` exits 0 with tree `71985a0f` and no conflict section,
+fix/open-server-fingerprints-opt-in` exits 0 with tree `71985a0f` and no conflict section,
   including the one overlapping file (`android-open-server.device.test.ts`). The problem
   with the 24-commit gap is not textual (3M-H2, 3M-M3, 3M-L5).
 
@@ -422,7 +424,7 @@ scoreboard row may be updated from it.** `README.md:44-46` makes the promotion c
    default is `drift` instead of the shipped `legacy` (3M-H2) and its fling gate is the
    pre-3k.1 one-sided gate without the pre-registered bimodality exclusion (3M-M3). A
    reference must be comparable arm-for-arm with what ships.
-4. Adopting it would also *write down* the ON-uiautomation arm: describe 53 → 72, encode
+4. Adopting it would also _write down_ the ON-uiautomation arm: describe 53 → 72, encode
    36 → 50, ping 0.82 → 0.95, with both OFF blocks flat — i.e. the scoreboard would record
    a uiautomation regression this run cannot explain (3M-M2).
 
@@ -451,7 +453,7 @@ particular:
   a 57 ms floor) — not attributable, not like-for-like (3M-H2, 3M-H3).
 - **`describe (idle)` — DO NOT CHANGE.** The current "parity at p50, 14–18 ms slower at p95"
   row stands. This run reads ON-scrcpy 50/75 (parity, unchanged) and ON-uia 72/106 (worse),
-  which would make the row *less* favourable on unexplained single-run evidence (3M-M2).
+  which would make the row _less_ favourable on unexplained single-run evidence (3M-M2).
 - **fling rows — DO NOT CHANGE.** The gate that ran is the pre-3k.1 one; the reported
   offender (150 ms/0.3 = 2.617) is excluded as non-informative under the rule on
   `open/main`, and re-scoring by that rule still fails on 400/0.3 and 400/0.5 (3M-M3).
@@ -463,7 +465,7 @@ particular:
   declared from this run.
 
 The one thing that may be recorded outside the scoreboard, in
-`README.md`'s "Tickets in flight" line, is a status change for 3m: *server-side contracts
+`README.md`'s "Tickets in flight" line, is a status change for 3m: _server-side contracts
 1–5 device-verified on run 34827025184; blocked on a screen-graph store-invariant
 regression (empty-tree node) and on a rebase onto the consolidated base before the headline
-can be attributed.*
+can be attributed._

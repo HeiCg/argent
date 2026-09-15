@@ -38,7 +38,10 @@
     /* best effort */
   }
   if (fs.existsSync(LOCK)) return; // another invocation already ran the arms
-  fs.writeFileSync(LOCK, `strategy arms claimed ${new Date().toISOString()} by BENCH_ONLY=${process.env.BENCH_ONLY}\n`);
+  fs.writeFileSync(
+    LOCK,
+    `strategy arms claimed ${new Date().toISOString()} by BENCH_ONLY=${process.env.BENCH_ONLY}\n`
+  );
   const serial = process.env.BENCH_SERIAL || "emulator-5554";
   // eslint-disable-next-line no-console
   console.log(
@@ -50,12 +53,18 @@
     // Readiness gate before each arm (best-effort, mirrors the workflow's per-block
     // ready-gate; a bad screen still trips the child's own effect gate).
     try {
-      execFileSync("bash", [path.join(".github", "bench-ci", "ready-gate.sh"), serial, "3", "60", "1"], {
-        stdio: "inherit",
-      });
+      execFileSync(
+        "bash",
+        [path.join(".github", "bench-ci", "ready-gate.sh"), serial, "3", "60", "1"],
+        {
+          stdio: "inherit",
+        }
+      );
     } catch {
       // eslint-disable-next-line no-console
-      console.log(`[run-bench] ready-gate warned before ${arm} — proceeding (the child effect gate is authoritative)`);
+      console.log(
+        `[run-bench] ready-gate warned before ${arm} — proceeding (the child effect gate is authoritative)`
+      );
     }
     // Isolated child process: one block, memory-frugal, cannot re-orchestrate. Tee the
     // child's output to bench-log-<arm>.txt (3N-M5) — staged in the artifact — AND the
@@ -63,13 +72,18 @@
     const logPath = path.join(OUT, `bench-log-${arm}.txt`);
     execFileSync(
       "bash",
-      ["-c", `ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=${arm} node ${JSON.stringify(__filename)} 2>&1 | tee -a ${JSON.stringify(logPath)}; exit \${PIPESTATUS[0]}`],
+      [
+        "-c",
+        `ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=${arm} node ${JSON.stringify(__filename)} 2>&1 | tee -a ${JSON.stringify(logPath)}; exit \${PIPESTATUS[0]}`,
+      ],
       { stdio: "inherit", env: process.env }
     );
   }
   if (wantFling) {
     // eslint-disable-next-line no-console
-    console.log("########## FLING (self-orchestrated, ticket 3o — optical, report-only) ##########");
+    console.log(
+      "########## FLING (self-orchestrated, ticket 3o — optical, report-only) ##########"
+    );
     const runFling = path.join(__dirname, "run-fling.js");
     const mergeFling = path.join(__dirname, "merge-fling.js");
     const flingLog = path.join(OUT, "bench-log-FLING.txt");
@@ -78,7 +92,11 @@
     // of the harness dying on a proprietary swipe that never runs.
     const offEnv = process.env.PROP_EXECUTABLE === "1" ? "" : "FLING_INCLUDE_OFF=0 ";
     try {
-      execFileSync("bash", [path.join(".github", "bench-ci", "ready-gate.sh"), serial, "3", "90", "0"], { stdio: "inherit" });
+      execFileSync(
+        "bash",
+        [path.join(".github", "bench-ci", "ready-gate.sh"), serial, "3", "90", "0"],
+        { stdio: "inherit" }
+      );
     } catch {
       /* best effort — the harness resets Settings per sample anyway */
     }
@@ -86,21 +104,30 @@
     try {
       execFileSync(
         "bash",
-        ["-c", `${offEnv}node ${JSON.stringify(runFling)} 2>&1 | tee -a ${JSON.stringify(flingLog)}; exit \${PIPESTATUS[0]}`],
+        [
+          "-c",
+          `${offEnv}node ${JSON.stringify(runFling)} 2>&1 | tee -a ${JSON.stringify(flingLog)}; exit \${PIPESTATUS[0]}`,
+        ],
         { stdio: "inherit", env: process.env }
       );
     } catch (e) {
       flingFailure = e;
       // eslint-disable-next-line no-console
-      console.log("::error::fling harness exited non-zero (arm-round collapse) — see bench-log-FLING.txt");
+      console.log(
+        "::error::fling harness exited non-zero (arm-round collapse) — see bench-log-FLING.txt"
+      );
     }
     // Always run the merge (report-only, exits 0) so the artifact carries the
     // self-test verdict + raw distributions even on a partial run.
     try {
-      execFileSync("bash", ["-c", `node ${JSON.stringify(mergeFling)} 2>&1 | tee -a ${JSON.stringify(flingLog)}`], {
-        stdio: "inherit",
-        env: process.env,
-      });
+      execFileSync(
+        "bash",
+        ["-c", `node ${JSON.stringify(mergeFling)} 2>&1 | tee -a ${JSON.stringify(flingLog)}`],
+        {
+          stdio: "inherit",
+          env: process.env,
+        }
+      );
     } catch (e) {
       // eslint-disable-next-line no-console
       console.log(`[run-bench] fling merge failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -125,4 +152,9 @@ require("ts-node").register({
     ignoreDeprecations: "6.0",
   },
 });
-require(require("node:path").resolve(process.cwd(), "packages/tool-server/scripts/bench-open-vs-proprietary.ts"));
+require(
+  require("node:path").resolve(
+    process.cwd(),
+    "packages/tool-server/scripts/bench-open-vs-proprietary.ts"
+  )
+);

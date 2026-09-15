@@ -1,7 +1,7 @@
 # Ticket: phase 3m.1 — fix the 3m REJECT findings, rebase on the consolidated base, one run
 
 Status: dispatched 2026-09-14. Read first: `2026-09-14-review-3m-findings.md` (every
-3M-H*, 3M-M*, 3M-L* item is a work item), the 3m ticket + `## Result`, the root-cause doc,
+3M-H*, 3M-M*, 3M-L\* item is a work item), the 3m ticket + `## Result`, the root-cause doc,
 `README.md` rules. Base: rebase (or merge) `fix/open-server-fingerprints-opt-in` onto
 `open/main` @ a75ad75d (3k.1 merged: pacing default legacy, pre-registered fling gate,
 current device-test suite). Same worktree `../argent-fork-wt-3m`. Never touch the main
@@ -9,6 +9,7 @@ checkout or /tmp; no npm install/gradle/emulator; vitest `--maxWorkers=2`; Kotli
 in CI only — read every Kotlin edit twice.
 
 ## Work
+
 1. **3M-H1 — screen-graph store integrity.** Find why a node was minted from an empty
    tree (`structuralHash == stateHash == EMPTY_TREE_HASH`, `skippedNoIdHash` 1, edge
    `taptext=Internet` with 2 destinations) on the fingerprints-ON path: likely
@@ -54,10 +55,11 @@ in CI only — read every Kotlin edit twice.
    finding-by-finding table, the six gates as pre-registered, the stage table per arm
    with per-sample residuals, verb table vs run 34813849446 (both ON arms, drift
    floors), fling per-cell under the pre-registered rule, screen-graph per-config success
-   + tokens + invariants line + store shapes vs 34813849446. Scoreboard untouched;
-   `open/main` not fast-forwarded.
+   - tokens + invariants line + store shapes vs 34813849446. Scoreboard untouched;
+     `open/main` not fast-forwarded.
 
 ## Acceptance
+
 Invariants gate green with `skippedNoIdHash` 0 and no `EMPTY_TREE_HASH` node; all
 awaiters arm the clock; version/hash from one snapshot; pacing pinned and legacy; six
 gates reported as pre-registered; headline attributed per arm honestly.

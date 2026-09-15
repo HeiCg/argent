@@ -532,7 +532,12 @@ export interface OpenDeviceServerApi {
     // The multi-tap timeline (F1/F8/F9) travels on the SAME `tap` RPC as the
     // outcome request, so a double-tap is one round-trip that both builds the
     // whole DOWN/UP timeline server-side and reports the before/after delta.
-    opts?: OutcomeOptions & { clickCount?: number; holdMs?: number; gapMs?: number; inject?: OpenInjectStrategy }
+    opts?: OutcomeOptions & {
+      clickCount?: number;
+      holdMs?: number;
+      gapMs?: number;
+      inject?: OpenInjectStrategy;
+    }
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   longPressWithOutcome(
     x: number,
@@ -557,7 +562,10 @@ export interface OpenDeviceServerApi {
     text: string,
     opts?: OutcomeOptions
   ): Promise<{ success: boolean; charsTyped: number } & OpenServerActionOutcome>;
-  keyWithOutcome(key: string, opts?: OutcomeOptions): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  keyWithOutcome(
+    key: string,
+    opts?: OutcomeOptions
+  ): Promise<{ success: boolean } & OpenServerActionOutcome>;
 }
 
 /**
@@ -869,7 +877,8 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
             lastPingErr = pingErr;
           }
         }
-        if (!pinged) throw lastPingErr instanceof Error ? lastPingErr : new Error(String(lastPingErr));
+        if (!pinged)
+          throw lastPingErr instanceof Error ? lastPingErr : new Error(String(lastPingErr));
         redirOk = true;
       } catch (e) {
         redirOk = false;
@@ -1025,7 +1034,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(tapOpts._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
       setClipboard: (text) =>
-        client.request<{ success: boolean; text: string; error?: string }>("setClipboard", { text }),
+        client.request<{ success: boolean; text: string; error?: string }>("setClipboard", {
+          text,
+        }),
       longPress: (x, y, durationMs) =>
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
       swipe: (startX, startY, endX, endY, steps, holdEndMs, swipeOpts) =>
@@ -1062,17 +1073,23 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           format: ssOpts.format ?? "png",
         }),
       getState: async (stateOpts = {}) => {
-        const { result, wireBytes, parseMs, hostSentToFirstByteMs, hostFirstToLastByteMs, hostRoundTripMs } =
-          await client.requestWithStats<OpenServerStateResult>("getState", {
-            maxElements: stateOpts.maxElements ?? 200,
-            waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
-            includeScreenshot: stateOpts.includeScreenshot ?? false,
-            ...(stateOpts.flush ? { flush: true } : {}),
-            ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
-            ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
-            ...(stateOpts.sinceVersion !== undefined ? { sinceVersion: stateOpts.sinceVersion } : {}),
-            ...(stateOpts.fingerprints ? { fingerprints: true } : {}),
-          });
+        const {
+          result,
+          wireBytes,
+          parseMs,
+          hostSentToFirstByteMs,
+          hostFirstToLastByteMs,
+          hostRoundTripMs,
+        } = await client.requestWithStats<OpenServerStateResult>("getState", {
+          maxElements: stateOpts.maxElements ?? 200,
+          waitTimeoutMs: stateOpts.waitTimeoutMs ?? 2000,
+          includeScreenshot: stateOpts.includeScreenshot ?? false,
+          ...(stateOpts.flush ? { flush: true } : {}),
+          ...(stateOpts.quality !== undefined ? { quality: stateOpts.quality } : {}),
+          ...(stateOpts.scale !== undefined ? { scale: stateOpts.scale } : {}),
+          ...(stateOpts.sinceVersion !== undefined ? { sinceVersion: stateOpts.sinceVersion } : {}),
+          ...(stateOpts.fingerprints ? { fingerprints: true } : {}),
+        });
         return {
           ...result,
           wireBytes,
@@ -1141,10 +1158,13 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           outcome: outcomeObject(outcomeOpts),
         }),
       typeTextWithOutcome: (text, outcomeOpts) =>
-        client.request<{ success: boolean; charsTyped: number } & OpenServerActionOutcome>("typeText", {
-          text,
-          outcome: outcomeObject(outcomeOpts),
-        }),
+        client.request<{ success: boolean; charsTyped: number } & OpenServerActionOutcome>(
+          "typeText",
+          {
+            text,
+            outcome: outcomeObject(outcomeOpts),
+          }
+        ),
       keyWithOutcome: (key, outcomeOpts) =>
         client.request<{ success: boolean } & OpenServerActionOutcome>("key", {
           key,
@@ -1190,7 +1210,11 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }
         // Drop the console redir mapping (phase 3j) before the adb forward, so a
         // later session on the same emulator doesn't inherit a stale forward.
-        if (redirHostPort !== undefined && redirConsolePort !== undefined && consoleToken !== null) {
+        if (
+          redirHostPort !== undefined &&
+          redirConsolePort !== undefined &&
+          consoleToken !== null
+        ) {
           await redirDel(redirConsolePort, redirHostPort, consoleToken).catch(() => undefined);
         }
         await removeAdbForward(serial, spawned.localPort);

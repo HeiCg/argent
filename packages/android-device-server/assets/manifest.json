@@ -3,8 +3,5 @@
   "instrumentationRunner": "com.argent.devicecontrol/.DeviceControlInstrumentation",
   "versionName": "0.1.22",
   "versionCode": 26,
-  "installFlags": [
-    "-r",
-    "-t"
-  ]
+  "installFlags": ["-r", "-t"]
 }

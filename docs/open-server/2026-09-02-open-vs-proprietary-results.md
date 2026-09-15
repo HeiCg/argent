@@ -15,20 +15,20 @@ OFF-2 detects drift).
 
 ## Environment
 
-| Item | Value |
-|---|---|
-| Host | macOS (Darwin 25.6.0), Apple Silicon |
-| Emulator | AVD `bench-api35`, Android 15 (API 35), abi arm64-v8a, 1080×2400 @ 420dpi |
-| Emulator serial | `emulator-5554` (headless: `-no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token`) |
-| Emulator build | `emulator 37.1.11.0` |
-| Physical device | `ZF524RZBHD` attached over USB — never targeted (all adb calls `-s emulator-5554`; RSS probe matched only `--id emulator-5554`) |
-| Fork (open server) | `argent-p3` @ `93fd5b17`, branch `feat/android-open-server`, `@argent/tool-server` 0.22.1 |
-| Proprietary binaries | vendored published package **v0.22.1**: `bin/darwin/simulator-server` (universal mach-o x86_64+arm64), `bin/argent-android-devtools-0.1.0.apk` |
-| Binary resolution | `ARGENT_SIMULATOR_SERVER_DIR` + `ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR` → vendored `bin/` (createRegistry called directly, not via the argent launcher, so env overrides are honoured; no binaries committed) |
-| Version match | APK `0.1.0` == fork's expected `argent-android-devtools-${versionName=0.1.0}.apk`; no version gate on simulator-server. Proprietary path started; no legacy `uiautomator dump` fallback was needed |
-| Token estimator | **chars/4** (spec fallback; the token-bench harness's `js-tiktoken` o200k_base is not installed in the argent-p3 checkout) |
-| Path confirmation | `describe.source` = `android-devtools` every OFF block, `open-device-server` every ON block; simulator-server host process present only under OFF |
-| Result JSON | throwaway `argent-p3/.bench-results/bench-2026-09-02T14-55-10-518Z.json` (not committed) |
+| Item                 | Value                                                                                                                                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host                 | macOS (Darwin 25.6.0), Apple Silicon                                                                                                                                                                           |
+| Emulator             | AVD `bench-api35`, Android 15 (API 35), abi arm64-v8a, 1080×2400 @ 420dpi                                                                                                                                      |
+| Emulator serial      | `emulator-5554` (headless: `-no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token`)                                                                                                                    |
+| Emulator build       | `emulator 37.1.11.0`                                                                                                                                                                                           |
+| Physical device      | `ZF524RZBHD` attached over USB — never targeted (all adb calls `-s emulator-5554`; RSS probe matched only `--id emulator-5554`)                                                                                |
+| Fork (open server)   | `argent-p3` @ `93fd5b17`, branch `feat/android-open-server`, `@argent/tool-server` 0.22.1                                                                                                                      |
+| Proprietary binaries | vendored published package **v0.22.1**: `bin/darwin/simulator-server` (universal mach-o x86_64+arm64), `bin/argent-android-devtools-0.1.0.apk`                                                                 |
+| Binary resolution    | `ARGENT_SIMULATOR_SERVER_DIR` + `ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR` → vendored `bin/` (createRegistry called directly, not via the argent launcher, so env overrides are honoured; no binaries committed) |
+| Version match        | APK `0.1.0` == fork's expected `argent-android-devtools-${versionName=0.1.0}.apk`; no version gate on simulator-server. Proprietary path started; no legacy `uiautomator dump` fallback was needed             |
+| Token estimator      | **chars/4** (spec fallback; the token-bench harness's `js-tiktoken` o200k_base is not installed in the argent-p3 checkout)                                                                                     |
+| Path confirmation    | `describe.source` = `android-devtools` every OFF block, `open-device-server` every ON block; simulator-server host process present only under OFF                                                              |
+| Result JSON          | throwaway `argent-p3/.bench-results/bench-2026-09-02T14-55-10-518Z.json` (not committed)                                                                                                                       |
 
 ## Latency per verb — p50 / p95 / max (ms)
 
@@ -36,16 +36,16 @@ Same call sites (`registry.invokeTool`), same screens (Settings root; Settings
 search for `paste`; Chrome `example.com` for `gesture-pinch`). All cells N=20,
 0 errors, 0 fallbacks.
 
-| Verb | OFF-1 (prop) | ON (open) | OFF-2 (prop) | winner |
-|---|---|---|---|---|
-| describe | 73 / 79 / 569 | 74 / 77 / 80 | 72 / 79 / 91 | ≈ equal |
-| screenshot | 5 / 7 / 7 | 78 / 122 / 124 | 6 / 7 / 8 | OFF (see caveat: resolution differs) |
-| gesture-tap | 53 / 54 / 55 | 146 / 170 / 1399 | 53 / 55 / 55 | OFF ~2.7× |
-| gesture-swipe | 298 / 306 / 314 | 650 / 667 / 669 | 300 / 303 / 303 | OFF ~2.2× |
-| await-screen-idle | 498 / 528 / 532 | 502 / 981 / 1000 | 495 / 525 / 543 | ≈ equal (p50) |
-| await-ui-element | 72 / 75 / 76 | 72 / 76 / 77 | 76 / 83 / 83 | ≈ equal |
-| paste | 78 / 111 / 114 | 57 / 68 / 68 | 82 / 104 / 117 | ON ~1.4× |
-| gesture-pinch | 348 / 358 / 359 | 846 / 1163 / 1305 | 351 / 356 / 357 | OFF ~2.4× |
+| Verb              | OFF-1 (prop)    | ON (open)         | OFF-2 (prop)    | winner                               |
+| ----------------- | --------------- | ----------------- | --------------- | ------------------------------------ |
+| describe          | 73 / 79 / 569   | 74 / 77 / 80      | 72 / 79 / 91    | ≈ equal                              |
+| screenshot        | 5 / 7 / 7       | 78 / 122 / 124    | 6 / 7 / 8       | OFF (see caveat: resolution differs) |
+| gesture-tap       | 53 / 54 / 55    | 146 / 170 / 1399  | 53 / 55 / 55    | OFF ~2.7×                            |
+| gesture-swipe     | 298 / 306 / 314 | 650 / 667 / 669   | 300 / 303 / 303 | OFF ~2.2×                            |
+| await-screen-idle | 498 / 528 / 532 | 502 / 981 / 1000  | 495 / 525 / 543 | ≈ equal (p50)                        |
+| await-ui-element  | 72 / 75 / 76    | 72 / 76 / 77      | 76 / 83 / 83    | ≈ equal                              |
+| paste             | 78 / 111 / 114  | 57 / 68 / 68      | 82 / 104 / 117  | ON ~1.4×                             |
+| gesture-pinch     | 348 / 358 / 359 | 846 / 1163 / 1305 | 351 / 356 / 357 | OFF ~2.4×                            |
 
 Drift: OFF-1 vs OFF-2 p50 within ±4 ms on every verb — no drift across the ON
 block. Gesture/swipe/pinch p50 are dominated by the injected gesture duration
@@ -53,12 +53,12 @@ block. Gesture/swipe/pinch p50 are dominated by the injected gesture duration
 
 ## describe output size (same Settings root)
 
-| Metric | OFF (android-devtools) | ON (open-device-server) |
-|---|---|---|
-| bytes | 1892 | 4307 |
-| tokens (chars/4) | 473 | 1077 |
-| rendered elements | 14 | 59 |
-| render mode | nested, pruned to labelled rows | flat, all UiAutomation nodes |
+| Metric            | OFF (android-devtools)          | ON (open-device-server)      |
+| ----------------- | ------------------------------- | ---------------------------- |
+| bytes             | 1892                            | 4307                         |
+| tokens (chars/4)  | 473                             | 1077                         |
+| rendered elements | 14                              | 59                           |
+| render mode       | nested, pruned to labelled rows | flat, all UiAutomation nodes |
 
 OFF-1 and OFF-2 describe were byte-identical (1892 b / 14 el). Proprietary
 describe is **~2.28× smaller in bytes and tokens** on this screen — it prunes to
@@ -69,12 +69,12 @@ node (including layout containers) unpruned.
 
 Set of visible `(resource-id | text)` identifiers per side.
 
-| Metric | Value |
-|---|---|
-| raw Jaccard | 0.057 |
-| normalized Jaccard | 0.615 |
+| Metric                          | Value                                                        |
+| ------------------------------- | ------------------------------------------------------------ |
+| raw Jaccard                     | 0.057                                                        |
+| normalized Jaccard              | 0.615                                                        |
 | text labels shared (normalized) | 17 / 17 (1.000) — OFF misses no ON row, ON misses no OFF row |
-| resource-ids | OFF 7, ON 22; OFF's 7 are a strict subset of ON's |
+| resource-ids                    | OFF 7, ON 22; OFF's 7 are a strict subset of ON's            |
 
 The raw 0.057 is representational, not informational: OFF uses
 package-qualified ids (`com.android.settings:id/search_bar`) and concatenated
@@ -89,10 +89,10 @@ row the other reported.
 ## Cold start — spawn to first successful describe (ms, 3× each)
 
 | Block | run 1 | run 2 | run 3 | median |
-|---|---|---|---|---|
-| OFF-1 | 914 | 739 | 700 | 739 |
-| ON | 869 | 751 | 770 | 770 |
-| OFF-2 | 774 | 708 | 757 | 757 |
+| ----- | ----- | ----- | ----- | ------ |
+| OFF-1 | 914   | 739   | 700   | 739    |
+| ON    | 869   | 751   | 770   | 770    |
+| OFF-2 | 774   | 708   | 757   | 757    |
 
 ≈ equal (~700–900 ms). Both APKs were already installed, so this is
 instrument-spawn + first-tree, not first-ever APK install. OFF cold start
@@ -113,10 +113,10 @@ describe cold path). ON measures the open server `am instrument` spawn.
 
 ## Host process cost (RSS after run)
 
-| Config | Backend host process | RSS |
-|---|---|---|
-| OFF | `simulator-server android --id emulator-5554` | ~62.3 MB (63856 / 63680 KB) |
-| ON | none beyond adb (server runs on-device via `am instrument`) | 0 host RSS |
+| Config | Backend host process                                        | RSS                         |
+| ------ | ----------------------------------------------------------- | --------------------------- |
+| OFF    | `simulator-server android --id emulator-5554`               | ~62.3 MB (63856 / 63680 KB) |
+| ON     | none beyond adb (server runs on-device via `am instrument`) | 0 host RSS                  |
 
 The proprietary gesture/screenshot backend keeps a ~62 MB host process alive per
 device; the open path has no host process beyond adb. (The proprietary describe

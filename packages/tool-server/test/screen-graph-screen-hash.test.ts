@@ -81,13 +81,20 @@ function settingsHome(expanded: boolean, rows: string[]): HashNode[] {
     n("View", "statusBarBackground"), // window decor — excluded from H_id
     n("FrameLayout", "content", {}, [
       n("ScrollView", "settings_homepage_container", { scrollable: expanded }, [
-        n("LinearLayout", "app_bar", {}, [n("LinearLayout", "app_bar_container", {}, appBarChildren)]),
+        n("LinearLayout", "app_bar", {}, [
+          n("LinearLayout", "app_bar_container", {}, appBarChildren),
+        ]),
         n("ScrollView", "main_content_scrollable_container", { scrollable: true }, [
           n("LinearLayout", "homepage_container", {}, [
             n("FrameLayout", "main_content", {}, [
               n("LinearLayout", "container_material", {}, [
                 n("FrameLayout", "list_container", {}, [
-                  n("ScrollView", "recycler_view", {}, rows.map((r) => prefRow(r))),
+                  n(
+                    "ScrollView",
+                    "recycler_view",
+                    {},
+                    rows.map((r) => prefRow(r))
+                  ),
                 ]),
               ]),
             ]),
@@ -107,14 +114,21 @@ function settingsDetail(title: string, rows: Array<[string, string]>): HashNode[
         n("LinearLayout", "app_bar", {}, [
           // CollapsingToolbarLayout carries the screen title as its contentDesc.
           n("FrameLayout", "collapsing_toolbar", { cd: title }, [
-            n("ViewGroup", "action_bar", {}, [n("Button", "", { cd: "Navigate up", clickable: true })]),
+            n("ViewGroup", "action_bar", {}, [
+              n("Button", "", { cd: "Navigate up", clickable: true }),
+            ]),
           ]),
         ]),
         n("FrameLayout", "content_frame", {}, [
           n("FrameLayout", "main_content", {}, [
             n("LinearLayout", "container_material", {}, [
               n("FrameLayout", "list_container", {}, [
-                n("ScrollView", "recycler_view", {}, rows.map(([t, s]) => prefRow(t, s))),
+                n(
+                  "ScrollView",
+                  "recycler_view",
+                  {},
+                  rows.map(([t, s]) => prefRow(t, s))
+                ),
               ]),
             ]),
           ]),

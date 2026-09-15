@@ -6,6 +6,7 @@ Repo: ARGENT FORK. Branches `feat/screen-graph-d` (from 757956c57) and
 NO local emulator/adb; CI only; at most one `gh run view` per 10 minutes, foreground.
 
 ## Must fix (from the review)
+
 1. **HIGH-1 — premature after-fingerprint mints nodes.** Store of run 33958064084 has two
    nodes labelled "Network & internet: Internet" (284ef030 visits 88, b2fbe915 visits 3)
    with byte-identical compact/resourceIds/stateHash and different H_id, reached by
@@ -41,6 +42,7 @@ NO local emulator/adb; CI only; at most one `gh run view` per 10 minutes, foregr
    vs B1 is attributed.
 
 ## Run and doc
+
 One matrix run after the fixes; regenerate the doc from JSON with a superseded block for
 D.1; report per-config table, O5 nav split (must show the duplicate-node edges gone), the
 measured O5 RPC count, H1–H4 with labels. Push; no device-farm commits.

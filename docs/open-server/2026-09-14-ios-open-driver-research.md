@@ -7,30 +7,32 @@ where the closed driver has no answer, physical iPhone support as an open-only c
 Read-only research; no code, no builds, no CI. Output: one Markdown report.
 
 ## Three candidate bases (all already on disk)
+
 A. **Owner's `device-stream`** (`/Users/heicg/Desktop/projects/device-farm/device-stream`,
-   read-only): `native-servers/ios-xctest-server` (Swift XCUITest bundle: `TCPServer`,
-   `JsonRpcHandler`, `Actions/{Tap,Swipe,LongPress,Type,PressKey,Screenshot,LaunchApp,
+read-only): `native-servers/ios-xctest-server` (Swift XCUITest bundle: `TCPServer`,
+`JsonRpcHandler`, `Actions/{Tap,Swipe,LongPress,Type,PressKey,Screenshot,LaunchApp,
    TerminateApp,Wait}`, `Accessibility/{TreeWalker,TreeCompressor,ElementSerializer}`,
-   `Util/ScreenInfo`), `tools/sim-input` (host Swift CLI injecting simulator HID through
-   IndigoHID / SimulatorKit / IOHIDDigitizer), `tools/sim-capture-avcc`, `sim-cam`,
-   `native-servers/sim-capture-private`, `packages/ios-simulator` (ScreenCaptureKit
-   capture), `packages/ios-device` (WebDriverAgent MJPEG + go-ios), `docs/ios-*.md`,
-   `benchmarks/token-bench`. Initial commit 2026-05-17.
+`Util/ScreenInfo`), `tools/sim-input` (host Swift CLI injecting simulator HID through
+IndigoHID / SimulatorKit / IOHIDDigitizer), `tools/sim-capture-avcc`, `sim-cam`,
+`native-servers/sim-capture-private`, `packages/ios-simulator` (ScreenCaptureKit
+capture), `packages/ios-device` (WebDriverAgent MJPEG + go-ios), `docs/ios-*.md`,
+`benchmarks/token-bench`. Initial commit 2026-05-17.
 B. **Upstream `origin/feat/ios-physical-devices`** (Software Mansion, 2026-08-31, not
-   merged): `packages/ios-device-runner/ArgentRunner` (Swift XCUITest runner:
-   `ArgentRunnerSession+{Commands,Gestures,Screenshot,Snapshot,TextEntry}`,
-   `ArgentExceptionGuard.m`, `RunnerHostApp.swift`, `PROTOCOL.md`, `README.md`), host
-   side in `packages/tool-server/src` (usbmuxd port forward, `devicectl` launch,
-   auto-signing via `ARGENT_IOS_TEAM_ID`, Swift sources shipped in the npm package),
-   `scripts/e2e-ios-physical-device.mjs`, docs pages. Siblings: `feat/physical-ios-via-
+merged): `packages/ios-device-runner/ArgentRunner` (Swift XCUITest runner:
+`ArgentRunnerSession+{Commands,Gestures,Screenshot,Snapshot,TextEntry}`,
+`ArgentExceptionGuard.m`, `RunnerHostApp.swift`, `PROTOCOL.md`, `README.md`), host
+side in `packages/tool-server/src` (usbmuxd port forward, `devicectl` launch,
+auto-signing via `ARGENT_IOS_TEAM_ID`, Swift sources shipped in the npm package),
+`scripts/e2e-ios-physical-device.mjs`, docs pages. Siblings: `feat/physical-ios-via-
    simserver` (CoreDevice through the closed server) and `feat/physical-ios-device-support`
-   (CoreDevice sidecar + pymobiledevice3 tunnel).
+(CoreDevice sidecar + pymobiledevice3 tunnel).
 C. **Closed `simulator-server`** on iOS (what we must beat): `packages/tool-server/src/
    utils/{simulator-client,ios-host,sim-remote,simctl-backend}.ts` and the blueprint
-   `blueprints/simulator-server.ts` show its API surface; mechanism inferred from the
-   host side only (binary is closed; do not reverse-engineer it, its LICENSE forbids).
+`blueprints/simulator-server.ts` show its API surface; mechanism inferred from the
+host side only (binary is closed; do not reverse-engineer it, its LICENSE forbids).
 
 ## Questions (answer each with file:line evidence)
+
 1. **Protocol and coverage matrix.** For A, B and our Android Kotlin server
    (`packages/android-device-server/src/main/java/com/argent/devicecontrol/handlers/`):
    which RPCs exist (describe/tree, query/diff/awaitChange, tap, swipe with timeline,
@@ -70,6 +72,7 @@ C. **Closed `simulator-server`** on iOS (what we must beat): `packages/tool-serv
    CI cost), and what the closed driver cannot do that we can (physical devices).
 
 ## Process
+
 Fan-out allowed (max 2 agents machine-wide; check the host is not in swap before adding
 the second): researcher 1 = A + question 2/3 (device-stream tree, read-only); researcher
 2 = B + C + question 4/5 (the fork's branches; use `git show origin/feat/ios-physical-
@@ -78,7 +81,6 @@ checkout, no worktree). No builds, no `npm install`, no Xcode, no simulator. Rep
 `docs/open-server/2026-09-14-ios-open-driver-research.md` (append `## Findings` sections
 by researcher), every claim with a path or a commit hash. The planner writes the spec
 and tickets from it.
-
 
 ## Findings — researcher 1 (base A: device-stream)`.
 
@@ -92,7 +94,7 @@ and tickets from it.
 6. Timing: the digitizer API accepts a timestamp but the code hardcodes `mach_absolute_time()`; pacing is host `usleep` (10 steps, ≥8 ms). No caller-controlled timeline like Android's `gesture(pointers[].tMs)`.
 7. `TreeWalker` never calls `XCUIApplication.snapshot()`: it walks lazily and touches ~15 XCUIElement properties per node, each a separate IPC — expensive, flat-only, default cap 50, no nesting/multi-window.
 8. Stable element identity: `element.identifier` (accessibility id) is the only candidate; Android's `idHash` is a **screen**-level hash and has no A-side equivalent.
-9. **No latency numbers exist anywhere in A** — `benchmarks/token-bench` is a token-payload bench driven by the *closed* argent server and states it is "not a latency benchmark".
+9. **No latency numbers exist anywhere in A** — `benchmarks/token-bench` is a token-payload bench driven by the _closed_ argent server and states it is "not a latency benchmark".
 10. Capture is fine for a bench (`sim-capture-avcc`, `sim-capture-private`, WDA MJPEG on device), but `tools/sim-capture` referenced by `capture-service.ts` **does not exist** in the tree.
 
 ---
@@ -107,33 +109,33 @@ Android method table: `/Users/heicg/Desktop/projects/argent-fork/packages/androi
 Host contract: `/Users/heicg/Desktop/projects/argent-fork/packages/tool-server/src/blueprints/android-open-server.ts:300-520`.
 A's method table: `/Users/heicg/Desktop/projects/device-farm/device-stream/native-servers/ios-xctest-server/XCTestServer/JsonRpcHandler.swift:90-123`.
 
-| RPC (Android/host name) | Android | A (`ios-xctest-server`) | A (`sim-input` CLI) |
-|---|---|---|---|
-| `ping` | ✓ `JsonRpcHandler.kt:153` | missing | n/a |
-| `getInfo` | ✓ `JsonRpcHandler.kt:145` (`InfoHandler`) | missing (only `getCurrentApp`, a stub) | n/a |
-| `getScreenSize` | ✓ `JsonRpcHandler.kt:146`, ~1 ms via `DisplayReader` | partial — `ScreenInfo.swift:7-14` takes a **full screenshot** to read `image.size`; no rotation field | n/a |
-| `getAccessibilityTree` (flat) | ✓ `JsonRpcHandler.kt:144` | partial `JsonRpcHandler.swift:103-104` → `TreeWalker.swift:13-27`; flat only, no `truncated`, no `waitTimeoutMs`, no `flush` | missing |
-| `getAccessibilityTree {nested:true}` | ✓ via `nested` param, `android-open-server.ts:959-965` (`maxElements` 3000) | **missing** — no nested/multi-window shape | missing |
-| `getState` | ✓ `JsonRpcHandler.kt:147` (`StateHandler`, 17 KB: waitForIdle + tree + info + optional screenshot + `sinceVersion`/`unchanged`) | partial `JsonRpcHandler.swift:20-37` — screenshot+tree+app+keyboardVisible+`captureMs`; **no** waitForIdle, no info, no version/fingerprints | missing |
-| `getNestedState` (host) | ✓ `android-open-server.ts:966-1000`, backs `open-server-describe.ts:56-68` | **missing** | missing |
-| `query` (server-side selector) | ✓ `JsonRpcHandler.kt:148` | **missing** | missing |
-| `diff(sinceVersion)` | ✓ `JsonRpcHandler.kt:149` | **missing** | missing |
-| `awaitChange` | ✓ `JsonRpcHandler.kt:150` (`fromVersion`/`until`/`settle`/`quietMs`) | **missing** | missing |
-| `waitForIdle` | ✓ `JsonRpcHandler.kt:151` | partial — `wait` is a bare `Thread.sleep`, `Actions/WaitAction.swift:9` | missing |
-| `tap` | ✓ `JsonRpcHandler.kt:124` + multi-tap timeline (`clickCount`/`holdMs`/`gapMs`, `open-server-input.ts:28-30`), `dropped` flag, `inject` strategy | partial `Actions/TapAction.swift:14` — `point.tap()`, no clickCount/hold/gap, no drop reporting | partial `main.swift:103-108` — single tap, `duration: 0` |
-| `longPress` | ✓ `JsonRpcHandler.kt:136` | ✓ `Actions/LongPressAction.swift:17` (`press(forDuration:)`, default 1000 ms) | missing (no wire verb) |
-| `swipe` | ✓ `JsonRpcHandler.kt:137` — `steps`, `holdEndMs` (fling suppression), `inject` | partial `Actions/SwipeAction.swift:22` — fixed 0.05 s press, `.default` velocity, `thenHoldForDuration` = the requested duration (semantics differ from Android) | partial `main.swift:110-121` → 10 steps, `stepMs` derived, no hold/no fling control |
-| `gesture` (multi-pointer timeline) | ✓ `JsonRpcHandler.kt:138`, `handlers/GestureHandler.kt:14-20` (`pointers[].points[].tMs`) | **missing** | **missing on the wire** (`touch2` exists in Swift at `IndigoHIDInput.swift:175-183` but no CLI verb) |
-| `flushInput` | ✓ `JsonRpcHandler.kt:139` | **missing** | **missing** |
-| `typeText` | ✓ `JsonRpcHandler.kt:140` (`sendStringSync` + shell fallback, full unicode) | partial `Actions/TypeAction.swift:14-30` — focused-element lookup then fallbacks | partial `main.swift:148-163` — **ASCII only**, `Support.swift:87-111` |
-| `setClipboard` | ✓ `JsonRpcHandler.kt:141` | **missing** | **missing** |
-| `key` | ✓ `JsonRpcHandler.kt:142` | partial `Actions/PressKeyAction.swift:13-33` — 8 named keys, rest typed as text | partial `main.swift:123-147` — HID usage page 7; `release` is an **acked no-op** |
-| `screenshot` | ✓ `JsonRpcHandler.kt:143` (png/jpeg/webp, quality, scale) | ✓ `Actions/ScreenshotAction.swift:9-27` (jpeg only, quality+scale) | n/a |
-| `launchApp` | ✓ `JsonRpcHandler.kt:152` | ✓ `Actions/LaunchAppAction.swift:11-12` | n/a |
-| terminate app | missing on Android | ✓ `Actions/TerminateAppAction.swift:11-12` (A-only) | n/a |
-| `batch` | ✓ `JsonRpcHandler.kt:154` | ✓ `JsonRpcHandler.swift:40-74` | n/a |
-| `shutdown` | ✓ `JsonRpcHandler.kt:155` | missing (runner blocks on a semaphore, `XCTestServerRunner.swift:18-19`) | EOF on stdin, `main.swift:179` |
-| outcome variants / `timings` / `version` / `hash`/`stateHash`/`idHash` | ✓ `TreeStore.kt:98-108,246`, `handlers/StateHandler.kt:93,295` | **all missing** | n/a |
+| RPC (Android/host name)                                                | Android                                                                                                                                         | A (`ios-xctest-server`)                                                                                                                                          | A (`sim-input` CLI)                                                                                  |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `ping`                                                                 | ✓ `JsonRpcHandler.kt:153`                                                                                                                       | missing                                                                                                                                                          | n/a                                                                                                  |
+| `getInfo`                                                              | ✓ `JsonRpcHandler.kt:145` (`InfoHandler`)                                                                                                       | missing (only `getCurrentApp`, a stub)                                                                                                                           | n/a                                                                                                  |
+| `getScreenSize`                                                        | ✓ `JsonRpcHandler.kt:146`, ~1 ms via `DisplayReader`                                                                                            | partial — `ScreenInfo.swift:7-14` takes a **full screenshot** to read `image.size`; no rotation field                                                            | n/a                                                                                                  |
+| `getAccessibilityTree` (flat)                                          | ✓ `JsonRpcHandler.kt:144`                                                                                                                       | partial `JsonRpcHandler.swift:103-104` → `TreeWalker.swift:13-27`; flat only, no `truncated`, no `waitTimeoutMs`, no `flush`                                     | missing                                                                                              |
+| `getAccessibilityTree {nested:true}`                                   | ✓ via `nested` param, `android-open-server.ts:959-965` (`maxElements` 3000)                                                                     | **missing** — no nested/multi-window shape                                                                                                                       | missing                                                                                              |
+| `getState`                                                             | ✓ `JsonRpcHandler.kt:147` (`StateHandler`, 17 KB: waitForIdle + tree + info + optional screenshot + `sinceVersion`/`unchanged`)                 | partial `JsonRpcHandler.swift:20-37` — screenshot+tree+app+keyboardVisible+`captureMs`; **no** waitForIdle, no info, no version/fingerprints                     | missing                                                                                              |
+| `getNestedState` (host)                                                | ✓ `android-open-server.ts:966-1000`, backs `open-server-describe.ts:56-68`                                                                      | **missing**                                                                                                                                                      | missing                                                                                              |
+| `query` (server-side selector)                                         | ✓ `JsonRpcHandler.kt:148`                                                                                                                       | **missing**                                                                                                                                                      | missing                                                                                              |
+| `diff(sinceVersion)`                                                   | ✓ `JsonRpcHandler.kt:149`                                                                                                                       | **missing**                                                                                                                                                      | missing                                                                                              |
+| `awaitChange`                                                          | ✓ `JsonRpcHandler.kt:150` (`fromVersion`/`until`/`settle`/`quietMs`)                                                                            | **missing**                                                                                                                                                      | missing                                                                                              |
+| `waitForIdle`                                                          | ✓ `JsonRpcHandler.kt:151`                                                                                                                       | partial — `wait` is a bare `Thread.sleep`, `Actions/WaitAction.swift:9`                                                                                          | missing                                                                                              |
+| `tap`                                                                  | ✓ `JsonRpcHandler.kt:124` + multi-tap timeline (`clickCount`/`holdMs`/`gapMs`, `open-server-input.ts:28-30`), `dropped` flag, `inject` strategy | partial `Actions/TapAction.swift:14` — `point.tap()`, no clickCount/hold/gap, no drop reporting                                                                  | partial `main.swift:103-108` — single tap, `duration: 0`                                             |
+| `longPress`                                                            | ✓ `JsonRpcHandler.kt:136`                                                                                                                       | ✓ `Actions/LongPressAction.swift:17` (`press(forDuration:)`, default 1000 ms)                                                                                    | missing (no wire verb)                                                                               |
+| `swipe`                                                                | ✓ `JsonRpcHandler.kt:137` — `steps`, `holdEndMs` (fling suppression), `inject`                                                                  | partial `Actions/SwipeAction.swift:22` — fixed 0.05 s press, `.default` velocity, `thenHoldForDuration` = the requested duration (semantics differ from Android) | partial `main.swift:110-121` → 10 steps, `stepMs` derived, no hold/no fling control                  |
+| `gesture` (multi-pointer timeline)                                     | ✓ `JsonRpcHandler.kt:138`, `handlers/GestureHandler.kt:14-20` (`pointers[].points[].tMs`)                                                       | **missing**                                                                                                                                                      | **missing on the wire** (`touch2` exists in Swift at `IndigoHIDInput.swift:175-183` but no CLI verb) |
+| `flushInput`                                                           | ✓ `JsonRpcHandler.kt:139`                                                                                                                       | **missing**                                                                                                                                                      | **missing**                                                                                          |
+| `typeText`                                                             | ✓ `JsonRpcHandler.kt:140` (`sendStringSync` + shell fallback, full unicode)                                                                     | partial `Actions/TypeAction.swift:14-30` — focused-element lookup then fallbacks                                                                                 | partial `main.swift:148-163` — **ASCII only**, `Support.swift:87-111`                                |
+| `setClipboard`                                                         | ✓ `JsonRpcHandler.kt:141`                                                                                                                       | **missing**                                                                                                                                                      | **missing**                                                                                          |
+| `key`                                                                  | ✓ `JsonRpcHandler.kt:142`                                                                                                                       | partial `Actions/PressKeyAction.swift:13-33` — 8 named keys, rest typed as text                                                                                  | partial `main.swift:123-147` — HID usage page 7; `release` is an **acked no-op**                     |
+| `screenshot`                                                           | ✓ `JsonRpcHandler.kt:143` (png/jpeg/webp, quality, scale)                                                                                       | ✓ `Actions/ScreenshotAction.swift:9-27` (jpeg only, quality+scale)                                                                                               | n/a                                                                                                  |
+| `launchApp`                                                            | ✓ `JsonRpcHandler.kt:152`                                                                                                                       | ✓ `Actions/LaunchAppAction.swift:11-12`                                                                                                                          | n/a                                                                                                  |
+| terminate app                                                          | missing on Android                                                                                                                              | ✓ `Actions/TerminateAppAction.swift:11-12` (A-only)                                                                                                              | n/a                                                                                                  |
+| `batch`                                                                | ✓ `JsonRpcHandler.kt:154`                                                                                                                       | ✓ `JsonRpcHandler.swift:40-74`                                                                                                                                   | n/a                                                                                                  |
+| `shutdown`                                                             | ✓ `JsonRpcHandler.kt:155`                                                                                                                       | missing (runner blocks on a semaphore, `XCTestServerRunner.swift:18-19`)                                                                                         | EOF on stdin, `main.swift:179`                                                                       |
+| outcome variants / `timings` / `version` / `hash`/`stateHash`/`idHash` | ✓ `TreeStore.kt:98-108,246`, `handlers/StateHandler.kt:93,295`                                                                                  | **all missing**                                                                                                                                                  | n/a                                                                                                  |
 
 Transport parity: both are newline-delimited JSON-RPC 2.0 over TCP (`XCTestServer/TCPServer.swift:103-134`; Kotlin `TCPServer.kt`), so `open-server-transport.ts` would mostly work as-is. Two deltas: A's port is **hardcoded 45679** (`XCTestServerRunner.swift:9`) while Android binds an injectable port and supports `0` = OS-assigned (`TCPServer.kt:16,22`); and A's dispatch queue is `.concurrent` (`TCPServer.swift:12`) with **no mutex** around XCUITest calls, so two connections can drive XCTest concurrently (the Android side serializes host-side via `openDeviceServerMutex`, `open-server-describe.ts:58`).
 
@@ -142,6 +144,7 @@ Coordinate convention: Android open server takes **device pixels** (`android-ope
 ### 2. Injection paths
 
 **XCUITest (`ios-xctest-server`)** — every Action is synchronous and blocking; the RPC returns only after XCTest's own implicit idle wait completes (inference from XCUITest semantics; not measured anywhere in A).
+
 - `TapAction.swift:14` `point.tap()` — no press duration, no click count.
 - `LongPressAction.swift:11-17` `press(forDuration:)`, ms→s, default 1000.
 - `SwipeAction.swift:22` `startPoint.press(forDuration: 0.05, thenDragTo: endPoint, withVelocity: .default, thenHoldForDuration: duration)` — **velocity is `.default`, not derived from `durationMs`**; `durationMs` becomes the end-hold. No intermediate points, no per-step timing, so no fling/velocity control and no way to express Android's `holdEndMs` momentum-free swipe.
@@ -151,11 +154,12 @@ Coordinate convention: Android open server takes **device pixels** (`android-ope
 - `XCUIApplication.snapshot()` is **never called** anywhere in A (verified across all 20 files under `native-servers/ios-xctest-server/`).
 
 **`tools/sim-input` (host Swift CLI, the fast path)**
+
 - Wire (stdin JSONL / stdout acks): `main.swift:12-20` and `docs/ios-simulator.md:299-307`. Verbs: `tap`, `swipe`, `press`, `release`, `text`. `release` is acked as a no-op because `key()` brackets down+up (`main.swift:136-146`, mirrored host-side at `packages/ios-simulator/src/input-service.ts:101-106`).
 - Mechanism: `IOHIDEventCreateDigitizerEvent` (parent) + `IOHIDEventCreateDigitizerFingerEvent` (child) + `IOHIDEventAppendEvent`, wrapped by SimulatorKit's `IndigoHIDMessageForTrackpadEventFromHIDEventRef`, then **two byte slots patched** (`0x6c`/`0x10c` ← target `0x32`; `0x3a/0x3b` + `0xda/0xdb` ← edge bitmask) and dispatched through `SimDeviceLegacyHIDClient` via `sendWithMessage:freeWhenDone:completionQueue:completion:` — `IOHIDDigitizerDispatch.swift:134-239`.
 - **Event types**: phases down/move/up with `IOHIDDigitizerEventMask` 0x07/0x07/0x06 (`IOHIDDigitizerDispatch.swift:66-74`). Edge flags none/left/top/right/bottom (`:39-51`) drive home-indicator and status-bar recognizers.
 - **Timestamps**: the private API takes a `ts` argument, but the code passes `mach_absolute_time()` at build time (`IOHIDDigitizerDispatch.swift:172`) — so the capability exists but is **not exposed**; pacing is host-side `usleep` between sends (`:105`, `:121`, `:124`). Contrast Android `MotionInjector.kt:98-132`, which carries an explicit `downTime` and paces against a `downTime + tMs` slot schedule.
-- **Multi-pointer**: `IOHIDDigitizerDispatch.send` takes a single `identifier`; `IndigoHIDInput.touch2` (`:175-183`) deliberately stays on the *legacy* `IndigoHIDMessageForMouseNSEvent` path and its comment says the digitizer recipe "doesn't model" coincident fingers yet. `twoFingerPath` exists (`:323-345`) but is not on the CLI wire. **Practical answer: no working multi-touch on the fast path today.**
+- **Multi-pointer**: `IOHIDDigitizerDispatch.send` takes a single `identifier`; `IndigoHIDInput.touch2` (`:175-183`) deliberately stays on the _legacy_ `IndigoHIDMessageForMouseNSEvent` path and its comment says the digitizer recipe "doesn't model" coincident fingers yet. `twoFingerPath` exists (`:323-345`) but is not on the CLI wire. **Practical answer: no working multi-touch on the fast path today.**
 - **Keys**: `IndigoHIDMessageForHIDArbitrary(target, page, usage, op)` with modifier bracketing (`IndigoHIDInput.swift:277-304`). Character decomposition is **ASCII-only** (`Support.swift:87-111`) — no accents, no emoji, no IME. Wire-code map at `Support.swift:113-145`.
 - **Buttons / system gestures** (Swift-level only, not on the CLI): home, lock, power, volume, digital crown, side buttons, app switcher (double home press), swipe-to-home (12 steps × 16 ms), swipe-to-app-switcher (30 × 35 ms + 900 ms dwell), pull-down lock screen / notification center — `IndigoHIDInput.swift:197-275`, `Support.swift:45-54`.
 - **Private frameworks / versions**: `SimulatorKit` `dlopen`'d from the active developer dir (`IndigoHIDInput.swift:615-641`, `IOHIDDigitizerDispatch.swift:280-299`); IOKit symbols via `RTLD_DEFAULT`. Developer dir resolved by `xcode-select -p` with a fallback scan of `/Applications/Xcode*.app` (`Support.swift:290-323`). `Package.swift:14` requires **macOS 15+**, swift-tools 6.0; deliberately **not linked** at build time (`Package.swift:5-11`). Recipe stated as verified against **iPhone 17 Pro Max / iOS 26.4 / Xcode 26** (`IOHIDDigitizerDispatch.swift:31-33`, `IndigoHIDInput.swift:10`). Ported verbatim from baguette (Apache-2.0) with a "DO NOT modify byte layouts, timing constants, or HID event ordering" banner (`:1-3`), echoed at `docs/ios-simulator.md:287,373`.
@@ -174,19 +178,19 @@ Coordinate convention: Android open server takes **device pixels** (`android-ope
 - **Limits**: `maxElements` default **50** (`TreeWalker.swift:9`), overridable per call (`:14`). Depth is unbounded. Pure layout containers (`.group`/`.other`/`.layoutArea`) that fail `shouldKeep` are not recursed into (`:49-52`) — an aggressive prune that can drop content nested under an unlabeled group. No `truncated` flag is emitted (Android sets one, `handlers/HierarchyHandler.kt:123`).
 - **Output shape**: flat 1-based-indexed array of `{index, className, resourceId, text, contentDesc, bounds{x1,y1,x2,y2}, clickable, scrollable, focused, enabled, selected}` (`ElementSerializer.swift:10-27`), deliberately mimicking Android's flat `IndexedElement`. Android's equivalent fields are at `accessibility/NodeSerializer.kt:204-228` and additionally carry `packageName`, `longClickable`, `checkable`, `checked`, `focusable`, `password`, and a `children` array for the nested form. So A matches the **legacy flat** Android shape, not the nested `getNestedState` shape the describe path and `openServerNestedToDescribeNode` actually consume today (`open-server-describe.ts:64-68`).
 - **Stable element identity**: the only candidate is `element.identifier` (accessibility identifier), serialized as `resourceId` (`ElementSerializer.swift:13`). No index path, no persistent handle, no hash. Android's `idHash` is **not** an element id — it is a screen-identity fingerprint, `ScreenHash.identity(roots, pkg)` stored per snapshot (`TreeStore.kt:108,246`, `accessibility/ScreenHash.kt:189`), computed FNV-1a over a canonical DFS string with host-side parity in `packages/tool-server/src/utils/screen-hash.ts` (`ScreenHash.kt:14-18`). An iOS analogue is derivable in principle from the same `(className, identifier, quantized bounds, flags)` DFS recipe, since `ElementSerializer` already produces every input field — but it does **not exist** in A, and A has no `version` clock at all, so `query`/`diff`/`awaitChange` have no substrate.
-- A's *other* describe path bypasses XCUITest entirely: `packages/ios-simulator/src/describe-ui.ts:67-79` fetches WDA `/session/{id}/source` XML and converts it to an `AXNode` (role/label/value/identifier/title/help/frame/enabled/focused/hidden/children). Its header comment says "Phase D will swap the implementation for direct AXPTranslator dispatch (the baguette recipe)" — that swap has not happened. `packages/dsl/src/drivers/ios.ts` and `selectors/wda-xml.ts` are also WDA-based.
+- A's _other_ describe path bypasses XCUITest entirely: `packages/ios-simulator/src/describe-ui.ts:67-79` fetches WDA `/session/{id}/source` XML and converts it to an `AXNode` (role/label/value/identifier/title/help/frame/enabled/focused/hidden/children). Its header comment says "Phase D will swap the implementation for direct AXPTranslator dispatch (the baguette recipe)" — that swap has not happened. `packages/dsl/src/drivers/ios.ts` and `selectors/wda-xml.ts` are also WDA-based.
 
 ### 4. Capture
 
 - `packages/ios-simulator/src/capture-service.ts` manages two binaries: legacy MJPEG `sim-capture` (ScreenCaptureKit) and `sim-capture-avcc` (H.264 AVCC + JPEG seed), framing = 4-byte BE length + 1-byte tag + payload, tags 0x01 avcC / 0x02 keyframe / 0x03 delta / 0x04 jpeg-seed (`:1-12,47-48,55-60`). **Gap: `tools/sim-capture` does not exist in the tree** (only `sim-cam`, `sim-capture-avcc`, `sim-input`), so `DEFAULT_MJPEG_BINARY_PATH` (`:47`) is dead; `bin/sim-capture` is a symlink to `sim-capture-private`.
 - `tools/sim-capture-avcc/Package.swift` links VideoToolbox/CoreVideo/CoreMedia/CoreGraphics/ImageIO/IOSurface with `-F <Xcode>/Library/PrivateFrameworks`, macOS 15+.
-- `native-servers/sim-capture-private/README.md:1-11` — IOSurface → CVPixelBuffer → H.264 over a Unix socket, replacing the TCC-prompting ScreenCaptureKit path. **Status line says "scaffolding only (Phase 32 in progress); the daemon is a stub"**, though `Sources/{Bridge,DyldSymbols,H264Encoder,IpcServer,ScreenAttach,TouchInject,Probe}.mm` are all present and `bin/sim-capture-private` is built (129 KB). Note `Sources/TouchInject.mm` is a *second*, independent HID injection port (from kittyfarm, `IndigoHIDMessageForMouseNSEvent`) — redundant with `sim-input` and on the older mouse-event recipe that `IOHIDDigitizerDispatch.swift:8-14` says iOS 26 broke. Build needs XcodeGen + full Xcode + `xcodebuild`; binary runs **unsigned** (README "Signing" section).
+- `native-servers/sim-capture-private/README.md:1-11` — IOSurface → CVPixelBuffer → H.264 over a Unix socket, replacing the TCC-prompting ScreenCaptureKit path. **Status line says "scaffolding only (Phase 32 in progress); the daemon is a stub"**, though `Sources/{Bridge,DyldSymbols,H264Encoder,IpcServer,ScreenAttach,TouchInject,Probe}.mm` are all present and `bin/sim-capture-private` is built (129 KB). Note `Sources/TouchInject.mm` is a _second_, independent HID injection port (from kittyfarm, `IndigoHIDMessageForMouseNSEvent`) — redundant with `sim-input` and on the older mouse-event recipe that `IOHIDDigitizerDispatch.swift:8-14` says iOS 26 broke. Build needs XcodeGen + full Xcode + `xcodebuild`; binary runs **unsigned** (README "Signing" section).
 - `packages/ios-device` (physical): WDA MJPEG at :9100 with a `qvh` QuickTime fallback, go-ios for pairing/forwarding (`docs/ios-device.md:3-49,183-189`; `src/mjpeg-client.ts`, `src/quicktime-capture.ts`). Requires `brew install go-ios`, a **signed** WebDriverAgent on the device, env `WDA_PORT=8100`, `MJPEG_PORT=9100`.
 - Role in a bench: `sim-capture-avcc`/`sim-capture-private` give a continuous host-side frame stream independent of the driver under test — usable as the **effect oracle / fling metric source** without asking either server for screenshots (so the measurement is not censored by the driver's own capture path). `ScreenCaptureKit` would need a Screen Recording TCC grant on first run (`docs/ios-simulator.md:216`), which is a problem on a fresh CI runner; `sim-capture-private` exists specifically to avoid that.
 
 ### 5. Build, launch, signing, ports
 
-- **`ios-xctest-server`: there is no build system.** The directory contains only 18 `.swift` + 2 `Info.plist` files — **no `.xcodeproj`, no `project.yml`, no `Package.swift`, no README, no build script**, and nothing in `package.json`, `scripts/`, `README.md` or `docs/` references it (grep across the tree finds it only in its own files). `App/AppDelegate.swift:3-4` says the host app is "minimal host app required for XCTest UI testing"; `XCTestServer/Info.plist` is `CFBundlePackageType BNDL`, `App/Info.plist` is `APPL`. Launch model is the standard UI-test one: `XCTestServerRunner.testStartServer` starts the TCP listener and blocks on a semaphore forever (`XCTestServerRunner.swift:8-20`), so it would be run via `xcodebuild test`/`test-without-building` with the test never completing. **Port 45679 hardcoded**, `allowLocalEndpointReuse = true` (`TCPServer.swift:21-23`). Simulator needs no signing; physical would need a team id and a host app — untested, and `XCUIApplication()` with no bundle id binds to the *target application* of the test, which in this scheme is the empty host app (`AppDelegate.swift:13-16`) — so every action and the whole tree are scoped to that empty app unless the xctestrun is rewired. This is the single largest unknown in base A.
+- **`ios-xctest-server`: there is no build system.** The directory contains only 18 `.swift` + 2 `Info.plist` files — **no `.xcodeproj`, no `project.yml`, no `Package.swift`, no README, no build script**, and nothing in `package.json`, `scripts/`, `README.md` or `docs/` references it (grep across the tree finds it only in its own files). `App/AppDelegate.swift:3-4` says the host app is "minimal host app required for XCTest UI testing"; `XCTestServer/Info.plist` is `CFBundlePackageType BNDL`, `App/Info.plist` is `APPL`. Launch model is the standard UI-test one: `XCTestServerRunner.testStartServer` starts the TCP listener and blocks on a semaphore forever (`XCTestServerRunner.swift:8-20`), so it would be run via `xcodebuild test`/`test-without-building` with the test never completing. **Port 45679 hardcoded**, `allowLocalEndpointReuse = true` (`TCPServer.swift:21-23`). Simulator needs no signing; physical would need a team id and a host app — untested, and `XCUIApplication()` with no bundle id binds to the _target application_ of the test, which in this scheme is the empty host app (`AppDelegate.swift:13-16`) — so every action and the whole tree are scoped to that empty app unless the xctestrun is rewired. This is the single largest unknown in base A.
 - **`sim-input`**: SwiftPM, `swift-tools-version: 6.0`, `.macOS(.v15)`, no private frameworks linked at build time (`Package.swift:1-21`); built by `scripts/build-sim-input.sh` with `DEVELOPER_DIR` pinned; consumed at `tools/sim-input/.build/release/sim-input` (`input-service.ts:55-58`) or `bin/sim-input`. No signing needed; no port — stdin/stdout only.
 - **CI**: `device-stream/.github/workflows/{ci,publish}.yml` are **ubuntu-latest only**. There is no macOS job, no Xcode pin, no simulator runtime setup anywhere in A. Everything iOS in A has only ever been run on the owner's machine.
 
@@ -195,6 +199,7 @@ Coordinate convention: Android open server takes **device pixels** (`android-ope
 Gaps (beyond the matrix): no `version` clock / AX event listener, so no `awaitChange`, no `diff`, no `sinceVersion`/`unchanged`, no settle semantics; no `hash`/`stateHash`/`idHash`; no per-stage `timings` (`OpenServerTimings`); no `wireBytes`/`hostParseMs` instrumentation; no injection-strategy selection or `dropped` reporting (`OpenInjectReport`); no `flushInput`; no `gesture`; no `setClipboard`; no nested multi-window tree; no `getInfo` (package/activity/rotation/keyboard as one object); no outcome-capable action variants; no host-side device mutex equivalent.
 
 Maturity, honestly:
+
 - `ios-xctest-server` — **prototype, effectively abandoned.** ~700 LOC, zero tests, zero build config, zero callers, unchanged since the root commit (2026-05-17, ~4 months). `ScreenInfo.getCurrentApp()` returns a hardcoded empty `bundleId` (`ScreenInfo.swift:29-32`); `getScreenSize` screenshots the screen to read a size; `TypeAction`'s `hasFocus == true` predicate over `descendants(matching: .any)` is a full-tree query per call. Treat it as a design sketch of the RPC surface, not as code to build on.
 - `tools/sim-input` — **the mature asset.** Dense, commented, verbatim-ported with a provenance banner, wired to a tested host client (`packages/ios-simulator/tests/input-service.spec.ts`, 173 lines; `simulator-manager-input.spec.ts`, 65 lines) and documented (`docs/ios-simulator.md:267-307`). But: no Swift-level tests, no CI, all behaviour depends on undocumented byte offsets in a private framework at a **specific Xcode/iOS pair (26 / 26.4)**, and the CLI wire exposes a strict subset of what the Swift class can do.
 - `packages/ios-simulator` / `packages/ios-device` — TypeScript is well tested (16 spec files under `ios-simulator/tests`), but the iOS describe path is WDA-based and explicitly marked "interim" (`describe-ui.ts:1-5`).
@@ -224,49 +229,50 @@ so `open-server-transport.ts` (adb-forward / emulator `redir`, NDJSON over TCP,
 apply; B ships its own stack instead (`usbmux.ts` 400 L + `usbmux-protocol.ts` 413 L +
 `runner-http.ts` 152 L).
 
-| RPC (Android/host name) | Android | B (`ArgentRunner` + `ios-device/*`) |
-|---|---|---|
-| `ping` | ✓ | partial — `status` without `statusCommandId` returns `{uptimeMs,state,suppressedIssues,recordedFailures}` (`ArgentRunnerSession.swift:246-273`) |
-| `getInfo` | ✓ | **missing** (no package/rotation/keyboard object) |
-| `getScreenSize` | ✓ | partial — `viewport` → `XCUIApplication.frame` rect, app-scoped, not the screen (`ArgentRunnerSession+Gestures.swift:116-137`) |
-| `getAccessibilityTree` (flat) | ✓ | ✓ `snapshot` — flat emission-order list (`ArgentRunnerSession+Snapshot.swift:31-73`) |
-| `getAccessibilityTree {nested}` | ✓ | ✓ **in shape**: flat list + `parentIndex` links reconstruct the tree (`PROTOCOL.md:132-149`); the host rebuilds it in `src/tools/describe/platforms/ios-device.ts:12,132` |
-| `getState` | ✓ | **missing** (no combined tree+info+screenshot call) |
-| `getNestedState` (host) | ✓ | **missing** — but the *adapter* exists, so the describe contract is already satisfied from `snapshot` |
-| `query` (server-side selector) | ✓ | **missing** |
-| `diff(sinceVersion)` | ✓ | **missing** (no version clock) |
-| `awaitChange` | ✓ | **missing** |
-| `waitForIdle` | ✓ | **missing** on the wire — XCTest's own implicit pre-event idle wait is inlined in every gesture (budget note: "gestures must outlast XCTest's ~60s pre-event idle wait", `RunnerProtocol.swift:70-76`) |
-| `tap` | ✓ (+ clickCount/holdMs/gapMs timeline, `dropped`) | partial — `tap` + `numberOfTaps`; 2 = native `doubleTap()`, >2 = on-device loop, **no hold/gap control, no drop report** (`+Gestures.swift:21-49`) |
-| `longPress` | ✓ | ✓ `longPress` `durationMs`, floor 0.05 s, default 800 ms (`+Gestures.swift:52-63`) |
-| `swipe` | ✓ (`steps`, `holdEndMs`, `inject`) | partial — `drag` maps `durationMs` to `XCUIGestureVelocity = distance/duration` clamped **[60, 5000] pt/s**, `settle:true` = 0.3 s end-hold (else 0.05) (`+Gestures.swift:67-112`). Closer to Android than A's `.default`, still no intermediate points |
-| `gesture` (multi-pointer timeline) | ✓ | **missing** — no multi-touch anywhere in the runner |
-| `flushInput` | ✓ | **missing** |
-| `typeText` | ✓ | ✓ `type` → `app.typeText` into the first responder, `TEXT_INPUT_NOT_FOCUSED` on focus failure (`+TextEntry.swift:6-38`); plus `keyboardReturn` (`:41-60`), which Android has no twin for |
-| `setClipboard` | ✓ | **missing** |
-| `key` | ✓ | **missing** (only `keyboardReturn`) |
-| `screenshot` | ✓ (png/jpeg/webp, quality, scale) | partial — `XCUIScreen.main.screenshot()` PNG, **always inline base64, no scale/quality** (`+Screenshot.swift:5-20`) |
-| `launchApp` | ✓ | **missing by design** — `foregroundTarget` refuses `.notRunning`; launching is `launch-app`'s job via `devicectl` (`+Commands.swift:196-248`) |
-| terminate app | missing | **missing** |
-| `batch` | ✓ | **missing** |
-| `shutdown` | ✓ | ✓ `shutdown` (reply flushed, then the XCTWaiter expectation is fulfilled, `ArgentRunnerSession.swift:150-159,218-221`) |
-| `timings` / `version` / `hash`/`stateHash`/`idHash` | ✓ | **all missing** — wire payloads are only `Message/Health/CommandStatus/Viewport/Screenshot/Snapshot(+Quality)` (`RunnerProtocol.swift:245-319`) |
-| **B-only** | — | `button` (`home/volumeUp/volumeDown/actionButton` with `hasHardwareButton` pre-check, `+Commands.swift:168-194`); `status{statusCommandId}` journal recovery; `commandId` send-once + in-flight coalescing (`ArgentRunnerSession.swift:286-326`); `reactivated` / `warning` envelope stamps (`PROTOCOL.md:32-47`) |
+| RPC (Android/host name)                             | Android                                           | B (`ArgentRunner` + `ios-device/*`)                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ping`                                              | ✓                                                 | partial — `status` without `statusCommandId` returns `{uptimeMs,state,suppressedIssues,recordedFailures}` (`ArgentRunnerSession.swift:246-273`)                                                                                                                                                                   |
+| `getInfo`                                           | ✓                                                 | **missing** (no package/rotation/keyboard object)                                                                                                                                                                                                                                                                 |
+| `getScreenSize`                                     | ✓                                                 | partial — `viewport` → `XCUIApplication.frame` rect, app-scoped, not the screen (`ArgentRunnerSession+Gestures.swift:116-137`)                                                                                                                                                                                    |
+| `getAccessibilityTree` (flat)                       | ✓                                                 | ✓ `snapshot` — flat emission-order list (`ArgentRunnerSession+Snapshot.swift:31-73`)                                                                                                                                                                                                                              |
+| `getAccessibilityTree {nested}`                     | ✓                                                 | ✓ **in shape**: flat list + `parentIndex` links reconstruct the tree (`PROTOCOL.md:132-149`); the host rebuilds it in `src/tools/describe/platforms/ios-device.ts:12,132`                                                                                                                                         |
+| `getState`                                          | ✓                                                 | **missing** (no combined tree+info+screenshot call)                                                                                                                                                                                                                                                               |
+| `getNestedState` (host)                             | ✓                                                 | **missing** — but the _adapter_ exists, so the describe contract is already satisfied from `snapshot`                                                                                                                                                                                                             |
+| `query` (server-side selector)                      | ✓                                                 | **missing**                                                                                                                                                                                                                                                                                                       |
+| `diff(sinceVersion)`                                | ✓                                                 | **missing** (no version clock)                                                                                                                                                                                                                                                                                    |
+| `awaitChange`                                       | ✓                                                 | **missing**                                                                                                                                                                                                                                                                                                       |
+| `waitForIdle`                                       | ✓                                                 | **missing** on the wire — XCTest's own implicit pre-event idle wait is inlined in every gesture (budget note: "gestures must outlast XCTest's ~60s pre-event idle wait", `RunnerProtocol.swift:70-76`)                                                                                                            |
+| `tap`                                               | ✓ (+ clickCount/holdMs/gapMs timeline, `dropped`) | partial — `tap` + `numberOfTaps`; 2 = native `doubleTap()`, >2 = on-device loop, **no hold/gap control, no drop report** (`+Gestures.swift:21-49`)                                                                                                                                                                |
+| `longPress`                                         | ✓                                                 | ✓ `longPress` `durationMs`, floor 0.05 s, default 800 ms (`+Gestures.swift:52-63`)                                                                                                                                                                                                                                |
+| `swipe`                                             | ✓ (`steps`, `holdEndMs`, `inject`)                | partial — `drag` maps `durationMs` to `XCUIGestureVelocity = distance/duration` clamped **[60, 5000] pt/s**, `settle:true` = 0.3 s end-hold (else 0.05) (`+Gestures.swift:67-112`). Closer to Android than A's `.default`, still no intermediate points                                                           |
+| `gesture` (multi-pointer timeline)                  | ✓                                                 | **missing** — no multi-touch anywhere in the runner                                                                                                                                                                                                                                                               |
+| `flushInput`                                        | ✓                                                 | **missing**                                                                                                                                                                                                                                                                                                       |
+| `typeText`                                          | ✓                                                 | ✓ `type` → `app.typeText` into the first responder, `TEXT_INPUT_NOT_FOCUSED` on focus failure (`+TextEntry.swift:6-38`); plus `keyboardReturn` (`:41-60`), which Android has no twin for                                                                                                                          |
+| `setClipboard`                                      | ✓                                                 | **missing**                                                                                                                                                                                                                                                                                                       |
+| `key`                                               | ✓                                                 | **missing** (only `keyboardReturn`)                                                                                                                                                                                                                                                                               |
+| `screenshot`                                        | ✓ (png/jpeg/webp, quality, scale)                 | partial — `XCUIScreen.main.screenshot()` PNG, **always inline base64, no scale/quality** (`+Screenshot.swift:5-20`)                                                                                                                                                                                               |
+| `launchApp`                                         | ✓                                                 | **missing by design** — `foregroundTarget` refuses `.notRunning`; launching is `launch-app`'s job via `devicectl` (`+Commands.swift:196-248`)                                                                                                                                                                     |
+| terminate app                                       | missing                                           | **missing**                                                                                                                                                                                                                                                                                                       |
+| `batch`                                             | ✓                                                 | **missing**                                                                                                                                                                                                                                                                                                       |
+| `shutdown`                                          | ✓                                                 | ✓ `shutdown` (reply flushed, then the XCTWaiter expectation is fulfilled, `ArgentRunnerSession.swift:150-159,218-221`)                                                                                                                                                                                            |
+| `timings` / `version` / `hash`/`stateHash`/`idHash` | ✓                                                 | **all missing** — wire payloads are only `Message/Health/CommandStatus/Viewport/Screenshot/Snapshot(+Quality)` (`RunnerProtocol.swift:245-319`)                                                                                                                                                                   |
+| **B-only**                                          | —                                                 | `button` (`home/volumeUp/volumeDown/actionButton` with `hasHardwareButton` pre-check, `+Commands.swift:168-194`); `status{statusCommandId}` journal recovery; `commandId` send-once + in-flight coalescing (`ArgentRunnerSession.swift:286-326`); `reactivated` / `warning` envelope stamps (`PROTOCOL.md:32-47`) |
 
 Counting the same 24 rows researcher 1 used: **B ≈ 10 present (3 partial) vs A's 11** — but the
-*overlap is different*: B has no `key`, no `launchApp`, no `batch`, no `getState`; A has no
+_overlap is different_: B has no `key`, no `launchApp`, no `batch`, no `getState`; A has no
 `button`, no `keyboardReturn`, no send-once. Neither is close to the screen-graph half
 (`query`/`diff`/`awaitChange`/`version`/`idHash`/`timings`/`flushInput`/`gesture`/`setClipboard`):
 **both bases are 0/9 there.**
 
 Two things B has that A does not, and that matter more than the row count:
+
 - **`app.snapshot()` — one XPC round trip for the whole tree**, flattened in-process
   (`+Snapshot.swift:38-46`, comment: "One XPC round trip captures the whole tree. Flattening it
   in-process avoids per-element AX queries and their stalls"). A walks lazily at ~15 XCUIElement
   property reads per node (researcher 1, §3). This is the single biggest technical difference
   between the two Swift bases.
 - **A real describe adapter already wired to our contract**: `src/tools/describe/platforms/
-  ios-device.ts` + the lockstep test `test/ios-device-swift-lockstep.test.ts:9-22`, which reads
+ios-device.ts` + the lockstep test `test/ios-device-swift-lockstep.test.ts:9-22`, which reads
   the Swift source from disk and pins `interactiveTypes`/`scrollContainerTypes` against the TS
   `RUNNER_TYPE_TO_ROLE`/`SCROLL_CONTAINER_TYPES`.
 
@@ -279,10 +285,11 @@ origin.x, …)`, `+Gestures.swift:4-17`), host converts normalized 0-1 via `view
 (`src/utils/ios-device/runner-commands.ts:26-33,66`). Android open server takes device **pixels**.
 
 Build / launch / signing / reach:
+
 - **Build**: `xcodebuild build-for-testing -project …/ArgentRunner.xcodeproj -scheme ArgentRunner
-  -allowProvisioningUpdates -allowProvisioningDeviceRegistration CODE_SIGN_STYLE=Automatic
-  DEVELOPMENT_TEAM=<team> ARGENT_RUNNER_APP_BUNDLE_ID=… ONLY_ACTIVE_ARCH=YES
-  ENABLE_CODE_COVERAGE=NO` (`src/utils/ios-device/runner-build.ts:262-288`), destination
+-allowProvisioningUpdates -allowProvisioningDeviceRegistration CODE_SIGN_STYLE=Automatic
+DEVELOPMENT_TEAM=<team> ARGENT_RUNNER_APP_BUNDLE_ID=… ONLY_ACTIVE_ARCH=YES
+ENABLE_CODE_COVERAGE=NO` (`src/utils/ios-device/runner-build.ts:262-288`), destination
   `generic/platform=iOS` or `platform=iOS,id=<udid>` (`:395-402`), into
   `~/.argent/ios-device-runner/derived` with a **`.argent-cache-key` stamp** = sha256(source tree
   hash ⊕ `xcodebuild -version` ⊕ static args) (`:103-152,180,334-380`); stamp mismatch ⇒ `rm -rf`
@@ -293,8 +300,8 @@ Build / launch / signing / reach:
   `packages/ios-device-runner/README.md:49-64`). The Xcode project hardcodes no team and
   placeholder bundle ids only.
 - **Launch**: `xcodebuild test-without-building -only-testing ArgentRunnerUITests/
-  ArgentRunnerSession/testServeCommands -test-timeouts-enabled NO -collect-test-diagnostics never
-  -resultBundlePath …xcresult -xctestrun <base> -destination platform=iOS,id=<udid>`, **detached +
+ArgentRunnerSession/testServeCommands -test-timeouts-enabled NO -collect-test-diagnostics never
+-resultBundlePath …xcresult -xctestrun <base> -destination platform=iOS,id=<udid>`, **detached +
   unref'd**, `env: TEST_RUNNER_ARGENT_RUNNER_PORT=<port>` (xcodebuild strips the prefix into the
   test process) — `runner-build.ts:471-528`. The test parks in
   `XCTWaiter.wait(for:[done], timeout: 24*60*60)` (`ArgentRunnerSession.swift:104-136`).
@@ -304,7 +311,7 @@ Build / launch / signing / reach:
 - **Reach**: usbmux only, **USB cable required** (`PROTOCOL.md:9-11`); the runner binds device
   loopback and usbmux terminates there.
 - **Sim vs physical**: the Xcode project declares `SUPPORTED_PLATFORMS = "iphoneos
-  iphonesimulator"` (`ArgentRunner.xcodeproj/project.pbxproj:238,276`), but **every host path is
+iphonesimulator"` (`ArgentRunner.xcodeproj/project.pbxproj:238,276`), but **every host path is
   physical-only**: the xctestrun finder filters on `iphoneos` (`runner-build.ts:185-201`),
   discovery filters devicectl to physical hardware (`ios-device/devicectl.ts:222`), and the
   transport is usbmux. A simulator arm needs: relax the team-id gate, an `iphonesimulator`
@@ -322,7 +329,7 @@ Build / launch / signing / reach:
   `scripts/e2e-ios-physical-device.mjs` (list-devices → launch-app → describe → tap → describe →
   screenshot, `:5-7`).
 - **Review state**: two tip commits are `chore: review & comments` / `chore: review code &
-  comments` (`b547b735`, `d19efe82`), and the log carries ~20 `fix(...)`/`docs(...)` commits
+comments` (`b547b735`, `d19efe82`), and the log carries ~20 `fix(...)`/`docs(...)` commits
   answering review findings. Branch has been **quiet since 2026-08-31** and is not merged into
   `main`. Reliability model is unusually mature for a spike: XCTIssue suppression with the muted
   wording pinned as contract (`ArgentRunnerSession.swift:44-98`), main-thread watchdog with
@@ -334,7 +341,7 @@ Build / launch / signing / reach:
 ### 2. B's two siblings
 
 **`feat/physical-ios-via-simserver` (`e6e8a8cf`, 2026-08-24, 88 files, +5284/−298).** Mechanism:
-**no new process at all** — a physical iPhone becomes *another simulator-server subcommand*.
+**no new process at all** — a physical iPhone becomes _another simulator-server subcommand_.
 `subcommandForDevice` gains `ios_device` ("Apple CoreDevice over USB … so physical iOS is 'just
 another sim-server subcommand' like the rest", `blueprints/simulator-server.ts:167-172` on that
 branch), gated by an opt-in flag checked inside `simulatorServerRef` itself so a disable takes
@@ -380,64 +387,64 @@ Two **separate** closed binaries, both resolved from `@argent/native-devtools-io
    `blueprints/simulator-server.ts:132-200`, announces itself on stdout as `api_ready <url>` and
    `stream_ready <url>` (`:182-199`). Surface:
    - **WebSocket `ws://<host>/ws`, one JSON command per message, ack `{"id","status":"ok"}`;
-     errors come back with *no id* and are matched positionally**
+     errors come back with _no id_ and are matched positionally**
      (`utils/simulator-client.ts:82-93,130-191`). Commands: `touch{type:Down|Move|Up, x, y,
-     second_x, second_y}`, `button{direction,button}`, `rotate{direction}`, key
+second_x, second_y}`, `button{direction,button}`, `rotate{direction}`, key
      (`SimulatorServerTransport`, `:37-54`, `routeViaTransport:518-545`). Coordinates are
      **normalized 0-1**.
    - **HTTP**: `POST /api/screenshot {rotation?,scale?}` → `{url,path}` (`:432-512`, default scale
-     **0.25**, `:23-26`), `POST /api/pointer {show|trail}` (touch visualiser drawn *into the frame
-     stream*, `:276-318`), `POST /api/clipboard/text` (device pasteboard; 404 on builds without
+     **0.25**, `:23-26`), `POST /api/pointer {show|trail}` (touch visualiser drawn _into the frame
+     stream_, `:276-318`), `POST /api/clipboard/text` (device pasteboard; 404 on builds without
      it, `:320-372`).
    - **Frame stream**: the `stream_ready` URL is an **MJPEG** stream, consumed by
      `tools/screen-recording/capture.ts:295` (`openMjpegStream`) via
      `screen-recording-start.ts:114-141`. Remote sims swap the whole transport for **MoQ/
      WebTransport** (`createMoqTransport`, `simulator-client.ts:552-597`).
-   - **What it measures/returns per action: nothing.** The ack is *acceptance*, not effect —
+   - **What it measures/returns per action: nothing.** The ack is _acceptance_, not effect —
      `sendCommand` resolves on `status:"ok"` with a **5 s** ack timeout, and the comment records
      the measured cost of that round trip: "0.06ms p50 / 0.17ms max, measured over 200 sends
      against a booted iOS sim" (`:56-61`). There is no outcome, no timing, no hash, no
      `dropped`. Researcher 1's note (`scenario-ios.json`: "iOS taps are fire-and-forget (argent
      issue #547) so every navigation tap is verified by re-describe") is consistent with what the
-     host code shows — and note the *pacing is host-side*: a tap is `touch Down` → host
+     host code shows — and note the _pacing is host-side_: a tap is `touch Down` → host
      `sleep(TAP_HOLD_MS=50)` → `touch Up`, multi-tap gap 100 ms
      (`tools/gesture-tap/index.ts:74-75,168-186`); a swipe is `steps = round(duration/16)` host
      frames, `Down`/`Move`×n/`Up`, with an ease-out interpolation for `momentum:false`
      (`tools/gesture-swipe/index.ts:145-257`). So every iOS gesture's timeline is **Node's event
      loop over a WebSocket**, not a device-side schedule.
 2. **`ax-service` (`axServiceBinaryPath{,Tcp}`)** — `xcrun simctl spawn <udid> <binary> --socket
-   … --timeout 3600` (`utils/ios-host.ts:388-413`), NDJSON RPC over a unix socket
+… --timeout 3600` (`utils/ios-host.ts:388-413`), NDJSON RPC over a unix socket
    `/tmp/ax-<udid8>.sock` (`blueprints/ax-service.ts:73-76`). API: `describe()`, `alertCheck()`,
    `ping()`, plus a `degraded` flag meaning the sim was booted outside argent so the AX
    entitlement bypass never ran (`:65-71`).
    - **describe output shape**: `{alertVisible, screenFrame?{width,height}, elements:[{label?,
-     frame?{x,y,width,height}, tapPoint?, traits?[], value?, identifier?}]}`
+frame?{x,y,width,height}, tapPoint?, traits?[], value?, identifier?}]}`
      (`ax-service.ts:50-63`) — a **flat list, frames already normalized 0-1**, no hierarchy, no
      stable node id beyond `identifier`, no version/hash. The host adapter clamps to [0,1], drops
      zero-area nodes and hangs everything off a synthetic `AXGroup` root
      (`tools/describe/platforms/ios/ios-ax-adapter.ts:13-48`). Fixtures: `test/describe-ax-adapter.
-     test.ts:9-60` (trait→role cases, clamping); `alertVisible` also appears in
+test.ts:9-60` (trait→role cases, clamping); `alertVisible` also appears in
      `test/describe-tool.test.ts`, `test/await-ui-element.test.ts`, `test/await-screen-idle.test.ts`.
    - iOS `describe` = ax-service first, **native-devtools view hierarchy as fallback** when the AX
      read is empty (`tools/describe/platforms/ios/index.ts:129-200`).
-   Notably **the tree does not come from simulator-server at all**, which is what makes an iOS
-   like-for-like bench awkward: swapping the *input* backend does not swap the *tree* backend.
+     Notably **the tree does not come from simulator-server at all**, which is what makes an iOS
+     like-for-like bench awkward: swapping the _input_ backend does not swap the _tree_ backend.
 3. Neutral third channel that belongs to neither: **`xcrun simctl io <udid> screenshot`** + `sips`
    downscale, already implemented for tvOS (`tools/screenshot/index.ts:78-93`).
 
 Android bench verbs vs an iOS counterpart (Android verb list:
 `packages/tool-server/scripts/bench-open-vs-proprietary.ts:7-9`):
 
-| Android bench verb | iOS OFF (closed) | iOS ON (B runner) | iOS ON-fast (A `sim-input`) |
-|---|---|---|---|
-| `gesture-tap` | ✓ ws Down/50 ms/Up | ✓ `tap` | ✓ `tap` |
-| `gesture-swipe` | ✓ ws Down/Move×(d/16)/Up | ✓ `drag` (velocity-mapped, `settle`) | ✓ 10 steps |
-| `describe` | ✓ ax-service | ✓ `snapshot` | ✗ (no tree) |
-| `screenshot` | ✓ `/api/screenshot` | ✓ inline PNG | ✗ (use `simctl io` / `sim-capture-avcc`) |
-| `await-ui-element` | ✓ (host poll over describe) | ✓ (same host loop) | ✗ |
-| `await-screen-idle` | ✓ | ✓ | ✗ |
-| `paste` | ✓ `/api/clipboard/text` | ✗ **no clipboard command** | ✗ |
-| `gesture-pinch` | ✓ (`second_x/second_y`) | ✗ **no multi-touch** | ✗ (not on the CLI wire) |
+| Android bench verb  | iOS OFF (closed)            | iOS ON (B runner)                    | iOS ON-fast (A `sim-input`)              |
+| ------------------- | --------------------------- | ------------------------------------ | ---------------------------------------- |
+| `gesture-tap`       | ✓ ws Down/50 ms/Up          | ✓ `tap`                              | ✓ `tap`                                  |
+| `gesture-swipe`     | ✓ ws Down/Move×(d/16)/Up    | ✓ `drag` (velocity-mapped, `settle`) | ✓ 10 steps                               |
+| `describe`          | ✓ ax-service                | ✓ `snapshot`                         | ✗ (no tree)                              |
+| `screenshot`        | ✓ `/api/screenshot`         | ✓ inline PNG                         | ✗ (use `simctl io` / `sim-capture-avcc`) |
+| `await-ui-element`  | ✓ (host poll over describe) | ✓ (same host loop)                   | ✗                                        |
+| `await-screen-idle` | ✓                           | ✓                                    | ✗                                        |
+| `paste`             | ✓ `/api/clipboard/text`     | ✗ **no clipboard command**           | ✗                                        |
+| `gesture-pinch`     | ✓ (`second_x/second_y`)     | ✗ **no multi-touch**                 | ✗ (not on the CLI wire)                  |
 
 So **6 of 8 verbs are like-for-like OFF↔ON; 2 (paste, pinch) have no ON counterpart** and must be
 declared out of scope rather than scored.
@@ -451,6 +458,7 @@ PR would otherwise stack up the slow, billed macOS jobs", and the header states 
 "Manual + on-change trigger only — the macOS jobs are slow and billed" (`:30`).
 
 What a bench job needs, and what already exists:
+
 - **Closed server on the runner: yes.** `bash scripts/download-simulator-server.sh` +
   `download-native-binaries.sh` with `GH_TOKEN` (`e2e-device-smoke.yml:78-83`); the release matrix
   includes `simulator-server-argent-macos:darwin` (`scripts/download-simulator-server.sh:20-25`),
@@ -492,8 +500,8 @@ usbmux (inference; the HTTP layer is unchanged). ON-fast = A's `sim-input` HID c
 
 **Like-for-like verbs**: `gesture-tap`, `gesture-swipe`, `screenshot`, `describe`,
 `await-ui-element`, `await-screen-idle`. **Excluded with a stated reason**: `paste` (no ON
-clipboard command), `gesture-pinch` (no ON multi-touch). Because the *tree* backend is
-independent of the *input* backend on iOS (§3), the matrix must be declared as
+clipboard command), `gesture-pinch` (no ON multi-touch). Because the _tree_ backend is
+independent of the _input_ backend on iOS (§3), the matrix must be declared as
 `input ∈ {closed-ws, xcuitest, sim-input} × tree ∈ {ax-service, xcuitest-snapshot}` and the
 describe row scored **per tree backend**, never attributed to the input arm.
 
@@ -501,16 +509,17 @@ describe row scored **per tree backend**, never attributed to the input arm.
 activity activities | grep mResumedActivity|topResumedActivity`, chosen because it is
 **backend-independent** (`bench-open-vs-proprietary.ts:1635-1653,2092-2097`), polled after the
 timed call (`:542-640`). iOS candidates, in order of preference:
+
 1. **Neutral pixels**: `xcrun simctl io <udid> screenshot` (already shelled in
    `tools/screenshot/index.ts:93`) → perceptual hash of a fixed region. Independent of all three
    arms and of both tree backends; works for in-app navigation, which the Android activity trick
    does not cover on iOS (a Settings row tap never changes the app). Cost is a `simctl` spawn per
-   poll (**inference**: 10²  ms), so poll interval, not latency, is the limit.
+   poll (**inference**: 10² ms), so poll interval, not latency, is the limit.
 2. **ax-service `describe()` label-set hash** — a third binary, spawned via `simctl`
-   (`ios-host.ts:388-413`), so independent of the *input* path; but it is the OFF arm's own
+   (`ios-host.ts:388-413`), so independent of the _input_ path; but it is the OFF arm's own
    describe source, so it must not also be the oracle on the describe row.
 3. `launchctl list` → `UIKitApplication:<bundle-id>` (parser already exists,
-   `ios-host.ts:306-314`) — only proves *running*, not frontmost, and never changes on in-app
+   `ios-host.ts:306-314`) — only proves _running_, not frontmost, and never changes on in-app
    navigation. Too weak on its own; useful only as a crash detector.
    Recommendation: **(1) as the oracle, (3) as a liveness guard**, and record per-iteration
    `effectChecked` / `effectZero` counters exactly as the Android bench does
@@ -519,7 +528,7 @@ timed call (`:542-640`). iOS candidates, in order of preference:
 **A scroll/fling metric that is not censored.** 3N-H3 (`docs/open-server/2026-09-14-review-3n-
 run1-findings.md:125-136`) diagnoses the Android metric: median downward displacement of labels
 surviving in **both** describes, filtered `d > 0.02`, with `if (disps.length === 0) return 1` —
-so a harder fling *loses survivors and can score lower*, 127 of 355 samples land on the single
+so a harder fling _loses survivors and can score lower_, 127 of 355 samples land on the single
 value 0.175 (the Settings row pitch), and 47 % sit on three atoms. Two design rules follow:
 (a) **never derive the metric from the accessibility tree** — survivorship is what censors it;
 (b) **never clamp an unmeasurable case to a legal score**.
@@ -552,7 +561,7 @@ path.** B is ~12 k lines written and reviewed in one week by the upstream team, 
 files, a written wire contract (`PROTOCOL.md`), a Swift↔TS lockstep test, a send-once/journal
 recovery model, a watchdog, an exception guard and an issue-suppression contract — none of which
 exist in A, whose `ios-xctest-server` has zero tests, **zero build files** and has not been
-touched since its root commit (researcher 1 §6). Where B is genuinely better *technically*, not
+touched since its root commit (researcher 1 §6). Where B is genuinely better _technically_, not
 just organisationally: `app.snapshot()` (one XPC hop vs A's ~15 property reads per node),
 duration→velocity mapping and a `settle` end-hold on `drag` (vs A's `.default` velocity), and a
 describe adapter already speaking our `DescribeNode` contract. Where B is worse: it is
@@ -561,7 +570,7 @@ that `open-server-transport.ts` / `android-open-server-client.ts` already implem
 `key`/`launchApp`/`batch`/`setClipboard`, and — like A — it is **0/9 on the screen-graph half**
 of the Android contract (`query`, `diff`, `awaitChange`, `version`, `idHash`, `timings`,
 `flushInput`, `gesture`, multi-touch). Fit with the host contract is therefore a wash at the
-*transport* layer (both need new plumbing) and a clear win for B at the *describe* layer (its
+_transport_ layer (both need new plumbing) and a clear win for B at the _describe_ layer (its
 adapter + lockstep test already land in `tools/describe/platforms/`), while A's `sim-input`
 remains the only artifact in any of the three bases that can inject with host-controlled timing
 on a simulator — which is exactly the ON-fast arm the bench needs and neither B nor C can supply.

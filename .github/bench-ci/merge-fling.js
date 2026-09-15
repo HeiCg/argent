@@ -38,7 +38,9 @@ const r3 = (n) => (Number.isFinite(n) ? Number(n.toFixed(3)) : n);
 const cellKey = (c) => `${c.durationMs}|${c.distance}`;
 const cellsOf = (b) => (b ? Object.fromEntries(b.cells.map((c) => [cellKey(c), c])) : {});
 function offsets(cell) {
-  return cell && Array.isArray(cell.samples) ? cell.samples.map((s) => s.offsetPx).filter((x) => Number.isFinite(x)) : [];
+  return cell && Array.isArray(cell.samples)
+    ? cell.samples.map((s) => s.offsetPx).filter((x) => Number.isFinite(x))
+    : [];
 }
 function median(xs) {
   if (!xs.length) return NaN;
@@ -93,14 +95,20 @@ const IM = readOpt("ON-input-manager");
 const UIA = readOpt("ON-uiautomation");
 const OFF = readOpt("OFF");
 if (!A || !B) {
-  throw new Error(`fling merge needs fling-block-ON-uia-A.json and fling-block-ON-uia-B.json under ${OUT}`);
+  throw new Error(
+    `fling merge needs fling-block-ON-uia-A.json and fling-block-ON-uia-B.json under ${OUT}`
+  );
 }
 const mA = cellsOf(A),
   mB = cellsOf(B),
   mIM = cellsOf(IM),
   mUIA = cellsOf(UIA),
   mOFF = cellsOf(OFF);
-const cellList = A.cells.map((c) => ({ durationMs: c.durationMs, distance: c.distance, key: cellKey(c) }));
+const cellList = A.cells.map((c) => ({
+  durationMs: c.durationMs,
+  distance: c.distance,
+  key: cellKey(c),
+}));
 
 // ── (A) SELF-TEST ───────────────────────────────────────────────────────────
 const selfCells = [];
@@ -145,7 +153,8 @@ function gradeArm(mArm, label) {
     const oOff = offsets(mOFF[c.key]);
     const medArm = median(oArm);
     const medOff = median(oOff);
-    const ratio = Number.isFinite(medArm) && Number.isFinite(medOff) && medOff !== 0 ? medArm / medOff : NaN;
+    const ratio =
+      Number.isFinite(medArm) && Number.isFinite(medOff) && medOff !== 0 ? medArm / medOff : NaN;
     const powered = oArm.length >= MIN_N && oOff.length >= MIN_N;
     const ok = powered && Number.isFinite(ratio) ? Math.abs(ratio - 1) <= GATE_TOL : null;
     return {
@@ -166,19 +175,29 @@ function gradeArm(mArm, label) {
   let verdict;
   if (!OFF) verdict = "NO-OFF (proprietary reference absent — arm/off not gradable)";
   else if (gradable.length === 0) verdict = "INCONCLUSIVE (0 powered cells)";
-  else verdict = `${out.length === 0 ? "PASS" : "FAIL"} (report-only; ${gradable.length} powered, ${out.length} out)`;
+  else
+    verdict = `${out.length === 0 ? "PASS" : "FAIL"} (report-only; ${gradable.length} powered, ${out.length} out)`;
   return { arm: label, verdict, cells };
 }
 
-const armGrades = unresolved ? [] : [gradeArm(mIM, "ON-input-manager"), gradeArm(mUIA, "ON-uiautomation")];
+const armGrades = unresolved
+  ? []
+  : [gradeArm(mIM, "ON-input-manager"), gradeArm(mUIA, "ON-uiautomation")];
 
 // Does input-manager under-scroll vs proprietary? (per cell: ratio < 1 & p < 0.05)
 let underScrollFinding = null;
 if (!unresolved && IM && OFF) {
   const imCells = armGrades.find((g) => g.arm === "ON-input-manager").cells;
-  const under = imCells.filter((c) => c.powered && Number.isFinite(c.ratio) && c.ratio < 1 && c.permP !== null && c.permP < 0.05);
+  const under = imCells.filter(
+    (c) =>
+      c.powered && Number.isFinite(c.ratio) && c.ratio < 1 && c.permP !== null && c.permP < 0.05
+  );
   underScrollFinding = {
-    cellsUnderScrolling: under.map((c) => ({ cell: `${c.durationMs}/${c.distance}`, ratio: c.ratio, permP: c.permP })),
+    cellsUnderScrolling: under.map((c) => ({
+      cell: `${c.durationMs}/${c.distance}`,
+      ratio: c.ratio,
+      permP: c.permP,
+    })),
     verdict:
       under.length === 0
         ? "input-manager does NOT significantly under-scroll vs proprietary on any powered cell"
@@ -191,8 +210,20 @@ const result = {
   metric: "optical-scroll-px",
   mode: "self-test-first",
   gating: false, // report-only this run (blocking only after the self-test passes twice)
-  selfTest: { tolerance: SELF_TEST_TOL, minN: MIN_N, verdict: selfVerdict, unresolved, cells: selfCells },
-  gate: { tolerance: GATE_TOL, minN: MIN_N, permB: PERM_B, permSeed: PERM_SEED, offReferencePresent: !!OFF },
+  selfTest: {
+    tolerance: SELF_TEST_TOL,
+    minN: MIN_N,
+    verdict: selfVerdict,
+    unresolved,
+    cells: selfCells,
+  },
+  gate: {
+    tolerance: GATE_TOL,
+    minN: MIN_N,
+    permB: PERM_B,
+    permSeed: PERM_SEED,
+    offReferencePresent: !!OFF,
+  },
   arms: armGrades,
   inputManagerUnderScroll: underScrollFinding,
   serial: A.serial,
@@ -204,8 +235,12 @@ fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
 
 // ── Print ─────────────────────────────────────────────────────────────────
 console.log("\n=== FLING (ticket 3o — OPTICAL metric, SELF-TEST FIRST, report-only) ===");
-console.log("arms: OFF(proprietary), ON-input-manager, ON-uiautomation(control), ON-uia-A/ON-uia-B(self-test)");
-console.log(`\n=== SELF-TEST (uia-A vs uia-B, ±${SELF_TEST_TOL * 100}% of pooled median, n>=${MIN_N} both) ===`);
+console.log(
+  "arms: OFF(proprietary), ON-input-manager, ON-uiautomation(control), ON-uia-A/ON-uia-B(self-test)"
+);
+console.log(
+  `\n=== SELF-TEST (uia-A vs uia-B, ±${SELF_TEST_TOL * 100}% of pooled median, n>=${MIN_N} both) ===`
+);
 for (const c of selfCells) {
   console.log(
     `  d=${c.durationMs}ms dist=${c.distance}: A ${c.medA}px (n=${c.nA}) B ${c.medB}px (n=${c.nB}) ` +
@@ -215,7 +250,9 @@ for (const c of selfCells) {
 }
 console.log(`SELF-TEST VERDICT: ${selfVerdict}`);
 if (unresolved) {
-  console.log("\nInstrument unresolved → NO arm is graded (ticket 3o: report the raw distributions and STOP).");
+  console.log(
+    "\nInstrument unresolved → NO arm is graded (ticket 3o: report the raw distributions and STOP)."
+  );
 } else {
   for (const g of armGrades) {
     console.log(`\n=== ARM ${g.arm} vs OFF (proprietary), report-only |ratio−1|≤${GATE_TOL} ===`);

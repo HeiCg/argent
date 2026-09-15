@@ -35,7 +35,10 @@ function nonEmpty(s: string | undefined): string | undefined {
   return t === "" ? undefined : t;
 }
 
-function targetFrom(t?: { id?: string; text?: string }): { id?: string; text?: string } | undefined {
+function targetFrom(t?: {
+  id?: string;
+  text?: string;
+}): { id?: string; text?: string } | undefined {
   const id = nonEmpty(t?.id);
   if (id) return { id };
   const text = nonEmpty(t?.text);

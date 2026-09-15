@@ -161,17 +161,33 @@ function ncc(before: Float64Array, after: Float64Array, s: number, minOverlap: n
  * Cross-correlate two pre-built strips. Pure (no PNG), so unit tests can drive it
  * with synthetic profiles as well as decoded frames.
  */
-export function correlateStrips(before: Float64Array, after: Float64Array, options: StripOptions = {}): ScrollEstimate {
+export function correlateStrips(
+  before: Float64Array,
+  after: Float64Array,
+  options: StripOptions = {}
+): ScrollEstimate {
   const opt = { ...DEFAULTS, ...options };
   const n = Math.min(before.length, after.length);
   if (n < 8) {
-    return { offsetPx: null, confidence: 0, peakShift: 0, refused: true, reason: "strip too short" };
+    return {
+      offsetPx: null,
+      confidence: 0,
+      peakShift: 0,
+      refused: true,
+      reason: "strip too short",
+    };
   }
   // Degenerate (blank) strip → zero variance → refuse without a spurious peak.
   const va = stats(after, 0, after.length).varSum;
   const vb = stats(before, 0, before.length).varSum;
   if (!(va > 1e-6) || !(vb > 1e-6)) {
-    return { offsetPx: null, confidence: 0, peakShift: 0, refused: true, reason: "blank/uniform strip (no variance)" };
+    return {
+      offsetPx: null,
+      confidence: 0,
+      peakShift: 0,
+      refused: true,
+      reason: "blank/uniform strip (no variance)",
+    };
   }
   const maxShift = Math.max(1, Math.floor(opt.maxShiftFrac * n));
   const minOverlap = Math.max(8, Math.floor(0.2 * n));
@@ -220,7 +236,11 @@ export function correlateStrips(before: Float64Array, after: Float64Array, optio
 }
 
 /** Estimate the scroll offset (px) between two PNG framebuffers. */
-export function estimateScrollPx(beforePng: Buffer, afterPng: Buffer, options: StripOptions = {}): ScrollEstimate {
+export function estimateScrollPx(
+  beforePng: Buffer,
+  afterPng: Buffer,
+  options: StripOptions = {}
+): ScrollEstimate {
   const opt = { ...DEFAULTS, ...options };
   const b = decode(beforePng);
   const a = decode(afterPng);

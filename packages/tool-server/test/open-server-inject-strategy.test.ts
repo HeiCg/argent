@@ -97,7 +97,12 @@ describe("open-server inject strategy (phase 3n)", () => {
       gesture: vi.fn(async (..._args: unknown[]) => ({ success: true, strategy: "uia-sync" })),
     };
     await openServerGesture(makeRegistry(server), device, [
-      { points: [{ x: 0.1, y: 0.1, tMs: 0 }, { x: 0.2, y: 0.2, tMs: 16 }] },
+      {
+        points: [
+          { x: 0.1, y: 0.1, tMs: 0 },
+          { x: 0.2, y: 0.2, tMs: 16 },
+        ],
+      },
     ]);
     expect(server.gesture).toHaveBeenCalledTimes(1);
     expect(server.gesture.mock.calls[0]![1]).toEqual({ inject: "uia-sync" });
@@ -115,7 +120,12 @@ describe("open-server inject strategy (phase 3n)", () => {
     await openServerTap(reg, device, 0.5, 0.5, 1);
     await openServerSwipe(reg, device, 0.1, 0.1, 0.1, 0.9, 10);
     await openServerGesture(reg, device, [
-      { points: [{ x: 0.1, y: 0.1, tMs: 0 }, { x: 0.2, y: 0.2, tMs: 16 }] },
+      {
+        points: [
+          { x: 0.1, y: 0.1, tMs: 0 },
+          { x: 0.2, y: 0.2, tMs: 16 },
+        ],
+      },
     ]);
     expect(server.tap.mock.calls[0]![2]).toMatchObject({ inject: "input-manager" });
     expect(server.swipe.mock.calls[0]![6]).toEqual({ inject: "input-manager" });
@@ -134,7 +144,12 @@ describe("open-server inject strategy (phase 3n)", () => {
     await openServerTap(reg, device, 0.5, 0.5, 1);
     await openServerSwipe(reg, device, 0.1, 0.1, 0.1, 0.9, 10);
     await openServerGesture(reg, device, [
-      { points: [{ x: 0.1, y: 0.1, tMs: 0 }, { x: 0.2, y: 0.2, tMs: 16 }] },
+      {
+        points: [
+          { x: 0.1, y: 0.1, tMs: 0 },
+          { x: 0.2, y: 0.2, tMs: 16 },
+        ],
+      },
     ]);
     expect(server.tap.mock.calls[0]![2]).not.toHaveProperty("inject");
     expect(server.swipe.mock.calls[0]![6]).not.toHaveProperty("inject");

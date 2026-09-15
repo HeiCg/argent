@@ -37,12 +37,12 @@ on this runner (see below). Per the agreed rule (only-red-is-fling → stop, no 
 
 ## Four-block summary (run 7)
 
-| block | config | first-attempt landing | oracle self-test | transport | degraded | describe p50/p95 | gesture-tap p50/p95 |
-|---|---|---|---|---|---|---|---|
-| OFF-1 | proprietary | 40/40 (100%) | pass | n/a (proprietary) | none | 52/53 | 52/54 |
-| ON-uiautomation | open, UiAutomation | 60/60 (100%) | pass | redir | none | 39/56 | 77/91 |
-| ON-scrcpy | open, scrcpy fast-inject | 59/60 (98.3%) | pass | redir | none | 36/53 | 51/52 |
-| OFF-2 | proprietary | 40/40 (100%) | pass | n/a (proprietary) | none | 52/56 | 52/53 |
+| block           | config                   | first-attempt landing | oracle self-test | transport         | degraded | describe p50/p95 | gesture-tap p50/p95 |
+| --------------- | ------------------------ | --------------------- | ---------------- | ----------------- | -------- | ---------------- | ------------------- |
+| OFF-1           | proprietary              | 40/40 (100%)          | pass             | n/a (proprietary) | none     | 52/53            | 52/54               |
+| ON-uiautomation | open, UiAutomation       | 60/60 (100%)          | pass             | redir             | none     | 39/56            | 77/91               |
+| ON-scrcpy       | open, scrcpy fast-inject | 59/60 (98.3%)         | pass             | redir             | none     | 36/53            | 51/52               |
+| OFF-2           | proprietary              | 40/40 (100%)          | pass             | n/a (proprietary) | none     | 52/56            | 52/53               |
 
 `first-attempt landing` = landed / effect-checked, first attempt only, never retried
 (the one scrcpy miss's latency is excluded from the tap percentiles). originLost = 0 in
@@ -62,18 +62,18 @@ after 2 empty dumps per block — in run 7 all four degraded to describe identic
 
 ## Full latency table (p50/p95 ms, N per cell)
 
-| verb | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 |
-|---|---|---|---|---|
-| describe (idle) | 52/53 (20) | 39/56 (20) | 36/53 (20) | 52/56 (20) |
-| gesture-tap (tap RPC only) | 52/54 (20) | 77/91 (20) | 51/52 (20) | 52/53 (20) |
-| tap+describe | 305/817 (20) | — | — | 313/958 (20) |
-| tap+describe(settle:false) | — | 455/673 (20) | 298/810 (19) | — |
-| tap+describe(settle:true) | — | 788/1100 (20) | 774/1039 (20) | — |
-| gesture-swipe | 290/308 (20) | 296/359 (20) | 257/262 (20) | 294/303 (20) |
-| await-screen-idle | 498/504 (20) | 463/472 (20) | 461/474 (20) | 497/541 (20) |
-| await-ui-element | 72/76 (20) | 32/38 (20) | 31/36 (20) | 73/77 (20) |
-| paste | 463/1217 (20) | 327/892 (20) | 289/867 (20) | 573/1104 (20) |
-| gesture-pinch | 338/349 (20) | 337/358 (20) | 307/309 (20) | 344/362 (20) |
+| verb                       | OFF-1         | ON-uiautomation | ON-scrcpy     | OFF-2         |
+| -------------------------- | ------------- | --------------- | ------------- | ------------- |
+| describe (idle)            | 52/53 (20)    | 39/56 (20)      | 36/53 (20)    | 52/56 (20)    |
+| gesture-tap (tap RPC only) | 52/54 (20)    | 77/91 (20)      | 51/52 (20)    | 52/53 (20)    |
+| tap+describe               | 305/817 (20)  | —               | —             | 313/958 (20)  |
+| tap+describe(settle:false) | —             | 455/673 (20)    | 298/810 (19)  | —             |
+| tap+describe(settle:true)  | —             | 788/1100 (20)   | 774/1039 (20) | —             |
+| gesture-swipe              | 290/308 (20)  | 296/359 (20)    | 257/262 (20)  | 294/303 (20)  |
+| await-screen-idle          | 498/504 (20)  | 463/472 (20)    | 461/474 (20)  | 497/541 (20)  |
+| await-ui-element           | 72/76 (20)    | 32/38 (20)      | 31/36 (20)    | 73/77 (20)    |
+| paste                      | 463/1217 (20) | 327/892 (20)    | 289/867 (20)  | 573/1104 (20) |
+| gesture-pinch              | 338/349 (20)  | 337/358 (20)    | 307/309 (20)  | 344/362 (20)  |
 
 `errors = 0` on every verb of every block. ON-scrcpy tap+describe(settle:false) is n=19
 because its one first-attempt no-effect tap's timing is excluded (landing 59/60).
@@ -96,23 +96,23 @@ and on par with proprietary.
 
 ## effect / transport / fallbacks per block
 
-| block | effect-checked | first-attempt no-effect | landing rate | originLost | fallbacks | transport |
-|---|---|---|---|---|---|---|
-| OFF-1 | 40 | 0 | 100% | 0 | 0 | n/a (proprietary) |
-| ON-uiautomation | 60 | 0 | 100% | 0 | 0 | redir |
-| ON-scrcpy | 60 | 1 | 98.3% | 0 | 0 | redir |
-| OFF-2 | 40 | 0 | 100% | 0 | 0 | n/a (proprietary) |
+| block           | effect-checked | first-attempt no-effect | landing rate | originLost | fallbacks | transport         |
+| --------------- | -------------- | ----------------------- | ------------ | ---------- | --------- | ----------------- |
+| OFF-1           | 40             | 0                       | 100%         | 0          | 0         | n/a (proprietary) |
+| ON-uiautomation | 60             | 0                       | 100%         | 0          | 0         | redir             |
+| ON-scrcpy       | 60             | 1                       | 98.3%        | 0          | 0         | redir             |
+| OFF-2           | 40             | 0                       | 100%         | 0          | 0         | n/a (proprietary) |
 
 ## describe idle p50 across three same-code runs (magnitude not reproducible)
 
 OFF is rock-stable; ON swings a 21 ms range on identical code — so the describe speedup
 is reported as DIRECTION only (ON ≤ OFF always; 3i target ON ≤ OFF+10 met in all three):
 
-| run | ON-uia | ON-scrcpy | OFF-1 | OFF-2 |
-|---|---|---|---|---|
-| 5 (33963464784) | 32 | 33 | 52 | 51 |
-| 6 (33969204089) | 53 | 50 | 52 | 52 |
-| 7 (33975063607, reported) | 39 | 36 | 52 | 52 |
+| run                       | ON-uia | ON-scrcpy | OFF-1 | OFF-2 |
+| ------------------------- | ------ | --------- | ----- | ----- |
+| 5 (33963464784)           | 32     | 33        | 52    | 51    |
+| 6 (33969204089)           | 53     | 50        | 52    | 52    |
+| 7 (33975063607, reported) | 39     | 36        | 52    | 52    |
 
 Noise floor: OFF path 0-1 ms within a run; ON path ~21 ms across runs.
 
@@ -126,16 +126,16 @@ Noise floor: OFF path 0-1 ms within a run; ON path ~21 ms across runs.
 
 ## OFF-1 vs OFF-2 per-verb drift (noise floor, p50 ms)
 
-| verb | OFF-1 | OFF-2 | drift |
-|---|---|---|---|
-| describe | 52 | 52 | 0 |
-| gesture-tap | 52 | 52 | 0 |
-| tap+describe | 305 | 313 | 8 |
-| gesture-swipe | 290 | 294 | 4 |
-| await-screen-idle | 498 | 497 | 1 |
-| await-ui-element | 72 | 73 | 1 |
-| paste | 463 | 573 | 110 |
-| gesture-pinch | 338 | 344 | 6 |
+| verb              | OFF-1 | OFF-2 | drift |
+| ----------------- | ----- | ----- | ----- |
+| describe          | 52    | 52    | 0     |
+| gesture-tap       | 52    | 52    | 0     |
+| tap+describe      | 305   | 313   | 8     |
+| gesture-swipe     | 290   | 294   | 4     |
+| await-screen-idle | 498   | 497   | 1     |
+| await-ui-element  | 72    | 73    | 1     |
+| paste             | 463   | 573   | 110   |
+| gesture-pinch     | 338   | 344   | 6     |
 
 paste carries the largest proprietary-path runner noise (110 ms), an order of magnitude
 above every other verb. The paste ON−OFF gain (~174 ms) is therefore reported as
@@ -149,8 +149,8 @@ informative cells, blocking. The scrcpy/uia ratio column looks noisy because
 **UiAutomation is the unstable arm**; against the stable proprietary reference scrcpy's
 long-duration deficit is REPRODUCIBLE (not noise):
 
-| cell | scrcpy/off run 5 | scrcpy/off run 7 |
-|---|---|---|
+| cell         | scrcpy/off run 5   | scrcpy/off run 7   |
+| ------------ | ------------------ | ------------------ |
 | 400 ms / 0.3 | 0.244/0.370 = 0.66 | 0.230/0.358 = 0.64 |
 | 400 ms / 0.5 | 0.369/0.653 = 0.57 | 0.360/0.621 = 0.58 |
 
@@ -167,14 +167,14 @@ UiAutomation is not achievable here.
 
 Per-cell (run 7), N=12 (scrcpy n=11 in three cells incl. 400/0.3 — one sample dropped, no reason recorded):
 
-| cell (durationMs / distance) | uia median (IQR) | scrcpy median (IQR) | ratio | verdict |
-|---|---|---|---|---|
-| 150 / 0.3 | 0.449 [0.175,0.509] | 0.466 [0.23,0.593] | 1.038 | OK |
-| 150 / 0.5 | 0.175 [0.175,0.175] | 0.175 [0.175,0.175] | 1.000 | **NON-INFORMATIVE — both arms at the 0.175 scroll floor; now EXCLUDED** |
-| 250 / 0.3 | 0.357 [0.292,0.428] | 0.324 [0.213,0.5] | 0.908 | OK |
-| 250 / 0.5 | 0.175 [0.175,0.464] | 0.265 [0.175,0.413] | 1.514 | OUT ±0.15 — whitelisted (now value-bounded 1.3-1.8) |
-| 400 / 0.3 | 0.321 [0.241,0.328] | 0.230 [0.22,0.366] | **0.717** | **OUT ±0.15 — UNEXPLAINED → FAIL (the run's only red)** |
-| 400 / 0.5 | 0.507 [0.461,0.539] | 0.360 [0.175,0.494] | 0.710 | OUT ±0.15 — whitelisted (now value-bounded 0.55-0.8) |
+| cell (durationMs / distance) | uia median (IQR)    | scrcpy median (IQR) | ratio     | verdict                                                                 |
+| ---------------------------- | ------------------- | ------------------- | --------- | ----------------------------------------------------------------------- |
+| 150 / 0.3                    | 0.449 [0.175,0.509] | 0.466 [0.23,0.593]  | 1.038     | OK                                                                      |
+| 150 / 0.5                    | 0.175 [0.175,0.175] | 0.175 [0.175,0.175] | 1.000     | **NON-INFORMATIVE — both arms at the 0.175 scroll floor; now EXCLUDED** |
+| 250 / 0.3                    | 0.357 [0.292,0.428] | 0.324 [0.213,0.5]   | 0.908     | OK                                                                      |
+| 250 / 0.5                    | 0.175 [0.175,0.464] | 0.265 [0.175,0.413] | 1.514     | OUT ±0.15 — whitelisted (now value-bounded 1.3-1.8)                     |
+| 400 / 0.3                    | 0.321 [0.241,0.328] | 0.230 [0.22,0.366]  | **0.717** | **OUT ±0.15 — UNEXPLAINED → FAIL (the run's only red)**                 |
+| 400 / 0.5                    | 0.507 [0.461,0.539] | 0.360 [0.175,0.494] | 0.710     | OUT ±0.15 — whitelisted (now value-bounded 0.55-0.8)                    |
 
 **Three of the six cells are outside ±0.15** (1.514, 0.717, 0.710); the gate names one
 (400/0.3) because the other two are whitelisted. Verdict:
@@ -240,7 +240,7 @@ Merge gates `.github/bench-ci/merge-blocks.js` (all blocking):
 - oracle self-test gate (a block whose backend could not complete one located+detected+restored navigation is invalid — distinct verdict) — **:88**.
 - **first-attempt LANDING-RATE gate ≥ 95% per block, symmetric OFF/ON** (>3 of 60 or >2 of 40 fails) — **:114**.
 - vacuous-arm gate (a tap block with effectChecked === 0 fails) — **:130**.
-- degraded-arm gate (await-* capped every iteration / paste field never found) — **:146**.
+- degraded-arm gate (await-\* capped every iteration / paste field never found) — **:146**.
 - redir transport gate (an ON emulator block with transport ≠ redir fails) — **:164**.
 - zero-fast-inject-fallback gate for ON-scrcpy — **:177**.
 

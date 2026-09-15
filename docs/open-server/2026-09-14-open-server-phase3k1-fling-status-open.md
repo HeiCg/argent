@@ -1,12 +1,13 @@
 # Ticket: phase 3k.1 — fling stays OPEN; pacing opt-in, pre-registered gate, one measurement run on the consolidated base
 
 Status: dispatched 2026-09-14. Follows the REJECT of 3k part A in
-`2026-09-14-review-3k-findings.md` (every 3K-H*, 3K-M*, 3K-L* item is a work item;
+`2026-09-14-review-3k-findings.md` (every 3K-H*, 3K-M*, 3K-L\* item is a work item;
 its `## Gate recommendation` is the pre-registered rule; its `## Scoreboard rows
 allowed` is the whitelist). Part B of 3k (F5/F6/F7/F12/F13/F19, gate unit tests,
 whitelist removal, floor exclusion) is ACCEPT-grade and stays as is.
 
 ## Decisions (planner, 2026-09-14)
+
 - Fling deficit status: **OPEN**, not resolved. Run 7's 400 ms under-scroll did not
   reproduce on `open/main` @ 690e66bc in either arm (legacy scrcpy/off 0.90/0.88/0.95
   vs run 7's 0.64/0.58/0.71), and drift vs legacy is indistinguishable (permutation
@@ -24,7 +25,7 @@ whitelist removal, floor exclusion) is ACCEPT-grade and stays as is.
   gated ratio, `off` included; (3) two-sided reference on surviving cells:
   `|scrcpy/uia - 1| <= 0.15` AND `|scrcpy/off - 1| <= 0.15`. Verdict string:
   `PASS|FAIL (per-cell ±0.15 on scrcpy/uia AND scrcpy/off, NO whitelist, over k
-  informative cell(s); m of 6 non-informative at the metric floor)`. Unit tests must
+informative cell(s); m of 6 non-informative at the metric floor)`. Unit tests must
   show the rule stays RED on run 7's artifact numbers (3 red cells) and yields the
   reviewer's per-cell table on run 34800933407.
 - Reference run: the ONE `suite=both` run this ticket triggers on the merged
@@ -33,6 +34,7 @@ whitelist removal, floor exclusion) is ACCEPT-grade and stays as is.
   run 34806342684 before anything is published.
 
 ## Work
+
 Base: merge `feat/open-server-3k` into `open/main` @ ad0f7423 first (the planner does
 the merge; it is clean). Then branch `feat/open-server-3k1` off the merged `open/main`,
 worktree `../argent-fork-wt-3k1` (never /tmp; root `node_modules` symlinked; no npm
@@ -58,7 +60,7 @@ install/gradle; vitest `--maxWorkers=2`; no emulator).
    verdict string above.
 5. Docs: rewrite `2026-09-13-open-server-3k-results-ci.md` per the findings (drop
    "resolved"/"fix works"; same-run paired test with p-values; cross-run sentence as the
-   reviewer phrased it; delivered-duration row caveated; await-* deviations listed;
+   reviewer phrased it; delivered-duration row caveated; await-\* deviations listed;
    `tap+describe(settle:true)` row included; superseded-run numbers shown). Append
    `## Result (3k.1)` to the 3k ticket.
 6. One CI run `suite=both`, `sg_mode=matrix` on `feat/open-server-3k1`. Polling: one
@@ -71,6 +73,7 @@ install/gradle; vitest `--maxWorkers=2`; no emulator).
    fast-forward `open/main`.
 
 ## Acceptance
+
 - Default scrcpy pacing byte-equal to pre-3k; drift opt-in and covered by tests.
 - Gate rule pre-registered here, implemented, tested against run 7 and 34800933407.
 - One run on the consolidated base with interleaved arms and n per cell-arm printed;

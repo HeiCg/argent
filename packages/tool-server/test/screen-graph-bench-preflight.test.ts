@@ -34,35 +34,44 @@ interface Fixture {
 const FIXTURE = join(__dirname, "fixtures", "preflight-launch-screens.json");
 const present = existsSync(FIXTURE);
 
-describe.skipIf(!present)("screen-graph bench pre-flight — launch-screen needle guard (BLOCKER-1)", () => {
-  const fx = present ? (JSON.parse(readFileSync(FIXTURE, "utf8")) as Fixture) : ({ serial: "", needleEval: [] } as Fixture);
+describe.skipIf(!present)(
+  "screen-graph bench pre-flight — launch-screen needle guard (BLOCKER-1)",
+  () => {
+    const fx = present
+      ? (JSON.parse(readFileSync(FIXTURE, "utf8")) as Fixture)
+      : ({ serial: "", needleEval: [] } as Fixture);
 
-  it("no navigating task's needle matches its launch screen (re-evaluated from the dump)", () => {
-    const offenders: string[] = [];
-    for (const e of fx.needleEval) {
-      if (!e.navigates) continue;
-      const launch = e.app === "settings" ? fx.settingsRoot : fx.exampleCom;
-      if (!launch) continue;
-      // C.4 work item E: navigating tasks are gated over the FULL launch tree
-      // (visible OR below-fold), since they swipe the root before tapping.
-      const r = evaluateAssertion(launch.nodes, e.needle, { ignoreVisibility: true });
-      if (r.matched) offenders.push(`${e.task} (needle "${e.needle}" in ${e.app} launch tree)`);
-    }
-    expect(offenders, `needles present on the launch screen: ${offenders.join("; ")}`).toEqual([]);
-  });
+    it("no navigating task's needle matches its launch screen (re-evaluated from the dump)", () => {
+      const offenders: string[] = [];
+      for (const e of fx.needleEval) {
+        if (!e.navigates) continue;
+        const launch = e.app === "settings" ? fx.settingsRoot : fx.exampleCom;
+        if (!launch) continue;
+        // C.4 work item E: navigating tasks are gated over the FULL launch tree
+        // (visible OR below-fold), since they swipe the root before tapping.
+        const r = evaluateAssertion(launch.nodes, e.needle, { ignoreVisibility: true });
+        if (r.matched) offenders.push(`${e.task} (needle "${e.needle}" in ${e.app} launch tree)`);
+      }
+      expect(offenders, `needles present on the launch screen: ${offenders.join("; ")}`).toEqual(
+        []
+      );
+    });
 
-  it("every launch-only task's needle IS present on its launch/destination screen", () => {
-    const missing: string[] = [];
-    for (const e of fx.needleEval) {
-      if (e.navigates) continue;
-      const launch = e.app === "settings" ? fx.settingsRoot : fx.exampleCom;
-      if (!launch) continue;
-      const r = evaluateAssertion(launch.nodes, e.needle, { screen: launch.screen });
-      if (!r.matched) missing.push(`${e.task} (needle "${e.needle}")`);
-    }
-    expect(missing, `launch-only needles missing from the screen: ${missing.join("; ")}`).toEqual([]);
-  });
-});
+    it("every launch-only task's needle IS present on its launch/destination screen", () => {
+      const missing: string[] = [];
+      for (const e of fx.needleEval) {
+        if (e.navigates) continue;
+        const launch = e.app === "settings" ? fx.settingsRoot : fx.exampleCom;
+        if (!launch) continue;
+        const r = evaluateAssertion(launch.nodes, e.needle, { screen: launch.screen });
+        if (!r.matched) missing.push(`${e.task} (needle "${e.needle}")`);
+      }
+      expect(missing, `launch-only needles missing from the screen: ${missing.join("; ")}`).toEqual(
+        []
+      );
+    });
+  }
+);
 
 // C.3 §1: the PURE gate the pre-flight script exits on. BAD or MISSING ⇒ not ok.
 describe("preflightVerdict — the matrix gate", () => {
@@ -79,7 +88,10 @@ describe("preflightVerdict — the matrix gate", () => {
 
   it("not ok on a BAD needle (on the launch screen a navigating task leaves)", () => {
     const v = preflightVerdict([
-      { task: "settings-network", verdict: "BAD (needle on launch screen a navigating task leaves)" },
+      {
+        task: "settings-network",
+        verdict: "BAD (needle on launch screen a navigating task leaves)",
+      },
     ]);
     expect(v.ok).toBe(false);
     expect(v.problems).toEqual([

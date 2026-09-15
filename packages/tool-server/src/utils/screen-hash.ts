@@ -61,7 +61,12 @@ const MASK64 = 0xffffffffffffffffn;
  */
 export const EMPTY_TREE_HASH = "cbf29ce484222325";
 
-const SCROLLING_CONTAINERS = new Set(["RecyclerView", "ListView", "ScrollView", "HorizontalScrollView"]);
+const SCROLLING_CONTAINERS = new Set([
+  "RecyclerView",
+  "ListView",
+  "ScrollView",
+  "HorizontalScrollView",
+]);
 
 /**
  * Window-decor resource-ids excluded from `H_id` (status/nav bar backgrounds),
@@ -98,7 +103,13 @@ export function isIdentityTitle(resourceId: string, ancestorIsToolbar: boolean):
   const r = resourceId.toLowerCase();
   if (r.includes("search")) return false;
   if (r.includes("collapsing_toolbar")) return true;
-  if (r === "action_bar_title" || r === "toolbar_title" || r === "actionbar_title" || r === "alerttitle") return true;
+  if (
+    r === "action_bar_title" ||
+    r === "toolbar_title" ||
+    r === "actionbar_title" ||
+    r === "alerttitle"
+  )
+    return true;
   if (r === "title" && ancestorIsToolbar) return true;
   return false;
 }
@@ -140,11 +151,20 @@ export function structuralHash(roots: HashNode[], screenW: number, screenH: numb
   let out = "";
   const append = (n: HashNode): void => {
     out +=
-      (n.class ?? "") + US +
-      (n.id ?? "") + US +
-      quant(n.bounds.x1, screenW) + "," + quant(n.bounds.y1, screenH) + "," +
-      quant(n.bounds.x2, screenW) + "," + quant(n.bounds.y2, screenH) + US +
-      flagsOf(n) + RS;
+      (n.class ?? "") +
+      US +
+      (n.id ?? "") +
+      US +
+      quant(n.bounds.x1, screenW) +
+      "," +
+      quant(n.bounds.y1, screenH) +
+      "," +
+      quant(n.bounds.x2, screenW) +
+      "," +
+      quant(n.bounds.y2, screenH) +
+      US +
+      flagsOf(n) +
+      RS;
     const children = n.children ?? [];
     if (isScrollingContainer(n)) {
       // Recycler rule (design §6): container + the class sequence of its FIRST
@@ -181,7 +201,7 @@ export function identityHash(roots: HashNode[], packageName: string): string {
   const scTokens = new Set<string>();
 
   const collectTitle = (n: HashNode): void => {
-    const t = ((n.text ?? "") !== "" ? n.text! : n.cd ?? "").trim();
+    const t = ((n.text ?? "") !== "" ? n.text! : (n.cd ?? "")).trim();
     if (t !== "" && !isVolatileText(t)) titles.add(t);
   };
   const scanTitles = (n: HashNode, ancestorIsToolbar: boolean): void => {
@@ -205,10 +225,16 @@ export function identityHash(roots: HashNode[], packageName: string): string {
   }
   nonScrollRids.sort();
   const out =
-    packageName + US +
-    "ID:" + [...titles].sort().join("|") + US +
-    "RID:" + nonScrollRids.join(",") + US +
-    "SC:" + [...scTokens].sort().join(",");
+    packageName +
+    US +
+    "ID:" +
+    [...titles].sort().join("|") +
+    US +
+    "RID:" +
+    nonScrollRids.join(",") +
+    US +
+    "SC:" +
+    [...scTokens].sort().join(",");
   return fnv1a(out);
 }
 
@@ -217,13 +243,24 @@ export function stateHash(roots: HashNode[], screenW: number, screenH: number): 
   let out = "";
   const append = (n: HashNode): void => {
     out +=
-      (n.class ?? "") + US +
-      (n.id ?? "") + US +
-      quant(n.bounds.x1, screenW) + "," + quant(n.bounds.y1, screenH) + "," +
-      quant(n.bounds.x2, screenW) + "," + quant(n.bounds.y2, screenH) + US +
-      flagsOf(n) + US +
-      (n.text ?? "") + US +
-      (n.cd ?? "") + RS;
+      (n.class ?? "") +
+      US +
+      (n.id ?? "") +
+      US +
+      quant(n.bounds.x1, screenW) +
+      "," +
+      quant(n.bounds.y1, screenH) +
+      "," +
+      quant(n.bounds.x2, screenW) +
+      "," +
+      quant(n.bounds.y2, screenH) +
+      US +
+      flagsOf(n) +
+      US +
+      (n.text ?? "") +
+      US +
+      (n.cd ?? "") +
+      RS;
     for (const c of n.children ?? []) append(c);
   };
   for (const r of roots) append(r);

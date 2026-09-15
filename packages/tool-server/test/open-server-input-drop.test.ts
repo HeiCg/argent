@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DeviceInfo, Registry } from "@argent/registry";
-import {
-  openServerTap,
-  openServerSwipe,
-  openServerGesture,
-} from "../src/utils/open-server-input";
+import { openServerTap, openServerSwipe, openServerGesture } from "../src/utils/open-server-input";
 
 const device = { id: "emulator-5554", platform: "android" } as unknown as DeviceInfo;
 
@@ -63,7 +59,12 @@ describe("open-server input drop surfacing (R1, phase 3g)", () => {
     };
     await expect(
       openServerGesture(makeRegistry(server), device, [
-        { points: [{ x: 0.1, y: 0.1, tMs: 0 }, { x: 0.2, y: 0.2, tMs: 16 }] },
+        {
+          points: [
+            { x: 0.1, y: 0.1, tMs: 0 },
+            { x: 0.2, y: 0.2, tMs: 16 },
+          ],
+        },
       ])
     ).rejects.toThrow(/gesture was dropped/);
   });

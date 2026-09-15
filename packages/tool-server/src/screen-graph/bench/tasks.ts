@@ -144,13 +144,21 @@ export const SETTINGS_TASKS: BenchTask[] = [
       { action: { kind: "launch" } },
       // Step 1 → the Network & internet screen; route identity "Calls & SMS"
       // (on that screen, not the root, not Internet).
-      { action: { kind: "tap", selector: t("Network & internet") }, knownTarget: true, navTarget: t("Calls & SMS") },
+      {
+        action: { kind: "tap", selector: t("Network & internet") },
+        knownTarget: true,
+        navTarget: t("Calls & SMS"),
+      },
       // Step 2 → the Internet (Wi‑Fi) screen. Phase D.3 (D2-H3): `t("Internet")`
       // now resolves the EXACT "Internet" row, not the "Network & internet"
       // toolbar title, so this genuinely enters the Internet screen. Per-step
       // navTarget "Network preferences" is an Internet-screen identity (captured
       // run 33970221242), distinct from the oracle.
-      { action: { kind: "tap", selector: t("Internet") }, knownTarget: true, navTarget: t("Network preferences") },
+      {
+        action: { kind: "tap", selector: t("Internet") },
+        knownTarget: true,
+        navTarget: t("Network preferences"),
+      },
     ],
     // Phase D.3 (D2-H3): the oracle needle now lives ONLY on the Internet screen
     // ("Add network", the Wi‑Fi picker's add-row; captured run 33970221242),
@@ -208,10 +216,7 @@ export const CHROME_TASKS: BenchTask[] = [
     id: "chrome-scroll-body",
     app: "chrome",
     description: "Scroll the page and confirm the body text",
-    steps: [
-      { action: { kind: "launch" } },
-      { action: { kind: "swipe", direction: "up" } },
-    ],
+    steps: [{ action: { kind: "launch" } }, { action: { kind: "swipe", direction: "up" } }],
     assertion: t("permission"),
     // Needle-independent observation anchor for the swipe step (C.4 work item D).
     query: t("Example"),
@@ -225,10 +230,7 @@ export const CHROME_TASKS: BenchTask[] = [
     // == destination and the pre-flight treats this as a launch-destination task
     // (needle present, no false-pass risk — there is no tap to miss).
     description: "Scroll the page and confirm a real body word",
-    steps: [
-      { action: { kind: "launch" } },
-      { action: { kind: "swipe", direction: "up" } },
-    ],
+    steps: [{ action: { kind: "launch" } }, { action: { kind: "swipe", direction: "up" } }],
     assertion: t("documentation"),
     query: t("Example"),
   },
@@ -368,7 +370,10 @@ export function validateTasks(tasks: BenchTask[] = ALL_TASKS): void {
         throw new Error(`task ${task.id} sameScreen step cannot be a ${a.kind} action`);
       }
     }
-    const selEq = (a?: { id?: string; text?: string }, b?: { id?: string; text?: string }): boolean =>
+    const selEq = (
+      a?: { id?: string; text?: string },
+      b?: { id?: string; text?: string }
+    ): boolean =>
       Boolean(a && b && (a.id ?? "") === (b.id ?? "") && (a.text ?? "") === (b.text ?? ""));
     // Phase D.3: a per-step navTarget is a screen identity, never the oracle needle.
     for (const step of task.steps) {

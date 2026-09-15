@@ -1,6 +1,7 @@
 # Spec — open iOS driver (planner, 2026-09-14; from ticket iOS-0 findings)
 
 ## Decision: base = upstream runner core on OUR contract, `sim-input` as the fast arm
+
 - **Device-side server**: take `origin/feat/ios-physical-devices`'s `ArgentRunner`
   (XCUITest; `app.snapshot()` = one XPC round trip for the whole tree; `drag` with
   duration→velocity and a `settle` end-hold; describe adapter + Swift↔TS lockstep test)
@@ -29,9 +30,11 @@
   in the tree), `physical-ios-device-support` (iOS 27+, root tunneld, no rects).
 
 ## What the closed driver cannot do that we will: physical iPhone (B's plumbing), and the
+
 screen-graph observation tier (tokens) on iOS.
 
 ## Phases
+
 - **iOS-1 — runner on our contract, simulator first.** Package
   `packages/ios-device-server/` (copy of B's ArgentRunner sources + xcodeproj, adapted):
   NDJSON/TCP transport, method table above, `timings` per stage (snapshot, serialize,
@@ -66,6 +69,7 @@ screen-graph observation tier (tokens) on iOS.
   self-hosted Mac mini runner story for physical iPhones; nightly device test.
 
 ## Rules carried over
+
 One worktree per agent under this clone; max 2 agents; CI only for numbers; one
 `gh run view` per 10 min; every number names statistic/block/N/run id; pre-registered
 gates; adversarial review before the scoreboard; a same-run control arm beats a

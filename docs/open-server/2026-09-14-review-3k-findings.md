@@ -28,15 +28,15 @@ numbers come back exactly from the artifacts. What fails is the headline. The re
 says "**the fix works**" / "the reproducible long-duration under-scroll is
 **RESOLVED**", but the report's own same-run control arm says otherwise: `legacy` →
 `drift` is statistically indistinguishable in every gated cell (permutation p = 0.08 …
-1.00, N = 11–12), and at 400 ms/0.3 the fixed arm is *marginally lower* than the
+1.00, N = 11–12), and at 400 ms/0.3 the fixed arm is _marginally lower_ than the
 pre-3k arm (0.319 vs 0.324). The "RESOLVED" claim is made instead against **run 7**,
 a different run — where the very same pre-3k code path, running as the `legacy` arm in
-*this* run, already reads 0.901 / 0.884 against proprietary versus 0.642 / 0.580 in
+_this_ run, already reads 0.901 / 0.884 against proprietary versus 0.642 / 0.580 in
 run 7. Run-to-run variance on this metric is larger than the effect being claimed
 (3K-H1, 3K-H2). The mechanism is equally unproven: zero `[pacing-trace]` lines reached
 any artifact, the "delivered DOWN→UP" row is one swipe per arm parsed from two
 Launcher `TaplEvents` lines (not InputDispatcher), and the pre-3k arm delivered 417 ms
-for a 416 ms request — i.e. the host stretch the ticket hypothesised is *absent* on
+for a 416 ms request — i.e. the host stretch the ticket hypothesised is _absent_ on
 this runner, so there was nothing for the fix to remove (3K-H3). Against the
 proprietary reference scrcpy still under-scrolls at 400/0.3 by a significant −11 %
 in **both** arms (p = 0.001), and the ticket's stated acceptance ("all six informative
@@ -63,10 +63,10 @@ after `fix/open-server-outcome-default-off` lands.
    (`2026-09-13-open-server-3k-results-ci.md`, fling table rows 400/0.3 and 400/0.5) —
    the "before" arm was already at parity with uia before the fix.
    Fix: delete "**Fix works**" / "RESOLVED" from the ticket `## Result` and the
-   results file. The defensible in-run sentence is: *"the same-run before/after
+   results file. The defensible in-run sentence is: _"the same-run before/after
    (legacy → drift, N = 11–12 per cell) shows no distinguishable change in scroll
    distance in any cell (permutation p ≥ 0.08); the pacing change is neutral on this
-   runner."* Note also that with N = 12 on a 2-level metric this test has low power —
+   runner."_ Note also that with N = 12 on a 2-level metric this test has low power —
    "no distinguishable change" is not "proven equal", which is exactly why the claim
    cannot be run the other way either.
 
@@ -83,13 +83,13 @@ after `fix/open-server-outcome-default-off` lands.
    Confounds between the two runs: different emulator session, and this base carries
    the always-on `outcome`/`settleAfterAction` path on `gesture-swipe`
    (`2026-09-14-open-server-outcome-regression.md`), which run 7 did not have.
-   Fix: state the cross-run line as *"run 7's 400 ms under-scroll did not reproduce on
-   `open/main` @ 690e66bc in either arm"* and keep the deficit **open**, not resolved.
+   Fix: state the cross-run line as _"run 7's 400 ms under-scroll did not reproduce on
+   `open/main` @ 690e66bc in either arm"_ and keep the deficit **open**, not resolved.
 
 3. **3K-H3 — the mechanism ("the fix is in the intermediate MOVE cadence") is asserted;
    the artifact contains no MOVE timing at all, and the endpoint data refutes the
    stretch hypothesis.** (a) `grep -c pacing-trace fling-log-ON-scrcpy.txt
-   fling-log-ON-scrcpy-legacy.txt` → **0 / 0**: the host per-frame trace
+fling-log-ON-scrcpy-legacy.txt` → **0 / 0**: the host per-frame trace
    (`scrcpy-inject-backend.ts:481-483`) never reached an artifact; the report concedes
    this only in "Open items 4". (b) The delivered-duration row is **N = 1 per arm** and
    its "2 touch events" are not InputDispatcher: `deliveredSpanMs`
@@ -97,7 +97,7 @@ after `fix/open-server-outcome-default-off` lands.
    `/InputDispatcher|InputReader|MotionEvent/` + `/\b(DOWN|…|ACTION_UP)\b`, and in
    `logs/logcat-device-test.txt` the only lines matching that pair are Launcher's
    `D TaplEvents: TIS / TouchInteractionService.onInputEvent: MotionEvent {
-   action=ACTION_DOWN|ACTION_UP }` — which by construction logs *only* the two
+action=ACTION_DOWN|ACTION_UP }` — which by construction logs _only_ the two
    endpoints. I reproduced the three numbers from exactly those pairs (405 ms at
    03:03:57.202→.607, 416 ms at 03:07:08.322→.738, 417 ms at 03:07:11.862→12.279);
    `setprop log.tag.InputDispatcher VERBOSE` (yml:278-279) produced no dispatch lines
@@ -121,9 +121,9 @@ after `fix/open-server-outcome-default-off` lands.
    arm, 400/0.3 is scrcpy 0.319 vs off 0.360, a **−11 %** difference that is
    statistically real in my permutation test (**p = 0.001**) — and equally real for the
    legacy arm (0.324 vs 0.360, p = 0.001). The report calls this cell "parity".
-   Fix: the honest summary line is *"phase-3k acceptance NOT met: the gate is red on
+   Fix: the honest summary line is _"phase-3k acceptance NOT met: the gate is red on
    150/0.3, two cells are non-informative at the metric floor, and a significant
-   ~11 % scrcpy under-scroll vs proprietary persists at 400/0.3 in both arms"*.
+   ~11 % scrcpy under-scroll vs proprietary persists at 400/0.3 in both arms"_.
 
 ## MEDIUM
 
@@ -135,7 +135,7 @@ after `fix/open-server-outcome-default-off` lands.
    null (`if (d !== null) samples.push(d)`), and `fling-log-OFF.txt` carries no error
    line for the four missing OFF samples — no reason recorded. The report's header
    ("fling A/B N = 12 per cell per backend") and its table caption ("N=12") state
-   otherwise, and the sentence "scrcpy/off = 0.722 is *closer* to proprietary than uia
+   otherwise, and the sentence "scrcpy/off = 0.722 is _closer_ to proprietary than uia
    is" is computed against that n = 8 median (0.443).
    Fix: print n per arm per cell in the report table; require n ≥ 10 on **every** arm
    used in a gate or in a transparency ratio (`merge-fling.js:55-64` checks only uia
@@ -158,7 +158,7 @@ after `fix/open-server-outcome-default-off` lands.
    My recompute: VERBOSE slowed **both** arms, not only ON — OFF-1 paste 894/1471 vs
    507/1223 clean, OFF-1 describe p95 131 vs 53 — and the uia fling arm was floored
    only at **150/0.3** (0.175 vs 0.232 clean); at 400/0.3 the contaminated uia arm is
-   *higher* (0.340 vs 0.313) and at 400/0.5 unchanged (0.593 vs 0.585). So "perturbed
+   _higher_ (0.340 vs 0.313) and at 400/0.5 unchanged (0.593 vs 0.585). So "perturbed
    the ON path's synced UiAutomation inject and pushed the uia fling arm to the floor"
    is not supported as stated; the one floored cell is the same bimodal cell that
    flips between every run (3K-M2).
@@ -209,7 +209,7 @@ after `fix/open-server-outcome-default-off` lands.
 
 1. **3K-L1 — the `drift` / `legacy` naming misdescribes the change.** The pre-3k loop
    was already drift-corrected (`690e66bc:packages/tool-server/src/utils/
-   scrcpy-inject-backend.ts:318`: `const wait = anchor + f.tMs - performance.now()`
+scrcpy-inject-backend.ts:318`: `const wait = anchor + f.tMs - performance.now()`
    recomputed per frame, with the comment "so a slow write does not push the rest of
    the gesture late"). The only delta is dropping the per-frame `await` — socket
    decoupling. Call the arms `awaited` / `decoupled`, or say "drift-corrected (as
@@ -234,7 +234,7 @@ after `fix/open-server-outcome-default-off` lands.
    `WritableStream` (`@yume-chan/stream-extra/esm/stream.js`), so WHATWG FIFO queueing
    applies and frames reach the socket in dispatch order. The unit test's ordering
    assertion (`open-server-fast-inject-pacing.test.ts`, "frames in order (DOWN…UP)")
-   records *call* order on a mock, which cannot fail. Queue growth is bounded by the
+   records _call_ order on a mock, which cannot fail. Queue growth is bounded by the
    frame count of one gesture (`await Promise.all(pending)` before return), so there is
    no unbounded queue; backpressure is deliberately ignored, which is the point of the
    fix. Multi-pointer/pinch semantics are unchanged (same frames, same order, per-slot
@@ -253,7 +253,7 @@ after `fix/open-server-outcome-default-off` lands.
 5. **3K-L5 — F6 is logged, not gated.** `bench-open-vs-proprietary.ts` `noteShortCircuit`
    emits one `[bench][locate] uiautomator-dump short-circuited …` line per block (it
    fired once in all four blocks of this run — `grep -c short-circuited
-   bench-log-*.txt` → 1,1,1,1) and the scoreboard renders the locate split
+bench-log-*.txt` → 1,1,1,1) and the scoreboard renders the locate split
    (`scoreboard.js`, "Locate source & no-effect taps (F5 / F7)"), but nothing fails on
    it. Report wording "the dump short-circuit is a logged/gated event" → "logged and
    surfaced; not gated".
@@ -279,8 +279,8 @@ Keep the ±0.15 band and the no-whitelist rule; fix **what counts as a gradable 
 and **what the denominator is**. Concretely, three changes to `merge-fling.js`:
 
 1. **Reference-bimodality exclusion (new).** A cell is non-informative when the
-   *reference* distribution straddles the metric floor — `q25(uia) <= SCROLL_FLOOR +
-   eps` (and likewise for `off` when `off` is used as a denominator). Key it on the
+   _reference_ distribution straddles the metric floor — `q25(uia) <= SCROLL_FLOOR +
+eps` (and likewise for `off` when `off` is used as a denominator). Key it on the
    **reference arms only, never on the scrcpy arm**, so a scrcpy defect can never
    exempt its own cell. This replaces "both arms pinned at the floor" (which is the
    degenerate case of the same rule) and is the honest answer to option (a) in the
@@ -302,18 +302,18 @@ the old gate named.
 
 Resulting verdict per cell for run **34800933407** under this rule (my recompute):
 
-| cell | scrcpy/uia | scrcpy/off | status under the proposed rule |
-|---|---|---|---|
-| 150 / 0.3 | 1.379 | 0.720 | **NON-INFORMATIVE** — uia q25 = 0.175 (IQR [0.175, 0.461]) and off q25 = 0.175, and off n = 8 < 10 |
-| 150 / 0.5 | 1.000 | 1.000 | non-informative (all arms at the floor) |
-| 250 / 0.3 | 0.970 | 0.983 | **PASS** |
-| 250 / 0.5 | 1.000 | 0.548 | non-informative (uia floored) |
-| 400 / 0.3 | 1.019 | 0.886 | **PASS** (dev 0.114 on the off side — inside the band, but see 3K-H4: the −11 % is real at p = 0.001) |
-| 400 / 0.5 | 1.085 | 0.967 | **PASS** |
+| cell      | scrcpy/uia | scrcpy/off | status under the proposed rule                                                                        |
+| --------- | ---------- | ---------- | ----------------------------------------------------------------------------------------------------- |
+| 150 / 0.3 | 1.379      | 0.720      | **NON-INFORMATIVE** — uia q25 = 0.175 (IQR [0.175, 0.461]) and off q25 = 0.175, and off n = 8 < 10    |
+| 150 / 0.5 | 1.000      | 1.000      | non-informative (all arms at the floor)                                                               |
+| 250 / 0.3 | 0.970      | 0.983      | **PASS**                                                                                              |
+| 250 / 0.5 | 1.000      | 0.548      | non-informative (uia floored)                                                                         |
+| 400 / 0.3 | 1.019      | 0.886      | **PASS** (dev 0.114 on the off side — inside the band, but see 3K-H4: the −11 % is real at p = 0.001) |
+| 400 / 0.5 | 1.085      | 0.967      | **PASS**                                                                                              |
 
 Verdict string it should produce: `PASS (per-cell ±0.15 on scrcpy/uia AND scrcpy/off,
 NO whitelist, over 3 informative cell(s); 3 of 6 cells non-informative at the metric
-floor)`. That is a *conditional* green and must be published with the disclosure that
+floor)`. That is a _conditional_ green and must be published with the disclosure that
 half the grid is ungradable on this runner at N = 12 — the right follow-up is to raise
 N per cell (≥ 24) or replace the anchor-displacement metric whose 0.175 floor causes
 the bimodality, not to celebrate the pass. A gate that flips a red to a green must be
@@ -326,7 +326,7 @@ the accepted latency/fling reference until the outcome-regression fix lands.
 
 Allowed now:
 
-1. Gate/process row (no measurement): *"Fling parity gate (phase 3k, run 34800933407):
+1. Gate/process row (no measurement): _"Fling parity gate (phase 3k, run 34800933407):
    per-cell `scrcpy(drift)/uia ±0.15`, **blocking, no whitelist** (the value-bounded
    whitelist is removed); cells with both arms at the 0.175 scroll floor excluded;
    `scrcpy/off` and `uia/off` printed as transparency; 17 gate unit tests
@@ -334,32 +334,32 @@ Allowed now:
    oracle self-test, vacuous arm, degraded arm, redir, zero fast-inject fallback,
    landing-rate (firing and non-firing), missing ON block, fling no-whitelist FAIL,
    floor exclusion, missing drift arm, all with failing inputs. Not covered by a firing
-   test: the device-test enforcement step (still evidence-free)."*
-2. Bench-honesty row: *"F5 locate split published per block (0 dump / 40–60 describe in
+   test: the device-test enforcement step (still evidence-free)."_
+2. Bench-honesty row: _"F5 locate split published per block (0 dump / 40–60 describe in
    all four blocks, run 34800933407); F6 dump short-circuit logged (fired in all four
    blocks) — logged, not gated; F7 no-effect identity captured (0 misses this run);
    F12 per-block ready gate blocking; F13 an executable OFF baseline failure fails the
-   run; F19 `destinationVisible` probe removed."*
+   run; F19 `destinationVisible` probe removed."_
 3. Fling status row **replacing** the run-7 "open loses" row's status, with the deficit
-   left OPEN: *"Run 7's 400 ms scrcpy under-scroll did not reproduce in run 34800933407
+   left OPEN: _"Run 7's 400 ms scrcpy under-scroll did not reproduce in run 34800933407
    on this base: the pre-3k `legacy` arm itself reads scrcpy/off 0.901 (400/0.3) and
    0.884 (400/0.5) versus 0.642 / 0.580 in run 7 (N = 11–12 per cell). The phase-3k
    drift/decoupled pacing shows no distinguishable change against the legacy arm in any
    cell (permutation p ≥ 0.08). A ~11 % scrcpy under-scroll vs proprietary persists at
    400/0.3 in both arms (0.319 / 0.324 vs off 0.360, p = 0.001). Status: open, not
    resolved; gate RED on 150/0.3 (ratio 1.379) — a cell where the two distributions are
-   not distinguishable (p = 0.74) and the OFF reference has n = 8."*
+   not distinguishable (p = 0.74) and the OFF reference has n = 8."_
 
 Not allowed:
 
 4. **No "fling pacing fixed / under-scroll resolved" row**, and no `legacy → drift`
    improvement row (3K-H1, 3K-H2).
 5. **No pacing-measurement row** from the delivered-duration table as written. If the
-   planner wants it, only in this form and outside the results table: *"delivered
+   planner wants it, only in this form and outside the results table: _"delivered
    DOWN→UP endpoints, one swipe per arm, parsed from Launcher `TaplEvents`
    ACTION_DOWN/UP: uia 405, scrcpy drift 416, scrcpy legacy 417 (requested 416);
    InputDispatcher VERBOSE produced no dispatch lines on this image; no intermediate
-   MOVE timing was captured in any artifact."*
+   MOVE timing was captured in any artifact."_
 6. **No latency verb rows** from this run: the base carries the tap/swipe outcome-path
    regression (`2026-09-14-open-server-outcome-regression.md`) and, separately,
    `await-screen-idle` moved −176 ms ON-only against a 1 ms floor with no established

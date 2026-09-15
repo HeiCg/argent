@@ -207,7 +207,14 @@ describe("androidOpenServerBlueprint.factory", () => {
       // reply is enough — the test only inspects the request params.
       const result =
         req.method === "getState"
-          ? { tree: [], info: { screenWidth: 1080, screenHeight: 1920 }, screenshot: "", waitedMs: 0, captureMs: 0, version: 0 }
+          ? {
+              tree: [],
+              info: { screenWidth: 1080, screenHeight: 1920 },
+              screenshot: "",
+              waitedMs: 0,
+              captureMs: 0,
+              version: 0,
+            }
           : req.method === "ping"
             ? { status: "ok" }
             : {};
@@ -239,7 +246,9 @@ describe("androidOpenServerBlueprint.factory", () => {
     expect("fingerprints" in plainFlat!.params).toBe(false);
 
     // The plain nested getState (the describe path): no `fingerprints`.
-    const plainNested = getStateReqs.find((r) => r.params.nested === true && !r.params.fingerprints);
+    const plainNested = getStateReqs.find(
+      (r) => r.params.nested === true && !r.params.fingerprints
+    );
     expect(plainNested).toBeTruthy();
     expect("fingerprints" in plainNested!.params).toBe(false);
 
@@ -270,7 +279,14 @@ describe("androidOpenServerBlueprint.factory", () => {
       seen.push({ method: req.method, params: req.params ?? {} });
       const result =
         req.method === "getState"
-          ? { tree: [], info: { screenWidth: 1080, screenHeight: 1920 }, screenshot: "", waitedMs: 0, captureMs: 0, version: 0 }
+          ? {
+              tree: [],
+              info: { screenWidth: 1080, screenHeight: 1920 },
+              screenshot: "",
+              waitedMs: 0,
+              captureMs: 0,
+              version: 0,
+            }
           : req.method === "getAccessibilityTree"
             ? { tree: [] }
             : req.method === "flushInput"
@@ -302,7 +318,9 @@ describe("androidOpenServerBlueprint.factory", () => {
     // The standalone drain RPC.
     expect((await api.flushInput()).success).toBe(true);
 
-    const reads = seen.filter((r) => r.method === "getState" || r.method === "getAccessibilityTree");
+    const reads = seen.filter(
+      (r) => r.method === "getState" || r.method === "getAccessibilityTree"
+    );
     // 8 read RPCs: 4 without flush, 4 with. (getNested* dispatch the same method names.)
     expect(reads.length).toBe(8);
     const withFlush = reads.filter((r) => r.params.flush === true);
@@ -365,4 +383,3 @@ describe("androidOpenServerBlueprint.factory", () => {
     expect(instance.api.isReady()).toBe(false);
   });
 });
-

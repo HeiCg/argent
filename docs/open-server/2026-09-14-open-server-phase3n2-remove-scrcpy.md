@@ -2,7 +2,7 @@
 
 Status: dispatched 2026-09-14. `input-manager` is the default on `open/main` since
 11fcfdf4 (merge of `feat/open-server-3n-kotlin-injector`). Read first, in full:
-`2026-09-14-review-3n1-findings.md` (every 3N1-H*, M*, L* is a work item; "Residual gate
+`2026-09-14-review-3n1-findings.md` (every 3N1-H*, M*, L\* is a work item; "Residual gate
 diagnosis", "Scoreboard rows allowed" and "Conditions for 3n.2" are authoritative),
 then the 3n and 3n.1 tickets, `README.md`, `2026-09-03-scoreboard.md`.
 
@@ -15,6 +15,7 @@ workflow installs from scratch). State in the Result that the lockfile was regen
 CI or must be regenerated in the main checkout after merge.
 
 ## Part A — pre-work (blocking, before the run)
+
 1. **3N1-H1 env-unset leak.** `bench-fling-fidelity.ts:339-340` (and every caller that
    "unsets = old default") must select the pre-3n.1 Kotlin DEFAULT explicitly via the
    `default`/`uia` sentinel; audit all `ARGENT_OPEN_INJECT_STRATEGY` readers. Unit test:
@@ -46,6 +47,7 @@ CI or must be regenerated in the main checkout after merge.
    the enforce step.
 
 ## Part B — scrcpy removal (keep the controls)
+
 Remove: `@yume-chan/adb-scrcpy`, `@yume-chan/scrcpy`, `@yume-chan/fetch-scrcpy-server`,
 the `postinstall` fetch, `src/utils/scrcpy-inject-backend.ts`, `scrcpy-inject-timeline.ts`
 and their tests, the `open-device-server-fast-inject` flag (or keep it as a deprecated
@@ -60,9 +62,11 @@ config keys (flag removed/added) and `docs/features/` if scrcpy is mentioned; ru
 main checkout after merge (say it was not run in the worktree).
 
 ## Part C — one run, pre-registered gates Q1–Q7 (fling NOT run, not gated)
+
 Blocks `OFF-1, ON-uiautomation, ON-input-manager, OFF-2`; `suite=both`, `sg_mode=matrix`;
 `FLING` disabled for this run (fling is instrument-unresolved; ticket 3o). Write Q1–Q7
 in the Result BEFORE triggering:
+
 - Q1 every verb within its measured OFF↔OFF floor of run 34870686468 (both ON blocks);
 - Q2 `ON-uiautomation` control unchanged vs 34870686468 within floors;
 - Q3 `ON-input-manager` still at-or-better than proprietary on tap/swipe/pinch/headline
@@ -74,11 +78,12 @@ in the Result BEFORE triggering:
 - Q7 no scrcpy remains: `grep -ri scrcpy` over `packages/`, `.github/`, `docs/` (outside
   `docs/open-server/` history) returns only historical notes; CI install has no
   fetch-scrcpy step; `ON-scrcpy` absent.
-Polling: one `gh run view` per 10 min as a single `run_in_background` Bash call
-`sleep 540; gh run view <id> --json status,conclusion,jobs`; never loop; one
-`gh run download` per artifact.
+  Polling: one `gh run view` per 10 min as a single `run_in_background` Bash call
+  `sleep 540; gh run view <id> --json status,conclusion,jobs`; never loop; one
+  `gh run download` per artifact.
 
 ## Part D — scoreboard
+
 Rewrite `docs/open-server/2026-09-03-scoreboard.md` with EXACTLY the rows in the
 review's "Scoreboard rows allowed" (run 34870686468 wording), plus the 3n.2 run's Q1–Q7
 row; fling status row stays pinned to 34813849446, OPEN, with the one permitted sentence;
@@ -88,6 +93,7 @@ retired claims list updated. README "Where things are / Verdict / Execution orde
 updated (scrcpy gone, reference runs, next: 3o fling metric, Artemis items, phase E).
 
 ## Result
+
 Append `## Result (3n.2)` here: commits, Part A finding-by-finding, what was removed and
 kept, run id, Q1–Q7 as pre-registered, verb table vs 34870686468, device/SG outcome,
 docs touched, lockfile status. Do not fast-forward `open/main`; adversarial review first.
@@ -98,7 +104,7 @@ docs touched, lockfile status. Do not fast-forward `open/main`; adversarial revi
 
 > **Phase 3n.2 — pre-registered acceptance. Base: `open/main` @ 775ae6fc with 3n.1
 > merged, branch `feat/open-server-3n2-remove-scrcpy`. Blocks: `OFF-1,
-> ON-uiautomation, ON-input-manager, OFF-2` (no scrcpy arm). `suite=both`,
+ON-uiautomation, ON-input-manager, OFF-2` (no scrcpy arm). `suite=both`,
 > `sg_mode=matrix`, N = 20 per verb per block; FLING NOT run (the step was removed).
 > Every gate is graded against the PROPRIETARY OFF blocks at the measured
 > `|OFF-1 − OFF-2|` floor, with a 10 000-draw bootstrap 95 % CI on the p50 difference
@@ -154,19 +160,19 @@ ubuntu-latest KVM, N = 20 per verb per block, four blocks
 
 #### Q1–Q7 as pre-registered — PASS/FAIL
 
-| gate | verdict | evidence |
-|---|---|---|
-| **Q1** nothing changed vs 34870686468 (im) | **PARTIAL — pinch within band; tap/swipe/headline exceed a near-zero band by cross-run noise, EXPLAINED (not a behaviour change)** | im p50 this run vs 34870686468: tap 55 vs 54 (band max(0,0)=0 → +1 OUT), swipe 267 vs 263 (band max(1,2)=2 → +4 OUT by 2), pinch 318 vs 318 (band 1 → IN), headline 279 vs 372 (band max(24,78)=78 → 93 FASTER, OUT by 15). The removed scrcpy seam never ran on these blocks (it was gated on the fast-inject flag), and the Kotlin injectors + the host gesture path are unchanged from `bb3fbddf` — so the gesture verbs are code-identical. But the describe/state capture path (`StateHandler.kt`, +59/−15: stage clocks unified to `SystemClock.uptimeMillis()`, `infoMs`/`recycleMs`/`otherMs` added) DID change in 3n.2, so the headline (`tap+describe`) and `describe` rows are NOT code-identical across the two runs (3N2-H3). The deltas are run-to-run environment movement, proven by the untouched proprietary OFF comparator moving on the same rows (see the acceptance note); NOT a scrcpy-removal effect. Cross-run 95 % CIs (3n.3): tap Δ+1 [0,+1], swipe Δ+4 [−1,+9], headline Δ−93 [−147,+17] — every one contains 0. |
-| **Q2** control unchanged | **Present (not void); within-band FAILs on the same cross-run-variance basis as Q1** | `ON-uiautomation` ran (`default: 161/161`), so the run is NOT void. Its p50s (tap 81 / swipe 293 / pinch 348 / headline 363 / idle 298) differ from 34870686468 (86 / 306 / 346 / 480 / 304) by more than the tight bands — same cross-run variance as Q1 (the control regressed vs 34813849446 too, 3N1-M6). |
-| **Q3** vs proprietary (this run's gates) | **swipe/pinch WIN, headline PASS; tap FAIL by 2 (planner-accepted parity)** | P2 tap **FAIL by 2** (Δ +2 > floor 0, CI **[1, 2.5]** vs max(OFF)) — honest sub-floor miss, parity in practice; P3 swipe **PASS/WIN** (**vs pooled OFF** Δ **−30.5**, CI **[−37, −25]**; vs min(OFF) Δ −30, CI [−37, −21] — Δ and CI now share a comparator, 3N2-M1); P4 pinch **PASS/WIN** (**vs pooled OFF** Δ **−24.5**, CI **[−30, −19]**; vs min(OFF) Δ −24, CI [−31, −18]); P5 headline **PASS** (0.279k ÷ OFF = 1.09 / 1.00 / 1.04 ≤ 1.15 — the ratio moved 0.91/0.77/0.83 → 1.09/1.00/1.04 vs 34870686468, i.e. the open stack lost ground on the headline relative to proprietary despite the 93 ms absolute improvement; P5 is a non-inferiority band, not a win, 3N2-M9); P6 **PASS** (im faster than the control on every gated verb). |
-| **Q4** landing, fallbacks, echo | **PASS** | first-attempt landing OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60, OFF-2 40/40 — 100 % every block; oracle self-test passed on every block; on-device `injectStrategyCounts` = `{"input-manager":161}` / control `{"default":161}` with **no** `unavailable` key — that (not `strategyFallbacks`, which reads 0 by construction after 3n.2 and is NOT evidence, 3N2-H1) is the real fallback evidence; the 3n.3 gate now reads it. Denominator (3N2-M6): 161 process-wide = **100 measured** gated-inject RPCs (5 inject verbs × N=20: gesture-tap, tap+describe settle:false/true, gesture-swipe, gesture-pinch) + warmups (5 × 3) + oracle self-test taps + describe-split after-tap taps (10+10) + locate/restore taps. |
-| **Q5** device suite green incl. residual gate + P9 tap/swipe/gesture | **PASS** | **Test Files 1 passed** — all 22 device cases PASS (`fallback=NO`); the 3n strategy cases `ranAs == requested` (uia-sync / uia-async / input-manager + cadence). **3m residual gate PASS: after-tap `|captureMs − Σ(stages)|` median 1 ms, idle 0 ms** (≤10) — new stages after-tap `infoMs` med 2, `recycleMs` med 0, `otherMs` med 1; the 20 per-sample residuals printed. **P9 forced-fallback PASS on tap, swipe AND gesture** (each `strategy==unavailable`, `fellBackTo==uia-async`; tap still navigated +/−42 labels; reset → input-manager). |
-| **Q6** screen-graph green | **PASS (O1 99/100 and skippedNoIdHash 1 reported)** | Job green. success B1 100/100 · B2 100/100 · O1 **99/100** · O2 100/100 · O3 100/100 · O4 100/100 · O5 100/100 (O1's 1 failure is uncategorised L/A/O/T 0 and within the H4 5 pp floor). tokens o200k p50 B1 657 · B2 651 · O1 138 · O2 54 · O3 627 · O4 21 · O5 21. H1 **0.212×** PASS, H2 0 FAIL / same-screen 1 PASS, H3 **0.033×** PASS, H4 all non-inferior (O1 Δ −1 pp [−3, 0]) vs both baselines. O5 one-step routed **60/60**, hash-mismatch 0. Store invariants OK (0 duplicate screens, 0 multi-destination edges), `com.android.settings` **10 nodes / 9 edges**. **`skippedNoIdHash` 1** (34813849446: 0; 34870686468: 0). |
-| **Q7** nothing scrcpy remains | **PASS** | `blocksRan: OFF-1,ON-uiautomation,ON-input-manager,OFF-2` (no ON-scrcpy). CI `npm install` regenerated the lockfile with the `@yume-chan/*` deps dropped and no scrcpy postinstall (the job is green). No scrcpy source/test file, no scrcpy workflow step; the bench refuses a `scrcpy` `BENCH_ONLY`. `grep -ri scrcpy packages/ .github/ docs/` (outside `docs/open-server/`) → 16 files, all historical/removal notes + the Q7 refusal string (no live scrcpy code). |
+| gate                                                                 | verdict                                                                                                                            | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Q1** nothing changed vs 34870686468 (im)                           | **PARTIAL — pinch within band; tap/swipe/headline exceed a near-zero band by cross-run noise, EXPLAINED (not a behaviour change)** | im p50 this run vs 34870686468: tap 55 vs 54 (band max(0,0)=0 → +1 OUT), swipe 267 vs 263 (band max(1,2)=2 → +4 OUT by 2), pinch 318 vs 318 (band 1 → IN), headline 279 vs 372 (band max(24,78)=78 → 93 FASTER, OUT by 15). The removed scrcpy seam never ran on these blocks (it was gated on the fast-inject flag), and the Kotlin injectors + the host gesture path are unchanged from `bb3fbddf` — so the gesture verbs are code-identical. But the describe/state capture path (`StateHandler.kt`, +59/−15: stage clocks unified to `SystemClock.uptimeMillis()`, `infoMs`/`recycleMs`/`otherMs` added) DID change in 3n.2, so the headline (`tap+describe`) and `describe` rows are NOT code-identical across the two runs (3N2-H3). The deltas are run-to-run environment movement, proven by the untouched proprietary OFF comparator moving on the same rows (see the acceptance note); NOT a scrcpy-removal effect. Cross-run 95 % CIs (3n.3): tap Δ+1 [0,+1], swipe Δ+4 [−1,+9], headline Δ−93 [−147,+17] — every one contains 0. |
+| **Q2** control unchanged                                             | **Present (not void); within-band FAILs on the same cross-run-variance basis as Q1**                                               | `ON-uiautomation` ran (`default: 161/161`), so the run is NOT void. Its p50s (tap 81 / swipe 293 / pinch 348 / headline 363 / idle 298) differ from 34870686468 (86 / 306 / 346 / 480 / 304) by more than the tight bands — same cross-run variance as Q1 (the control regressed vs 34813849446 too, 3N1-M6).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Q3** vs proprietary (this run's gates)                             | **swipe/pinch WIN, headline PASS; tap FAIL by 2 (planner-accepted parity)**                                                        | P2 tap **FAIL by 2** (Δ +2 > floor 0, CI **[1, 2.5]** vs max(OFF)) — honest sub-floor miss, parity in practice; P3 swipe **PASS/WIN** (**vs pooled OFF** Δ **−30.5**, CI **[−37, −25]**; vs min(OFF) Δ −30, CI [−37, −21] — Δ and CI now share a comparator, 3N2-M1); P4 pinch **PASS/WIN** (**vs pooled OFF** Δ **−24.5**, CI **[−30, −19]**; vs min(OFF) Δ −24, CI [−31, −18]); P5 headline **PASS** (0.279k ÷ OFF = 1.09 / 1.00 / 1.04 ≤ 1.15 — the ratio moved 0.91/0.77/0.83 → 1.09/1.00/1.04 vs 34870686468, i.e. the open stack lost ground on the headline relative to proprietary despite the 93 ms absolute improvement; P5 is a non-inferiority band, not a win, 3N2-M9); P6 **PASS** (im faster than the control on every gated verb).                                                                                                                                                                                                                                                                                           |
+| **Q4** landing, fallbacks, echo                                      | **PASS**                                                                                                                           | first-attempt landing OFF-1 40/40, ON-uiautomation 60/60, ON-input-manager 60/60, OFF-2 40/40 — 100 % every block; oracle self-test passed on every block; on-device `injectStrategyCounts` = `{"input-manager":161}` / control `{"default":161}` with **no** `unavailable` key — that (not `strategyFallbacks`, which reads 0 by construction after 3n.2 and is NOT evidence, 3N2-H1) is the real fallback evidence; the 3n.3 gate now reads it. Denominator (3N2-M6): 161 process-wide = **100 measured** gated-inject RPCs (5 inject verbs × N=20: gesture-tap, tap+describe settle:false/true, gesture-swipe, gesture-pinch) + warmups (5 × 3) + oracle self-test taps + describe-split after-tap taps (10+10) + locate/restore taps.                                                                                                                                                                                                                                                                                                    |
+| **Q5** device suite green incl. residual gate + P9 tap/swipe/gesture | **PASS**                                                                                                                           | **Test Files 1 passed** — all 22 device cases PASS (`fallback=NO`); the 3n strategy cases `ranAs == requested` (uia-sync / uia-async / input-manager + cadence). \*\*3m residual gate PASS: after-tap `                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | captureMs − Σ(stages) | `median 1 ms, idle 0 ms** (≤10) — new stages after-tap`infoMs`med 2,`recycleMs`med 0,`otherMs`med 1; the 20 per-sample residuals printed. **P9 forced-fallback PASS on tap, swipe AND gesture** (each`strategy==unavailable`, `fellBackTo==uia-async`; tap still navigated +/−42 labels; reset → input-manager). |
+| **Q6** screen-graph green                                            | **PASS (O1 99/100 and skippedNoIdHash 1 reported)**                                                                                | Job green. success B1 100/100 · B2 100/100 · O1 **99/100** · O2 100/100 · O3 100/100 · O4 100/100 · O5 100/100 (O1's 1 failure is uncategorised L/A/O/T 0 and within the H4 5 pp floor). tokens o200k p50 B1 657 · B2 651 · O1 138 · O2 54 · O3 627 · O4 21 · O5 21. H1 **0.212×** PASS, H2 0 FAIL / same-screen 1 PASS, H3 **0.033×** PASS, H4 all non-inferior (O1 Δ −1 pp [−3, 0]) vs both baselines. O5 one-step routed **60/60**, hash-mismatch 0. Store invariants OK (0 duplicate screens, 0 multi-destination edges), `com.android.settings` **10 nodes / 9 edges**. **`skippedNoIdHash` 1** (34813849446: 0; 34870686468: 0).                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Q7** nothing scrcpy remains                                        | **PASS**                                                                                                                           | `blocksRan: OFF-1,ON-uiautomation,ON-input-manager,OFF-2` (no ON-scrcpy). CI `npm install` regenerated the lockfile with the `@yume-chan/*` deps dropped and no scrcpy postinstall (the job is green). No scrcpy source/test file, no scrcpy workflow step; the bench refuses a `scrcpy` `BENCH_ONLY`. `grep -ri scrcpy packages/ .github/ docs/` (outside `docs/open-server/`) → 16 files, all historical/removal notes + the Q7 refusal string (no live scrcpy code).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 **Acceptance:** Q3 (swipe/pinch win, headline pass, tap honest 2 ms parity-miss), Q4, Q5,
 Q6, Q7 are green. Q1/Q2 exceed their (near-zero) reproduction bands by 1–4 ms on
-tap/swipe and by a 93 ms *improvement* on the headline; per the acceptance rule these are
+tap/swipe and by a 93 ms _improvement_ on the headline; per the acceptance rule these are
 reported and explained — they are cross-run **environment** movement, NOT a behaviour
 change from the removal. The removed scrcpy seam never ran on these blocks (it was gated on
 the fast-inject flag) and the Kotlin injectors + host gesture path are unchanged from
@@ -190,14 +196,14 @@ before merge; `open/main` is NOT fast-forwarded.
 
 #### Verb table — run 34888577404 vs run 34870686468 (ON-input-manager p50, at measured floors)
 
-| verb | 34870686468 im | 34888577404 im | 34888577404 floor | vs proprietary (34888577404) |
-|---|---|---|---|---|
-| gesture-tap | 54 | **55** | 0 | +2 vs max(OFF) 53 → P2 FAIL by 2 (parity, CI [1, 2.5] vs max(OFF)) |
-| gesture-swipe | 263 | **267** | 1 | −30.5 vs **pooled OFF** → **WIN**, CI [−37, −25] (min(OFF): Δ −30, CI [−37, −21]) |
-| gesture-pinch | 318 | **318** | 1 | −24.5 vs **pooled OFF** → **WIN**, CI [−30, −19] (min(OFF): Δ −24, CI [−31, −18]) |
-| tap+describe(settle:false) | 372 | **279** | 24 | ÷ OFF 1.09 / 1.00 / 1.04 → P5 PASS |
-| await-screen-idle | 305 | **297** | 1 | −199…−200 vs OFF (498/497) |
-| await-ui-element | 41 | **36** | 3 | −36…−39 vs OFF (72/75) |
+| verb                       | 34870686468 im | 34888577404 im | 34888577404 floor | vs proprietary (34888577404)                                                      |
+| -------------------------- | -------------- | -------------- | ----------------- | --------------------------------------------------------------------------------- |
+| gesture-tap                | 54             | **55**         | 0                 | +2 vs max(OFF) 53 → P2 FAIL by 2 (parity, CI [1, 2.5] vs max(OFF))                |
+| gesture-swipe              | 263            | **267**        | 1                 | −30.5 vs **pooled OFF** → **WIN**, CI [−37, −25] (min(OFF): Δ −30, CI [−37, −21]) |
+| gesture-pinch              | 318            | **318**        | 1                 | −24.5 vs **pooled OFF** → **WIN**, CI [−30, −19] (min(OFF): Δ −24, CI [−31, −18]) |
+| tap+describe(settle:false) | 372            | **279**        | 24                | ÷ OFF 1.09 / 1.00 / 1.04 → P5 PASS                                                |
+| await-screen-idle          | 305            | **297**        | 1                 | −199…−200 vs OFF (498/497)                                                        |
+| await-ui-element           | 41             | **36**         | 3                 | −36…−39 vs OFF (72/75)                                                            |
 
 Both ON blocks (im and the `ON-uiautomation` control tap 81 / swipe 293 / pinch 348 /
 headline 363) drifted a few ms vs 34870686468 on the tightest floors; OFF↔OFF drift this

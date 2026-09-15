@@ -7,14 +7,16 @@ locally; do not push. AVD `bench-api35` (`-grpc 8554 -grpc-use-token`), never
 `ZF524RZBHD`; boot only when `adb devices` shows no emulator.
 
 ## Finding (v4)
+
 tap+describe: proprietary 145 ms p50, open 689 ms. `captureMs` 12 ms — the
 residual is `waitedMs` 519 (`getNestedState waitTimeoutMs: 500` = quiescence
 window). The proprietary ADT path reads the tree immediately after the tap
-(no quiescence), so the two differ in *policy*, not speed. To be like-for-
+(no quiescence), so the two differ in _policy_, not speed. To be like-for-
 like, the open describe must default to the same policy; the settled read is
 the superior product feature and stays available explicitly.
 
 ## Changes
+
 1. `tools/describe/platforms/android/index.ts` open branch: default
    `waitTimeoutMs: 0` (immediate read, matching ADT). Add describe param
    `settle?: boolean | number` (false/absent = immediate; true = 500 ms
@@ -24,7 +26,7 @@ the superior product feature and stays available explicitly.
    `waitForIdleMs: 500` actually does in the bench path (does ADT's
    `getHierarchy` honour it as a cap or a quiescence?). Measure: OFF
    tap+describe with `waitedMs`-equivalent unknown — instead, measure the
-   OFF describe's *staleness*: after a navigating tap, does the OFF tree
+   OFF describe's _staleness_: after a navigating tap, does the OFF tree
    already contain the destination screen's title (count over 20 runs)?
    Do the same for ON at `settle:false` and `settle:true`. Report the
    three "destination already visible" rates.
@@ -37,6 +39,7 @@ the superior product feature and stays available explicitly.
    proprietary path.
 
 ## Targets
+
 - tap+describe ON(settle:false) ≤ 1.2× OFF p50.
 - ON(settle:true) reported with its staleness benefit (destination-visible
   rate) — no latency target.
@@ -45,6 +48,7 @@ the superior product feature and stays available explicitly.
   verify `uiDevice.waitForIdle(0)` returns immediately, else skip the call).
 
 ## Output
+
 Append a "v5 / phase 3d" section to
 `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results-v4.md`
 (same file, new section) with the tap+describe triple and staleness rates.

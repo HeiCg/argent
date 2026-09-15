@@ -51,10 +51,17 @@ export function resolveRunnerProjectPath(): string {
 
 /** The derived-data / build cache dir, keyed below by Xcode version + sources. */
 function derivedDataRoot(): string {
-  return process.env.ARGENT_IOS_RUNNER_DERIVED ?? path.join(os.homedir(), ".argent", "ios-open-server", "derived");
+  return (
+    process.env.ARGENT_IOS_RUNNER_DERIVED ??
+    path.join(os.homedir(), ".argent", "ios-open-server", "derived")
+  );
 }
 
-function runnerError(message: string, stage: string, kind: "validation" | "subprocess" | "timeout"): FailureError {
+function runnerError(
+  message: string,
+  stage: string,
+  kind: "validation" | "subprocess" | "timeout"
+): FailureError {
   return new FailureError(message, {
     error_code: FAILURE_CODES.OPEN_DEVICE_SERVER_READY_TIMEOUT,
     failure_stage: stage,
@@ -70,7 +77,11 @@ export async function xcodebuildVersion(): Promise<string> {
 }
 
 /** sha256 over the source tree hash ⊕ `xcodebuild -version` ⊕ the destination. */
-async function cacheKey(projectDir: string, xcodeVersion: string, destination: string): Promise<string> {
+async function cacheKey(
+  projectDir: string,
+  xcodeVersion: string,
+  destination: string
+): Promise<string> {
   const h = createHash("sha256");
   h.update(xcodeVersion);
   h.update("\0");
@@ -79,7 +90,9 @@ async function cacheKey(projectDir: string, xcodeVersion: string, destination: s
   // Hash every Swift/Obj-C/plist/pbxproj under the project dir (order-stable).
   const files: string[] = [];
   const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of fs
+      .readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name))) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name === "build" || entry.name.endsWith(".xcuserdata")) continue;
@@ -124,16 +137,25 @@ export async function buildForTesting(target: IosRunnerTarget): Promise<string> 
 
     const args = [
       "build-for-testing",
-      "-project", projectPath,
-      "-scheme", "ArgentRunner",
-      "-destination", destination,
-      "-derivedDataPath", derived,
+      "-project",
+      projectPath,
+      "-scheme",
+      "ArgentRunner",
+      "-destination",
+      destination,
+      "-derivedDataPath",
+      derived,
       "ONLY_ACTIVE_ARCH=YES",
       "ENABLE_CODE_COVERAGE=NO",
     ];
     if (target.kind === "device") {
       const teamId = process.env.ARGENT_IOS_TEAM_ID?.trim();
-      if (!teamId) throw runnerError("ARGENT_IOS_TEAM_ID is required to build for a physical device", "ios_open_server_signing", "validation");
+      if (!teamId)
+        throw runnerError(
+          "ARGENT_IOS_TEAM_ID is required to build for a physical device",
+          "ios_open_server_signing",
+          "validation"
+        );
       args.push(
         "-allowProvisioningUpdates",
         "CODE_SIGN_STYLE=Automatic",
@@ -141,7 +163,10 @@ export async function buildForTesting(target: IosRunnerTarget): Promise<string> 
         `ARGENT_RUNNER_APP_BUNDLE_ID=com.argent.runner.t${teamId.toLowerCase()}`
       );
     }
-    await execFileAsync("xcodebuild", args, { timeout: BUILD_BUDGET_MS, maxBuffer: 64 * 1024 * 1024 });
+    await execFileAsync("xcodebuild", args, {
+      timeout: BUILD_BUDGET_MS,
+      maxBuffer: 64 * 1024 * 1024,
+    });
     fs.writeFileSync(stamp, key);
   }
 
@@ -153,8 +178,14 @@ function findXctestrun(productsDir: string, kind: IosRunnerTarget["kind"]): stri
   const wantSim = kind === "simulator";
   const entries = fs.existsSync(productsDir) ? fs.readdirSync(productsDir) : [];
   const runs = entries.filter((e) => e.endsWith(".xctestrun"));
-  const match = runs.find((e) => (wantSim ? /simulator/i.test(e) : /iphoneos|device/i.test(e))) ?? runs[0];
-  if (!match) throw runnerError(`no .xctestrun produced in ${productsDir}`, "ios_open_server_build", "subprocess");
+  const match =
+    runs.find((e) => (wantSim ? /simulator/i.test(e) : /iphoneos|device/i.test(e))) ?? runs[0];
+  if (!match)
+    throw runnerError(
+      `no .xctestrun produced in ${productsDir}`,
+      "ios_open_server_build",
+      "subprocess"
+    );
   return path.join(productsDir, match);
 }
 
@@ -163,15 +194,21 @@ function findXctestrun(productsDir: string, kind: IosRunnerTarget["kind"]): stri
  * port through `TEST_RUNNER_ARGENT_RUNNER_PORT` (xcodebuild strips the prefix so
  * the test process reads `ARGENT_RUNNER_PORT`).
  */
-export async function launchRunner(target: IosRunnerTarget, xctestrun: string): Promise<SpawnedIosRunner> {
+export async function launchRunner(
+  target: IosRunnerTarget,
+  xctestrun: string
+): Promise<SpawnedIosRunner> {
   const port = await freeHostPort();
   const destination = destinationFor(target);
   const args = [
     "test-without-building",
-    "-xctestrun", xctestrun,
+    "-xctestrun",
+    xctestrun,
     "-only-testing:" + TEST_IDENTIFIER,
-    "-destination", destination,
-    "-test-timeouts-enabled", "NO",
+    "-destination",
+    destination,
+    "-test-timeouts-enabled",
+    "NO",
   ];
   const proc = spawn("xcodebuild", args, {
     detached: true,
@@ -183,7 +220,10 @@ export async function launchRunner(target: IosRunnerTarget, xctestrun: string): 
 }
 
 /** Ping the runner until it answers or 120 s elapse. */
-export async function waitForReady(client: IosOpenServerClient, timeoutMs = READY_TIMEOUT_MS): Promise<void> {
+export async function waitForReady(
+  client: IosOpenServerClient,
+  timeoutMs = READY_TIMEOUT_MS
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   while (Date.now() < deadline) {
@@ -203,7 +243,9 @@ export async function waitForReady(client: IosOpenServerClient, timeoutMs = READ
 }
 
 /** Build (cached) + launch + wait-for-ready, returning the process and a client. */
-export async function spawnIosRunner(target: IosRunnerTarget): Promise<{ spawned: SpawnedIosRunner; client: IosOpenServerClient }> {
+export async function spawnIosRunner(
+  target: IosRunnerTarget
+): Promise<{ spawned: SpawnedIosRunner; client: IosOpenServerClient }> {
   const xctestrun = await buildForTesting(target);
   const spawned = await launchRunner(target, xctestrun);
   const client = new IosOpenServerClient({ port: spawned.port });

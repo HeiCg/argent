@@ -7,6 +7,7 @@ acceptance. device-farm keeps its own concerns (pool, jobs, reporting); its
 DSL/driver innovations land in the fork first.
 
 ## Branch model (fork: github.com/HeiCg/argent)
+
 - `main` — tracks upstream `software-mansion/argent` main (fast-forward only).
 - `open/main` — the distribution branch: upstream main + all open-driver
   work merged. Rebased/merged from upstream on a cadence; releases cut here.
@@ -19,6 +20,7 @@ DSL/driver innovations land in the fork first.
   `open/main` commits, not in feature branches.
 
 ## Distribution defaults on `open/main`
+
 - `open-device-server` flag default ON for Android; proprietary binaries
   optional (absent = open path only, no fallback attempts, clear message).
 - Package: publish under a distinct scope/name (e.g. `@heicg/argent-open` or
@@ -29,6 +31,7 @@ DSL/driver innovations land in the fork first.
   device test on a macOS runner with an AVD (nightly).
 
 ## Immediate work mapping
+
 - Phase 3 (perf parity) → `feat/android-open-server` (in flight).
 - Screen-graph Phase A → `feat/screen-graph` worktree off
   `feat/android-open-server` (in flight; rebase after phase 3 lands).
@@ -42,6 +45,7 @@ DSL/driver innovations land in the fork first.
   (or its DSL package) instead of its own drivers.
 
 ## Open items
+
 - Name/scope for the published package; LICENSE notice (Apache-2.0
   compatible; keep upstream NOTICE).
 - Which upstream PRs to keep opening (run-script, rich-selectors,

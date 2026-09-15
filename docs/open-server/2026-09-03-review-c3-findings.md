@@ -22,7 +22,7 @@ descriptive statistics are accepted with labels; H4 is not scoreboard-grade.
 ### Verified TRUE (no action)
 
 - **C1-OK** `.github/workflows/bench-open-vs-proprietary.yml:` checkout `ref:
-  a0f8300403156472132748cb04997a58b3b62f28` == `origin/feat/screen-graph-c3`
+a0f8300403156472132748cb04997a58b3b62f28` == `origin/feat/screen-graph-c3`
   head. Run 33786304637 ran workflow sha `05a539ca` == `feat/bench-ci-c3` head.
   Pin is correct **for this run**.
 - **C2-OK** Both `run:` blocks start with `set -euo pipefail`; no
@@ -39,14 +39,13 @@ descriptive statistics are accepted with labels; H4 is not scoreboard-grade.
   Root cause as stated: `bench-screen-graph.ts:730` now sends
   `target: { selector: … }`. Confirmed in both JSONs.
 - **C6-OK** Chrome FRE: all six chrome-related tasks read `YYY` for all seven
-  configs in run 33786304637 (regenerated from the JSON). Was NNN for all in
-  33742435496.
+  configs in run 33786304637 (regenerated from the JSON). Was NNN for all in 33742435496.
 - **C7-OK** No centre taps. `bench-screen-graph.ts:814` — `!located.found`
   returns `locateFailed`, `:1075` aborts the task and excludes it. B1
   `locateFailed 0, excluded 0`; matrix log line 2: `B1 precompute done in
-  133626ms: 16 coords, 0 miss`. B1 taps were located through the tree.
+133626ms: 16 coords, 0 miss`. B1 taps were located through the tree.
 - **C8-OK** Scoring/exclusion RULES are byte-identical C.2→C.3: `git diff
-  5b1e6e98..a0f83004` touches only `bench-preflight.ts`,
+5b1e6e98..a0f83004` touches only `bench-preflight.ts`,
   `bench-screen-graph.ts` (4 hunks: FRE, navigate fix, `located` for O5, main
   ordering), new `preflight.ts`, `tasks.ts`, the test. `oracle.ts` and
   `policy.ts` untouched.
@@ -63,7 +62,7 @@ descriptive statistics are accepted with labels; H4 is not scoreboard-grade.
   tasks (`settings-network` 1×3, `settings-network-internet` 2×3). The other
   27 of 36 known-target taps fell back to plain locate+tap — identical to O4.
   `logs/sg-matrix.log:111-137` has 27 `navigate-to did not reach …; falling
-  back to locate+tap` lines, yet `:138` reports `fallbacks 0`. The counter is
+back to locate+tap` lines, yet `:138` reports `fallbacks 0`. The counter is
   honest for its own definition (`bench-screen-graph.ts:162` `fallbacksSince`
   scans the monkey-patched `console.debug`; the navigate message goes through
   `realDebug` and is invisible to it) but the per-config table publishes
@@ -98,7 +97,7 @@ descriptive statistics are accepted with labels; H4 is not scoreboard-grade.
   exercised the proprietary path … so its success is valid for H4" is not
   supported. The doc's caveat "B1 read (none) where B2 matched Brightness" is
   also stale: in run 33786304637 B1 reps 1-2 matched `Brightness`/`Brightness
-  level`@title.
+level`@title.
 - **C-H5 · H1's 0.107× is not comparable across phases; the needle change moved
   the metric.** `bench-screen-graph.ts:1040` feeds `task.assertion` as the
   `query` selector on every NON-tap step, and `runObservation`'s `query` branch
@@ -181,14 +180,14 @@ All from **run 33786304637**, 7 configs × 20 tasks × 3 reps, **n = 93 non-laun
 steps per config**, 60 task-runs per config. Independently recomputed from
 `bench-sg-2026-09-03T17-50-09-621Z.json`; all reproduce the doc.
 
-| Statistic (p50) | B1 | B2 | O1 | O2 | O3 | O4 | O5 |
-|---|---|---|---|---|---|---|---|
-| tokens/step o200k | 657 | 627 | 67 | 54 | 598 | 85 | 85 |
-| tokens/step chars/4 | 473 | 447 | 43 | 32 | 397 | 69 | 70 |
-| observation RTT ms/step | 668 | 94 | 4 | 4 | 90 | 50 | 48 |
-| RTT count/step, all | 2 | 2 | 2 | 2 | 2 | 1 | 1 |
-| RTT count/step, same-screen (n=30) | 2 | 2 | 2 | 1 | 1 | 1 | 1 |
-| task success | 56/60 | 60/60 | 58/60 | 59/60 | 60/60 | 60/60 | 49/60 |
+| Statistic (p50)                    | B1    | B2    | O1    | O2    | O3    | O4    | O5    |
+| ---------------------------------- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+| tokens/step o200k                  | 657   | 627   | 67    | 54    | 598   | 85    | 85    |
+| tokens/step chars/4                | 473   | 447   | 43    | 32    | 397   | 69    | 70    |
+| observation RTT ms/step            | 668   | 94    | 4     | 4     | 90    | 50    | 48    |
+| RTT count/step, all                | 2     | 2     | 2     | 2     | 2     | 1     | 1     |
+| RTT count/step, same-screen (n=30) | 2     | 2     | 2     | 1     | 1     | 1     | 1     |
+| task success                       | 56/60 | 60/60 | 58/60 | 59/60 | 60/60 | 60/60 | 49/60 |
 
 Labels that must travel with them: O1/O2 tokens are needle-coupled (C-H5); O5's
 tokens and RTT-count are O4's numbers for 94 % of steps (C-H1); B1's success is
@@ -242,7 +241,7 @@ independent reasons that is wrong:
 1. **The structural hash excludes text by construction.**
    `packages/android-device-server/.../accessibility/ScreenHash.kt:78-93`
    (`appendStructural`) hashes `className | resourceId | quantised bounds |
-   flags` per node in DFS order and **never appends `text` or `contentDesc`**.
+flags` per node in DFS order and **never appends `text` or `contentDesc`**.
    The state hash at `:107-116` (`appendState`) is the one that adds them. A
    clock tick, a battery percentage or a signal-strength label changes
    `H_text`, never `H`. `planToSelector` and `runNavigation` both use `H`.
@@ -287,7 +286,7 @@ there is genuinely no edge chain from the live root to any indexed target.
 **The 9 "reached but wrong" cases have a separate, structural cause.**
 `runNavigation` (`src/screen-graph/navigate.ts:44-56`) accepts a step when
 `afterHash === step.to`, comparing the **text-free** `H`. Hash equality is
-therefore *structural* equality, not *content* equality: arriving on a
+therefore _structural_ equality, not _content_ equality: arriving on a
 structurally identical list screen satisfies `reached` while the needle is
 absent. `planToSelector` selects targets **by text** and `runNavigation`
 verifies **without text**. That mismatch, not a "stale bucket", is the defect.

@@ -3,7 +3,8 @@
 Why: the local host is memory-exhausted (24 GB RAM, 15 GB swap, <100 MB
 free) and blocks every device bench. Upstream argent already boots an
 Android emulator on `ubuntu-latest` with KVM (`.github/workflows/wayland-e2e.yml`
-+ `.github/actions/*`). Reuse that to run our benches off-host.
+
+- `.github/actions/*`). Reuse that to run our benches off-host.
 
 Repo: ARGENT FORK. Worktree: create
 `/private/tmp/claude-501/-Users-heicg-Desktop-projects-device-farm-device-stream/f494020d-4d6d-4533-9918-a025d7c363ad/scratchpad/argent-ci`
@@ -13,6 +14,7 @@ emulator, NO adb against local devices. Commit locally, then PUSH this branch
 (it must reach GitHub to run) and trigger with `gh workflow run`.
 
 ## Workflow `.github/workflows/bench-open-vs-proprietary.yml`
+
 - `workflow_dispatch` only, inputs: `blocks` (default
   `OFF-1,ON-uiautomation,ON-scrcpy,OFF-2`), `n` (default 20), `suite`
   (`latency` | `screen-graph` | `both`, default `latency`).
@@ -46,6 +48,7 @@ emulator, NO adb against local devices. Commit locally, then PUSH this branch
   print the scoreboard table into the job summary (`$GITHUB_STEP_SUMMARY`).
 
 ## Report
+
 Write `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-03-open-vs-proprietary-results-ci.md`
 from the downloaded artifacts (`gh run download`): same tables as v4–v6,
 plus a clear banner that this is x86_64/KVM on a hosted runner and is NOT
@@ -53,6 +56,7 @@ comparable to the local arm64/HVF numbers — only OFF vs ON within the same
 run is like-for-like. Include OFF-1/OFF-2 drift and fallbacks per block.
 
 ## Acceptance
+
 - Workflow green (or ON-only with the proprietary refusal documented).
 - Artifacts downloaded; report written; branch pushed; run URL in the
   report.

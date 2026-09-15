@@ -14,6 +14,7 @@ tsconfig extends `@docusaurus/tsconfig`, not installed in the root `node_modules
 `npm ci` installs it.
 
 ## Work
+
 1. `npm run format` (prettier --write) once on the branch — expect ~156 files; commit as
    one mechanical commit "style: prettier over the open-server work"; no content changes.
    Check that `docs/open-server/*.md` tables survive (prettier reflows markdown; if a
@@ -40,6 +41,7 @@ tsconfig extends `@docusaurus/tsconfig`, not installed in the root `node_modules
    planner already removed the single uncited one).
 
 ## Process
+
 Branch `chore/ci-hygiene-open-main` off `open/main` (HEAD ≥ b5be6a9a), worktree
 `../argent-fork-wt-hygiene` (never /tmp; root `node_modules` symlinked; no npm install /
 gradle / Xcode; vitest `--maxWorkers=2`). Wait for the two bench agents (`wt-ios2`,

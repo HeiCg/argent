@@ -34,7 +34,9 @@ describe("iOS open-server method parity (host list ↔ Swift RunnerMethod)", () 
     const deferred = extractEnumCases(swiftSource, "DeferredMethod");
     const supported = new Set<string>(IOS_OPEN_SERVER_METHODS);
     for (const d of deferred) {
-      expect(supported.has(d), `deferred method '${d}' also appears in the supported list`).toBe(false);
+      expect(supported.has(d), `deferred method '${d}' also appears in the supported list`).toBe(
+        false
+      );
     }
     // The deferred set names the iOS-2/3/4 work, so it must be non-empty.
     expect(deferred.length).toBeGreaterThan(0);

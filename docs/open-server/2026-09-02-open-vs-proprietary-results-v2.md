@@ -17,44 +17,44 @@ are local, not pushed.
 
 ## Environment
 
-| Item | Value |
-|---|---|
-| Host | macOS (Darwin 25.6.0), Apple Silicon |
-| Emulator | AVD `bench-api35`, Android 15 (API 35), arm64-v8a, 1080×2400 @ 420dpi, `-no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token` |
-| Emulator serial | `emulator-5554` (all adb calls `-s emulator-5554`) |
-| Physical device | `ZF524RZBHD` — **never targeted** (not attached during this run; the bench refuses any non-`emulator-` serial and the physical deny-serial) |
+| Item                 | Value                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Host                 | macOS (Darwin 25.6.0), Apple Silicon                                                                                                                                                 |
+| Emulator             | AVD `bench-api35`, Android 15 (API 35), arm64-v8a, 1080×2400 @ 420dpi, `-no-window -no-audio -no-boot-anim -grpc 8554 -grpc-use-token`                                               |
+| Emulator serial      | `emulator-5554` (all adb calls `-s emulator-5554`)                                                                                                                                   |
+| Physical device      | `ZF524RZBHD` — **never targeted** (not attached during this run; the bench refuses any non-`emulator-` serial and the physical deny-serial)                                          |
 | Proprietary binaries | vendored published package **v0.22.1** (`bin/darwin/simulator-server`, `argent-android-devtools-0.1.0.apk`), resolved via `ARGENT_SIMULATOR_SERVER_DIR` / `ARGENT_NATIVE_DEVTOOLS_*` |
-| Open server | Kotlin `@argent/android-device-server` rebuilt to versionCode 13 (`gradlew assembleDebug`), reinstalled per iteration via the manifest version gate |
-| Token estimator | **chars/4** (spec fallback; js-tiktoken o200k_base not installed in the checkout) |
-| Path confirmation | `describe.source` = `android-devtools` every OFF block, `open-device-server` every ON block; no masked fallbacks |
+| Open server          | Kotlin `@argent/android-device-server` rebuilt to versionCode 13 (`gradlew assembleDebug`), reinstalled per iteration via the manifest version gate                                  |
+| Token estimator      | **chars/4** (spec fallback; js-tiktoken o200k_base not installed in the checkout)                                                                                                    |
+| Path confirmation    | `describe.source` = `android-devtools` every OFF block, `open-device-server` every ON block; no masked fallbacks                                                                     |
 
 ## Latency per verb — p50 / p95 / max (ms), final run
 
 Authoritative final bench (`.bench-results/final2`, clean APK, no instrumentation).
 All cells N=20, **0 errors, 0 fallbacks** across all 480 calls.
 
-| Verb | OFF-1 (prop) | ON (open) | OFF-2 (prop) | v1 ON (before) | verdict |
-|---|---|---|---|---|---|
-| describe | 76 / 78 / 79 | 77 / 80 / 80 | 73 / 77 / 77 | 74 | ≈ equal |
-| screenshot | 6 / 6 / 7 | 80 / 121 / 125 | 6 / 7 / 7 | 78 | OFF (resolution differs, see caveat) |
-| **gesture-tap** | 52 / 54 / 55 | **33 / 35 / 36** | 52 / 53 / 54 | 146 | **ON wins** (was OFF 2.7×) |
-| **gesture-swipe** | 285 / 294 / 296 | 300 / 338 / 348 | 286 / 291 / 292 | 650 | ON at floor (+5%, was 2.2× — see floor) |
-| await-screen-idle | 506 / 519 / 964 | 502 / 514 / 721 | 509 / 541 / 729 | 502 | ≈ equal |
-| await-ui-element | 76 / 79 / 79 | 75 / 84 / 528 | 76 / 81 / 84 | 72 | ≈ equal |
-| paste | 81 / 99 / 108 | 66 / 69 / 80 | 81 / 101 / 138 | 57 | ON wins |
-| **gesture-pinch** | 353 / 379 / 385 | **220 / 234 / 236** | 339 / 348 / 349 | 846 | **ON wins** (was OFF 2.4×) |
+| Verb              | OFF-1 (prop)    | ON (open)           | OFF-2 (prop)    | v1 ON (before) | verdict                                 |
+| ----------------- | --------------- | ------------------- | --------------- | -------------- | --------------------------------------- |
+| describe          | 76 / 78 / 79    | 77 / 80 / 80        | 73 / 77 / 77    | 74             | ≈ equal                                 |
+| screenshot        | 6 / 6 / 7       | 80 / 121 / 125      | 6 / 7 / 7       | 78             | OFF (resolution differs, see caveat)    |
+| **gesture-tap**   | 52 / 54 / 55    | **33 / 35 / 36**    | 52 / 53 / 54    | 146            | **ON wins** (was OFF 2.7×)              |
+| **gesture-swipe** | 285 / 294 / 296 | 300 / 338 / 348     | 286 / 291 / 292 | 650            | ON at floor (+5%, was 2.2× — see floor) |
+| await-screen-idle | 506 / 519 / 964 | 502 / 514 / 721     | 509 / 541 / 729 | 502            | ≈ equal                                 |
+| await-ui-element  | 76 / 79 / 79    | 75 / 84 / 528       | 76 / 81 / 84    | 72             | ≈ equal                                 |
+| paste             | 81 / 99 / 108   | 66 / 69 / 80        | 81 / 101 / 138  | 57             | ON wins                                 |
+| **gesture-pinch** | 353 / 379 / 385 | **220 / 234 / 236** | 339 / 348 / 349 | 846            | **ON wins** (was OFF 2.4×)              |
 
 Drift: OFF-1 vs OFF-2 p50 within ±14 ms every verb — no drift across the ON block.
 
 ## describe output size — BOTH screens
 
-| Metric | OFF (android-devtools) | ON (open-device-server) |
-|---|---|---|
-| Settings **root** — bytes | 1892 | 1894 |
-| Settings **root** — tokens (chars/4) | 473 | **473** |
-| Settings **root** — elements | 14 | **14** |
-| Settings **search** ("battery") — tokens | 735 | **735** |
-| Settings **search** — rendered labels | 20 | **20** |
+| Metric                                   | OFF (android-devtools) | ON (open-device-server) |
+| ---------------------------------------- | ---------------------- | ----------------------- |
+| Settings **root** — bytes                | 1892                   | 1894                    |
+| Settings **root** — tokens (chars/4)     | 473                    | **473**                 |
+| Settings **root** — elements             | 14                     | **14**                  |
+| Settings **search** ("battery") — tokens | 735                    | **735**                 |
+| Settings **search** — rendered labels    | 20                     | **20**                  |
 
 v1 ON was 1077 tokens / 59 elements on the root — a **2.28× regression** that is
 now gone. The compact ON describe is **byte-identical** to the proprietary path
@@ -64,11 +64,11 @@ on the root, and token-identical on the search-results screen.
 
 Settings root (bench `fidelitySet`, `(resource-id | text)`):
 
-| Metric | Value |
-|---|---|
+| Metric                | Value     |
+| --------------------- | --------- |
 | raw Jaccard OFF vs ON | **1.000** |
-| labels only in OFF | 0 |
-| labels/ids only in ON | 0 |
+| labels only in OFF    | 0         |
+| labels/ids only in ON | 0         |
 
 Search screen (measured describing the SAME static screen under both backends):
 label set **identical** (20/20, no `onlyOff`, no `onlyOn`), OFF resource-ids ⊆ ON.
@@ -81,12 +81,12 @@ different states (an artifact seen mid-loop, not a real gap).
 Median vertical displacement of rows common to before/after a single default
 swipe (fromY 0.72 → 0.32, 300 ms), fresh Settings list:
 
-| | scroll (normalized) |
-|---|---|
-| OFF default momentum | 0.599 |
-| ON default momentum | 0.584 |
-| **ON / OFF ratio** | **0.975** (within ±15%) |
-| ON `momentum:false` | 0.379 (< ON momentum ✓ — momentum-free scrolls less) |
+|                      | scroll (normalized)                                  |
+| -------------------- | ---------------------------------------------------- |
+| OFF default momentum | 0.599                                                |
+| ON default momentum  | 0.584                                                |
+| **ON / OFF ratio**   | **0.975** (within ±15%)                              |
+| ON `momentum:false`  | 0.379 (< ON momentum ✓ — momentum-free scrolls less) |
 
 ### gesture-pinch zoom (condition 3)
 
@@ -115,7 +115,7 @@ MotionInjector, plus per-RPC server timing.
   which implicitly waits for the UI to go idle after the tap. The raw `tap` RPC
   measured **133 ms** almost entirely inside `click`. Replaced with a raw
   ACTION_DOWN + ACTION_UP through `MotionInjector` (no idle wait; settling is the
-  await-* tools' job). tap RPC → **~27 ms**, tool p50 146 → **33**.
+  await-\* tools' job). tap RPC → **~27 ms**, tool p50 146 → **33**.
 - **C. `MotionInjector` pacing — confirmed, fixed.** Every frame was injected
   with `injectInputEvent(sync=true)`, blocking the RPC thread on each event's full
   dispatch (~15–40 ms/frame under UI load). For pinch (22 events) that stacked
@@ -166,8 +166,8 @@ MotionInjector, plus per-RPC server timing.
 ON swipe p50 300 ms vs OFF ~286 ms (+~14 ms, ~5 %), consistent across runs (not
 noise: OFF-1 285, OFF-2 286).
 
-**Reason.** A default swipe is duration-bound: condition 2 requires the *same
-requested duration* (250 ms), so both backends hold the finger down ~256 ms — the
+**Reason.** A default swipe is duration-bound: condition 2 requires the _same
+requested duration_ (250 ms), so both backends hold the finger down ~256 ms — the
 floor both share. The residual gap is the cost of getting the finger down and up
 during that window:
 
@@ -181,7 +181,7 @@ fits over the last ~100 ms before the lift, so enough samples must land in that
 window to reproduce OFF's velocity. Cutting the sample count to bring injection
 under OFF's overhead **measurably breaks the fling**: at 5 samples the swipe
 latency dropped to ~276 ms but the fling collapsed to ratio **0.38** (0.24 vs OFF
-0.62) and `momentum:false` began scrolling *more* than the default — a fidelity
+0.62) and `momentum:false` began scrolling _more_ than the default — a fidelity
 regression. The shipped path keeps dense-near-the-lift sampling (fling ratio
 0.975) and accepts the ~14 ms, because fling fidelity is the harder guarantee.
 
@@ -192,8 +192,8 @@ losing the fling. Tap and pinch, whose durations are not pinned, both beat OFF.
 ## What changed — per-fix attribution (commits, local only)
 
 1. `feat(android-open-server): token-parity compact describe via nested tree +
-   shared v2 trim` — condition 4. Server serves the full nested a11y tree across
-   all windows (incl. the IME keyboard); the host runs the *same* v2 trim the
+shared v2 trim` — condition 4. Server serves the full nested a11y tree across
+   all windows (incl. the IME keyboard); the host runs the _same_ v2 trim the
    android-devtools XML path uses (`buildDescribeTreeFromParsedRoot`), so output
    is byte-identical. Files: `NodeSerializer.kt` (nested serializer),
    `HierarchyHandler.kt` (all-windows), `uiautomator-parser.ts` (extract shared
@@ -201,7 +201,7 @@ losing the fling. Tap and pinch, whose durations are not pinned, both beat OFF.
    `format-tree.ts` (open-device-server → nested render), blueprint
    (`getNestedAccessibilityTree`).
 2. `perf(android-open-server): cut tap/swipe/pinch latency to <= the proprietary
-   path` — conditions 1–3. Raw-inject tap (B), async motion events + downsampling
+path` — conditions 1–3. Raw-inject tap (B), async motion events + downsampling
    (C/F), cheap `getScreenSize` + per-session size cache on the hot path (E),
    momentum-swipe via injector with dense-near-lift sampling, 180 ms open-path
    pinch cap. Files: `TapHandler.kt`, `MotionInjector.kt`, `SwipeHandler.kt`,

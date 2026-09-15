@@ -26,7 +26,10 @@ import {
   type OpenDeviceServerApi,
   type OpenServerInfo,
 } from "../../src/blueprints/android-open-server";
-import type { OpenServerElement, OpenServerNestedElement } from "../../src/tools/describe/platforms/android/open-server-tree";
+import type {
+  OpenServerElement,
+  OpenServerNestedElement,
+} from "../../src/tools/describe/platforms/android/open-server-tree";
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
 import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
@@ -62,7 +65,11 @@ function deliveredSpanMs(logcat: string): { spanMs: number | null; events: numbe
     // Touch dispatch lines under InputDispatcher/InputReader VERBOSE. Broad on
     // purpose (image-dependent wording); we only need the burst's first/last time.
     if (!/InputDispatcher|InputReader|MotionEvent/.test(line)) continue;
-    if (!/\b(DOWN|MOVE|UP|ACTION_DOWN|ACTION_MOVE|ACTION_UP|dispatchMotion|deliverInputEvent)\b/.test(line)) {
+    if (
+      !/\b(DOWN|MOVE|UP|ACTION_DOWN|ACTION_MOVE|ACTION_UP|dispatchMotion|deliverInputEvent)\b/.test(
+        line
+      )
+    ) {
       continue;
     }
     const t = threadtimeMs(line);
@@ -144,7 +151,12 @@ function dumpsysMotionEventTimes(dump: string): {
       cadenceMs: cadence,
     };
   }
-  return { source: "dumpsys input (no MotionEvent times parsed)", n: 0, spanMs: null, cadenceMs: [] };
+  return {
+    source: "dumpsys input (no MotionEvent times parsed)",
+    n: 0,
+    spanMs: null,
+    cadenceMs: [],
+  };
 }
 
 /** Fraction of pixels that differ (per-channel tolerance 24) between two PNGs. */
@@ -239,10 +251,7 @@ async function pollFingerprintChanged(
  */
 async function foregroundFocus(dserial: string): Promise<string> {
   try {
-    const out = await adbShell(
-      dserial,
-      "dumpsys window 2>/dev/null | grep -m1 mCurrentFocus"
-    );
+    const out = await adbShell(dserial, "dumpsys window 2>/dev/null | grep -m1 mCurrentFocus");
     return out.replace(/\s+/g, " ").trim();
   } catch {
     return "";
@@ -390,9 +399,7 @@ suite("android open-device-server on-device", () => {
     console.log("\n===== OPEN-SERVER DEVICE VALIDATION RESULTS (serial=" + serial + ") =====");
     for (const r of rows) {
       // eslint-disable-next-line no-console
-      console.log(
-        `${r.status.padEnd(4)} | ${r.verb.padEnd(24)} | fallback=NO | ${r.evidence}`
-      );
+      console.log(`${r.status.padEnd(4)} | ${r.verb.padEnd(24)} | fallback=NO | ${r.evidence}`);
     }
     if (dispose) await dispose().catch(() => undefined);
   }, 30_000);
@@ -421,11 +428,7 @@ suite("android open-device-server on-device", () => {
     const shot = await api.screenshot({ format: "png" });
     const buf = Buffer.from(shot.data, "base64");
     const isPng =
-      buf.length > 8 &&
-      buf[0] === 0x89 &&
-      buf[1] === 0x50 &&
-      buf[2] === 0x4e &&
-      buf[3] === 0x47;
+      buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
     expect(isPng).toBe(true);
     expect(shot.mimeType).toBe("image/png");
     expect(shot.width).toBe(info.screenWidth);
@@ -511,7 +514,9 @@ suite("android open-device-server on-device", () => {
       }
       const moved = beforeTop - found.bounds.y1;
       // eslint-disable-next-line no-console
-      console.log(`  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->${found.bounds.y1} moved=${moved}`);
+      console.log(
+        `  swipe hold=${hold} anchor="${anchorLabel}" top ${beforeTop}->${found.bounds.y1} moved=${moved}`
+      );
       return { moved, offscreen: false };
     };
     const def = await measure(false);
@@ -567,9 +572,9 @@ suite("android open-device-server on-device", () => {
       // 3K-H3: read the device-side MotionEvent cadence from `dumpsys input`
       // IMMEDIATELY (the RecentQueue ages relative to the dump time, so it must be
       // read before the burst rolls out of the queue), then the logcat endpoints.
-      const di = await runAdb(["-s", serial, "shell", "dumpsys", "input"], { timeoutMs: 20_000 }).catch(
-        () => ({ stdout: "" })
-      );
+      const di = await runAdb(["-s", serial, "shell", "dumpsys", "input"], {
+        timeoutMs: 20_000,
+      }).catch(() => ({ stdout: "" }));
       const dv = dumpsysMotionEventTimes(di.stdout);
       await sleep(600);
       const dump = await runAdb(["-s", serial, "logcat", "-d", "-v", "threadtime"], {
@@ -702,7 +707,9 @@ suite("android open-device-server on-device", () => {
     const after = Buffer.from((await api.screenshot({ format: "png" })).data, "base64");
     const ratio = pngDiffRatio(before, after);
     // eslint-disable-next-line no-console
-    console.log(`  pinch screenshot diff ratio = ${(ratio * 100).toFixed(2)}% (chrome ready=${ready})`);
+    console.log(
+      `  pinch screenshot diff ratio = ${(ratio * 100).toFixed(2)}% (chrome ready=${ready})`
+    );
     // Review A6/fix e: assert the readiness precondition — a pinch that verified
     // nothing (Chrome never rendered a zoomable page) must FAIL, never record PASS
     // conditionally. The gate clears the FRE and confirms a rendered page first.
@@ -763,13 +770,17 @@ suite("android open-device-server on-device", () => {
       const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
       const beforeTexts = textSet(before);
       const clickables = before.filter(
-        (e) => e.clickable === true && e.bounds.y1 > info0.screenHeight * 0.12 && e.bounds.y2 < info0.screenHeight * 0.85
+        (e) =>
+          e.clickable === true &&
+          e.bounds.y1 > info0.screenHeight * 0.12 &&
+          e.bounds.y2 < info0.screenHeight * 0.85
       );
       const inside = (p: { x: number; y: number }, e: Element): boolean =>
         p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
       const row =
-        before.find((e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))) ??
-        clickables.find((e) => label(e).length > 0);
+        before.find(
+          (e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))
+        ) ?? clickables.find((e) => label(e).length > 0);
       if (!row) throw new Error(`3n-${strategy}: no labelled clickable row on Settings`);
       const c = center(row);
       const tapRes = (await api.tap(c.x, c.y, { inject: strategy })) as {
@@ -793,7 +804,9 @@ suite("android open-device-server on-device", () => {
         const tree = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
         const labelled = tree.filter((e) => label(e).length > 0 && e.bounds.y2 > e.bounds.y1);
         const target = info.screenHeight * 0.6;
-        const anchor = labelled.slice().sort((a, b) => Math.abs(a.bounds.y1 - target) - Math.abs(b.bounds.y1 - target))[0];
+        const anchor = labelled
+          .slice()
+          .sort((a, b) => Math.abs(a.bounds.y1 - target) - Math.abs(b.bounds.y1 - target))[0];
         if (!anchor) throw new Error(`3n-${strategy}: no anchor row for swipe`);
         const anchorLabel = label(anchor);
         const beforeTop = anchor.bounds.y1;
@@ -803,7 +816,9 @@ suite("android open-device-server on-device", () => {
         await api.swipe(cx, y0, cx, y1, 12, hold ? 120 : 0, { inject: strategy });
         await sleep(1400);
         await api.waitForIdle(3000);
-        const found = (await api.getAccessibilityTree({ maxElements: 200 })).tree.find((e) => label(e) === anchorLabel);
+        const found = (await api.getAccessibilityTree({ maxElements: 200 })).tree.find(
+          (e) => label(e) === anchorLabel
+        );
         if (!found) return { moved: NaN, offscreen: true };
         return { moved: beforeTop - found.bounds.y1, offscreen: false };
       };
@@ -902,7 +917,12 @@ suite("android open-device-server on-device", () => {
         const dump = await adbShell(serial, "dumpsys input");
         cadence = dumpsysMotionEventTimes(dump);
       } catch (e) {
-        cadence = { source: `dumpsys input unavailable: ${e instanceof Error ? e.message : String(e)}`, n: 0, spanMs: null, cadenceMs: [] };
+        cadence = {
+          source: `dumpsys input unavailable: ${e instanceof Error ? e.message : String(e)}`,
+          n: 0,
+          spanMs: null,
+          cadenceMs: [],
+        };
       }
       // Measurement-only: never fails the enforced suite (parsing varies by image).
       record(
@@ -924,16 +944,23 @@ suite("android open-device-server on-device", () => {
     const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
     const beforeTexts = textSet(before);
     const clickables = before.filter(
-      (e) => e.clickable === true && e.bounds.y1 > info.screenHeight * 0.12 && e.bounds.y2 < info.screenHeight * 0.85
+      (e) =>
+        e.clickable === true &&
+        e.bounds.y1 > info.screenHeight * 0.12 &&
+        e.bounds.y2 < info.screenHeight * 0.85
     );
     const inside = (p: { x: number; y: number }, e: Element): boolean =>
       p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
     const row =
-      before.find((e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))) ??
-      clickables.find((e) => label(e).length > 0);
+      before.find(
+        (e) => label(e).length > 0 && clickables.some((cl) => cl !== e && inside(center(e), cl))
+      ) ?? clickables.find((e) => label(e).length > 0);
     if (!row) throw new Error("3n.1 P9: no labelled clickable row on Settings");
     const c = center(row);
-    const forced = (await api.tap(c.x, c.y, { inject: "input-manager", _forceInjectUnavailable: true })) as {
+    const forced = (await api.tap(c.x, c.y, {
+      inject: "input-manager",
+      _forceInjectUnavailable: true,
+    })) as {
       success: boolean;
       strategy?: string;
       fellBackTo?: string;
@@ -945,7 +972,9 @@ suite("android open-device-server on-device", () => {
     await sleep(1200);
     await api.waitForIdle(3000);
     const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
-    const changed = [...afterTexts].filter((t) => !beforeTexts.has(t)).length + [...beforeTexts].filter((t) => !afterTexts.has(t)).length;
+    const changed =
+      [...afterTexts].filter((t) => !beforeTexts.has(t)).length +
+      [...beforeTexts].filter((t) => !afterTexts.has(t)).length;
     expect(changed).toBeGreaterThan(0); // outcome unchanged: the fell-back tap still navigated
     // Phase 3n.2 (review 3N1-L1): the seam now covers swipe and gesture too — force
     // the fallback on each and prove it reports uia-async. After scrcpy removal the
@@ -962,8 +991,18 @@ suite("android open-device-server on-device", () => {
     await freshSettings();
     const forcedGesture = (await api.gesture(
       [
-        { points: [{ x: 0.4, y: 0.5, tMs: 0 }, { x: 0.3, y: 0.5, tMs: 120 }] },
-        { points: [{ x: 0.6, y: 0.5, tMs: 0 }, { x: 0.7, y: 0.5, tMs: 120 }] },
+        {
+          points: [
+            { x: 0.4, y: 0.5, tMs: 0 },
+            { x: 0.3, y: 0.5, tMs: 120 },
+          ],
+        },
+        {
+          points: [
+            { x: 0.6, y: 0.5, tMs: 0 },
+            { x: 0.7, y: 0.5, tMs: 120 },
+          ],
+        },
       ],
       { inject: "input-manager", _forceInjectUnavailable: true }
     )) as { success: boolean; strategy?: string; fellBackTo?: string };
@@ -972,7 +1011,10 @@ suite("android open-device-server on-device", () => {
     expect(forcedGesture.fellBackTo).toBe("uia-async");
     // Reset check: a normal input-manager tap (no force) reports input-manager again.
     await freshSettings();
-    const normal = (await api.tap(c.x, c.y, { inject: "input-manager" })) as { success: boolean; strategy?: string };
+    const normal = (await api.tap(c.x, c.y, { inject: "input-manager" })) as {
+      success: boolean;
+      strategy?: string;
+    };
     expect(normal.strategy).toBe("input-manager");
     record(
       "3n.1 P9 forced-fallback",

@@ -166,7 +166,13 @@ Before tapping, determine the correct coordinates by using discovery tools — p
             await openServerTap(registry, device, params.x, params.y, clickCount);
             return { tapped: true, timestampMs };
           }
-          const outcome = await openServerTapWithOutcome(registry, device, params.x, params.y, clickCount);
+          const outcome = await openServerTapWithOutcome(
+            registry,
+            device,
+            params.x,
+            params.y,
+            clickCount
+          );
           return { tapped: true, timestampMs, outcome };
         } catch (err) {
           console.debug(

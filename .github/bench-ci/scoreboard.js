@@ -32,8 +32,10 @@ L.push("> **x86_64 / KVM on a GitHub-hosted runner.** These numbers are NOT comp
 L.push("> to the local arm64 / HVF results (v4–v6). Only OFF vs ON *within this run* is");
 L.push("> like-for-like.");
 L.push("");
-L.push(`Blocks run: **${(merged.blocksRan || []).join(", ") || "?"}**` +
-  (merged.offArmPresent ? "" : "  — **ON-only** (proprietary OFF arm absent/refused)"));
+L.push(
+  `Blocks run: **${(merged.blocksRan || []).join(", ") || "?"}**` +
+    (merged.offArmPresent ? "" : "  — **ON-only** (proprietary OFF arm absent/refused)")
+);
 L.push("");
 
 // Environment
@@ -41,7 +43,8 @@ L.push("### Environment");
 L.push("");
 L.push("| key | value |");
 L.push("| --- | --- |");
-const row = (k, v) => L.push(`| ${k} | ${v === undefined || v === null ? "-" : String(v).replace(/\|/g, "\\|")} |`);
+const row = (k, v) =>
+  L.push(`| ${k} | ${v === undefined || v === null ? "-" : String(v).replace(/\|/g, "\\|")} |`);
 row("android release", env.androidRelease);
 row("android sdk", env.androidSdk);
 row("abi", env.abi);
@@ -62,7 +65,8 @@ L.push("");
 // Per-block verb latency (p50/p95 ms)
 const blocks = merged.blocks || [];
 const verbNames = [];
-for (const b of blocks) for (const v of b.verbs || []) if (!verbNames.includes(v.verb)) verbNames.push(v.verb);
+for (const b of blocks)
+  for (const v of b.verbs || []) if (!verbNames.includes(v.verb)) verbNames.push(v.verb);
 
 // Phase 3n.1 P1/P3/H5 helpers: measured drift floor (never a constant), per-sample
 // arrays, and a seeded 10 000-draw bootstrap 95% CI on the p50 difference.
@@ -111,7 +115,8 @@ function bootstrapDiffCI(aS, bS, B = 10000, seed = 0x3e1f005) {
 const off1Blk = blocks.find((b) => b.block === "OFF-1");
 const off2Blk = blocks.find((b) => b.block === "OFF-2");
 function measuredFloor(vn) {
-  const a = p50Of(off1Blk, vn), b = p50Of(off2Blk, vn);
+  const a = p50Of(off1Blk, vn),
+    b = p50Of(off2Blk, vn);
   return a != null && b != null ? Math.abs(a - b) : null;
 }
 
@@ -139,7 +144,9 @@ L.push("| --- | --- | --- | --- | --- | --- |");
 for (const b of blocks) {
   const d = b.describeSample || {};
   const s = b.screenshot || {};
-  L.push(`| ${b.block} | ${d.source ?? "-"} | ${d.bytes ?? "-"} | ${d.tokens ?? "-"} | ${d.elements ?? "-"} | ${s.width}x${s.height} ${s.bytes}b |`);
+  L.push(
+    `| ${b.block} | ${d.source ?? "-"} | ${d.bytes ?? "-"} | ${d.tokens ?? "-"} | ${d.elements ?? "-"} | ${s.width}x${s.height} ${s.bytes}b |`
+  );
 }
 L.push("");
 
@@ -156,9 +163,13 @@ if (merged.fidelity) {
   const f = merged.fidelity;
   L.push("### Fidelity (OFF-1 describe vs ON-uiautomation describe)");
   L.push("");
-  L.push(`- Jaccard(id+text set): **${f.off1_vs_on_jaccard}** (OFF ${f.offCount} vs ON ${f.onCount} keys)`);
-  if (f.onlyOff && f.onlyOff.length) L.push(`- only OFF: ${f.onlyOff.slice(0, 12).join(", ")}${f.onlyOff.length > 12 ? " …" : ""}`);
-  if (f.onlyOn && f.onlyOn.length) L.push(`- only ON: ${f.onlyOn.slice(0, 12).join(", ")}${f.onlyOn.length > 12 ? " …" : ""}`);
+  L.push(
+    `- Jaccard(id+text set): **${f.off1_vs_on_jaccard}** (OFF ${f.offCount} vs ON ${f.onCount} keys)`
+  );
+  if (f.onlyOff && f.onlyOff.length)
+    L.push(`- only OFF: ${f.onlyOff.slice(0, 12).join(", ")}${f.onlyOff.length > 12 ? " …" : ""}`);
+  if (f.onlyOn && f.onlyOn.length)
+    L.push(`- only ON: ${f.onlyOn.slice(0, 12).join(", ")}${f.onlyOn.length > 12 ? " …" : ""}`);
   L.push("");
 } else {
   L.push("### Fidelity");
@@ -194,28 +205,38 @@ if (onIm && off1Blk && off2Blk) {
   // comparator verb name in the OFF blocks (tap+describe(settle:false) → tap+describe).
   const offVerb = (vn) => (vn === "tap+describe(settle:false)" ? "tap+describe" : vn);
   const pooledOff = (vn) => {
-    const a = p50Of(off1Blk, offVerb(vn)), b = p50Of(off2Blk, offVerb(vn));
+    const a = p50Of(off1Blk, offVerb(vn)),
+      b = p50Of(off2Blk, offVerb(vn));
     return a != null && b != null ? (a + b) / 2 : null;
   };
   const pooledOffSamples = (vn) => {
-    const a = samplesOf(off1Blk, offVerb(vn)), b = samplesOf(off2Blk, offVerb(vn));
+    const a = samplesOf(off1Blk, offVerb(vn)),
+      b = samplesOf(off2Blk, offVerb(vn));
     return a && b ? a.concat(b) : null;
   };
   const ciVerdict = (delta, ci, floor) => {
     if (floor == null) return "N/A (no OFF comparator)";
-    if (!ci) return delta < -floor ? "win (no CI)" : delta > floor ? "loss (no CI)" : "parity (no CI)";
+    if (!ci)
+      return delta < -floor ? "win (no CI)" : delta > floor ? "loss (no CI)" : "parity (no CI)";
     if (ci[1] < -floor) return `win (CI [${ci[0]},${ci[1]}] < −floor)`;
     if (ci[0] > floor) return `loss (CI [${ci[0]},${ci[1]}] > +floor)`;
     return `parity (CI [${ci[0]},${ci[1]}] overlaps ±${floor})`;
   };
 
-  L.push("### phase 3n.1 — promotion gates P2–P6 (ON-input-manager vs PROPRIETARY, measured floor + bootstrap CI)");
-  L.push("");
-  L.push("| verb | ON-uiautomation | ON-input-manager | OFF-1 | OFF-2 | floor | Δ(im−pooledOFF) | 95% CI | reading |");
-  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  const gatedVerbs = ["gesture-tap", "gesture-swipe", "gesture-pinch", "tap+describe(settle:false)"].filter((vn) =>
-    verbNames.includes(vn)
+  L.push(
+    "### phase 3n.1 — promotion gates P2–P6 (ON-input-manager vs PROPRIETARY, measured floor + bootstrap CI)"
   );
+  L.push("");
+  L.push(
+    "| verb | ON-uiautomation | ON-input-manager | OFF-1 | OFF-2 | floor | Δ(im−pooledOFF) | 95% CI | reading |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  const gatedVerbs = [
+    "gesture-tap",
+    "gesture-swipe",
+    "gesture-pinch",
+    "tap+describe(settle:false)",
+  ].filter((vn) => verbNames.includes(vn));
   for (const vn of gatedVerbs) {
     const imP = p50Of(onIm, vn);
     const po = pooledOff(vn);
@@ -249,7 +270,8 @@ if (onIm && off1Blk && off2Blk) {
   // (e.g. tap +1 ms) is a scoreboard NOTE, printed alongside — never rendered as PASS.
   const pline = (id, text, verdict) => L.push(`- **${id}** — ${text}: **${verdict}**`);
   const offBound = (vn, kind) => {
-    const a = p50Of(off1Blk, vn), b = p50Of(off2Blk, vn);
+    const a = p50Of(off1Blk, vn),
+      b = p50Of(off2Blk, vn);
     if (a == null || b == null) return null;
     const useA = kind === "max" ? a >= b : a <= b;
     return { blk: useA ? off1Blk : off2Blk, p: useA ? a : b };
@@ -272,7 +294,8 @@ if (onIm && off1Blk && off2Blk) {
   // P5: headline ratio ≤ 1.15 vs each OFF-1, OFF-2, pooled.
   {
     const im = p50Of(onIm, "tap+describe(settle:false)");
-    const o1 = p50Of(off1Blk, "tap+describe"), o2 = p50Of(off2Blk, "tap+describe");
+    const o1 = p50Of(off1Blk, "tap+describe"),
+      o2 = p50Of(off2Blk, "tap+describe");
     const po = o1 != null && o2 != null ? (o1 + o2) / 2 : null;
     const ratios = [o1, o2, po].map((d) => (im != null && d != null && d > 0 ? im / d : null));
     const ok = ratios.every((r) => r != null && r <= 1.15);
@@ -287,12 +310,18 @@ if (onIm && off1Blk && off2Blk) {
   // floor on any gated verb (CI-based, same non-inferiority rule).
   {
     if (!onUia) {
-      pline("P6", "not slower than ON-uiautomation (control) by more than the floor on any gated verb", "N/A");
+      pline(
+        "P6",
+        "not slower than ON-uiautomation (control) by more than the floor on any gated verb",
+        "N/A"
+      );
     } else {
       const bad = [];
       let na = false;
       for (const vn of gatedVerbs) {
-        const im = p50Of(onIm, vn), u = p50Of(onUia, vn), f = measuredFloor(offVerb(vn));
+        const im = p50Of(onIm, vn),
+          u = p50Of(onUia, vn),
+          f = measuredFloor(offVerb(vn));
         if (im == null || u == null || f == null) {
           na = true;
           continue;
@@ -304,19 +333,32 @@ if (onIm && off1Blk && off2Blk) {
         const fail = im > u + f;
         if (fail) bad.push(`${vn} +${im - u}${ci ? ` (CI [${ci[0]}, ${ci[1]}])` : ""}`);
       }
-      pline("P6", "not slower than ON-uiautomation (control) by more than the floor on any gated verb", na && !bad.length ? "N/A (missing samples)" : bad.length ? `FAIL (${bad.join(", ")})` : "PASS");
+      pline(
+        "P6",
+        "not slower than ON-uiautomation (control) by more than the floor on any gated verb",
+        na && !bad.length
+          ? "N/A (missing samples)"
+          : bad.length
+            ? `FAIL (${bad.join(", ")})`
+            : "PASS"
+      );
     }
   }
   // P7 fallback count from the block's echo.
   if (onIm.injectStrategyReported) {
-    L.push(`- **P7 echo** — ON-input-manager \`injectStrategyReported\`: ${onIm.injectStrategyReported}`);
+    L.push(
+      `- **P7 echo** — ON-input-manager \`injectStrategyReported\`: ${onIm.injectStrategyReported}`
+    );
   }
   // Phase 3n.3 (3N2-H1/M6): the AUTHORITATIVE fallback signal is the on-device
   // injectStrategyCounts.unavailable (the host counter was removed in 3n.2). Print it
   // as a real number alongside the measured-RPC denominator so Q4 is not prose.
   if (onIm.injectStrategyCounts) {
     const c = onIm.injectStrategyCounts;
-    const total = onIm.injectStrategyTotal != null ? onIm.injectStrategyTotal : Object.values(c).reduce((s, n) => s + n, 0);
+    const total =
+      onIm.injectStrategyTotal != null
+        ? onIm.injectStrategyTotal
+        : Object.values(c).reduce((s, n) => s + n, 0);
     const unavail = c.unavailable || 0;
     const measured = onIm.measuredInjectRpcs;
     L.push(
@@ -330,7 +372,9 @@ if (onIm && off1Blk && off2Blk) {
     );
   }
   L.push("");
-  L.push("_Gates are graded vs the proprietary OFF blocks at the measured floor (P1); the promotion decision (P0–P7 + P9 + P10 green) is the planner's, from these numbers._");
+  L.push(
+    "_Gates are graded vs the proprietary OFF blocks at the measured floor (P1); the promotion decision (P0–P7 + P9 + P10 green) is the planner's, from these numbers._"
+  );
   L.push("");
 }
 
@@ -346,7 +390,9 @@ const effKeys = Object.keys(eb).length ? Object.keys(eb) : ez ? Object.keys(ez) 
 if (effKeys.length) {
   L.push("### tap first-attempt landing & timeline parity (phase 3h)");
   L.push("");
-  L.push("| block | firstTapLanding (landed/checked) | rate | oracle self-test | transport | tap frames | MOVE |");
+  L.push(
+    "| block | firstTapLanding (landed/checked) | rate | oracle self-test | transport | tap frames | MOVE |"
+  );
   L.push("| --- | --- | --- | --- | --- | --- | --- |");
   const tt = merged.tapTimelines || {};
   const rate = (e) => {
@@ -395,14 +441,17 @@ if (effKeys.length) {
 if (blocks.some((b) => b.locateViaTotal || (b.noEffectSamples && b.noEffectSamples.length))) {
   L.push("### Locate source & no-effect taps (F5 / F7)");
   L.push("");
-  L.push("Locate is per-backend (dump primary, backend-describe fallback); only the effect fingerprint (`mResumedActivity`) is backend-independent.");
+  L.push(
+    "Locate is per-backend (dump primary, backend-describe fallback); only the effect fingerprint (`mResumedActivity`) is backend-independent."
+  );
   L.push("");
   L.push("| block | locate dump/describe | first-attempt no-effect |");
   L.push("| --- | --- | --- |");
   for (const b of blocks) {
     const lv = b.locateViaTotal;
     const via = lv ? `${lv.dump}/${lv.describe}` : "-";
-    const ne = b.noEffectSamples && b.noEffectSamples.length ? String(b.noEffectSamples.length) : "0";
+    const ne =
+      b.noEffectSamples && b.noEffectSamples.length ? String(b.noEffectSamples.length) : "0";
     L.push(`| ${b.block} | ${via} | ${ne} |`);
   }
   L.push("");
@@ -434,7 +483,8 @@ for (const b of blocks) {
 
 // Phase 3j: serialize-once + compact in-run A/B and the transport experiment.
 // Defensive — only rendered for ON blocks that carry a `phase3j` object.
-const p50p95 = (st) => (st && st.p50 !== null && st.p50 !== undefined ? `${st.p50}/${st.p95 ?? "?"}` : "-");
+const p50p95 = (st) =>
+  st && st.p50 !== null && st.p50 !== undefined ? `${st.p50}/${st.p95 ?? "?"}` : "-";
 const on3j = blocks.filter((b) => b.phase3j);
 if (on3j.length) {
   L.push("### Phase 3j — serialize-once + compact (before | after, p50/p95)");
@@ -445,20 +495,35 @@ if (on3j.length) {
     L.push("");
     L.push("| metric | serialize legacy | serialize once | compact off | compact on |");
     L.push("| --- | --- | --- | --- | --- |");
-    const el = p.encodeLegacy, eo = p.encodeOnce, co = p.compactOff, cn = p.compactOn;
-    L.push(`| server handleMs (t3-t2) | ${p50p95(el?.serverHandleMs)} | ${p50p95(eo?.serverHandleMs)} | ${p50p95(co?.serverHandleMs)} | ${p50p95(cn?.serverHandleMs)} |`);
-    L.push(`| server encodeMs | ${p50p95(el?.serverEncodeMs)} | ${p50p95(eo?.serverEncodeMs)} | ${p50p95(co?.serverEncodeMs)} | ${p50p95(cn?.serverEncodeMs)} |`);
-    L.push(`| wireBytes | ${p50p95(el?.wireBytes)} | ${p50p95(eo?.wireBytes)} | ${p50p95(co?.wireBytes)} | ${p50p95(cn?.wireBytes)} |`);
-    L.push(`| hostRttMs | ${p50p95(el?.hostRttMs)} | ${p50p95(eo?.hostRttMs)} | ${p50p95(co?.hostRttMs)} | ${p50p95(cn?.hostRttMs)} |`);
+    const el = p.encodeLegacy,
+      eo = p.encodeOnce,
+      co = p.compactOff,
+      cn = p.compactOn;
+    L.push(
+      `| server handleMs (t3-t2) | ${p50p95(el?.serverHandleMs)} | ${p50p95(eo?.serverHandleMs)} | ${p50p95(co?.serverHandleMs)} | ${p50p95(cn?.serverHandleMs)} |`
+    );
+    L.push(
+      `| server encodeMs | ${p50p95(el?.serverEncodeMs)} | ${p50p95(eo?.serverEncodeMs)} | ${p50p95(co?.serverEncodeMs)} | ${p50p95(cn?.serverEncodeMs)} |`
+    );
+    L.push(
+      `| wireBytes | ${p50p95(el?.wireBytes)} | ${p50p95(eo?.wireBytes)} | ${p50p95(co?.wireBytes)} | ${p50p95(cn?.wireBytes)} |`
+    );
+    L.push(
+      `| hostRttMs | ${p50p95(el?.hostRttMs)} | ${p50p95(eo?.hostRttMs)} | ${p50p95(co?.hostRttMs)} | ${p50p95(cn?.hostRttMs)} |`
+    );
     L.push("");
     if (p.transport && p.transport.arms) {
-      L.push(`Transport experiment (N per arm; pad target ${p.transport.paddingTarget}B) — rttMs / recvMs / wireB p50/p95:`);
+      L.push(
+        `Transport experiment (N per arm; pad target ${p.transport.paddingTarget}B) — rttMs / recvMs / wireB p50/p95:`
+      );
       L.push("");
       L.push("| arm | rttMs | recvMs | wireB | note |");
       L.push("| --- | --- | --- | --- | --- |");
       for (const a of p.transport.arms) {
         const note = (a.available ? "" : "N/A: ") + (a.note || "");
-        L.push(`| ${a.label} | ${p50p95(a.rtt)} | ${p50p95(a.recv)} | ${p50p95(a.wire)} | ${note.replace(/\|/g, "\\|")} |`);
+        L.push(
+          `| ${a.label} | ${p50p95(a.rtt)} | ${p50p95(a.recv)} | ${p50p95(a.wire)} | ${note.replace(/\|/g, "\\|")} |`
+        );
       }
       L.push("");
     }

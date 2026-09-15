@@ -17,10 +17,9 @@ const W = 1080;
 const H = 2400;
 
 function render(roots: OpenServerNestedElement[]): string {
-  return formatDescribeTree(
-    openServerNestedToDescribeNode(roots, W, H),
-    { source: "open-device-server" }
-  );
+  return formatDescribeTree(openServerNestedToDescribeNode(roots, W, H), {
+    source: "open-device-server",
+  });
 }
 
 /** A window root (FrameLayout) wrapping children, full-screen bounds by default. */
@@ -32,7 +31,11 @@ function windowRoot(
   return { className: "android.widget.FrameLayout", packageName: pkg, bounds, children };
 }
 
-function row(text: string, resourceId?: string, bounds?: OpenServerNestedElement["bounds"]): OpenServerNestedElement {
+function row(
+  text: string,
+  resourceId?: string,
+  bounds?: OpenServerNestedElement["bounds"]
+): OpenServerNestedElement {
   return {
     className: "android.widget.TextView",
     text,
@@ -48,8 +51,18 @@ describe("open-server window-filter render goldens (phase 3g)", () => {
   it("Settings root: renders the list rows", () => {
     const roots = [
       windowRoot("com.android.settings", [
-        row("Network & internet", "com.android.settings:id/title", { x1: 40, y1: 200, x2: 1040, y2: 320 }),
-        row("Connected devices", "com.android.settings:id/title", { x1: 40, y1: 340, x2: 1040, y2: 460 }),
+        row("Network & internet", "com.android.settings:id/title", {
+          x1: 40,
+          y1: 200,
+          x2: 1040,
+          y2: 320,
+        }),
+        row("Connected devices", "com.android.settings:id/title", {
+          x1: 40,
+          y1: 340,
+          x2: 1040,
+          y2: 460,
+        }),
         row("Apps", "com.android.settings:id/title", { x1: 40, y1: 480, x2: 1040, y2: 600 }),
       ]),
     ];
@@ -86,7 +99,13 @@ describe("open-server window-filter render goldens (phase 3g)", () => {
         },
       ]),
       windowRoot("com.google.android.inputmethod.latin", [
-        { className: "android.inputmethodservice.KeyboardView", contentDesc: "space", clickable: true, bounds: { x1: 200, y1: 2100, x2: 880, y2: 2200 }, children: [] },
+        {
+          className: "android.inputmethodservice.KeyboardView",
+          contentDesc: "space",
+          clickable: true,
+          bounds: { x1: 200, y1: 2100, x2: 880, y2: 2200 },
+          children: [],
+        },
       ]),
     ];
     const out = render(roots);
@@ -99,9 +118,28 @@ describe("open-server window-filter render goldens (phase 3g)", () => {
   it("dialog: shows the dialog buttons and drops the app behind it", () => {
     const dialogOnly = [
       windowRoot("com.android.settings", [
-        { className: "android.widget.TextView", text: "Erase all data?", bounds: { x1: 100, y1: 900, x2: 980, y2: 1000 }, children: [] },
-        { className: "android.widget.Button", text: "Cancel", clickable: true, resourceId: "android:id/button2", bounds: { x1: 500, y1: 1100, x2: 700, y2: 1200 }, children: [] },
-        { className: "android.widget.Button", text: "Erase", clickable: true, resourceId: "android:id/button1", bounds: { x1: 720, y1: 1100, x2: 980, y2: 1200 }, children: [] },
+        {
+          className: "android.widget.TextView",
+          text: "Erase all data?",
+          bounds: { x1: 100, y1: 900, x2: 980, y2: 1000 },
+          children: [],
+        },
+        {
+          className: "android.widget.Button",
+          text: "Cancel",
+          clickable: true,
+          resourceId: "android:id/button2",
+          bounds: { x1: 500, y1: 1100, x2: 700, y2: 1200 },
+          children: [],
+        },
+        {
+          className: "android.widget.Button",
+          text: "Erase",
+          clickable: true,
+          resourceId: "android:id/button1",
+          bounds: { x1: 720, y1: 1100, x2: 980, y2: 1200 },
+          children: [],
+        },
       ]),
     ];
     const out = render(dialogOnly);
@@ -115,7 +153,9 @@ describe("open-server window-filter render goldens (phase 3g)", () => {
   // 3b. dialog (before) — no dialog yet; only the app window is active.
   it("dialog before: the plain app screen renders its rows", () => {
     const out = render([
-      windowRoot("com.android.settings", [row("Network & internet", "com.android.settings:id/title")]),
+      windowRoot("com.android.settings", [
+        row("Network & internet", "com.android.settings:id/title"),
+      ]),
     ]);
     expect(out).toContain("Network & internet");
     expect(out).not.toContain("Erase all data?");

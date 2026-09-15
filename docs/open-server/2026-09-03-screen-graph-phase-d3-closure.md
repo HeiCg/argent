@@ -5,6 +5,7 @@ worktrees `argent-c3` / `argent-c3-ci`. Read `2026-09-03-review-d2-findings.md` 
 NO local emulator/adb; CI only; one `gh run view` per 10 minutes, foreground.
 
 ## Must fix
+
 1. **D2-H3 harness locate bug (all configs).** `locateNorm` uses contains + case-insensitive
    and taps `q.nodes[0]` (bench-screen-graph.ts:437-442, :475-481), so `t("Internet")`
    matches the toolbar "Network & internet" and the second step of
@@ -39,6 +40,7 @@ NO local emulator/adb; CI only; one `gh run view` per 10 minutes, foreground.
    and attempts used per task.
 
 ## Run and doc
+
 One matrix run; regenerate the doc from JSON (D.2 to superseded with reasons); report
 per-config table, O5 split (one-step / zero-step / fallback), edge invariant result,
 H1–H4 with labels, the network-internet step-2 H_id change evidence. Push; no

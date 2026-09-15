@@ -57,9 +57,7 @@ export function readAndroidOpenState(
   // describe and gesture open paths do.
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const state = await server.getNestedState(
-      opts.fingerprints ? { fingerprints: true } : {}
-    );
+    const state = await server.getNestedState(opts.fingerprints ? { fingerprints: true } : {});
     const tree = openServerNestedToDescribeNode(
       state.tree,
       state.info.screenWidth,

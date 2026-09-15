@@ -14,6 +14,7 @@ regressions. Winning is not required; lying is prohibited. If after fixes the
 open path is slower on a verb, the report says so with the number.
 
 ## Correctness fixes (all must land, with unit tests)
+
 1. **Tap hold parity (F1/F8).** `TapHandler` timeline: DOWN at 0, UP at
    `holdMs` (param, default 50 = `TAP_HOLD_MS`); `openServerTap` passes it.
    `clickCount>1`: pass `clickCount` + `gapMs` (default `MULTI_TAP_GAP_MS`=100)
@@ -22,11 +23,11 @@ open path is slower on a verb, the report says so with the number.
 2. **Pinch duration cap removed (F2).** Delete `OPEN_PINCH_MAX_DURATION_MS`;
    honour `durationMs` as authored. Downsampling (F18): make it
    time-uniform (resample each pointer path at `MOMENTUM_STEP_MS` cadence,
-   preserving original keyframes' times, cap frames by *time*, not index)
+   preserving original keyframes' times, cap frames by _time_, not index)
    and document it in `gesture-custom`'s schema; keep dwell segments
    (consecutive same-position keyframes) intact.
 3. **MotionInjector real-clock pacing (F17).** `waitMs = eventTime -
-   (SystemClock.uptimeMillis() - t0)` clamped ≥ 0; `eventTime` of each
+(SystemClock.uptimeMillis() - t0)` clamped ≥ 0; `eventTime` of each
    injected event = actual `uptimeMillis()` so VelocityTracker sees the
    truth. Re-measure fling after this (below).
 4. **Final-event sync parity (F3).** Return from swipe/gesture RPCs only
@@ -37,7 +38,7 @@ open path is slower on a verb, the report says so with the number.
    `(deviceId, displayRotation)`; `getScreenSize` already returns rotation —
    compare on every gesture (cheap RPC ~1ms) OR invalidate in `rotate` tool
    and on registry dispose. Test both rotation change and dispose.
-6. **describe vs await-* tree unification (F12).** Make the open-path
+6. **describe vs await-\* tree unification (F12).** Make the open-path
    `await-ui-element` / `await-screen-idle` render through the same nested
    tree + v2 trim as `describe` (use `getState`'s tree if it can be nested —
    add `nested:true` to `getState`, or call the nested tree RPC), so labels/
@@ -61,6 +62,7 @@ open path is slower on a verb, the report says so with the number.
     fixture with a dialog + IME window.
 
 ## Bench fixes (script `packages/tool-server/scripts/bench-open-vs-proprietary.ts`)
+
 - Add verb `tap+describe` (single timed pair, back to root between
   iterations) (F4). Reset to a known screen before every tap/swipe
   iteration (F5).
@@ -74,6 +76,7 @@ open path is slower on a verb, the report says so with the number.
 - Report ranges across runs, not single p50s, for any claim of stability (F7).
 
 ## Output
+
 `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-open-vs-proprietary-results-v3.md`
 — same layout as v2 plus: per-finding status table (F1–F23: fixed / not
 applicable / open), like-for-like caveats resolved, fling grid, and a
@@ -81,6 +84,7 @@ verdict paragraph usable verbatim in a PR (reviewer's allowed wording as the
 floor; upgrade claims only where the new numbers support them).
 
 ## Acceptance
+
 - All 10 correctness fixes with tests; tool-server suite green; device test
   green; APK builds.
 - v3 report with N=20 per verb (OFF-1/ON/OFF-2) at equal hold/duration.

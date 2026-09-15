@@ -72,23 +72,23 @@ Three published numbers are additionally **wrong, not merely mislabelled**:
 ### HIGH
 
 - **C4-H1 · O5's 99 % is the C.3 B1 artifact wearing a different hat; the honest
-  number is 86/100.** `oracle.ts:145` treats *any* `locateFailed` as
+  number is 86/100.** `oracle.ts:145` treats _any_ `locateFailed` as
   plumbing/infra and `:171-189` drops it from the denominator. All 13 O5
   exclusions sit at `stepIndex 1`, **immediately after O5's own `navigate-to`
   moved the device off the source screen**: 10 with `{reached:true,
-  completedSteps:1/1, misland:true}` (settings-network ×5, settings-network-internet
+completedSteps:1/1, misland:true}` (settings-network ×5, settings-network-internet
   ×5) and 3 with `{reached:false, completedSteps:0/1}` whose recorded `hash` is
   already `2bf46d4f…`, i.e. the sub-screen (settings-apps ×3). The re-locate then
   correctly reports the row is gone. That is a **strategy** failure, not
   plumbing. The C.1 rule it invokes (`phase-c1-oracle.md` fix 1+2) was written for
-  a locate that is *"plumbing, identical for all configs"*; C.4 deliberately broke
+  a locate that is _"plumbing, identical for all configs"_; C.4 deliberately broke
   that premise by giving B1 its own describe-locate and by letting O5 move the
   device before locating. Counted as failures: **O5 = 86/100, Wilson [78, 91]** —
   which lies entirely below B1's [96, 100]. **Fix:** exclude only pre-action
   infra failures; classify a locate-fail that follows the config's own navigation
   as a task failure.
 - **C4-H2 · The H4 verdict is circular for O5.** `bench-screen-graph.ts:1580`
-  intersects the two configs' *scored* pairs, so the 13 pairs O5 could not do are
+  intersects the two configs' _scored_ pairs, so the 13 pairs O5 could not do are
   removed **from the baseline too**. The generated report states it plainly:
   `O5 99% [94,100] vs 100% [96,100] (n=86)` — B1 scored Y on all 14 removed
   pairs. Non-inferiority measured only where the challenger did not
@@ -100,8 +100,8 @@ Three published numbers are additionally **wrong, not merely mislabelled**:
 - **C4-H3 · `navMisland 0` is a false published number.** `aggregate()` skips
   excluded runs at `bench-screen-graph.ts:1274` **before** the nav counters at
   `:1283-1290`, so every navigate attempt that caused an exclusion is invisible to
-  them. The CI report therefore prints *"fallbacks 40 (no-route/divergence 40,
-  reached-but-mis-landed **0**)"* while the per-step records hold **10 mislands**.
+  them. The CI report therefore prints _"fallbacks 40 (no-route/divergence 40,
+  reached-but-mis-landed **0**)"_ while the per-step records hold **10 mislands**.
   The hand-written doc's prose says the opposite of its own generated table.
   True counts over all 55 attempted known-target taps: **2 routed, 10 mis-landed,
   3 diverged-after-tap, 40 no-route → 53 fallbacks**, not 40/42.
@@ -129,8 +129,8 @@ Three published numbers are additionally **wrong, not merely mislabelled**:
 - **C4-M1 · The Jaccard from-side localizer never ran; the run is zero evidence
   it works.** `plan.ts:248-256` returns `via:"exact"` whenever the live hash is
   already a node, and **both** root hashes are in the store, so `fromVia` was
-  `exact` on all 55 nav records. The doc's *"The from-side fix I added … works —
-  `fromVia` was `exact` on every O5 step this run"* inverts the logic: `exact`
+  `exact` on all 55 nav records. The doc's _"The from-side fix I added … works —
+  `fromVia` was `exact` on every O5 step this run"_ inverts the logic: `exact`
   means the fallback was never reached. Worse, the dominant root node
   `77a189ce…` carries **no `resourceIds`** (`hasRids false`), so
   `bestNodeByResourceIds` could not have scored it. Only the unit test supports
@@ -138,7 +138,7 @@ Three published numbers are additionally **wrong, not merely mislabelled**:
 - **C4-M2 · "The root did NOT drift" is refuted by the uploaded store.**
   `graph-store/com.android.settings/34.json` holds **two** root nodes with
   near-identical 64-key text indexes and the same label `Settings: Network &
-  internet`: `77a189ce…` (the operative one — the `from` of 194 of the 225
+internet`: `77a189ce…` (the operative one — the `from` of 194 of the 225
   recorded traversals) and `299378e0…` (visits 34, 23 distinct resource-ids,
   reached from `77a189ce…` by a `swipe up` edge, count 30). Two structural hashes
   for one screen **is** drift — the RecyclerView first-child rule
@@ -174,7 +174,7 @@ Three published numbers are additionally **wrong, not merely mislabelled**:
 
 ### LOW
 
-- **C4-L1** The observation anchor is not the assertion *string*, but for
+- **C4-L1** The observation anchor is not the assertion _string_, but for
   `chrome-example-word` (assertion `example`, anchor `Example`) the two are the
   same predicate under `contains + caseInsensitive`
   (`toOpenSelector`, `oracle.ts:87`). The tested invariant still holds; the doc's
@@ -192,7 +192,7 @@ Three published numbers are additionally **wrong, not merely mislabelled**:
   `ceil(p/100·n)−1`) and the standard median both give **77**. H3 = 0.129× stands
   under either convention.
 - **C4-L6** B1's locate (`parseDescribeLocate`, first line whose annotations
-  *contain* the text, including non-clickable subtitles) and the open configs'
+  _contain_ the text, including non-clickable subtitles) and the open configs'
   locate (`query(limit:5).nodes[0]`) are different "topmost match" definitions.
   Harmless in this run (B1 99/99) but it is no longer one locate for all configs.
 
@@ -203,14 +203,14 @@ All from **run 33806639520**, 7 configs × 20 tasks × 5 reps, bench tree
 `.bench-results/screen-graph/bench-sg-2026-09-03T21-17-54-188Z.json`; all
 reproduce the doc.
 
-| Statistic (p50) | B1 | B2 | O1 | O2 | O3 | O4 | O5 |
-|---|---|---|---|---|---|---|---|
-| n steps (non-launch, scored) | 152 | 155 | 155 | 155 | 153 | 155 | **137** |
-| tokens/step o200k | 657 | 627 | 179 | 54 | 598 | 85 | 85 |
-| tokens/step chars/4 | 473 | 447 | 103 | 33 | 397 | 70 | 70 |
-| observation RTT ms/step | 462 | 91 | 4 | 4 | 87 | 47 | 46 |
-| RTT count/step, all | 2 | 2 | 2 | 2 | 2 | 1 | 1 |
-| RTT count/step, same-screen (n=50) | 2 | 2 | 2 | 1 | 1 | 1 | 1 |
+| Statistic (p50)                    | B1  | B2  | O1  | O2  | O3  | O4  | O5      |
+| ---------------------------------- | --- | --- | --- | --- | --- | --- | ------- |
+| n steps (non-launch, scored)       | 152 | 155 | 155 | 155 | 153 | 155 | **137** |
+| tokens/step o200k                  | 657 | 627 | 179 | 54  | 598 | 85  | 85      |
+| tokens/step chars/4                | 473 | 447 | 103 | 33  | 397 | 70  | 70      |
+| observation RTT ms/step            | 462 | 91  | 4   | 4   | 87  | 47  | 46      |
+| RTT count/step, all                | 2   | 2   | 2   | 2   | 2   | 1   | 1       |
+| RTT count/step, same-screen (n=50) | 2   | 2   | 2   | 1   | 1   | 1   | 1       |
 
 Labels that must travel with them: O5's row is over **137** steps, not 155, and
 its RTT-count of 1 omits the navigate + locate round-trips on 53 of its 55
@@ -222,14 +222,14 @@ B1's observation RTT includes the proprietary describe.
 fixed at 100 for every config, so it cannot be chosen by the outcome):
 
 | Config | ok/100 | Wilson (naive, n=100) | Task-cluster bootstrap (n=20 tasks) |
-|---|---|---|---|
-| B1 | 99 | [94.6, 99.8] | [97, 100] |
-| B2 | 97 | [92, 99] | [92, 100] |
-| O1 | 100 | [96, 100] | [100, 100] |
-| O2 | 98 | [93, 99] | [94, 100] |
-| O3 | 97 | [92, 99] | [94, 100] |
-| O4 | 98 | [93, 99] | [95, 100] |
-| O5 | **86** | [78, 91] | [71, 99] |
+| ------ | ------ | --------------------- | ----------------------------------- |
+| B1     | 99     | [94.6, 99.8]          | [97, 100]                           |
+| B2     | 97     | [92, 99]              | [92, 100]                           |
+| O1     | 100    | [96, 100]             | [100, 100]                          |
+| O2     | 98     | [93, 99]              | [94, 100]                           |
+| O3     | 97     | [92, 99]              | [94, 100]                           |
+| O4     | 98     | [93, 99]              | [95, 100]                           |
+| O5     | **86** | [78, 91]              | [71, 99]                            |
 
 The doc's `ok/scored` column (B1 100 %, O3 98 %, O5 99 %) is **not** scoreboard-grade
 for O5, whose denominator moves by 13 %; it is acceptable for B1 and O3, whose
@@ -247,7 +247,7 @@ Hypotheses, run 33806639520:
 - **H4 — PARTIAL.** Accepted for **O1–O4 only**: on the full 100-run denominator
   with exclusions as failures, the paired task-cluster bootstrap gives
   O1..O4 − B1 ∈ {+1, −1, −2, −1} pp and O1..O4 − B2 ∈ {+3, +1, 0, +1} pp, every
-  95 % CI containing 0 → **indistinguishable at N**, against a *valid* B1.
+  95 % CI containing 0 → **indistinguishable at N**, against a _valid_ B1.
   **VOID for O5**: the published 99 % [94, 100] is measured on the 87 runs O5's
   own routing did not destroy, and the H4 intersection removes the same 13 pairs
   from the baseline (C4-H1, C4-H2). O5's honest figure is **86/100**, point
@@ -283,7 +283,7 @@ store it uploaded:
   It lands on a sibling detail screen, hashes to `2bf46d4f…` → `reached:true`,
   `queryPresent("Internet")` fails → the 10 mislands. The other 40 navTargets
   (`Saved devices`, `Battery Saver`, `Trash`, `Call volume`, `Notification
-  history`, `Brightness`) are indexed nowhere → no route.
+history`, `Brightness`) are indexed nowhere → no route.
 
 Nothing in C.4's harness could have fixed this; the follow-up is device-side
 (separate sibling list screens in `H`) plus semantic edges. Accept as written,
@@ -293,15 +293,15 @@ with the two corrections in C4-M1/C4-M2.
 
 Exclusions-as-failures, same 20 tasks:
 
-| | B1 | B2 | O1 | O2 | O3 | O4 | O5 |
-|---|---|---|---|---|---|---|---|
-| C.3 33786304637 | 93.3 | 100.0 | 96.7 | 98.3 | 100.0 | 100.0 | 81.7 |
-| C.4 33806639520 | 99.0 | 97.0 | 100.0 | 98.0 | 97.0 | 98.0 | 86.0 |
-| Δ pp | +5.7 | −3.0 | +3.3 | −0.3 | −3.0 | −2.0 | +4.3 |
+|                 | B1   | B2    | O1    | O2   | O3    | O4    | O5   |
+| --------------- | ---- | ----- | ----- | ---- | ----- | ----- | ---- |
+| C.3 33786304637 | 93.3 | 100.0 | 96.7  | 98.3 | 100.0 | 100.0 | 81.7 |
+| C.4 33806639520 | 99.0 | 97.0  | 100.0 | 98.0 | 97.0  | 98.0  | 86.0 |
+| Δ pp            | +5.7 | −3.0  | +3.3  | −0.3 | −3.0  | −2.0  | +4.3 |
 
 **Robust verdicts** (survive both runs and the noise floor): H1, H2 (both rows),
-H3; the qualitative H4 statement *O1–O4 match both baselines within noise at an
-order of magnitude fewer tokens*; and **O5 is the only config that is worse**,
+H3; the qualitative H4 statement _O1–O4 match both baselines within noise at an
+order of magnitude fewer tokens_; and **O5 is the only config that is worse**,
 in both runs, by a margin larger than the floor.
 **Not robust:** any per-config success ranking among B1/B2/O1–O4 (every Δ is
 inside 3.4–8.3 pp), and O5's apparent recovery — +4.3 pp is inside the floor.

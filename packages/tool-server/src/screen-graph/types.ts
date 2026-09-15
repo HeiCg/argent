@@ -239,7 +239,11 @@ export function actionLabel(a: CanonicalAction): string {
     case "back":
       return "back";
     case "typeText":
-      return a.target?.id ? `type #${a.target.id}` : a.target?.text ? `type "${a.target.text}"` : "type";
+      return a.target?.id
+        ? `type #${a.target.id}`
+        : a.target?.text
+          ? `type "${a.target.text}"`
+          : "type";
     case "key":
       return `key ${a.key ?? ""}`.trim();
   }

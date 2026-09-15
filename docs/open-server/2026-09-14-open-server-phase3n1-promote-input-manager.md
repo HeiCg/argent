@@ -8,6 +8,7 @@ worktree `../argent-fork-wt-3n`; merge `open/main` @ 10fb1ea6 first (docs only s
 8315e396, clean).
 
 ## Decisions (planner, from the review)
+
 - Default injection strategy = `input-manager` for tap, swipe, pinch and multi-pointer
   gesture; automatic fallback `uia-async` on a hiddenapi block (already implemented).
   The earlier "input-manager for tap/pinch, uia for swipe" split is dropped: not
@@ -22,6 +23,7 @@ worktree `../argent-fork-wt-3n`; merge `open/main` @ 10fb1ea6 first (docs only s
   comparator yields `N/A`, not `±2`.
 
 ## Work
+
 1. Default flip: `open-server-input.ts` resolves `input-manager` when no strategy is set
    (`ARGENT_OPEN_INJECT_STRATEGY` still overrides; `uia-sync` = the old default remains
    selectable). Kotlin default unchanged (host sends `inject` explicitly). Unit tests:
@@ -43,7 +45,7 @@ worktree `../argent-fork-wt-3n`; merge `open/main` @ 10fb1ea6 first (docs only s
    tap +2 parity, swipe −39 win, pinch −28 win, headline −45 parity/win at floor 103).
 6. One CI run `suite=both`, `sg_mode=matrix`, blocks as above. Polling: one `gh run view`
    per 10 min as a single `run_in_background` Bash call `sleep 540; gh run view <id>
-   --json status,conclusion,jobs`; never loop; one `gh run download` per artifact. If a
+--json status,conclusion,jobs`; never loop; one `gh run download` per artifact. If a
    harness defect surfaces, fix and STOP (planner decides on a re-run). If the latency job
    risks the 120-min limit with 5 blocks + 5 fling arms, say so BEFORE triggering and
    propose the split (e.g. fling N=8 per cell-arm) — do not silently shrink N.
@@ -54,6 +56,7 @@ worktree `../argent-fork-wt-3n`; merge `open/main` @ 10fb1ea6 first (docs only s
    `skippedNoIdHash`. Scoreboard untouched; `open/main` not fast-forwarded.
 
 ## Acceptance
+
 P0–P7 + P9 + P10 green as pre-registered → `input-manager` is the default on the
 branch, ready for review and the 3n.2 scrcpy-removal PR. Otherwise: report which gate
 failed by how much with its CI; no default flip.

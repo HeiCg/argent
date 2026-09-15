@@ -36,7 +36,9 @@ if (present.length === 0) throw new Error(`no bench-block-*.json found under ${O
 // OFF-* may be absent — a proprietary refusal on Linux legitimately downgrades to
 // ON-only.
 const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
-  .split(",").map((s) => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const missingOn = requested.filter((n) => n.startsWith("ON") && ALL.includes(n) && !files[n]);
 if (missingOn.length) {
   throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
@@ -71,7 +73,9 @@ if (tls.length) {
   const holdMs0 = tls[0].tl.holdMs;
   for (const { block, tl } of tls) {
     if (tl.holdMs !== holdMs0) {
-      throw new Error(`tap-timeline parity: ${block} holdMs=${tl.holdMs} != ${tls[0].block} holdMs=${holdMs0}`);
+      throw new Error(
+        `tap-timeline parity: ${block} holdMs=${tl.holdMs} != ${tls[0].block} holdMs=${holdMs0}`
+      );
     }
     if (tl.hasMoveFrame || tl.frameCount !== 2) {
       throw new Error(
@@ -87,7 +91,8 @@ if (tls.length) {
 // landed (effectZeroTotal 0, from the timing-independent poll oracle). ON blocks are
 // FATAL; OFF (proprietary) is tolerated and only reported (its arm is best-effort on
 // Linux). originLost is reported for context.
-const firstMiss = (b) => (b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0);
+const firstMiss = (b) =>
+  b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0;
 const landingRate = (b) => {
   const c = b.effectCheckedTotal || 0;
   return c > 0 ? (c - firstMiss(b)) / c : 1;
@@ -163,7 +168,7 @@ if (unarmed.length) {
 // valid baseline. The bench records the reasons in `degradedReasons`; a non-empty
 // list fails the merge (an unarmed OR degraded OFF block must fail, per the ticket).
 const degraded = present
-  .filter((n) => ((files[n].block.degradedReasons || []).length > 0))
+  .filter((n) => (files[n].block.degradedReasons || []).length > 0)
   .map((n) => `${n}: ${files[n].block.degradedReasons.join("; ")}`);
 if (degraded.length) {
   throw new Error(
@@ -232,7 +237,8 @@ if (files["ON-input-manager"]) {
 
 // Fidelity: OFF-1 vs ON-uiautomation, only when both arms ran.
 const jaccard = (a, b) => {
-  const A = new Set(a), B = new Set(b);
+  const A = new Set(a),
+    B = new Set(b);
   const inter = [...A].filter((x) => B.has(x)).length;
   const uni = new Set([...a, ...b]).size;
   return uni === 0 ? 1 : Number((inter / uni).toFixed(3));
@@ -282,7 +288,8 @@ const result = {
   effectByBlock: Object.fromEntries(
     blocks.map((b) => {
       const c = b.effectCheckedTotal || 0;
-      const miss = b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0;
+      const miss =
+        b.firstTapNoEffectTotal != null ? b.firstTapNoEffectTotal : b.effectZeroTotal || 0;
       return [
         b.block,
         {
@@ -317,8 +324,12 @@ console.log(
 console.log("tap effect-check (ON fatal, OFF tolerated) — " + effectLine + " — ON gate OK");
 if (tls.length) {
   console.log(
-    "tap-timeline parity OK: holdMs=" + tls[0].tl.holdMs + "ms; every backend a clean 2-frame DOWN→UP — " +
-      tls.map(({ block, tl }) => `${block}:${tl.frameCount}f${tl.hasMoveFrame ? "+move" : ""}`).join(", ")
+    "tap-timeline parity OK: holdMs=" +
+      tls[0].tl.holdMs +
+      "ms; every backend a clean 2-frame DOWN→UP — " +
+      tls
+        .map(({ block, tl }) => `${block}:${tl.frameCount}f${tl.hasMoveFrame ? "+move" : ""}`)
+        .join(", ")
   );
 }
 console.log("MERGED_JSON=" + outPath);

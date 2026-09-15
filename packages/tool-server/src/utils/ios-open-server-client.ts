@@ -155,15 +155,19 @@ export class IosOpenServerClient {
     return this.request("getScreenSize");
   }
 
-  getState(opts: {
-    includeScreenshot?: boolean;
-    maxElements?: number;
-    bundleId?: string;
-  } = {}): Promise<IosOpenServerState> {
+  getState(
+    opts: {
+      includeScreenshot?: boolean;
+      maxElements?: number;
+      bundleId?: string;
+    } = {}
+  ): Promise<IosOpenServerState> {
     return this.request("getState", { ...opts });
   }
 
-  getNestedState(opts: { maxElements?: number; bundleId?: string } = {}): Promise<IosOpenServerState> {
+  getNestedState(
+    opts: { maxElements?: number; bundleId?: string } = {}
+  ): Promise<IosOpenServerState> {
     return this.request("getNestedState", { ...opts });
   }
 
@@ -175,7 +179,11 @@ export class IosOpenServerClient {
     return this.request("tap", { x, y, ...opts });
   }
 
-  longPress(x: number, y: number, opts: { durationMs?: number; bundleId?: string } = {}): Promise<{ success: boolean }> {
+  longPress(
+    x: number,
+    y: number,
+    opts: { durationMs?: number; bundleId?: string } = {}
+  ): Promise<{ success: boolean }> {
     return this.request("longPress", { x, y, ...opts });
   }
 

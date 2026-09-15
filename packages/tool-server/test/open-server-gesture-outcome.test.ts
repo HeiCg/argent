@@ -37,12 +37,22 @@ function makeOpenApi() {
       keyboardVisible: false,
       displayRotation: 0,
     })),
-    getScreenSize: vi.fn(async () => ({ screenWidth: 1000, screenHeight: 2000, displayRotation: 0 })),
+    getScreenSize: vi.fn(async () => ({
+      screenWidth: 1000,
+      screenHeight: 2000,
+      displayRotation: 0,
+    })),
     tap: vi.fn(async () => ({ success: true })),
     tapWithOutcome: vi.fn(async () => ({ success: true, ...OUTCOME })),
     getState: vi.fn(async () => ({
       tree: [],
-      info: { screenWidth: 1000, screenHeight: 2000, currentPackage: "", keyboardVisible: false, displayRotation: 0 },
+      info: {
+        screenWidth: 1000,
+        screenHeight: 2000,
+        currentPackage: "",
+        keyboardVisible: false,
+        displayRotation: 0,
+      },
       screenshot: "",
       waitedMs: 0,
       captureMs: 0,
@@ -91,7 +101,12 @@ describe("gesture-tap → open-device-server outcome (Screen-graph Phase A)", ()
     const openApi = makeOpenApi();
     const tool = makeTool(openApi);
 
-    const result = await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5, clickCount: 3 });
+    const result = await tool.execute({} as never, {
+      udid: ANDROID_SERIAL,
+      x: 0.5,
+      y: 0.5,
+      clickCount: 3,
+    });
 
     // The whole multi-tap timeline (clickCount 3, holdMs, gapMs) is built
     // server-side in ONE `tap` RPC that also reports the outcome — no host-side

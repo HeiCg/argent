@@ -64,13 +64,13 @@ and the run carries a masked on-device test failure.
 
 ## Scoreboard-grade numbers (run 33768547622, sha 97e708e6)
 
-| metric | OFF-1 | ON-uiautomation | ON-scrcpy | OFF-2 |
-|---|---|---|---|---|
-| describe idle p50/p95 ms, n=20 | 76/80 | 120/145 | 123/158 | 76/76 |
-| tokens o200k (1 sample) | 657 | 657 | 657 | 657 |
-| ping p50/p95 ms, n=20 | n/a | 3.24/22.58 | 6.72/38.75 | n/a |
-| wire bytes p50, n=10 | n/a | 31788 | 31788 | n/a |
-| server captureP50 ms, n=10 | n/a | 25 | 25 | n/a |
+| metric                         | OFF-1 | ON-uiautomation | ON-scrcpy  | OFF-2 |
+| ------------------------------ | ----- | --------------- | ---------- | ----- |
+| describe idle p50/p95 ms, n=20 | 76/80 | 120/145         | 123/158    | 76/76 |
+| tokens o200k (1 sample)        | 657   | 657             | 657        | 657   |
+| ping p50/p95 ms, n=20          | n/a   | 3.24/22.58      | 6.72/38.75 | n/a   |
+| wire bytes p50, n=10           | n/a   | 31788           | 31788      | n/a   |
+| server captureP50 ms, n=10     | n/a   | 25              | 25         | n/a   |
 
 Fidelity Jaccard 1.0 on 17 keys (OFF-1 vs ON-uia).
 

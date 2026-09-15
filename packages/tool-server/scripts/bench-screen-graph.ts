@@ -2593,7 +2593,8 @@ async function main(): Promise<void> {
   // Phase 3n.3 (3N2-L5): pin the injection strategy EXPLICITLY instead of relying on
   // "env unset ⇒ the default" (the same assumption that produced 3N1-H1). The open
   // configs (B2/O1–O5) inject through this; a caller can still override it.
-  process.env.ARGENT_OPEN_INJECT_STRATEGY = process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "input-manager";
+  process.env.ARGENT_OPEN_INJECT_STRATEGY =
+    process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "input-manager";
   if (process.env.BENCH_FRESH_STORE) {
     rmSync(OUT_DIR, { recursive: true, force: true });
     rmSync(graphDir(), { recursive: true, force: true });
@@ -2795,7 +2796,11 @@ async function main(): Promise<void> {
       // audit can tell whose store `graph-store/<pkg>/<vc>.json` belongs to.
       writeFileSync(
         join(dst, "_run-meta.json"),
-        JSON.stringify({ runId, jobStartedAt, benchStartedAt: started, generatedAt: new Date().toISOString() }, null, 2)
+        JSON.stringify(
+          { runId, jobStartedAt, benchStartedAt: started, generatedAt: new Date().toISOString() },
+          null,
+          2
+        )
       );
       realDebug(`[bench-sg] copied graph store ${src} -> ${dst} (run ${runId})`);
     }

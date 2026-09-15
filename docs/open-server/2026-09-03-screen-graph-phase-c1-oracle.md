@@ -13,6 +13,7 @@ per config (`policy.ts:112` → describe substring scan for B1, on-device
 non-empty on example.com).
 
 ## Fixes
+
 1. **Locate is plumbing, identical for all configs.** Use the open-server
    `query` (or nested state) to locate targets in EVERY config including B1,
    exactly as the harness already documents ("NOT counted as an
@@ -29,7 +30,7 @@ non-empty on example.com).
    excluded from the success denominator, counted separately).
 3. **One oracle for all configs**, off the metric path: on-device `query`
    with the matched nodes' text persisted in the JSON (`assertionMatches:
-   [{text, id, bounds}]`). Use `text: { equals | contains }` semantics
+[{text, id, bounds}]`). Use `text: { equals | contains }` semantics
    explicitly — inspect `toOpenSelector` (`:313`) and the Kotlin
    `ScreenSelector` contains-matching for case/whitespace/content-desc
    folding; make the oracle require the needle to appear in `text` or
@@ -44,17 +45,20 @@ non-empty on example.com).
    `bench-screen-graph.ts:965-969`.
 
 ## Run
+
 Full 7 configs × 15 tasks × 3 reps on a fresh emulator (B1 with vendored
 0.22.1 binaries as before). Reuse nothing from pass1 for success metrics;
 tokens/step may be cross-checked against pass1.
 
 ## Output
+
 Replace `/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md`
 with the v2 report (keep the old H1/H3 numbers in a "pass1" appendix for
 provenance), including per-task success matrix per config and the matched
 node text for every assertion. Tear the emulator down.
 
 ## Acceptance
+
 - B1 success ≥ 90 % (if lower, the per-task failure list must name a real
   proprietary-path failure with the matched/unmatched node text as
   evidence — otherwise the harness is still wrong; keep fixing).

@@ -25,7 +25,7 @@ InputReader VERBOSE` during the latency+fling steps (added for F7). VERBOSE infl
 latency on **all four blocks**, not only ON: OFF-1 paste **894/1471** vs **507/1223**
 clean, OFF-1 describe p95 **131** vs **53** clean; and it floored the uia fling arm only
 at **150/0.3** (0.175 vs 0.232 clean) while at 400/0.3 the contaminated uia arm was
-*higher* (0.340 vs 0.313) and at 400/0.5 unchanged (0.593 vs 0.585). So the run is
+_higher_ (0.340 vs 0.313) and at 400/0.5 unchanged (0.593 vs 0.585). So the run is
 superseded because **VERBOSE input logging inflated latency on all four blocks**, not
 because it "pushed the uia fling arm to the floor" (the one floored cell is the same
 bimodal 150/0.3 that flips between every run). VERBOSE was removed from the latency and
@@ -69,14 +69,14 @@ before = `ON-scrcpy-legacy` (await-per-frame), after = `ON-scrcpy` (drift), same
 Every statistic recomputed from the per-sample arrays; paired legacy→drift is a
 20 000-draw permutation test on the median difference.
 
-| cell | uia (IQR, n) | scrcpy drift (IQR, n) | scrcpy legacy (n) | off (n) | scrcpy/uia leg→drift | scrcpy/off leg→drift | Δ(drift−legacy) | paired perm p |
-|---|---|---|---|---|---|---|---|---|
-| 150/0.3 | 0.232 [0.175,0.461] (12) | 0.320 [0.175,0.464] (12) | 0.464 (12) | 0.443 (**8**) | 2.000→1.379 | 1.048→0.722 | −0.145 | **0.40** |
-| 150/0.5 | 0.175 [floor] (11) | 0.175 [floor] (12) | 0.175 (12) | 0.175 (11) | 1.000→1.000 | 1.000→1.000 | 0.000 | 1.00 |
-| 250/0.3 | 0.473 [0.452,0.483] (12) | 0.459 [0.426,0.468] (**11**) | 0.442 (12) | 0.467 (12) | 0.934→0.970 | 0.947→0.983 | +0.017 | 0.58 |
-| 250/0.5 | 0.175 [floor] (11) | 0.175 [0.175,0.464] (12) | 0.175 (12) | 0.320 (12) | 1.000→1.000 | 0.547→0.547 | 0.000 | 1.00 |
-| 400/0.3 | 0.313 [0.29,0.318] (12) | 0.319 [0.296,0.324] (**11**) | 0.324 (12) | 0.360 (12) | 1.035→1.019 | 0.900→0.886 | −0.005 | **0.28** |
-| 400/0.5 | 0.585 [0.573,0.648] (12) | 0.635 [0.589,0.643] (12) | 0.581 (12) | 0.657 (12) | 0.993→1.085 | 0.884→0.967 | +0.054 | **0.08** |
+| cell    | uia (IQR, n)             | scrcpy drift (IQR, n)        | scrcpy legacy (n) | off (n)       | scrcpy/uia leg→drift | scrcpy/off leg→drift | Δ(drift−legacy) | paired perm p |
+| ------- | ------------------------ | ---------------------------- | ----------------- | ------------- | -------------------- | -------------------- | --------------- | ------------- |
+| 150/0.3 | 0.232 [0.175,0.461] (12) | 0.320 [0.175,0.464] (12)     | 0.464 (12)        | 0.443 (**8**) | 2.000→1.379          | 1.048→0.722          | −0.145          | **0.40**      |
+| 150/0.5 | 0.175 [floor] (11)       | 0.175 [floor] (12)           | 0.175 (12)        | 0.175 (11)    | 1.000→1.000          | 1.000→1.000          | 0.000           | 1.00          |
+| 250/0.3 | 0.473 [0.452,0.483] (12) | 0.459 [0.426,0.468] (**11**) | 0.442 (12)        | 0.467 (12)    | 0.934→0.970          | 0.947→0.983          | +0.017          | 0.58          |
+| 250/0.5 | 0.175 [floor] (11)       | 0.175 [0.175,0.464] (12)     | 0.175 (12)        | 0.320 (12)    | 1.000→1.000          | 0.547→0.547          | 0.000           | 1.00          |
+| 400/0.3 | 0.313 [0.29,0.318] (12)  | 0.319 [0.296,0.324] (**11**) | 0.324 (12)        | 0.360 (12)    | 1.035→1.019          | 0.900→0.886          | −0.005          | **0.28**      |
+| 400/0.5 | 0.585 [0.573,0.648] (12) | 0.635 [0.589,0.643] (12)     | 0.581 (12)        | 0.657 (12)    | 0.993→1.085          | 0.884→0.967          | +0.054          | **0.08**      |
 
 **The long-duration under-scroll is NOT resolved by this run.** The same-run before/after
 (legacy → drift, N = 11–12 per cell) shows **no distinguishable change** in scroll
@@ -91,8 +91,8 @@ read 400/0.3 scrcpy/off **0.642**, 400/0.5 **0.580**, 250/0.3 **0.712**
 (`2026-09-03-review-final-findings.md:353-360`). The **same pre-3k code** running as the
 `legacy` arm of THIS run reads 400/0.3 **0.901**, 400/0.5 **0.884**, 250/0.3 **0.946** —
 a +0.26/+0.30/+0.23 change on unchanged code, far larger than the change the fix is
-credited with. The defensible cross-run sentence is: *"run 7's 400 ms under-scroll did
-not reproduce on `open/main` @ 690e66bc in either arm"* — the deficit is **OPEN, not
+credited with. The defensible cross-run sentence is: _"run 7's 400 ms under-scroll did
+not reproduce on `open/main` @ 690e66bc in either arm"_ — the deficit is **OPEN, not
 resolved**. Confounds between the two runs: a different emulator session, and this base
 carries the always-on `outcome`/`settleAfterAction` path on `gesture-swipe`
 (`2026-09-14-open-server-outcome-regression.md`), which run 7 did not have — so the fling
@@ -111,17 +111,17 @@ unstable arm" F2 effect tripping the no-whitelist gate, not a scrcpy defect. Thi
 **gate-design** problem, fixed by the pre-registered 3k.1 rule (reference-bimodality
 exclusion keyed on the reference arms, power floor on every arm, two-sided scrcpy/uia AND
 scrcpy/off). Under that rule this run reads **3 PASS / 3 non-informative** — a
-*conditional* green that must be published WITH the disclosure that half the grid is
+_conditional_ green that must be published WITH the disclosure that half the grid is
 ungradable at N = 12, and the deficit stays OPEN because the same-run paired test is not
 significant.
 
 ### Delivered swipe duration (device logcat, `3k pacing`, 26-frame ≈416 ms swipe) — caveated
 
-| arm | delivered DOWN→UP | requested | source |
-|---|---|---|---|
-| UiAutomation | 405 ms | 416 ms | Launcher `TaplEvents` ACTION_DOWN/UP, **1 swipe** |
-| scrcpy drift | 416 ms | 416 ms | Launcher `TaplEvents` ACTION_DOWN/UP, **1 swipe** |
-| scrcpy legacy | 417 ms | 416 ms | Launcher `TaplEvents` ACTION_DOWN/UP, **1 swipe** |
+| arm           | delivered DOWN→UP | requested | source                                            |
+| ------------- | ----------------- | --------- | ------------------------------------------------- |
+| UiAutomation  | 405 ms            | 416 ms    | Launcher `TaplEvents` ACTION_DOWN/UP, **1 swipe** |
+| scrcpy drift  | 416 ms            | 416 ms    | Launcher `TaplEvents` ACTION_DOWN/UP, **1 swipe** |
+| scrcpy legacy | 417 ms            | 416 ms    | Launcher `TaplEvents` ACTION_DOWN/UP, **1 swipe** |
 
 **This row does not prove the mechanism.** `grep -c pacing-trace fling-log-*.txt` → 0/0:
 the host per-frame trace never reached an artifact (the fling harness swallows the
@@ -137,18 +137,18 @@ routes the host trace to a file and reads device-side MotionEvent eventTimes via
 
 ### Latency verbs vs run 7 (p50/p95 ms) — corrected
 
-| verb | OFF-1 | ON-uia | ON-scrcpy | OFF-2 | vs run 7 |
-|---|---|---|---|---|---|
-| describe (idle) | 52/53 | 33/57 | 35/55 | 52/53 | unchanged (ON ≤ OFF; direction only, F1) |
-| await-screen-idle | 496/537 | **287/292** | **287/289** | 495/502 | **CHANGED on this base, cause not established**: ON −176 ms vs run 7 (463/472, 461/474) against a 1 ms OFF drift floor (OFF 496/495 vs 498/497) |
-| await-ui-element | 73/76 | 37/34 | 34/41 | 72/80 | **CHANGED**: ON 37/34 vs run 7 32/31, outside its 1 ms floor (small) |
-| paste | 507/1223 | 290/476 | 286/442 | 521/1094 | unchanged (directional; 110 ms floor, F16) |
-| gesture-pinch | 347/358 | 345/378 | 308/315 | 350/375 | unchanged (ON-scrcpy pinch 308 vs run 7 307) |
-| gesture-tap | 52/53 | **723/828** | **721/881** | 53/54 | **base regression** (outcome path) |
-| gesture-swipe | 293/306 | **1152/1238** | **1100/1149** | 290/317 | **base regression** (outcome path) |
-| tap+describe | 401/842 | — | — | 274/1016 | **OFF not comparable**: 401 vs 274 within-run (127 ms drift vs run 7's 8 ms floor) |
-| tap+describe(settle:false) | — | 736/914 | 777/884 | — | inflated by the base regression |
-| tap+describe(settle:true) | — | **1111/1236** | **1105/1277** | — | vs run 7 788/1100, 774/1039 — inflated by the base regression (was omitted before) |
+| verb                       | OFF-1    | ON-uia        | ON-scrcpy     | OFF-2    | vs run 7                                                                                                                                        |
+| -------------------------- | -------- | ------------- | ------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| describe (idle)            | 52/53    | 33/57         | 35/55         | 52/53    | unchanged (ON ≤ OFF; direction only, F1)                                                                                                        |
+| await-screen-idle          | 496/537  | **287/292**   | **287/289**   | 495/502  | **CHANGED on this base, cause not established**: ON −176 ms vs run 7 (463/472, 461/474) against a 1 ms OFF drift floor (OFF 496/495 vs 498/497) |
+| await-ui-element           | 73/76    | 37/34         | 34/41         | 72/80    | **CHANGED**: ON 37/34 vs run 7 32/31, outside its 1 ms floor (small)                                                                            |
+| paste                      | 507/1223 | 290/476       | 286/442       | 521/1094 | unchanged (directional; 110 ms floor, F16)                                                                                                      |
+| gesture-pinch              | 347/358  | 345/378       | 308/315       | 350/375  | unchanged (ON-scrcpy pinch 308 vs run 7 307)                                                                                                    |
+| gesture-tap                | 52/53    | **723/828**   | **721/881**   | 53/54    | **base regression** (outcome path)                                                                                                              |
+| gesture-swipe              | 293/306  | **1152/1238** | **1100/1149** | 290/317  | **base regression** (outcome path)                                                                                                              |
+| tap+describe               | 401/842  | —             | —             | 274/1016 | **OFF not comparable**: 401 vs 274 within-run (127 ms drift vs run 7's 8 ms floor)                                                              |
+| tap+describe(settle:false) | —        | 736/914       | 777/884       | —        | inflated by the base regression                                                                                                                 |
+| tap+describe(settle:true)  | —        | **1111/1236** | **1105/1277** | —        | vs run 7 788/1100, 774/1039 — inflated by the base regression (was omitted before)                                                              |
 
 The **tap/swipe/settle inflation IS the known base regression and nothing else**: it hits
 ON-uiautomation (which uses no scrcpy), OFF is normal, fallbacks = 0, and it matches
@@ -159,12 +159,12 @@ lands (the outcome fix has since merged; 3k.1 re-measures).
 
 ### F5 / F6 / F7 / transport (per block)
 
-| block | locateVia dump/describe | first-attempt no-effect | transport | oracle |
-|---|---|---|---|---|
-| OFF-1 | 0 / 40 | 0 | n/a | pass |
-| ON-uiautomation | 0 / 60 | 0 | redir | pass |
-| ON-scrcpy | 0 / 60 | 0 | redir | pass |
-| OFF-2 | 0 / 40 | 0 | n/a | pass |
+| block           | locateVia dump/describe | first-attempt no-effect | transport | oracle |
+| --------------- | ----------------------- | ----------------------- | --------- | ------ |
+| OFF-1           | 0 / 40                  | 0                       | n/a       | pass   |
+| ON-uiautomation | 0 / 60                  | 0                       | redir     | pass   |
+| ON-scrcpy       | 0 / 60                  | 0                       | redir     | pass   |
+| OFF-2           | 0 / 40                  | 0                       | n/a       | pass   |
 
 `locateVia = describe 100%` in every block; the F6 short-circuit fired and is **logged
 and surfaced, not gated**. No first-attempt no-effect taps this run (scrcpy 60/60), so no

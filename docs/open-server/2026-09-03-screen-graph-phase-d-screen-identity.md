@@ -14,6 +14,7 @@ Read first: `2026-09-03-review-c4-findings.md` (verdict REJECT scoped to O5/H4-O
 `tools/navigate-to/index.ts`, `bench/oracle.ts`, `scripts/bench-screen-graph.ts`.
 
 ## 0. Republish C.4 honestly (harness, same run 33806639520, no new device time)
+
 1. O5 = 86/100 everywhere: exclusions caused by the config's own prior action are
    failures. `isExcludedRun` (oracle.ts:145) restricted to pre-action infrastructure
    failures identical for all configs.
@@ -33,10 +34,11 @@ Read first: `2026-09-03-review-c4-findings.md` (verdict REJECT scoped to O5/H4-O
    dump, not only absence on launch) and C-M3 (commit `preflight-launch-screens.json`
    so the two skipped tests run).
 7. O5 tokens over all 155 steps; O5 RTT/step must include navigate + locate RPCs.
-Regenerate the results doc from the JSON (no hand-typed numbers); keep C.4's
-published numbers in a "superseded" block with the reason per number.
+   Regenerate the results doc from the JSON (no hand-typed numbers); keep C.4's
+   published numbers in a "superseded" block with the reason per number.
 
 ## 1. Screen identity hash (device side, `ScreenHash.kt`)
+
 Problem (proven from the uploaded store): node 2bf46d4f absorbs every Settings
 sub-screen (7+8 root buckets route into it) because H never appends text or
 contentDescription (:78-83), hashes a scrolling container as container + first-child
@@ -44,6 +46,7 @@ class sequence (:84-89), and quantises bounds to 1/32 (:66). Two hashes exist fo
 the Settings root (scroll-dependent first-child sequence + bucket crossings).
 Design `H_id` (the identity used for nodes and routing), keeping `H` and `H_text` as
 they are for diff/awaitChange:
+
 - window package + the texts of "identity nodes": toolbar/collapsing-toolbar title,
   action-bar title, tab labels, dialog titles (by resource-id patterns
   `*:id/action_bar`, `*collapsing_toolbar*`, `*:id/title` when its parent is a
@@ -54,13 +57,14 @@ they are for diff/awaitChange:
 - for scrollable containers: container class + resource-id only, never child
   sequence, never bounds;
 - no bounds at all in `H_id`; no focus flags.
-Unit tests with captured roots from the run 33806639520 store: (a) 77a189ce and
-299378e0 → same `H_id`; (b) Network & internet, Battery, Sound, Display, Apps
-sub-screens → five distinct `H_id`; (c) the same sub-screen scrolled → same `H_id`.
-Return `H_id` in `getState`/`getNestedState` alongside `H`/`H_text`; the host graph
-keys nodes by `H_id`.
+  Unit tests with captured roots from the run 33806639520 store: (a) 77a189ce and
+  299378e0 → same `H_id`; (b) Network & internet, Battery, Sound, Display, Apps
+  sub-screens → five distinct `H_id`; (c) the same sub-screen scrolled → same `H_id`.
+  Return `H_id` in `getState`/`getNestedState` alongside `H`/`H_text`; the host graph
+  keys nodes by `H_id`.
 
 ## 2. Edges carry the acted element's selector
+
 Record on every edge: `{ text?, contentDescription?, resourceId?, className,
 indexInParent, boundsBucket }` of the tapped node (from the tree at action time), plus
 outcome. Planning (`plan.ts`) prefers edges with a selector; replay resolves the
@@ -70,12 +74,14 @@ selector cannot be resolved on the live screen is not taken. Weight stays
 1/(successes+1) but per (from `H_id`, selector) pair.
 
 ## 3. navigate-to correctness
+
 Route only when the target `H_id` is unambiguous (one node); verify arrival by
 `H_id` equality (tolerant match only for the same `H_id` with a different `H`).
 Divergence → stop, re-observe, return `ok:false` with `totalSteps`, `completedSteps`,
 `divergedAt`. The bench's O5 fallback taps only after a fresh describe.
 
 ## 4. Matrix run and acceptance
+
 `BENCH_REPS=5`, same task list, same oracle. Accept when: O5-pure covers ≥ 30 of the
 known-target taps; O5 success (exclusions as failures) within the cluster-bootstrap
 interval of B1; mis-land count reported and ≤ 2; results doc regenerated from JSON;

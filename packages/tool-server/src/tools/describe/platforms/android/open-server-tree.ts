@@ -154,20 +154,20 @@ export function nestedTreeTruncated(roots: OpenServerNestedElement[]): boolean {
 function nestedToParsed(el: OpenServerNestedElement): ParsedXmlNode {
   const b = el.bounds;
   const attrs: Record<string, string> = {
-    class: el.className ?? "",
-    bounds: `[${b.x1},${b.y1}][${b.x2},${b.y2}]`,
-    clickable: el.clickable ? "true" : "false",
+    "class": el.className ?? "",
+    "bounds": `[${b.x1},${b.y1}][${b.x2},${b.y2}]`,
+    "clickable": el.clickable ? "true" : "false",
     "long-clickable": el.longClickable ? "true" : "false",
-    scrollable: el.scrollable ? "true" : "false",
-    checkable: el.checkable ? "true" : "false",
-    checked: el.checked ? "true" : "false",
-    focusable: el.focusable ? "true" : "false",
-    focused: el.focused ? "true" : "false",
-    selected: el.selected ? "true" : "false",
+    "scrollable": el.scrollable ? "true" : "false",
+    "checkable": el.checkable ? "true" : "false",
+    "checked": el.checked ? "true" : "false",
+    "focusable": el.focusable ? "true" : "false",
+    "focused": el.focused ? "true" : "false",
+    "selected": el.selected ? "true" : "false",
     // `enabled` defaults true (matches uiautomator dump, where only false is
     // notable); `makeUiNode` reads `enabled === "false"`.
-    enabled: el.enabled === false ? "false" : "true",
-    password: el.password ? "true" : "false",
+    "enabled": el.enabled === false ? "false" : "true",
+    "password": el.password ? "true" : "false",
   };
   if (el.resourceId) attrs["resource-id"] = el.resourceId;
   if (el.text) attrs.text = el.text;
@@ -271,7 +271,9 @@ function compactNestedNode(el: OpenServerNestedElement): OpenServerNestedElement
     : [{ ...el, children: compactedChildren }];
 }
 
-function compactChildren(children: OpenServerNestedElement[] | undefined): OpenServerNestedElement[] {
+function compactChildren(
+  children: OpenServerNestedElement[] | undefined
+): OpenServerNestedElement[] {
   const out: OpenServerNestedElement[] = [];
   for (const c of children ?? []) {
     for (const cc of compactNestedNode(c)) out.push(cc);
@@ -298,9 +300,7 @@ function compactChildren(children: OpenServerNestedElement[] | undefined): OpenS
  * conservative stays byte-identical, because both only ever remove nodes the trim
  * itself passes through or drops.
  */
-export function compactNestedRoots(
-  roots: OpenServerNestedElement[]
-): OpenServerNestedElement[] {
+export function compactNestedRoots(roots: OpenServerNestedElement[]): OpenServerNestedElement[] {
   return roots.map((r) => ({ ...r, children: compactChildren(r.children) }));
 }
 

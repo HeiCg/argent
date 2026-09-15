@@ -15,7 +15,10 @@ import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
 import { shouldUseOpenServer, openServerAwaitChange } from "../../utils/open-server-input";
-import { describeAndroidViaOpenState, readAndroidOpenState } from "../../utils/open-server-describe";
+import {
+  describeAndroidViaOpenState,
+  readAndroidOpenState,
+} from "../../utils/open-server-describe";
 import type { OpenServerSelector } from "../../blueprints/android-open-server";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";

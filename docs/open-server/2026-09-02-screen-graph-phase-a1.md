@@ -8,6 +8,7 @@ absolute path:
 has committed. Run `git -C <path> fetch origin` first, then:
 
 ## 1. Rebase
+
 `git rebase origin/feat/android-open-server` (phase 3 @ dd378ddf: nested
 compact describe, TapHandler raw inject, MotionInjector syncFinal,
 SwipeHandler momentum, GestureHandler downsample, cached screen size,
@@ -16,9 +17,11 @@ fixes and Phase A outcome/version wrappers in `JsonRpcHandler.runAction`.
 Bump versionCode above 13. Rebuild APK; full tool-server vitest green.
 
 ## 2. Outcome settle heuristic (Kotlin `TreeStore.waitForQuiet` / `runAction`)
+
 Smoke finding: on a cold emulator the navigation's first AX event arrives
 ~1.3 s after the tap; the 80 ms no-event window trips first and the outcome
 reports `newScreen:false` with `after == before`. Fix:
+
 - After the action, phase 1: wait for the FIRST AX event with a bound
   `firstEventTimeoutMs` (default 600; param under `outcome`). If none
   arrives, return `changed:false` with `settled:'no-event'`.
@@ -33,12 +36,14 @@ reports `newScreen:false` with `after == before`. Fix:
   "next stable state" get it in one call). Default unchanged (first event).
 
 ## 3. await-ui-element on awaitChange
+
 Deferred from Phase A: switch the open-path poll loop in
 `await-ui-element` to `awaitChange({until: selector, settle:true})` with the
 existing poll loop as fallback; keep trust/cause semantics. Unit tests with
 mocked client.
 
 ## 4. Phase B leftovers (same branch, after rebase)
+
 - Store the device `version` (and `stateHash`) on the live `ScreenNode` at
   observation time so the compact tier's "only text changed" path can call
   `diff(sinceVersion)` and patch instead of refreshing; also populate
@@ -51,6 +56,7 @@ mocked client.
   `query` for the stored index entry and skip/diverge if not present.
 
 ## Tests
+
 Vitest: outcome shapes with `settled`/`firstEventMs`; awaitChange settle
 option; await-ui-element uses awaitChange when flag on. Kotlin builds.
 On-device (AVD free unless told otherwise; never ZF524RZBHD): repeat the
@@ -58,5 +64,6 @@ Phase A smoke M3 (Settings root → Network tap must report `newScreen:true`
 on a cold boot) and M4; record numbers; tear down.
 
 ## Acceptance
+
 Rebased branch pushed? NO — local commits only; report conflicts resolved,
 numbers, test counts.

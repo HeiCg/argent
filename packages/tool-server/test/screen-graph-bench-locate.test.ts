@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { pickUniqueNode, normLc, type QueryNodeLite } from "../src/screen-graph/bench/locate";
-import { parseDescribeLocate, describeLinesToNodes } from "../src/screen-graph/bench/describe-locate";
+import {
+  parseDescribeLocate,
+  describeLinesToNodes,
+} from "../src/screen-graph/bench/describe-locate";
 import { isPreActionInfraError } from "../src/screen-graph/bench/oracle";
 
 const b = (y: number) => ({ x1: 0, y1: y, x2: 500, y2: y + 60 });
@@ -85,7 +88,6 @@ describe("phase D.3 (D2-M6) — isPreActionInfraError", () => {
   });
 });
 
-
 /* --------------------------------------------------------------------------
  * Phase D.4.1 (D4-H3) — the collapsed describe row is split into text/cd.
  *
@@ -155,11 +157,23 @@ describe("phase D.4.1 (D4-H2) — root Settings screen, both renderings (verbati
   // matching and only returns the winner's centre).
   const openRoot: QueryNodeLite[] = [
     { id: "title", text: "Network & internet", bounds: { x1: 189, y1: 824, x2: 625, y2: 895 } },
-    { id: "summary", text: "Mobile, Wi‑Fi, hotspot", bounds: { x1: 189, y1: 895, x2: 540, y2: 946 } },
+    {
+      id: "summary",
+      text: "Mobile, Wi‑Fi, hotspot",
+      bounds: { x1: 189, y1: 895, x2: 540, y2: 946 },
+    },
     { id: "title", text: "Display", bounds: { x1: 189, y1: 2441, x2: 361, y2: 2512 } },
-    { id: "summary", text: "Dark theme, font size, brightness", bounds: { x1: 189, y1: 2512, x2: 725, y2: 2583 } },
+    {
+      id: "summary",
+      text: "Dark theme, font size, brightness",
+      bounds: { x1: 189, y1: 2512, x2: 725, y2: 2583 },
+    },
     { id: "title", text: "Accessibility", bounds: { x1: 189, y1: 2903, x2: 486, y2: 2974 } },
-    { id: "summary", text: "Display, interaction, audio", bounds: { x1: 189, y1: 2974, x2: 605, y2: 3025 } },
+    {
+      id: "summary",
+      text: "Display, interaction, audio",
+      bounds: { x1: 189, y1: 2974, x2: 605, y2: 3025 },
+    },
   ];
   // Proprietary describe — verbatim [D4] rows: the root list (log lines 27/2, top of
   // the unscrolled root) plus the two "display"-bearing rows (log line 25, scrolled).
@@ -212,7 +226,11 @@ describe("phase D.4.1 (D4-H2/H1, item 4) — DESTINATION Network & internet scre
   // Open query nodes — verbatim from graph-store node 284ef0302b28c5de ("Network &
   // internet: Internet"), normalized bounds as captured (x, y, w, h -> x1,y1,x2,y2).
   const openDest: QueryNodeLite[] = [
-    { id: "collapsing_toolbar", text: "Network & internet", bounds: { x1: 0.0, y1: 0.0, x2: 1.0, y2: 0.249 } },
+    {
+      id: "collapsing_toolbar",
+      text: "Network & internet",
+      bounds: { x1: 0.0, y1: 0.0, x2: 1.0, y2: 0.249 },
+    },
     { id: "title", text: "Internet", bounds: { x1: 0.175, y1: 0.267, x2: 0.342, y2: 0.297 } },
     { id: "summary", text: "T-Mobile", bounds: { x1: 0.175, y1: 0.296, x2: 0.305, y2: 0.317 } },
   ];

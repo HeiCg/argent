@@ -94,7 +94,8 @@ describe("IosOpenServerClient transport framing", () => {
 
   it("passes screen-point coordinates through on tap", async () => {
     fake = await startFakeServer((req) => {
-      if (req.method === "tap") return { success: true, dropped: false, dropReporting: "unsupported" };
+      if (req.method === "tap")
+        return { success: true, dropped: false, dropReporting: "unsupported" };
       return {};
     });
     client = new IosOpenServerClient({ port: fake.port });
@@ -106,7 +107,9 @@ describe("IosOpenServerClient transport framing", () => {
   });
 
   it("rejects with the server's JSON-RPC error message", async () => {
-    fake = await startFakeServer(() => ({ __error: { code: -32004, message: "query is not implemented in this phase" } }));
+    fake = await startFakeServer(() => ({
+      __error: { code: -32004, message: "query is not implemented in this phase" },
+    }));
     client = new IosOpenServerClient({ port: fake.port });
     await expect(client.getState()).rejects.toThrow(/not implemented in this phase/);
   });

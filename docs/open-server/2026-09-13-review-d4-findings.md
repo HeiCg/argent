@@ -44,7 +44,7 @@ headline narratives refuted by evidence already in hand (D4-H5).
 Only **10 of B1's 18 failures** (the `settings-display` / `same-display-slider`
 `t("Display")` refusals) are the describe-collapse rendering property the report
 claims; those 10 are real and well evidenced. The 82 % count itself looks robust
-(81/100 in the reference run) — it is the *attribution* that must not enter the
+(81/100 in the reference run) — it is the _attribution_ that must not enter the
 scoreboard.
 
 ## HIGH
@@ -54,7 +54,7 @@ scoreboard.
   lines 94-108, 247 and 258 build the whole "no discrete Internet row on that
   screen" claim on `logs/sg-matrix.log:28`. That line's row is
   `LinearLayout "Network & internet / Mobile, Wi‑Fi, hotspot" [clickable]
-  (0.000, 0.321, 1.000, 0.096)` — identical in text and bounds to
+(0.000, 0.321, 1.000, 0.096)` — identical in text and bounds to
   `logs/sg-matrix.log:27` (the same task's **step 1**, on the root) and to
   `:2` (`settings-network` step 1, on the root). The run JSON gives B1
   `settings-network-internet` step 2 an observation of **657 tokens in all 5
@@ -63,10 +63,10 @@ scoreboard.
   capture of the destination (`graph-store/com.android.settings/34.json`, node
   `284ef0302b28c5de`, label `Network & internet: Internet`) has
   `FrameLayout "Network & internet" id="collapsing_toolbar" (0.000, 0.000,
-  1.000, 0.249)` and `StaticText "Internet" id="title" (0.175, 0.267, 0.167,
-  0.030)`, and contains no node at y 0.321 and no substring "Mobile, Wi‑Fi,
+1.000, 0.249)` and `StaticText "Internet" id="title" (0.175, 0.267, 0.167,
+0.030)`, and contains no node at y 0.321 and no substring "Mobile, Wi‑Fi,
   hotspot". Mechanism (`packages/tool-server/scripts/bench-screen-graph.ts:
-  1164-1169`): B1's describe is issued at the top of the step, and B1 pays no
+1164-1169`): B1's describe is issued at the top of the step, and B1 pays no
   settle — `currentHash` returns `""` without a device call for a non-open
   config (`bench-screen-graph.ts:536-545`), `traversals` likewise (`:547-556`),
   `recordMs` is 0. B1's step-1 tap `actionRttMs` is 53-62 ms; B2's is
@@ -74,24 +74,24 @@ scoreboard.
   delete the claim. Either state it as "B1's step-2 describe read the source
   screen (657 tok, root row bounds) because the B1 path has no post-tap settle
   — a harness-timing asymmetry, phase 3k" and re-run with a symmetric settle
-  before B1's describe, or capture the proprietary describe *of the Network &
-  internet screen* and quote that. Nothing about the destination screen's
+  before B1's describe, or capture the proprietary describe _of the Network &
+  internet screen_ and quote that. Nothing about the destination screen's
   proprietary rendering is currently in evidence.
 
 - **D4-H2 · The "CAPTURED Network & internet screen (run 34794414764)" test
   fixture is not a capture; one row is fabricated and one is from a different
   screen.** `packages/tool-server/test/screen-graph-bench-locate.test.ts:
-  152-164` says "quoted verbatim from run 34794414764 (logs/sg-matrix.log line
+152-164` says "quoted verbatim from run 34794414764 (logs/sg-matrix.log line
   28)". Line 28 contains exactly one row. Of the three fixture rows:
   `test:161` is the root row from line 28 (mislabelled, see D4-H1); `test:162`
   (`Connected devices / Bluetooth, pairing`) is from `sg-matrix.log:5`, the
-  `settings-connected` step 1 — a *different task, on the root*; `test:163`
+  `settings-connected` step 1 — a _different task, on the root_; `test:163`
   (`LinearLayout "Airplane mode" id="airplane" [clickable] (0.000, 0.700,
-  1.000, 0.060)`) **appears nowhere in any artifact** — `grep -ri airplane`
+1.000, 0.060)`) **appears nowhere in any artifact** — `grep -ri airplane`
   over `logs/`, `preflight-launch-screens.json`, the run JSON and
   `results-ci.md` returns nothing (the only artifact hit is the graph-store,
   where the real node is `StaticText "Airplane mode" id="title" (0.175, 0.524,
-  0.317, 0.030)`, a different shape and position). `openNodes` (`test:167-172`)
+0.317, 0.030)`, a different shape and position). `openNodes` (`test:167-172`)
   is likewise hand-written, not the capture. The report cites this test twice as
   evidence (line 79-80 verbatim listing, line 257 acceptance PASS), and test
   case `test:194-199` — the one the report quotes as "'Airplane mode' resolves
@@ -103,7 +103,7 @@ scoreboard.
 
 - **D4-H3 · The symmetric-policy test cannot detect the divergence that
   actually happens, and the real asymmetry has moved into the describe parser.**
-  `test:100-108` renders the "describe payload" *from the same `screen` array*
+  `test:100-108` renders the "describe payload" _from the same `screen` array_
   with the test's own serializer, emitting `text` and `cd` as two separate
   quoted strings — precisely the shape `describeLinesToNodes` splits back into
   `text`/`cd` (`describe-locate.ts:47,54-55`). It is a round-trip of the test's
@@ -112,7 +112,7 @@ scoreboard.
   string, `"Display / Dark theme, font size, brightness"`, so
   `describeLinesToNodes` sets `text` to the joined label and leaves `cd`
   **undefined** — which makes tiers 2 and 3 of `pickUniqueNode` (`locate.ts:
-  48-51`, EXACT text, EXACT contentDescription) structurally unreachable for
+48-51`, EXACT text, EXACT contentDescription) structurally unreachable for
   every collapsed B1 row, and forces it into the contains tier. The open path
   receives the same content as separate nodes (`preflight-launch-screens.json`
   `settingsRoot`: `{"id":"title","text":"Network & internet"}` and
@@ -148,7 +148,7 @@ scoreboard.
 - **D4-H5 · The report withholds a same-code reference run it downloaded, which
   refutes two of its headline claims.** Lines 22-25 name run 34788497583 ("the
   same resolver code") and say it is "used only where noted" and "do not blend".
-  Not blending is right; not *checking* is not. In that run's JSON
+  Not blending is right; not _checking_ is not. In that run's JSON
   (`.bench-results/d4/.bench-results/screen-graph/bench-sg-2026-09-13T23-09-59-641Z.json`):
   **O5 = 100/100**, `settings-display` YYYYY and `same-display-slider` YYYYY —
   versus 95/100 in D.4. **B1 `settings-network-internet` = NLNLN**, not NNNNN
@@ -171,9 +171,9 @@ scoreboard.
   run JSON every B1 locate-fail on that task (reps 0, 3, 4, step 3) has an
   observation of **112 tokens**; the passing reps 1-2 have 657 at the same step.
   112 is the same value that, in reference run 34788497583, appears as a failed
-  *launch* describe (reps 1/3 of `settings-network-internet`) — a screen that is
+  _launch_ describe (reps 1/3 of `settings-network-internet`) — a screen that is
   not Settings. The `[D4]` line `sg-matrix.log:32` confirms `describe rows
-  containing "battery": (none)`. By contrast the 10 `Display` locate-fails all
+containing "battery": (none)`. By contrast the 10 `Display` locate-fails all
   have 665-693-token describes, i.e. a real scrolled root — those are genuine.
   **Fix:** split B1's 13 locate-fails into "10 rendering (collapsed-row
   ambiguity, evidenced) + 3 degenerate capture (112-token describe, infra)" and
@@ -184,7 +184,7 @@ scoreboard.
   and 213 call O5's failures config-neutral Display flakiness. Recompute: O5
   `settings-display` fails on reps 1, 2, 3 — the same three records whose step 2
   carries `navFallback:true`, `nav {reached:false, completedSteps:0,
-  totalSteps:1, fromVia:"exact"}`. The two passing reps routed
+totalSteps:1, fromVia:"exact"}`. The two passing reps routed
   (`strategy:"navigate"`). On the same task B2 and O4 are YYYYY and O1/O2/O3
   fail once each. A config-neutral fling flake does not land 3/5 on the one
   config that routes and 0/5 on two others. Note also the post-step `hash` on
@@ -234,7 +234,7 @@ scoreboard.
   published `[3, 31] / [3, 33] / [3, 31] / [3, 35] / [2, 26]`. All point
   estimates, all Wilson intervals, all vs-B2 intervals and O4/O5/B2/O1/O2/O3
   cluster intervals reproduce exactly. The D.2 review reproduced D.2's bootstrap
-  *because D.2 published its seed*. **Fix:** publish the RNG seed (and use a
+  _because D.2 published its seed_. **Fix:** publish the RNG seed (and use a
   fixed one in the harness), or round the interval to a resolution stable across
   seeds.
 
@@ -297,19 +297,19 @@ scoreboard.
 ## Scoreboard rows allowed
 
 Only these may enter `2026-09-03-scoreboard.md`, worded as given. Nothing about
-B1's *cause*, nothing about O5-pure, nothing from Item 2.
+B1's _cause_, nothing about O5-pure, nothing from Item 2.
 
-| row | wording required |
-|---|---|
-| tokens/agent-step, o200k p50, run 34794414764, n = non-launch steps | B1 657 (n=145) · B2 645 (n=151) · O1 138 · O2 54 · O3 627 · O4 21 · O5 22 (n=155 each). Add "launch-step observation excluded". |
-| RTT count/step p50, same run, same n | B1 2 · B2 2 · O1 2 · O2 2 · O3 2 · O4 1 · O5 1. Not a latency column (D2-M4). |
-| success, full 100 denominator, Wilson (n=100), run 34794414764 | B1 82 % [73, 88] · B2 98 % [93, 99] · O1 98 % [93, 99] · O2 99 % [95, 100] · O3 98 % [93, 99] · O4 100 % [96, 100] · O5 95 % [89, 98]. Cluster intervals only if the seed is published (D4-M6). B1's row must carry "82 % is a count, not an explained capability gap — see `2026-09-13-review-d4-findings.md` D4-H1/H5; 81/100 on the same code in run 34788497583". |
-| H1 tokens ratio, run 34794414764 | O1/B2 o200k p50 over all non-launch steps = 0.214× (target ≤ 0.5×), PASS. Label "all non-launch steps", not "unchanged steps". |
-| H3 warm/cold ratio, run 34794414764 | O4/O3 o200k p50 = 21/627 = 0.033× (target ≤ 0.2×), PASS; store 11 nodes / 11 edges, max out-degree 9. |
-| H4 non-inferiority **vs B2 only**, paired task-cluster bootstrap, B=10 000, full 100 denominator | none inferior: O1 +0 · O2 +1 · O3 +0 · O4 +2 · O5 −3. Publish the seed. The vs-B1 column must NOT be published while B1's 82 is unexplained (D4-H1, D4-H5). |
-| invariants gate, run 34794414764 | store invariants OK: 0 duplicate screens, 0 multi-destination edges; `skippedNoIdHash` 0; five stores 11/11, 3/2, 2/1, 1/1, 1/1. |
-| O5 routing coverage, run 34794414764, n=60 known-target taps | 57 one-step routed · 0 zero-step · 0 mis-landed · 3 diverged (hash-mismatch, all on `settings-display`) · 0 no-route (ambiguous 0, no-known-path 0). Must carry "the 3 divergences are exactly O5's 3 `settings-display` failures (D4-M2)". |
-| O5 measured RPCs per routed tap, n=57 | min 7 / p50 7 / max 7, a LOWER bound (D2-L1). |
+| row                                                                                              | wording required                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tokens/agent-step, o200k p50, run 34794414764, n = non-launch steps                              | B1 657 (n=145) · B2 645 (n=151) · O1 138 · O2 54 · O3 627 · O4 21 · O5 22 (n=155 each). Add "launch-step observation excluded".                                                                                                                                                                                                                                       |
+| RTT count/step p50, same run, same n                                                             | B1 2 · B2 2 · O1 2 · O2 2 · O3 2 · O4 1 · O5 1. Not a latency column (D2-M4).                                                                                                                                                                                                                                                                                         |
+| success, full 100 denominator, Wilson (n=100), run 34794414764                                   | B1 82 % [73, 88] · B2 98 % [93, 99] · O1 98 % [93, 99] · O2 99 % [95, 100] · O3 98 % [93, 99] · O4 100 % [96, 100] · O5 95 % [89, 98]. Cluster intervals only if the seed is published (D4-M6). B1's row must carry "82 % is a count, not an explained capability gap — see `2026-09-13-review-d4-findings.md` D4-H1/H5; 81/100 on the same code in run 34788497583". |
+| H1 tokens ratio, run 34794414764                                                                 | O1/B2 o200k p50 over all non-launch steps = 0.214× (target ≤ 0.5×), PASS. Label "all non-launch steps", not "unchanged steps".                                                                                                                                                                                                                                        |
+| H3 warm/cold ratio, run 34794414764                                                              | O4/O3 o200k p50 = 21/627 = 0.033× (target ≤ 0.2×), PASS; store 11 nodes / 11 edges, max out-degree 9.                                                                                                                                                                                                                                                                 |
+| H4 non-inferiority **vs B2 only**, paired task-cluster bootstrap, B=10 000, full 100 denominator | none inferior: O1 +0 · O2 +1 · O3 +0 · O4 +2 · O5 −3. Publish the seed. The vs-B1 column must NOT be published while B1's 82 is unexplained (D4-H1, D4-H5).                                                                                                                                                                                                           |
+| invariants gate, run 34794414764                                                                 | store invariants OK: 0 duplicate screens, 0 multi-destination edges; `skippedNoIdHash` 0; five stores 11/11, 3/2, 2/1, 1/1, 1/1.                                                                                                                                                                                                                                      |
+| O5 routing coverage, run 34794414764, n=60 known-target taps                                     | 57 one-step routed · 0 zero-step · 0 mis-landed · 3 diverged (hash-mismatch, all on `settings-display`) · 0 no-route (ambiguous 0, no-known-path 0). Must carry "the 3 divergences are exactly O5's 3 `settings-display` failures (D4-M2)".                                                                                                                           |
+| O5 measured RPCs per routed tap, n=57                                                            | min 7 / p50 7 / max 7, a LOWER bound (D2-L1).                                                                                                                                                                                                                                                                                                                         |
 
 ### Explicitly NOT allowed
 

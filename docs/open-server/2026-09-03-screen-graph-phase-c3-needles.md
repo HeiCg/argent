@@ -49,7 +49,7 @@ Root causes, confirmed offline 2026-09-03:
 ## Work
 
 1. **Pre-flight gate (pure + tested).** Extract `preflightVerdict(needleEval)
-   -> { ok: boolean; problems: string[] }` (BAD or MISSING ⇒ not ok) and make
+-> { ok: boolean; problems: string[] }` (BAD or MISSING ⇒ not ok) and make
    `bench-preflight.ts` exit 1 when `!ok`. Unit-test the function in
    `screen-graph-bench-preflight.test.ts` (ok / BAD / MISSING / mixed).
    Workflow: prefix the pre-flight and matrix `run:` blocks with
@@ -61,15 +61,15 @@ Root causes, confirmed offline 2026-09-03:
    its LAUNCH screen (the existing pre-flight check). Source of truth for
    what is on each screen, in order of preference:
    a. artifacts of run 33742435496 (`sg-preflight.log`, matrix results JSON,
-      `results-ci.md`) — the oracle readouts carry visible node text;
+   `results-ci.md`) — the oracle readouts carry visible node text;
    b. if destination text is not recoverable from (a), add
-      `BENCH_CAPTURE=1` to `bench-preflight.ts`: for every task, execute the
-      task's steps once through the plain B1 path (describe + tap) and dump
-      launch-screen and destination-screen visible texts/ids to
-      `.bench-results/screen-graph/capture.json`; add a workflow input
-      `sg_mode` (`capture` | `matrix`, default `matrix`) that runs only
-      pre-flight in capture mode; run capture once, pick needles from the
-      dump, commit them, then run the matrix.
+   `BENCH_CAPTURE=1` to `bench-preflight.ts`: for every task, execute the
+   task's steps once through the plain B1 path (describe + tap) and dump
+   launch-screen and destination-screen visible texts/ids to
+   `.bench-results/screen-graph/capture.json`; add a workflow input
+   `sg_mode` (`capture` | `matrix`, default `matrix`) that runs only
+   pre-flight in capture mode; run capture once, pick needles from the
+   dump, commit them, then run the matrix.
    Never pick a needle by guessing; every needle must be justified by a line
    in the capture/oracle output, and the pre-flight run in the final CI run
    must print `PROBLEM needles: 0`.

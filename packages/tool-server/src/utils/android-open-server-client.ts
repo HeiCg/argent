@@ -106,7 +106,9 @@ export class AndroidOpenServerClient {
     params?: Record<string, unknown>,
     opts?: { timeoutMs?: number }
   ): Promise<T> {
-    return this.enqueue(() => this.sendOne<T>(method, params, opts?.timeoutMs)).then((r) => r.result);
+    return this.enqueue(() => this.sendOne<T>(method, params, opts?.timeoutMs)).then(
+      (r) => r.result
+    );
   }
 
   /**

@@ -209,7 +209,9 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
       }
     });
     // eslint-disable-next-line no-console
-    console.log(`[device] after tap: version ${before.version}->${after.version}, generalTitlePresent=${hasGeneralTitle}`);
+    console.log(
+      `[device] after tap: version ${before.version}->${after.version}, generalTitlePresent=${hasGeneralTitle}`
+    );
   }, 90_000);
 
   it("swipe scrolls the list — neutral-pixel diff in the list region", async () => {
@@ -220,7 +222,9 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     const midX = (b.x1 + b.x2) / 2;
     const beforeShot = await simctlScreenshot("swipe-before");
     // Swipe up (content moves up): from lower third to upper third of the list.
-    await client.swipe(midX, b.y1 + (b.y2 - b.y1) * 0.75, midX, b.y1 + (b.y2 - b.y1) * 0.25, { steps: 12 });
+    await client.swipe(midX, b.y1 + (b.y2 - b.y1) * 0.75, midX, b.y1 + (b.y2 - b.y1) * 0.25, {
+      steps: 12,
+    });
     await sleep(1200);
     const afterShot = await simctlScreenshot("swipe-after");
     const ratio = await neutralPixelDiffRatio(beforeShot, afterShot);
@@ -293,7 +297,9 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     await timed("swipe", () => client.swipe(target.x, 500, target.x, 200, { steps: 10 }));
     await sleep(600);
     await timed("screenshot(png)", () => client.screenshot({ format: "png" }));
-    await timed("screenshot(jpeg,0.5)", () => client.screenshot({ format: "jpeg", quality: 60, scale: 0.5 }));
+    await timed("screenshot(jpeg,0.5)", () =>
+      client.screenshot({ format: "jpeg", quality: 60, scale: 0.5 })
+    );
     expect(true).toBe(true);
   }, 120_000);
 });

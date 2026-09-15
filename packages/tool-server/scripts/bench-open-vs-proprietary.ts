@@ -304,7 +304,9 @@ async function ensureSettings(reg: Reg): Promise<void> {
   await sleep(300);
   adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
   await sleep(1500);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+    .catch(() => undefined);
 }
 
 // LIGHT reset for the tap effect loop: force-stop + relaunch WITHOUT `pm clear`
@@ -316,7 +318,9 @@ async function relaunchSettings(reg: Reg): Promise<void> {
   adbShell(`am force-stop ${SETTINGS}`, 8_000);
   adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
   await sleep(700);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+    .catch(() => undefined);
 }
 
 // Settle onto a rendered, IDLE Settings homepage before the await-* verbs measure.
@@ -339,11 +343,15 @@ async function ensureSettledSettingsRoot(reg: Reg): Promise<string[]> {
       4000,
       150
     );
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+      .catch(() => undefined);
     try {
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
       const crashed = /keeps stopping|aerr_|isn't responding/i.test(d.description);
-      const rooted = /network|battery|display|storage|connected|apps|sound|notif/i.test(d.description);
+      const rooted = /network|battery|display|storage|connected|apps|sound|notif/i.test(
+        d.description
+      );
       if (rooted && !crashed) return d.description.split("\n");
     } catch {
       /* retry */
@@ -393,12 +401,11 @@ async function ensureChrome(reg: Reg): Promise<boolean> {
   adbShell(`am force-stop ${CHROME}`, 8_000);
   await sleep(500);
   // Load a deterministic, pinch-zoomable page directly via a VIEW intent.
-  adbShell(
-    `am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`,
-    12_000
-  );
+  adbShell(`am start -a android.intent.action.VIEW -d https://example.com ${CHROME}`, 12_000);
   await sleep(3500);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 5000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 5000 })
+    .catch(() => undefined);
   // Confirm we are actually in Chrome (a cold FRE would block content).
   try {
     const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
@@ -466,7 +473,8 @@ async function timeCalls(
       lat.push(Date.now() - t0);
     } catch (e) {
       errors++;
-      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+      if (errorSamples.length < 5)
+        errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   const fb = fallbackCountSince(mark);
@@ -585,11 +593,13 @@ async function timeTapEffect(
     }
     if (!loc) {
       locateFailed++;
-      if (errorSamples.length < 5) errorSamples.push(`i=${i}: locate('${target}') failed — excluded`);
+      if (errorSamples.length < 5)
+        errorSamples.push(`i=${i}: locate('${target}') failed — excluded`);
       continue;
     }
     locateVia[loc.source]++;
-    if (prev && (Math.abs(loc.x - prev.x) > 0.002 || Math.abs(loc.y - prev.y) > 0.002)) coordMoved++;
+    if (prev && (Math.abs(loc.x - prev.x) > 0.002 || Math.abs(loc.y - prev.y) > 0.002))
+      coordMoved++;
     prev = { x: loc.x, y: loc.y };
     // 2. Origin fingerprint (baseline for the effect poll).
     const origin = await fingerprint().catch(() => undefined);
@@ -606,12 +616,18 @@ async function timeTapEffect(
       dt = Date.now() - t0;
     } catch (e) {
       errors++;
-      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+      if (errorSamples.length < 5)
+        errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
       await ensureOrigin().catch(() => undefined);
       continue;
     }
     // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
-    const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== originFp, 3000, 150);
+    const changed = await pollUntil(
+      fingerprint,
+      (f) => f !== undefined && f !== originFp,
+      3000,
+      150
+    );
     effectChecked++;
     // The miss iteration's latency is EXCLUDED from the tap percentiles (team-lead
     // run-6 decision): a tap that produced no effect is not a representative timing.
@@ -632,7 +648,12 @@ async function timeTapEffect(
     // 5. Restore for the next iteration: BACK; if not back on the root, hard-reset.
     if (changed) {
       await restoreBack().catch(() => undefined);
-      const restored = await pollUntil(fingerprint, (f) => f !== undefined && f === rootFp, 2000, 150);
+      const restored = await pollUntil(
+        fingerprint,
+        (f) => f !== undefined && f === rootFp,
+        2000,
+        150
+      );
       if (!restored) {
         originLost++;
         await ensureOrigin().catch(() => undefined);
@@ -688,7 +709,12 @@ async function oracleSelfTest(
     const changed = await pollUntil(fingerprint, (f) => f !== undefined && f !== origin, 3000, 150);
     if (!changed) continue;
     await restoreBack().catch(() => undefined);
-    const restored = await pollUntil(fingerprint, (f) => f !== undefined && f === origin, 3000, 150);
+    const restored = await pollUntil(
+      fingerprint,
+      (f) => f !== undefined && f === origin,
+      3000,
+      150
+    );
     if (restored) return true;
     await ensureOrigin().catch(() => undefined);
   }
@@ -830,10 +856,21 @@ function newSplitAcc(): SplitAcc {
     captured: [],
     wireBytesSamples: [],
     stageSamples: {
-      idleMs: [], rootMs: [], windowsMs: [], rootsMs: [], serializeMs: [], encodeMs: [],
+      idleMs: [],
+      rootMs: [],
+      windowsMs: [],
+      rootsMs: [],
+      serializeMs: [],
+      encodeMs: [],
       fingerprintMs: [],
-      hostParseMs: [], hostRenderMs: [], hostTtfbMs: [], hostRecvMs: [], hostRttMs: [],
-      prevServerWriteMs: [], prevServerHandleMs: [], prevServerTotalMs: [],
+      hostParseMs: [],
+      hostRenderMs: [],
+      hostTtfbMs: [],
+      hostRecvMs: [],
+      hostRttMs: [],
+      prevServerWriteMs: [],
+      prevServerHandleMs: [],
+      prevServerTotalMs: [],
     },
     perSample: [],
   };
@@ -948,11 +985,16 @@ async function describeSplitAfterTapFingerprints(
     const acc = newSplitAcc();
     for (let i = 0; i < n; i++) {
       await ensureSettings(reg);
-      await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY }).catch(() => undefined);
+      await reg
+        .invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY })
+        .catch(() => undefined);
       try {
         // settle:false shape (waitTimeoutMs 0) so the fingerprint rebuild runs
         // mid-transition — the exact after-tap condition C1 lived in.
-        const r = (await server.getNestedState({ waitTimeoutMs: 0, fingerprints: true })) as DescribeMeta;
+        const r = (await server.getNestedState({
+          waitTimeoutMs: 0,
+          fingerprints: true,
+        })) as DescribeMeta;
         collectSplit(acc, r);
       } catch {
         /* skip */
@@ -994,7 +1036,8 @@ async function describeIdleLatencyWithStages(
       collectSplit(acc, d);
     } catch (e) {
       errors++;
-      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+      if (errorSamples.length < 5)
+        errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   const fb = fallbackCountSince(mark);
@@ -1029,7 +1072,9 @@ function formatStageTable(
   // Wire payload (phase 3i): bytes, not ms — the full nested tree over adb forward.
   const bcell = (s: StageStat) =>
     s.p50 === null ? "   -   " : `${String(s.p50).padStart(6)}/${String(s.p95 ?? "?").padStart(6)}`;
-  lines.push(`[bench]   ${"wireBytes".padEnd(12)} ${bcell(idle.wireBytes)} | ${bcell(afterTap.wireBytes)}`);
+  lines.push(
+    `[bench]   ${"wireBytes".padEnd(12)} ${bcell(idle.wireBytes)} | ${bcell(afterTap.wireBytes)}`
+  );
   return lines.join("\n");
 }
 
@@ -1120,9 +1165,17 @@ async function measureRpcBreakdown(
     // Warmup also primes the server's prevServer* piggyback for the first sample.
     for (let i = 0; i < 3; i++) await call(server).catch(() => undefined);
     const s = {
-      wire: [] as number[], ttfb: [] as number[], recv: [] as number[], rtt: [] as number[],
-      parse: [] as number[], waited: [] as number[], capture: [] as number[], encode: [] as number[],
-      write: [] as number[], handle: [] as number[], total: [] as number[],
+      wire: [] as number[],
+      ttfb: [] as number[],
+      recv: [] as number[],
+      rtt: [] as number[],
+      parse: [] as number[],
+      waited: [] as number[],
+      capture: [] as number[],
+      encode: [] as number[],
+      write: [] as number[],
+      handle: [] as number[],
+      total: [] as number[],
     };
     const push = (arr: number[], v?: number) => {
       if (typeof v === "number" && Number.isFinite(v)) arr.push(v);
@@ -1176,7 +1229,12 @@ async function measureRpcBreakdown(
  */
 async function measureAdbFormFactorCost(
   n: number
-): Promise<{ beforeP50: number | null; beforeP95: number | null; afterP50: number | null; n: number }> {
+): Promise<{
+  beforeP50: number | null;
+  beforeP95: number | null;
+  afterP50: number | null;
+  n: number;
+}> {
   try {
     const before: number[] = [];
     const after: number[] = [];
@@ -1201,7 +1259,9 @@ async function measureAdbFormFactorCost(
 /** Render one RpcBreakdown as a p50/p95 stage table for the bench log. */
 function formatRpcBreakdown(b: RpcBreakdown): string {
   const cell = (st: StageStat) =>
-    st.p50 === null ? "   -   " : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
+    st.p50 === null
+      ? "   -   "
+      : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
   const rows: Array<[string, StageStat]> = [
     ["wireBytes", b.wireBytes],
     ["hostTtfbMs", b.hostTtfbMs],
@@ -1313,7 +1373,12 @@ async function measureTransportExperiment(reg: Reg, n: number): Promise<Transpor
     const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     ports = server.getTransportPorts();
   } catch (e) {
-    arms.push(naArm("adb-forward", `could not resolve open server: ${e instanceof Error ? e.message : String(e)}`));
+    arms.push(
+      naArm(
+        "adb-forward",
+        `could not resolve open server: ${e instanceof Error ? e.message : String(e)}`
+      )
+    );
     return { paddingTarget: PAD, arms };
   }
 
@@ -1322,11 +1387,23 @@ async function measureTransportExperiment(reg: Reg, n: number): Promise<Transpor
     const client = new AndroidOpenServerClient("127.0.0.1", ports.localPort);
     try {
       const a = await measureClientTransport(client, n);
-      arms.push({ label: "adb-forward", available: true, note: "baseline (adb server on the last hop)", ...a });
+      arms.push({
+        label: "adb-forward",
+        available: true,
+        note: "baseline (adb server on the last hop)",
+        ...a,
+      });
       const c = await measureClientTransport(client, n, { _padTo: PAD });
-      arms.push({ label: `adb-forward +pad${PAD}`, available: true, note: "diagnostic: reply padded to a full-MSS multiple (never shipped)", ...c });
+      arms.push({
+        label: `adb-forward +pad${PAD}`,
+        available: true,
+        note: "diagnostic: reply padded to a full-MSS multiple (never shipped)",
+        ...c,
+      });
     } catch (e) {
-      arms.push(naArm("adb-forward", `probe failed: ${e instanceof Error ? e.message : String(e)}`));
+      arms.push(
+        naArm("adb-forward", `probe failed: ${e instanceof Error ? e.message : String(e)}`)
+      );
     } finally {
       client.close();
     }
@@ -1338,7 +1415,12 @@ async function measureTransportExperiment(reg: Reg, n: number): Promise<Transpor
     const consolePort = emulatorConsolePort(SERIAL);
     const token = readConsoleAuthToken();
     if (ports.allPort === undefined) {
-      arms.push(naArm("redir (emulator console)", "server has no 0.0.0.0 listener (not an emulator bind); redir cannot reach loopback-only"));
+      arms.push(
+        naArm(
+          "redir (emulator console)",
+          "server has no 0.0.0.0 listener (not an emulator bind); redir cannot reach loopback-only"
+        )
+      );
     } else if (consolePort === null) {
       arms.push(naArm("redir (emulator console)", `serial ${SERIAL} is not emulator-NNNN`));
     } else if (token === null) {
@@ -1351,12 +1433,23 @@ async function measureTransportExperiment(reg: Reg, n: number): Promise<Transpor
         await redirAdd(consolePort, hostPort, ports.allPort, token);
         client = new AndroidOpenServerClient("127.0.0.1", hostPort);
         const s = await measureClientTransport(client, n);
-        arms.push({ label: "redir (emulator console)", available: true, note: `redir tcp:${hostPort} -> guest 0.0.0.0:${ports.allPort} (bypasses adb server)`, ...s });
+        arms.push({
+          label: "redir (emulator console)",
+          available: true,
+          note: `redir tcp:${hostPort} -> guest 0.0.0.0:${ports.allPort} (bypasses adb server)`,
+          ...s,
+        });
       } catch (e) {
-        arms.push(naArm("redir (emulator console)", `probe failed: ${e instanceof Error ? e.message : String(e)}`));
+        arms.push(
+          naArm(
+            "redir (emulator console)",
+            `probe failed: ${e instanceof Error ? e.message : String(e)}`
+          )
+        );
       } finally {
         if (client) client.close();
-        if (hostPort !== undefined) await redirDel(consolePort, hostPort, token).catch(() => undefined);
+        if (hostPort !== undefined)
+          await redirDel(consolePort, hostPort, token).catch(() => undefined);
       }
     }
   }
@@ -1368,8 +1461,15 @@ async function measureTransportExperiment(reg: Reg, n: number): Promise<Transpor
 function formatPhase3j(p: Phase3jResults): string {
   const lines: string[] = [];
   const cell = (st: StageStat): string =>
-    st.p50 === null ? "   -   " : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
-  const ab = (title: string, before: RpcBreakdown | null, after: RpcBreakdown | null, keys: Array<[string, (b: RpcBreakdown) => StageStat]>): void => {
+    st.p50 === null
+      ? "   -   "
+      : `${String(st.p50).padStart(6)}/${String(st.p95 ?? "?").padStart(6)}`;
+  const ab = (
+    title: string,
+    before: RpcBreakdown | null,
+    after: RpcBreakdown | null,
+    keys: Array<[string, (b: RpcBreakdown) => StageStat]>
+  ): void => {
     lines.push(`[bench] ${title} (before | after) p50/p95`);
     for (const [k, sel] of keys) {
       const b = before ? cell(sel(before)) : "   -   ";
@@ -1393,8 +1493,12 @@ function formatPhase3j(p: Phase3jResults): string {
     ["hostRecvMs", (b) => b.hostRecvMs],
     ["hostRttMs", (b) => b.hostRttMs],
   ]);
-  lines.push(`[bench] 3j item3 transport experiment (pad target ${p.transport.paddingTarget}B) p50/p95`);
-  lines.push(`[bench]   ${"arm".padEnd(22)} ${"rttMs".padStart(13)} ${"recvMs".padStart(13)} ${"wireB".padStart(13)}  note`);
+  lines.push(
+    `[bench] 3j item3 transport experiment (pad target ${p.transport.paddingTarget}B) p50/p95`
+  );
+  lines.push(
+    `[bench]   ${"arm".padEnd(22)} ${"rttMs".padStart(13)} ${"recvMs".padStart(13)} ${"wireB".padStart(13)}  note`
+  );
   for (const a of p.transport.arms) {
     lines.push(
       `[bench]   ${a.label.padEnd(22)} ${cell(a.rtt)} ${cell(a.recv)} ${cell(a.wire)}  ${a.available ? "" : "N/A: "}${a.note}`
@@ -1410,17 +1514,34 @@ function formatPhase3j(p: Phase3jResults): string {
  */
 async function runPhase3j(reg: Reg, n: number): Promise<Phase3jResults> {
   await ensureSettings(reg);
-  const encodeLegacy = await measureRpcBreakdown(reg, "3j serialize legacy (before)", n, (s) =>
-    s.getNestedState({ waitTimeoutMs: 0, compact: true, _benchLegacyEncode: true }) as Promise<RpcTimedReply>
+  const encodeLegacy = await measureRpcBreakdown(
+    reg,
+    "3j serialize legacy (before)",
+    n,
+    (s) =>
+      s.getNestedState({
+        waitTimeoutMs: 0,
+        compact: true,
+        _benchLegacyEncode: true,
+      }) as Promise<RpcTimedReply>
   );
-  const encodeOnce = await measureRpcBreakdown(reg, "3j serialize-once (after)", n, (s) =>
-    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  const encodeOnce = await measureRpcBreakdown(
+    reg,
+    "3j serialize-once (after)",
+    n,
+    (s) => s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
   );
-  const compactOff = await measureRpcBreakdown(reg, "3j compact off (before)", n, (s) =>
-    s.getNestedState({ waitTimeoutMs: 0, compact: false }) as Promise<RpcTimedReply>
+  const compactOff = await measureRpcBreakdown(
+    reg,
+    "3j compact off (before)",
+    n,
+    (s) => s.getNestedState({ waitTimeoutMs: 0, compact: false }) as Promise<RpcTimedReply>
   );
-  const compactOn = await measureRpcBreakdown(reg, "3j compact on (after)", n, (s) =>
-    s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
+  const compactOn = await measureRpcBreakdown(
+    reg,
+    "3j compact on (after)",
+    n,
+    (s) => s.getNestedState({ waitTimeoutMs: 0, compact: true }) as Promise<RpcTimedReply>
   );
   const transport = await measureTransportExperiment(reg, n);
   return { encodeLegacy, encodeOnce, compactOff, compactOn, transport };
@@ -1581,7 +1702,10 @@ function locateLabelInXml(
     if (!text.startsWith(target) && !desc.startsWith(target)) continue;
     const b = node.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
     if (!b) continue;
-    const l = Number(b[1]), t = Number(b[2]), r = Number(b[3]), bot = Number(b[4]);
+    const l = Number(b[1]),
+      t = Number(b[2]),
+      r = Number(b[3]),
+      bot = Number(b[4]);
     if (r <= l || bot <= t) continue;
     return { x: (l + r) / 2 / screen.width, y: (t + bot) / 2 / screen.height };
   }
@@ -1642,7 +1766,10 @@ function resumedActivityFingerprint(): Promise<string | undefined> {
   return Promise.resolve().then(() => {
     let out = "";
     try {
-      out = adbShell("dumpsys activity activities | grep -m1 -E 'mResumedActivity|topResumedActivity'", 8_000);
+      out = adbShell(
+        "dumpsys activity activities | grep -m1 -E 'mResumedActivity|topResumedActivity'",
+        8_000
+      );
     } catch {
       out = "";
     }
@@ -1716,7 +1843,9 @@ async function deriveNavTarget(
     await reg
       .invokeTool("gesture-tap", { udid: SERIAL, x: picked.x, y: picked.y })
       .catch(() => undefined);
-    await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+    await reg
+      .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+      .catch(() => undefined);
     let destLabels: Set<string>;
     try {
       const dest = (await reg.invokeTool("describe", {
@@ -1945,10 +2074,7 @@ async function runBlock(
 
   // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
   // this is an ON-only probe; OFF blocks report nulls.
-  const ping =
-    config === "ON"
-      ? await measurePing(reg, N)
-      : { p50: null, p95: null, n: 0 };
+  const ping = config === "ON" ? await measurePing(reg, N) : { p50: null, p95: null, n: 0 };
 
   // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1),
   // measured on both configs.
@@ -1970,15 +2096,21 @@ async function runBlock(
   let phase3j: Phase3jResults | undefined;
   if (config === "ON") {
     await ensureSettings(reg);
-    const nested = await measureRpcBreakdown(reg, "getNestedState (describe path)", N, (s) =>
-      s.getNestedState({ waitTimeoutMs: 0 }) as Promise<RpcTimedReply>
+    const nested = await measureRpcBreakdown(
+      reg,
+      "getNestedState (describe path)",
+      N,
+      (s) => s.getNestedState({ waitTimeoutMs: 0 }) as Promise<RpcTimedReply>
     );
     if (nested) {
       rpcBreakdowns.push(nested);
       realDebug(formatRpcBreakdown(nested));
     }
-    const withShot = await measureRpcBreakdown(reg, "getState +screenshot", N, (s) =>
-      s.getState({ waitTimeoutMs: 0, includeScreenshot: true }) as Promise<RpcTimedReply>
+    const withShot = await measureRpcBreakdown(
+      reg,
+      "getState +screenshot",
+      N,
+      (s) => s.getState({ waitTimeoutMs: 0, includeScreenshot: true }) as Promise<RpcTimedReply>
     );
     if (withShot) {
       rpcBreakdowns.push(withShot);
@@ -2012,9 +2144,13 @@ async function runBlock(
             2
           ) + "\n"
         );
-        realDebug(`[bench] captured real nested reply -> ${capturePath} (wireBytes=${state.wireBytes ?? "?"})`);
+        realDebug(
+          `[bench] captured real nested reply -> ${capturePath} (wireBytes=${state.wireBytes ?? "?"})`
+        );
       } catch (e) {
-        realDebug(`[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`);
+        realDebug(
+          `[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`
+        );
       }
     }
     // Phase 3j: serialize-once + compact in-run A/B, and the transport experiment.
@@ -2024,7 +2160,9 @@ async function runBlock(
         phase3j = await runPhase3j(reg, N);
         realDebug(formatPhase3j(phase3j));
       } catch (e) {
-        realDebug(`[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`);
+        realDebug(
+          `[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`
+        );
       }
     } else {
       realDebug("[bench] phase3j experiment OFF (set BENCH_PHASE3J_EXPERIMENT=1 to run it)");
@@ -2106,7 +2244,14 @@ async function runBlock(
   // was derivable (canEffect false — already surfaced as no effect check).
   let oracleSelfTestPassed = true;
   if (canEffect) {
-    oracleSelfTestPassed = await oracleSelfTest(target, timedTapAt, reg, fingerprint, ensureOrigin, restoreBack);
+    oracleSelfTestPassed = await oracleSelfTest(
+      target,
+      timedTapAt,
+      reg,
+      fingerprint,
+      ensureOrigin,
+      restoreBack
+    );
     notes.push(
       oracleSelfTestPassed
         ? `oracle self-test: PASSED (locate→tap→detect→restore for ${target})`
@@ -2121,7 +2266,15 @@ async function runBlock(
   // effectZero > 0 in the merge (ON) / is reported (OFF).
   verbs.push(
     canEffect
-      ? await timeTapEffect("gesture-tap", target, timedTapAt, reg, fingerprint, ensureOrigin, restoreBack)
+      ? await timeTapEffect(
+          "gesture-tap",
+          target,
+          timedTapAt,
+          reg,
+          fingerprint,
+          ensureOrigin,
+          restoreBack
+        )
       : await timeCalls("gesture-tap", gestureTapRpc, undefined, ensureOrigin)
   );
 
@@ -2131,13 +2284,15 @@ async function runBlock(
   // window = coordinate tap RPC + describe RPC; the fresh locate, effect poll and BACK
   // restore are outside it. ON runs both idle policies (settle:false like-for-like,
   // settle:true our policy); OFF has one policy.
-  const tapDescribeAt = (settle?: boolean) => async (x: number, y: number, _i: number): Promise<void> => {
-    await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
-    await reg.invokeTool("describe", {
-      udid: SERIAL,
-      ...(settle === undefined ? {} : { settle }),
-    });
-  };
+  const tapDescribeAt =
+    (settle?: boolean) =>
+    async (x: number, y: number, _i: number): Promise<void> => {
+      await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
+      await reg.invokeTool("describe", {
+        udid: SERIAL,
+        ...(settle === undefined ? {} : { settle }),
+      });
+    };
   const tapThenDescribeFixed = (settle?: boolean) => async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
     await reg.invokeTool("describe", {
@@ -2147,7 +2302,15 @@ async function runBlock(
   };
   const runTapDescribe = (name: string, settle?: boolean): Promise<VerbResult> =>
     canEffect
-      ? timeTapEffect(name, target, tapDescribeAt(settle), reg, fingerprint, ensureOrigin, restoreBack)
+      ? timeTapEffect(
+          name,
+          target,
+          tapDescribeAt(settle),
+          reg,
+          fingerprint,
+          ensureOrigin,
+          restoreBack
+        )
       : timeCalls(name, tapThenDescribeFixed(settle), undefined, ensureOrigin);
   if (config === "ON") {
     verbs.push(await runTapDescribe("tap+describe(settle:false)", false));
@@ -2293,7 +2456,8 @@ async function runBlock(
       /* retry */
     }
   }
-  if (!pasteReady) notes.push("paste: could not locate Settings search field; measured on current focus");
+  if (!pasteReady)
+    notes.push("paste: could not locate Settings search field; measured on current focus");
   verbs.push(
     await timeCalls("paste", async (i) => {
       await reg.invokeTool("paste", { udid: SERIAL, text: `b${i % 10}` });
@@ -2308,7 +2472,8 @@ async function runBlock(
   // call's implicit `waitForIdle` (the 1029 ms pinch in v3), so the number was
   // measuring idle-wait drift, not the gesture.
   const chromeOk = await ensureChrome(reg);
-  if (!chromeOk) notes.push("gesture-pinch: Chrome/example.com did not confirm content; latency still measured");
+  if (!chromeOk)
+    notes.push("gesture-pinch: Chrome/example.com did not confirm content; latency still measured");
   verbs.push(
     await timeCalls(
       "gesture-pinch",
@@ -2344,12 +2509,16 @@ async function runBlock(
   );
 
   const rss = config === "OFF" ? simServerRssKb() : null;
-  if (config === "ON") notes.push("host process: none beyond adb (open server runs on-device via am instrument)");
+  if (config === "ON")
+    notes.push("host process: none beyond adb (open server runs on-device via am instrument)");
 
   // The tap timeline this block's backend injected, and the total no-effect tap
   // iterations across the effect-checked tap verbs (phase 3h).
   const injectBackend = config === "ON" ? "uiautomation" : "proprietary";
-  const injectedTapTimeline = describeInjectedTapTimeline(injectBackend, BENCH_GESTURE_PARAMS.tapHoldMs);
+  const injectedTapTimeline = describeInjectedTapTimeline(
+    injectBackend,
+    BENCH_GESTURE_PARAMS.tapHoldMs
+  );
   const effectZeroTotal = verbs.reduce((s, v) => s + (v.effectZero ?? 0), 0);
   const effectCheckedTotal = verbs.reduce((s, v) => s + (v.effectChecked ?? 0), 0);
   const originLostTotal = verbs.reduce((s, v) => s + (v.originLost ?? 0), 0);
@@ -2358,7 +2527,10 @@ async function runBlock(
     (s, v) => s + ((v as Partial<TapEffectResult>).locateFailed ?? 0),
     0
   );
-  const coordMovedTotal = verbs.reduce((s, v) => s + ((v as Partial<TapEffectResult>).coordMoved ?? 0), 0);
+  const coordMovedTotal = verbs.reduce(
+    (s, v) => s + ((v as Partial<TapEffectResult>).coordMoved ?? 0),
+    0
+  );
   // F7: gather the per-miss identity strings from every tap verb into the block.
   const noEffectSamples = verbs.flatMap(
     (v) => (v as Partial<TapEffectResult>).noEffectSamples ?? []
@@ -2412,10 +2584,14 @@ async function runBlock(
     );
   }
   if (!pasteReady) {
-    degradedReasons.push("paste could not locate the Settings search field (measured on the wrong focus)");
+    degradedReasons.push(
+      "paste could not locate the Settings search field (measured on the wrong focus)"
+    );
   }
   for (const r of degradedReasons) notes.push(`DEGRADED ARM: ${r}`);
-  realDebug(`[bench] ${block} transport=${lastTransport} degradedReasons=${JSON.stringify(degradedReasons)}`);
+  realDebug(
+    `[bench] ${block} transport=${lastTransport} degradedReasons=${JSON.stringify(degradedReasons)}`
+  );
 
   // Fidelity is compared on the pristine Settings root captured at block start
   // (before any tap/paste/keyboard state), so OFF and ON are the same screen.
@@ -2464,7 +2640,9 @@ async function runBlock(
         notes.push(`inject-strategy control block ran ${expected} ${n}/${total} on-device`);
       }
     } catch (e) {
-      notes.push(`inject-strategy count read failed: ${e instanceof Error ? e.message : String(e)}`);
+      notes.push(
+        `inject-strategy count read failed: ${e instanceof Error ? e.message : String(e)}`
+      );
     }
   }
 
@@ -2482,7 +2660,8 @@ async function runBlock(
     .filter((v) => INJECT_VERB.test(v.verb))
     .reduce(
       (s, v) =>
-        s + (v.effectChecked != null ? v.effectChecked + v.errors : v.latencySamples.length + v.errors),
+        s +
+        (v.effectChecked != null ? v.effectChecked + v.errors : v.latencySamples.length + v.errors),
       0
     );
 
@@ -2514,7 +2693,9 @@ async function runBlock(
     describeSplitIdle,
     describeSplitAfterTap,
     // Phase 3m.1 (3M-M4): opt-in fingerprint cost probe (ON only; null on OFF).
-    ...(describeSplitAfterTapFp ? { describeSplitAfterTapFingerprints: describeSplitAfterTapFp } : {}),
+    ...(describeSplitAfterTapFp
+      ? { describeSplitAfterTapFingerprints: describeSplitAfterTapFp }
+      : {}),
     pingP50: ping.p50,
     pingP95: ping.p95,
     pingN: ping.n,

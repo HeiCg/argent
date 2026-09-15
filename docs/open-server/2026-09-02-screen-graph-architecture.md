@@ -19,7 +19,7 @@ transition — so a revisited screen costs a hash check and a graph lookup, not 
 re-description. Actions return their own **outcome** (before/after fingerprint,
 delta, known-screen id) so the tap→wait→describe triple collapses into one
 round-trip. The expected effect is that per-step tokens scale with the size of
-the *answer* rather than the size of the *screen*, and that warm runs (second
+the _answer_ rather than the size of the _screen_, and that warm runs (second
 visit of a screen) cost an order of magnitude less than cold runs. We describe
 the components, the formalization, and an evaluation protocol on our existing
 benchmark harness against the argent baseline.
@@ -33,13 +33,14 @@ and kept only to show the starting point. Current like-for-like numbers are in
 657 = 657 (o200k), 14 = 14 elements, Jaccard 1.000; tap 61 ms open vs 53 ms
 proprietary (+8 ms).
 
-| per step (v1, superseded) | argent proprietary | our open server |
-|---|---|---|
-| describe (Settings root) | 473 tok (chars/4) / 14 el / 73 ms | 1077 tok (chars/4) / 59 el / 74 ms — trim landed in v2, now 657 / 14 |
-| tap | 53 ms | 146 ms — injector fixes landed in v2/v3, now 61 ms |
-| auto-capture after each tool (argent MCP) | +screenshot +tree ≈ 800 tok/step | same policy when routed |
+| per step (v1, superseded)                 | argent proprietary                | our open server                                                      |
+| ----------------------------------------- | --------------------------------- | -------------------------------------------------------------------- |
+| describe (Settings root)                  | 473 tok (chars/4) / 14 el / 73 ms | 1077 tok (chars/4) / 59 el / 74 ms — trim landed in v2, now 657 / 14 |
+| tap                                       | 53 ms                             | 146 ms — injector fixes landed in v2/v3, now 61 ms                   |
+| auto-capture after each tool (argent MCP) | +screenshot +tree ≈ 800 tok/step  | same policy when routed                                              |
 
 Two structural facts drive the cost, independent of backend:
+
 1. **Full re-serialization per step.** The tree is rebuilt on-device, JSON-encoded,
    shipped, re-rendered to text, and tokenized — even when 0 nodes changed.
 2. **No memory across steps or runs.** Screen N revisited is as expensive as
@@ -63,9 +64,9 @@ on the host as a fallback with the same interface).
   `VIEW_SCROLLED`) and bumps `v` on any event. Reading the tree when nothing
   happened is a cache hit: **no UiAutomation traversal**.
 - **Structural hash.** `H(T)` = hash over (class, resource-id, bounds bucket,
-  actionability flags) per node in DFS order, *excluding* text. A second
-  `H_text(T)` includes text/content-desc. `H` identifies a *screen*;
-  `H_text` identifies its *state*. Computing `H` over an already-built tree is
+  actionability flags) per node in DFS order, _excluding_ text. A second
+  `H_text(T)` includes text/content-desc. `H` identifies a _screen_;
+  `H_text` identifies its _state_. Computing `H` over an already-built tree is
   ~O(n) integer ops, sub-millisecond for n≈500.
 - **Query RPCs** (replace `getAccessibilityTree` as the default agent path):
   - `query(selector, {limit, fields})` → matching nodes only. Selector grammar
@@ -74,7 +75,7 @@ on the host as a fallback with the same interface).
   - `diff(sinceVersion)` → `{v, H, H_text, added[], removed[], changed[]}` as
     node paths + compact node records; empty when `v` unchanged.
   - `state({includeTree:'none'|'compact'|'full', sinceVersion})` → `{v, H,
-    H_text, idle, screen:{w,h,pkg,activity}, tree?}`. Our existing `getState`
+H_text, idle, screen:{w,h,pkg,activity}, tree?}`. Our existing `getState`
     grows the hash+version fields and the `sinceVersion` short-circuit.
   - `awaitChange({fromVersion, timeoutMs, until?:selector})` → resolves on the
     first AX event after `fromVersion` (or when `until` matches); no polling
@@ -91,7 +92,7 @@ In the tool-server / MCP host (TS), persisted per `(package, versionCode)` as
 JSON under `~/.device-farm/screen-graph/` (or argent's config dir).
 
 - **Node** = screen fingerprint `H` with: first/last seen, visit count, the
-  compact rendering of the tree at first visit, a *selector index*
+  compact rendering of the tree at first visit, a _selector index_
   (`resource-id | text → bounds, actionability`) and an optional
   human/LLM-assigned label (e.g. "Settings > Network & internet"), plus a
   thumbnail.
@@ -100,7 +101,7 @@ JSON under `~/.device-farm/screen-graph/` (or argent's config dir).
   observed count and success ratio; time-stamped for staleness.
 - **Localization.** After any action, the host receives `after.H`. If `H` is
   known: return `{screen: label|id, seen: n, affordances: [known outgoing
-  edges], delta_vs_last_visit}` — typically 30–80 tokens. If unknown: fall
+edges], delta_vs_last_visit}` — typically 30–80 tokens. If unknown: fall
   back to compact describe (cold path) and insert the node.
 - **Route planning.** `plan(targetSelector | targetScreen)` → shortest known
   action path from the current `H` (Dijkstra over edge weights). Exposed to
@@ -115,28 +116,28 @@ JSON under `~/.device-farm/screen-graph/` (or argent's config dir).
 ### 2.3 Agent-facing layer — what the model sees
 
 - A step is `act(action) → outcome` where `outcome` is: `{changed, screen,
-  known, summary}`; the model asks for `describe` only when `known=false` or
+known, summary}`; the model asks for `describe` only when `known=false` or
   when it explicitly needs detail. In our typed-script DSL this is the
   default return of `tap()/fill()` and the wait verbs.
 - `describe` has three tiers: `summary` (label + affordances, ≤100 tok),
   `compact` (pruned tree, current 470-tok class), `full` (debug).
-- The graph is *advisory*: the agent may deviate; every deviation is a new
+- The graph is _advisory_: the agent may deviate; every deviation is a new
   edge. Exploration is a by-product of use, not a separate phase.
 
 ## 3. Formalization (for the paper; also the contract for tests)
 
 - Tree `T` = ordered rooted tree of nodes `n = (class, id, text, cd, bounds,
-  flags)`. Screen hash `H(T) = h(seq_DFS((class, id, quant(bounds), flags)))`
+flags)`. Screen hash `H(T) = h(seq_DFS((class, id, quant(bounds), flags)))`
   with `quant` bucketing bounds to 1/32 of screen dims to tolerate small
   layout jitter. State hash `H_text` adds `(text, cd)`.
 - Delta `Δ(T_a, T_b)`: computed by keyed tree diff on `(class, id, index in
-  parent)`; output `added/removed/changed` node paths. Property: `T_b =
-  patch(T_a, Δ)`; `|Δ| = 0 ⇔ H_text(T_a) = H_text(T_b)`.
+parent)`; output `added/removed/changed` node paths. Property: `T_b =
+patch(T_a, Δ)`; `|Δ| = 0 ⇔ H_text(T_a) = H_text(T_b)`.
 - Screen graph `G = (V, E)`, `V ⊆ image(H)`, `E ⊆ V × A × V`, `A` canonical
   actions. Localization = lookup `H(T_now) ∈ V`. Planning = shortest path in
   `G` under weight `w(e) = 1/(successes+1) + staleness`.
 - Cost model. Per step: tokens `= c_outcome + [known ? c_summary :
-  c_compact]`, RTT `= 1` (action+outcome) `+ [known ? 0 : 1]`. Baseline:
+c_compact]`, RTT `= 1` (action+outcome) `+ [known ? 0 : 1]`. Baseline:
   tokens `= c_tree(+c_screenshot)`, RTT `= 2–3` (action, idle, describe).
 
 ## 4. Evaluation protocol
@@ -179,19 +180,20 @@ non-empty set for a word absent from the page), not evidence.
 Headline claim, and the only one with no prior found: **the observation is a
 diff, answered by the device.** Every observation-reduction work (UIFormer,
 D2Snap, FocusAgent, the 2026 "Revisiting Observation Reduction" studies)
-compresses *after* a full dump crosses the wire; DMI (arXiv:2510.04607) moves
+compresses _after_ a full dump crosses the wire; DMI (arXiv:2510.04607) moves
 work into the environment but has no versioning, hashing or diffs; Agent-E
 reports DOM mutations as prose, not as a structural fingerprint. Chrome's
 `AXTreeSerializer`/`AXTreeUpdate` (renderer→browser, dirty nodes only) is the
 engineering precedent we apply across the device→host boundary.
 
-Claims we present as *incremental*, with the residue we defend:
+Claims we present as _incremental_, with the residue we defend:
+
 - Screen graph / app memory: Fastbot2 reuses a transition model across runs;
   AutoDroid and Executable Agentic Memory (arXiv:2605.12294) build UTG-backed
   memory (offline exploration); AppAgentX and MAGNET evolve memory online.
   Residue: nodes keyed by a device-computed structural hash that doubles as
   cache-validity token; no exploration phase; the graph caches the
-  *observation*, not only action plans (Stagehand caches plans by DOM hash).
+  _observation_, not only action plans (Stagehand caches plans by DOM hash).
 - Actions return outcomes: Agent-E's change observation has the same loop
   shape. Residue: fingerprint-carrying outcome lets the host skip `describe`
   entirely; the RTT saving is NOT yet demonstrated (H2 FAIL, 0 RTT removed on

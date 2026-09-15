@@ -20,7 +20,8 @@ export const DEFAULT_STABLE_MATCH_THRESHOLD = 0.9;
  * `stable(H)` would exclude, not a re-hash. The resource-id multiset (which these
  * nodes share with their stable siblings) is the actual match key.
  */
-export const VOLATILE_TEXT = /^\s*(?:\d{1,3}\s*%|\d{1,2}:\d{2}(?:\s*[ap]m)?|\d[\d.,]*\s*(?:%|min|hr|hrs|h|GB|MB|KB|B)?|[A-Z][a-z]{2}\s+\d{1,2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*$/i;
+export const VOLATILE_TEXT =
+  /^\s*(?:\d{1,3}\s*%|\d{1,2}:\d{2}(?:\s*[ap]m)?|\d[\d.,]*\s*(?:%|min|hr|hrs|h|GB|MB|KB|B)?|[A-Z][a-z]{2}\s+\d{1,2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*$/i;
 
 /** True when `text` is purely volatile content (a clock, percentage, counter, date). */
 export function isVolatileText(text: string): boolean {
@@ -113,15 +114,16 @@ function dijkstra(
   return null;
 }
 
-function reconstruct(
-  prev: Map<string, { node: string; edge: Edge }>,
-  target: string
-): PlanStep[] {
+function reconstruct(prev: Map<string, { node: string; edge: Edge }>, target: string): PlanStep[] {
   const steps: PlanStep[] = [];
   let cur = target;
   while (prev.has(cur)) {
     const { node, edge } = prev.get(cur)!;
-    steps.push({ action: edge.action, to: edge.to, ...(edge.selector ? { selector: edge.selector } : {}) });
+    steps.push({
+      action: edge.action,
+      to: edge.to,
+      ...(edge.selector ? { selector: edge.selector } : {}),
+    });
     cur = node;
   }
   steps.reverse();
@@ -297,5 +299,9 @@ export function planToSelectorStable(
   if (targets.size === 0) return null;
   const result = dijkstra(graph, from.hash, targets, now);
   if (!result) return null;
-  return { ...result, fromVia: from.via, ...(from.score !== undefined ? { fromScore: from.score } : {}) };
+  return {
+    ...result,
+    fromVia: from.via,
+    ...(from.score !== undefined ? { fromScore: from.score } : {}),
+  };
 }

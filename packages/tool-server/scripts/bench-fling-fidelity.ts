@@ -51,7 +51,7 @@ const DISTANCES = [0.3, 0.5];
 type FlingArm = "OFF" | "ON-input-manager" | "ON-uiautomation" | "ON-uia-A" | "ON-uia-B";
 /** The env `ARGENT_OPEN_INJECT_STRATEGY` value for each arm; null ⇒ flag off (OFF). */
 const ARM_STRATEGY: Record<FlingArm, "input-manager" | "default" | null> = {
-  OFF: null,
+  "OFF": null,
   "ON-input-manager": "input-manager",
   "ON-uiautomation": "default",
   "ON-uia-A": "default",
@@ -94,7 +94,9 @@ async function ensureSettings(reg: Reg): Promise<void> {
   await sleep(300);
   adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
   await sleep(1400);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+    .catch(() => undefined);
 }
 
 interface Sample {
@@ -122,7 +124,10 @@ async function measureOne(
   try {
     before = screencapPng();
   } catch (e) {
-    return { sample: null, reason: `pre-swipe screencap failed: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      sample: null,
+      reason: `pre-swipe screencap failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
   const fromY = 0.72;
   const toY = fromY - distance;
@@ -136,23 +141,37 @@ async function measureOne(
     momentum: true,
   });
   await sleep(1300);
-  await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+  await reg
+    .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+    .catch(() => undefined);
   let after: Buffer;
   try {
     after = screencapPng();
   } catch (e) {
-    return { sample: null, reason: `post-settle screencap failed: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      sample: null,
+      reason: `post-settle screencap failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
   let est: ScrollEstimate;
   try {
     est = estimateScrollPx(before, after);
   } catch (e) {
-    return { sample: null, reason: `estimator threw: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      sample: null,
+      reason: `estimator threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
   if (est.refused || est.offsetPx === null) {
-    return { sample: null, reason: `estimator refused: ${est.reason ?? "low confidence"} (conf ${est.confidence})` };
+    return {
+      sample: null,
+      reason: `estimator refused: ${est.reason ?? "low confidence"} (conf ${est.confidence})`,
+    };
   }
-  return { sample: { offsetPx: est.offsetPx, confidence: est.confidence, peakShift: est.peakShift }, reason: null };
+  return {
+    sample: { offsetPx: est.offsetPx, confidence: est.confidence, peakShift: est.peakShift },
+    reason: null,
+  };
 }
 
 function median(xs: number[]): number {
@@ -182,7 +201,13 @@ interface Cell {
   drops: Drop[];
 }
 
-function summarizeCell(durationMs: number, distance: number, config: FlingArm, samples: Sample[], drops: Drop[]): Cell {
+function summarizeCell(
+  durationMs: number,
+  distance: number,
+  config: FlingArm,
+  samples: Sample[],
+  drops: Drop[]
+): Cell {
   const offsets = samples.map((s) => s.offsetPx);
   return {
     durationMs,
@@ -240,7 +265,7 @@ interface SampleEvent {
  */
 type Visit = "off" | "input-manager" | "uia-control" | "uia-selftest";
 const VISIT_FLAGS: Record<Visit, FlingArm> = {
-  off: "OFF",
+  "off": "OFF",
   "input-manager": "ON-input-manager",
   "uia-control": "ON-uiautomation",
   "uia-selftest": "ON-uiautomation", // same flags as control; labels split A/B per sample
@@ -255,12 +280,21 @@ async function main(): Promise<void> {
     ? ["OFF", "ON-input-manager", "ON-uiautomation", "ON-uia-A", "ON-uia-B"]
     : ["ON-input-manager", "ON-uiautomation", "ON-uia-A", "ON-uia-B"];
   const acc: Record<FlingArm, Map<string, Accum>> = {} as never;
-  for (const a of arms) acc[a] = new Map(CELLS.map((c) => [cellKey(c.durationMs, c.distance), { samples: [], drops: [] }]));
+  for (const a of arms)
+    acc[a] = new Map(
+      CELLS.map((c) => [cellKey(c.durationMs, c.distance), { samples: [], drops: [] }])
+    );
   const evidence: SampleEvent[] = [];
   const armRoundFailures: string[] = [];
   const t0 = Date.now();
 
-  const take = async (reg: Reg, arm: FlingArm, durationMs: number, distance: number, round: number): Promise<void> => {
+  const take = async (
+    reg: Reg,
+    arm: FlingArm,
+    durationMs: number,
+    distance: number,
+    round: number
+  ): Promise<void> => {
     const cell = acc[arm].get(cellKey(durationMs, distance))!;
     if (cell.samples.length >= N) return;
     const { sample, reason } = await measureOne(reg, durationMs, distance);
@@ -288,7 +322,9 @@ async function main(): Promise<void> {
       let reg: Reg | null = null;
       try {
         reg = createRegistry();
-        await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 }).catch(() => undefined);
+        await reg
+          .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
+          .catch(() => undefined);
         for (let j = 0; j < perRound; j++) {
           for (const c of CELLS) {
             if (visit === "uia-selftest") {
@@ -303,7 +339,8 @@ async function main(): Promise<void> {
       } catch (e) {
         const reason = `visit ${visit} round ${round} failed: ${e instanceof Error ? e.message : String(e)}`;
         armRoundFailures.push(reason);
-        const owed: FlingArm[] = visit === "uia-selftest" ? ["ON-uia-A", "ON-uia-B"] : [VISIT_FLAGS[visit]];
+        const owed: FlingArm[] =
+          visit === "uia-selftest" ? ["ON-uia-A", "ON-uia-B"] : [VISIT_FLAGS[visit]];
         for (const arm of owed) {
           for (const c of CELLS) {
             const cell = acc[arm].get(cellKey(c.durationMs, c.distance))!;
@@ -323,7 +360,11 @@ async function main(): Promise<void> {
   unsetFlag("open-device-server", "project");
   delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
 
-  const estimatorMeta = { metric: "optical-scroll-px", strip: "central-band NCC, sub-pixel, confidence≥0.6", minConfidence: 0.6 };
+  const estimatorMeta = {
+    metric: "optical-scroll-px",
+    strip: "central-band NCC, sub-pixel, confidence≥0.6",
+    minConfidence: 0.6,
+  };
   for (const arm of arms) {
     const cells = CELLS.map((c) => {
       const a = acc[arm].get(cellKey(c.durationMs, c.distance))!;
@@ -349,12 +390,20 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(
         `d=${c.durationMs}ms dist=${c.distance}: median ${c.medianPx}px iqr=[${c.iqrPx[0]},${c.iqrPx[1]}] n=${c.n}` +
-          (c.drops.length ? ` (dropped ${c.drops.length}: ${c.drops.map((d) => d.reason).slice(0, 2).join(" | ")})` : "")
+          (c.drops.length
+            ? ` (dropped ${c.drops.length}: ${c.drops
+                .map((d) => d.reason)
+                .slice(0, 2)
+                .join(" | ")})`
+            : "")
       );
     }
   }
   const evPath = join(OUT_DIR, "fling-interleave-evidence.json");
-  writeFileSync(evPath, JSON.stringify({ serial: SERIAL, N, rounds, perRound, t0, events: evidence }, null, 2));
+  writeFileSync(
+    evPath,
+    JSON.stringify({ serial: SERIAL, N, rounds, perRound, t0, events: evidence }, null, 2)
+  );
   process.stdout.write(`INTERLEAVE_EVIDENCE_JSON=${evPath}\n`);
 
   if (armRoundFailures.length) {

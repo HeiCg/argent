@@ -7,6 +7,7 @@ numbers that survive adversarial review. The scrcpy fast-inject backend was remo
 phase 3n.2. The fork is the only home of this work from 2026-09-13 on.
 
 ## Where things are (2026-09-14)
+
 - Working branch: `open/main` @ 00c10536 = driver (3h+3i, 3j disabled) + screen-graph
   (D→D.4.1) + bench workflow with all gates + 3k/3k.1 + 3m/3m.1 (fingerprints opt-in) +
   **3n/3n.1 Kotlin injection strategies, `input-manager` the shipped default** (merge
@@ -39,6 +40,7 @@ phase 3n.2. The fork is the only home of this work from 2026-09-13 on.
   `2026-09-14-decision-fling-next-phase.md`.
 
 ## Verdict so far (reference run 34870686468, `input-manager` default; CI x86_64/KVM, N=20, p50 ms, within-run drift floor)
+
 Wins: swipe 263 vs 303–305 (Δ −41, CI [−45,−34]), pinch 318 vs 353–354 (Δ −35.5, CI
 [−43.5,−34]), await-screen-idle 305 vs ~498, await-ui-element 41 vs 76, tokens/agent-step
 21–179 vs 651–657 at 100/100 task success in all seven screen-graph configs (success is at
@@ -57,6 +59,7 @@ gate (1 ms, was 11 ms)** and P9 on tap/swipe/gesture, screen-graph green (O1 99/
 scrcpy removed), "tap at parity via scrcpy" (input-manager +1 ms), "fling resolved".
 
 ## Execution order (next)
+
 1. **3n.2 merged; 3n.3 post-merge fixes review + merge** — 3n.2 (scrcpy removal +
    residual-gate repair, run 34888577404 green) is merged. 3n.3
    (`fix/open-server-3n3-post-merge`) applies the review's post-merge fixes: the real
@@ -85,6 +88,7 @@ scrcpy removed), "tap at parity via scrcpy" (input-manager +1 ms), "fling resolv
    `2026-09-02-screen-graph-related-work.md`).
 
 ## iOS (2026-09-14)
+
 Owner approved an open iOS driver. Spec `2026-09-14-ios-open-driver-spec.md`; research
 `2026-09-14-ios-open-driver-research.md`. iOS-1 MERGED (607ddb80): `packages/ios-device-server`
 (XCUITest runner on the Android NDJSON contract, from upstream `feat/ios-physical-devices`),
@@ -94,6 +98,7 @@ Next: iOS-2 bench (`2026-09-14-ios-phase2-bench.md`), iOS-3 screen graph on iOS,
 sim-input depth + physical CI. Android fling: `2026-09-14-open-server-phase3o-fling-metric.md`.
 
 ## Rules that paid for themselves
+
 - One worktree per agent, under this clone (`git worktree add ../argent-fork-wt-<name>`),
   never under /tmp (wiped between sessions; the 3k WIP was lost that way). Commit early.
 - Max 2 agents at once (machine-wide resource policy); no local emulator on the 24 GB
@@ -112,6 +117,7 @@ sim-input depth + physical CI. Android fling: `2026-09-14-open-server-phase3o-fl
   artifact says "hand-built".
 
 ## 2026-09-13 note — what to take from google/artemis (Apache-2.0, Python)
+
 Ideas, not code: pre-execution "XML-first, pixel fallback" target verification;
 execution incident with consecutive-failure count kept in context; `click_sequence`
 bursts for transient UI; dynamic-first locating with verified coordinate fallback;

@@ -79,94 +79,94 @@ const capability: ToolCapability = {
 
 export function createGesturePinchTool(registry: Registry): ToolDefinition<Params, Result> {
   return {
-  id: "gesture-pinch",
-  interaction: {
-    startedMsg: ({ params }) =>
-      `Pinching ${params.endDistance > params.startDistance ? "out" : "in"} at (${Math.round(params.centerX * 100)}%, ${Math.round(params.centerY * 100)}%)`,
-    completedMsg: ({ params }) =>
-      `Pinched ${params.endDistance > params.startDistance ? "out" : "in"} at (${Math.round(params.centerX * 100)}%, ${Math.round(params.centerY * 100)}%)`,
-    failedMsg: ({ failureSignal }) => `Failed to pinch: ${failureSignal.error_code}`,
-  },
-  description: `Execute a pinch-to-zoom gesture by moving two fingers toward or away from a center point to change the scale of on-screen content. All positions and distances are normalized 0.0–1.0 (fractions of screen width/height, not pixels)—same coordinate space as gesture-tap and gesture-swipe.
+    id: "gesture-pinch",
+    interaction: {
+      startedMsg: ({ params }) =>
+        `Pinching ${params.endDistance > params.startDistance ? "out" : "in"} at (${Math.round(params.centerX * 100)}%, ${Math.round(params.centerY * 100)}%)`,
+      completedMsg: ({ params }) =>
+        `Pinched ${params.endDistance > params.startDistance ? "out" : "in"} at (${Math.round(params.centerX * 100)}%, ${Math.round(params.centerY * 100)}%)`,
+      failedMsg: ({ failureSignal }) => `Failed to pinch: ${failureSignal.error_code}`,
+    },
+    description: `Execute a pinch-to-zoom gesture by moving two fingers toward or away from a center point to change the scale of on-screen content. All positions and distances are normalized 0.0–1.0 (fractions of screen width/height, not pixels)—same coordinate space as gesture-tap and gesture-swipe.
 startDistance > endDistance = pinch in (zoom out). startDistance < endDistance = pinch out (zoom in).
 Typical values: startDistance 0.2, endDistance 0.6 for a zoom-in pinch at screen center.
 Auto-generates interpolated frames at ~60fps. The angle parameter controls the axis (0 = horizontal, 90 = vertical). Optional endCenterX/endCenterY drift the centroid linearly over the gesture (omitted = fixed center).
 Use when you need to zoom in or out on a map, image, or zoomable view. Returns { pinched: true, timestampMs }. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
-  zodSchema,
-  capability,
-  services: (params): Record<string, ServiceRef> => {
-    const device = resolveDevice(params.udid);
-    // Skip the proprietary server when the open path is active; it is resolved
-    // lazily in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
-    if (shouldUseOpenServer(device)) return {};
-    return { simulatorServer: simulatorServerRef(device) };
-  },
-  async execute(services, params) {
-    const device = resolveDevice(params.udid);
-    const duration = params.durationMs ?? 300;
-    const steps = Math.max(1, Math.round(duration / 16));
-    const angleDeg = params.angle ?? 0;
-    const angleRad = (angleDeg * Math.PI) / 180;
-    const cosA = Math.cos(angleRad);
-    const sinA = Math.sin(angleRad);
-    const endCenterX = params.endCenterX ?? params.centerX;
-    const endCenterY = params.endCenterY ?? params.centerY;
+    zodSchema,
+    capability,
+    services: (params): Record<string, ServiceRef> => {
+      const device = resolveDevice(params.udid);
+      // Skip the proprietary server when the open path is active; it is resolved
+      // lazily in execute only as a fallback (mirrors gesture-tap / gesture-swipe).
+      if (shouldUseOpenServer(device)) return {};
+      return { simulatorServer: simulatorServerRef(device) };
+    },
+    async execute(services, params) {
+      const device = resolveDevice(params.udid);
+      const duration = params.durationMs ?? 300;
+      const steps = Math.max(1, Math.round(duration / 16));
+      const angleDeg = params.angle ?? 0;
+      const angleRad = (angleDeg * Math.PI) / 180;
+      const cosA = Math.cos(angleRad);
+      const sinA = Math.sin(angleRad);
+      const endCenterX = params.endCenterX ?? params.centerX;
+      const endCenterY = params.endCenterY ?? params.centerY;
 
-    // Single-source the geometry so the open (one gesture RPC) and simulator-
-    // server (per-frame Move loop) paths dispatch the exact same frames.
-    const frames: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const dist = params.startDistance + (params.endDistance - params.startDistance) * t;
-      const halfDist = dist / 2;
-      const cx = params.centerX + (endCenterX - params.centerX) * t;
-      const cy = params.centerY + (endCenterY - params.centerY) * t;
-      frames.push({
-        x1: cx - halfDist * cosA,
-        y1: cy - halfDist * sinA,
-        x2: cx + halfDist * cosA,
-        y2: cy + halfDist * sinA,
-      });
-    }
-
-    const timestampMs = Date.now();
-
-    if (shouldUseOpenServer(device)) {
-      try {
-        // Honour the authored duration (F2): the finger is held for the full
-        // timeline (one FRAME_MS per frame), same as the proprietary path, so a
-        // like-for-like bench compares equal durations. The on-device server
-        // time-thins the frames (F18) to keep the per-event injection cost down
-        // without changing the total duration or the endpoints.
-        const tAt = (i: number): number => i * FRAME_MS;
-        const pointers: NormalizedPointerPath[] = [
-          { id: 0, points: frames.map((f, i) => ({ x: f.x1, y: f.y1, tMs: tAt(i) })) },
-          { id: 1, points: frames.map((f, i) => ({ x: f.x2, y: f.y2, tMs: tAt(i) })) },
-        ];
-        await openServerGesture(registry, device, pointers);
-        return { pinched: true, timestampMs };
-      } catch (err) {
-        console.debug(
-          `[gesture-pinch] open-device-server failed, falling back to simulator-server: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
+      // Single-source the geometry so the open (one gesture RPC) and simulator-
+      // server (per-frame Move loop) paths dispatch the exact same frames.
+      const frames: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const dist = params.startDistance + (params.endDistance - params.startDistance) * t;
+        const halfDist = dist / 2;
+        const cx = params.centerX + (endCenterX - params.centerX) * t;
+        const cy = params.centerY + (endCenterY - params.centerY) * t;
+        frames.push({
+          x1: cx - halfDist * cosA,
+          y1: cy - halfDist * sinA,
+          x2: cx + halfDist * cosA,
+          y2: cy + halfDist * sinA,
+        });
       }
-    }
 
-    const ref = simulatorServerRef(device);
-    const api = shouldUseOpenServer(device)
-      ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
-      : (services.simulatorServer as SimulatorServerApi);
+      const timestampMs = Date.now();
 
-    for (let i = 0; i < frames.length; i++) {
-      const f = frames[i]!;
-      const type = i === 0 ? "Down" : i === frames.length - 1 ? "Up" : "Move";
-      await sendTouchEvent(api, type, f.x1, f.y1, f.x2, f.y2);
-      if (i < frames.length - 1) await sleep(16);
-    }
+      if (shouldUseOpenServer(device)) {
+        try {
+          // Honour the authored duration (F2): the finger is held for the full
+          // timeline (one FRAME_MS per frame), same as the proprietary path, so a
+          // like-for-like bench compares equal durations. The on-device server
+          // time-thins the frames (F18) to keep the per-event injection cost down
+          // without changing the total duration or the endpoints.
+          const tAt = (i: number): number => i * FRAME_MS;
+          const pointers: NormalizedPointerPath[] = [
+            { id: 0, points: frames.map((f, i) => ({ x: f.x1, y: f.y1, tMs: tAt(i) })) },
+            { id: 1, points: frames.map((f, i) => ({ x: f.x2, y: f.y2, tMs: tAt(i) })) },
+          ];
+          await openServerGesture(registry, device, pointers);
+          return { pinched: true, timestampMs };
+        } catch (err) {
+          console.debug(
+            `[gesture-pinch] open-device-server failed, falling back to simulator-server: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
 
-    return { pinched: true, timestampMs };
-  },
+      const ref = simulatorServerRef(device);
+      const api = shouldUseOpenServer(device)
+        ? await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options)
+        : (services.simulatorServer as SimulatorServerApi);
+
+      for (let i = 0; i < frames.length; i++) {
+        const f = frames[i]!;
+        const type = i === 0 ? "Down" : i === frames.length - 1 ? "Up" : "Move";
+        await sendTouchEvent(api, type, f.x1, f.y1, f.x2, f.y2);
+        if (i < frames.length - 1) await sleep(16);
+      }
+
+      return { pinched: true, timestampMs };
+    },
   };
 }
