@@ -13,7 +13,13 @@ import {
   shouldUseOpenServer,
   openServerSwipe,
   openServerSwipeWithOutcome,
+  openServerVerifiedSwipe,
+  type OpenServerVerify,
+  type OpenServerVerifiedResult,
 } from "../../utils/open-server-input";
+import { verifyParamSchema } from "../../utils/open-server-verify";
+import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
+import { recordIncident, clearIncident } from "../../utils/open-server-incident";
 import { shouldUseIosOpenServer, iosOpenServerSwipe } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
@@ -83,6 +89,17 @@ const zodSchema = z
       .describe(
         "Retired: renamed to `momentum` with the opposite sense. Pass `momentum: false` for what `settle: true` meant; `settle: false` was the default, so drop the key."
       ),
+    verify: verifyParamSchema
+      .optional()
+      .describe(
+        "Android open-device-server only: verify the swipe's START point on the LIVE accessibility " +
+          "tree before swiping. Pass { selector, tolerancePx? } (ScreenSelector grammar, same as " +
+          "gesture-tap). The host runs the server-side `query` RPC and resolves a UNIQUE node: exactly " +
+          "one match starts the swipe at its bounds center (refuses `verify_mismatch` if fromX/fromY " +
+          "fall outside the match ± tolerancePx); zero refuses `verify_not_found`; several refuses " +
+          "`verify_ambiguous` — NO swipe is issued on a refusal. The end point is taken as authored. " +
+          "Ignored off the Android open path; when absent the swipe path is unchanged."
+      ),
   })
   .refine(
     (p) =>
@@ -104,6 +121,19 @@ interface Result {
    * The before/after fingerprint delta of this swipe.
    */
   outcome?: OpenServerActionOutcome;
+  /**
+   * Ticket A1 (verified swipe start) — present only when `verify` was passed on
+   * the Android open path. `true` when the start selector resolved uniquely and
+   * the swipe started from its center; `false` on a refusal (no swipe issued).
+   */
+  verified?: boolean;
+  verifyCode?: "verify_not_found" | "verify_ambiguous" | "verify_mismatch";
+  resolvedBounds?: VerifyBounds;
+  version?: number;
+  verifyMs?: number;
+  candidates?: VerifyCandidate[];
+  requestedPx?: { x: number; y: number };
+  mismatchLabel?: string;
 }
 
 // Touch platforms only: on a desktop renderer a mouse drag selects text instead
@@ -171,6 +201,70 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
         }
       }
 
+      if (shouldUseOpenServer(device) && params.verify) {
+        // Ticket A1 (verified swipe start): resolve the START target on the LIVE
+        // tree first and begin the swipe at its center, or refuse WITHOUT
+        // injecting. No fallback to the proprietary path.
+        const steps = Math.max(1, Math.round(duration / 16));
+        const verify: OpenServerVerify = params.verify;
+        let vr: OpenServerVerifiedResult;
+        try {
+          vr = await openServerVerifiedSwipe(
+            registry,
+            device,
+            params.fromX,
+            params.fromY,
+            params.toX,
+            params.toY,
+            steps,
+            verify,
+            momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
+          );
+        } catch (err) {
+          recordIncident(device.id, {
+            tool: "gesture-swipe",
+            code: "timeout",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          throw err;
+        }
+        if (vr.outcome === "swiped") {
+          clearIncident(device.id);
+          return {
+            swiped: true,
+            timestampMs,
+            verified: true,
+            resolvedBounds: vr.resolvedBounds,
+            version: vr.version,
+            verifyMs: vr.verifyMs,
+          };
+        }
+        const verifyCode =
+          vr.outcome === "not_found"
+            ? "verify_not_found"
+            : vr.outcome === "ambiguous"
+              ? "verify_ambiguous"
+              : "verify_mismatch";
+        recordIncident(device.id, {
+          tool: "gesture-swipe",
+          code: verifyCode,
+          message: `verify refused: ${verifyCode}`,
+          ...(vr.label !== undefined ? { label: vr.label } : {}),
+        });
+        return {
+          swiped: false,
+          timestampMs,
+          verified: false,
+          verifyCode,
+          version: vr.version,
+          verifyMs: vr.verifyMs,
+          ...(vr.resolvedBounds ? { resolvedBounds: vr.resolvedBounds } : {}),
+          ...(vr.candidates ? { candidates: vr.candidates } : {}),
+          ...(vr.requestedPx ? { requestedPx: vr.requestedPx } : {}),
+          ...(vr.label !== undefined ? { mismatchLabel: vr.label } : {}),
+        };
+      }
+
       if (shouldUseOpenServer(device)) {
         try {
           // The on-device server interpolates its own steps; map the host frame
@@ -199,6 +293,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
               steps,
               momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
             );
+            clearIncident(device.id);
             return { swiped: true, timestampMs };
           }
           const outcome = await openServerSwipeWithOutcome(
@@ -211,6 +306,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             steps,
             momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
+          clearIncident(device.id);
           return { swiped: true, timestampMs, outcome };
         } catch (err) {
           console.debug(

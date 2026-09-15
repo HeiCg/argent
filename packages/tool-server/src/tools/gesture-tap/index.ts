@@ -9,7 +9,13 @@ import {
   shouldUseOpenServer,
   openServerTap,
   openServerTapWithOutcome,
+  openServerVerifiedTap,
+  type OpenServerVerify,
+  type OpenServerVerifiedResult,
 } from "../../utils/open-server-input";
+import { verifyParamSchema } from "../../utils/open-server-verify";
+import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
+import { recordIncident, clearIncident } from "../../utils/open-server-incident";
 import { shouldUseIosOpenServer, iosOpenServerTap } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
@@ -33,6 +39,18 @@ const zodSchema = z.object({
         "The taps land inside the OS double-tap window; on Chromium each click carries an escalating " +
         "CDP clickCount so dblclick actually fires. Default 1."
     ),
+  verify: verifyParamSchema
+    .optional()
+    .describe(
+      "Android open-device-server only: verify a target on the LIVE accessibility tree before " +
+        "tapping. Pass { selector, tolerancePx? } where selector is the ScreenSelector grammar " +
+        "(id/text/class as a bare string = exact, or { contains|equals|regex, caseInsensitive? }; " +
+        "index, visible, containsDescendant). The host runs the server-side `query` RPC and resolves " +
+        "a UNIQUE node: exactly one match taps its bounds center (and refuses `verify_mismatch` if x/y " +
+        "fall outside the match ± tolerancePx); zero matches refuses `verify_not_found`; several refuses " +
+        "`verify_ambiguous` with up to 5 candidates — NO tap is issued on a refusal. Ignored off the " +
+        "Android open path. When absent the tap path is unchanged."
+    ),
 });
 
 type Params = z.infer<typeof zodSchema>;
@@ -46,6 +64,24 @@ interface Result {
    * the screen changed (and whether it's a new screen) without a follow-up read.
    */
   outcome?: OpenServerActionOutcome;
+  /**
+   * Ticket A1 (verified tap) — present only when `verify` was passed on the
+   * Android open path. `true` when the selector resolved uniquely and the tap
+   * landed on its center; `false` on a refusal (no tap issued). `verifyCode`
+   * names the refusal; `resolvedBounds` / `version` / `verifyMs` describe the
+   * `query` that resolved (or refused) the target.
+   */
+  verified?: boolean;
+  verifyCode?: "verify_not_found" | "verify_ambiguous" | "verify_mismatch";
+  resolvedBounds?: VerifyBounds;
+  version?: number;
+  verifyMs?: number;
+  /** `verify_ambiguous`: up to 5 matches (label, bounds) — add a second field. */
+  candidates?: VerifyCandidate[];
+  /** `verify_mismatch`: the pixel coordinates the caller proposed. */
+  requestedPx?: { x: number; y: number };
+  /** `verify_mismatch`: the element the caller's coordinates actually hit. */
+  mismatchLabel?: string;
 }
 
 function tapDescription(params: Params, tense: "present" | "past"): string {
@@ -153,6 +189,76 @@ Before tapping, determine the correct coordinates by using discovery tools — p
           const ref = simulatorServerRef(device);
           api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
         }
+      } else if (shouldUseOpenServer(device) && params.verify) {
+        // Ticket A1 (verified tap): resolve the target on the LIVE tree first and
+        // tap its center, or refuse WITHOUT injecting. No fallback to the
+        // proprietary path — a verify the open path cannot run must not become a
+        // silent unverified tap on the closed backend.
+        const verify: OpenServerVerify = params.verify;
+        let vr: OpenServerVerifiedResult;
+        try {
+          vr = await openServerVerifiedTap(
+            registry,
+            device,
+            params.x,
+            params.y,
+            clickCount,
+            verify
+          );
+        } catch (err) {
+          recordIncident(device.id, {
+            tool: "gesture-tap",
+            code: "timeout",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          throw err;
+        }
+        if (vr.outcome === "tapped") {
+          if (vr.changed) {
+            clearIncident(device.id);
+          } else {
+            // Landed but moved nothing — a no-effect tap the caller asked to
+            // verify counts as a failure for the incident (part B).
+            recordIncident(device.id, {
+              tool: "gesture-tap",
+              code: "no_effect",
+              message: "verified tap landed but the screen did not change",
+            });
+          }
+          return {
+            tapped: true,
+            timestampMs,
+            verified: true,
+            resolvedBounds: vr.resolvedBounds,
+            version: vr.version,
+            verifyMs: vr.verifyMs,
+            ...(vr.actionOutcome ? { outcome: vr.actionOutcome } : {}),
+          };
+        }
+        const verifyCode =
+          vr.outcome === "not_found"
+            ? "verify_not_found"
+            : vr.outcome === "ambiguous"
+              ? "verify_ambiguous"
+              : "verify_mismatch";
+        recordIncident(device.id, {
+          tool: "gesture-tap",
+          code: verifyCode,
+          message: `verify refused: ${verifyCode}`,
+          ...(vr.label !== undefined ? { label: vr.label } : {}),
+        });
+        return {
+          tapped: false,
+          timestampMs,
+          verified: false,
+          verifyCode,
+          version: vr.version,
+          verifyMs: vr.verifyMs,
+          ...(vr.resolvedBounds ? { resolvedBounds: vr.resolvedBounds } : {}),
+          ...(vr.candidates ? { candidates: vr.candidates } : {}),
+          ...(vr.requestedPx ? { requestedPx: vr.requestedPx } : {}),
+          ...(vr.label !== undefined ? { mismatchLabel: vr.label } : {}),
+        };
       } else if (shouldUseOpenServer(device)) {
         try {
           // Default (screen-graph off): plain `tap` RPC, pre-merge semantics — no
@@ -164,6 +270,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
           // stays optional on the result and is absent here.
           if (!screenGraphRecordingEnabled()) {
             await openServerTap(registry, device, params.x, params.y, clickCount);
+            clearIncident(device.id);
             return { tapped: true, timestampMs };
           }
           const outcome = await openServerTapWithOutcome(
@@ -173,6 +280,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
             params.y,
             clickCount
           );
+          clearIncident(device.id);
           return { tapped: true, timestampMs, outcome };
         } catch (err) {
           console.debug(
