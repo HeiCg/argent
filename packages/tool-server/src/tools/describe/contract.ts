@@ -119,6 +119,12 @@ export interface DescribeTreeData {
   // Which host↔device transport carried the open-path reply (phase 3j):
   // "adb-forward" (default) or "redir". Metadata only.
   transport?: "adb-forward" | "redir";
+  // Ticket A1 (part B): the ONE execution-incident line the open describe path
+  // prepends to its rendered `description` while an incident is active on the
+  // device (a prior verify refusal / no-effect tap / timeout). Set solely by the
+  // Android open path; `withDescription` prepends it to the text. Absent when no
+  // incident is active.
+  incidentLine?: string;
 }
 
 export interface DescribeStageTimings {
