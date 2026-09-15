@@ -3,6 +3,7 @@
 Owner wants a clean CI. After `2026-09-15-ci-hygiene-open-main.md` (merged 786feb59) the
 hygiene workflows fire on `open/main`; three are red with pre-existing debt (read that
 ticket's `## Result` for run ids and the exact error lists):
+
 - **Lint** (run 34922260198): 9 mechanical errors (`no-unused-vars`,
   `no-useless-assignment`) + 4 `Parsing error: file not found in project` because
   `packages/tool-server/scripts/*.ts` are covered by `scripts/tsconfig.json`, which is
@@ -16,6 +17,7 @@ ticket's `## Result` for run ids and the exact error lists):
   binaries; pass 2 = ~71 unused exports/types in screen-graph / iOS / bench source.
 
 ## Work (one branch, green on all three before merge)
+
 1. **Lint**: add `packages/tool-server/scripts/tsconfig.json` to the eslint
    `parserOptions.project` list (or the `projectService` allowDefaultProject list, whichever
    the repo's `eslint.config.*` uses); fix the 9 mechanical errors by removing the unused
@@ -45,6 +47,7 @@ ticket's `## Result` for run ids and the exact error lists):
    red run.
 
 ## Process
+
 Branch `chore/ci-paydown-lint-tests-knip` off `open/main` @ 786feb59, worktree
 `../argent-fork-wt-paydown` (never /tmp; root `node_modules` symlinked; no npm install /
 gradle / Xcode; vitest `--maxWorkers=2`). Another agent works on
