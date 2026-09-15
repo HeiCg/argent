@@ -1,28 +1,24 @@
-"""Step 0 — blocking a11y-suppression probe (AW-1).
+"""Step 0 — a11y-suppression probe, run BOTH ways to prove the opt-in gating.
 
-Research §2 records an *inference*, not a measurement: our on-device server holds
-a ``UiAutomation`` obtained with default flags
-(``DeviceControlInstrumentation.kt:52``), and a default ``UiAutomation``
-connection is believed to *suppress other accessibility services* for its
-lifetime. If so, while our instrumentation is alive AndroidWorld's a11y forwarder
-forest comes back empty and ``uiautomator dump`` fails for want of a second
-``UiAutomation`` — which would force AW-1 to add
-``FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`` to the ``getUiAutomation`` call.
+Research §2 records an inference: our on-device server holds a ``UiAutomation``
+obtained with default flags, and a default ``UiAutomation`` connection suppresses
+other accessibility services for its lifetime — so while our instrumentation is
+alive AndroidWorld's a11y forwarder forest comes back empty.
 
-This script settles that on the CI emulator (API 33, booted WITHOUT
-``-grpc-use-token``). It:
-  1. installs our device-control APK and launches the instrumentation, waiting
-     for the ``INSTRUMENTATION_STATUS: port=`` line that proves the server is
-     alive (matching the host handshake in ``android-open-server.ts``);
-  2. WHILE the instrumentation is alive, runs ``uiautomator dump`` (the
-     dependency-light, direct suppression signal) and reads AndroidWorld's own
-     a11y forest through its controller (the exact path the harness would use);
-  3. writes ``probe.json`` and prints a verdict.
+AW-1 makes ``FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`` OPT-IN (arg
+``-e dontSuppressA11y true``), so this probe runs the emulator BOTH ways in one
+job and records each outcome:
 
-The Result in the ticket pre-registers the choice from this output BEFORE the
-harness runs. Note (research risk 2): if the flag is added, the describe
-latencies must be re-measured against run 34870686468 at the drift floor —
-scheduled as AW-1.1, never folded into the AW-1 harness run.
+  * default start (no arg): expect AW's forest NOT readable (suppression) — the
+    default driver is byte-identical to before AW-1;
+  * ``dontSuppressA11y true``: expect AW's forest to return (nodes > 0) — the
+    AndroidWorld harness path.
+
+Gating is proven when the default start suppresses and the opt-in restores. The
+Kotlin also compiles + unit-tests in the same CI job (``testDebugUnitTest``).
+Note (research risk 2): the opt-in arm is a driver behavior change, so its
+describe latencies are AW-1.1 (re-measure vs run 34870686468 at the drift floor);
+the default arm needs no re-measure.
 """
 
 from __future__ import annotations
@@ -42,21 +38,14 @@ PORT_MARKER = re.compile(r"INSTRUMENTATION_STATUS:\s*port=(\d+)")
 
 def adb(serial: str, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
   return subprocess.run(
-      ["adb", "-s", serial, *args],
-      capture_output=True,
-      text=True,
-      timeout=timeout,
+      ["adb", "-s", serial, *args], capture_output=True, text=True, timeout=timeout
   )
 
 
 def start_instrumentation(
-    serial: str, dont_suppress_a11y: bool = True
+    serial: str, dont_suppress_a11y: bool
 ) -> tuple[subprocess.Popen, int | None]:
-  """Launch am instrument and wait for the ephemeral-port status line.
-
-  The probe exercises the OPT-IN path (`-e dontSuppressA11y true`), which is what
-  the AndroidWorld harness uses; the default driver start stays suppressing.
-  """
+  """Launch am instrument (with or without the opt-in arg) and wait for its port."""
   extra = ["-e", "dontSuppressA11y", "true"] if dont_suppress_a11y else []
   proc = subprocess.Popen(
       ["adb", "-s", serial, "shell", "am", "instrument", "-w", *extra, INSTRUMENTATION_RUNNER],
@@ -81,8 +70,18 @@ def start_instrumentation(
   return proc, port
 
 
+def stop_instrumentation(serial: str, proc: subprocess.Popen) -> None:
+  try:
+    adb(serial, ["shell", "am", "force-stop", PACKAGE_NAME])
+    proc.terminate()
+    proc.wait(timeout=10)
+  except Exception:  # noqa: BLE001
+    proc.kill()
+  time.sleep(3)  # let the UiAutomation connection be released before the next phase
+
+
 def read_aw_forest(console_port: int, grpc_port: int, adb_path: str) -> dict:
-  """Read AndroidWorld's a11y forest through its own controller."""
+  """Read AndroidWorld's a11y forest through its own controller (fresh env)."""
   out: dict = {"ok": False}
   try:
     from android_world.env import env_launcher
@@ -99,12 +98,7 @@ def read_aw_forest(console_port: int, grpc_port: int, adb_path: str) -> dict:
       windows = list(getattr(forest, "windows", []))
       nodes = sum(len(list(getattr(w.tree, "nodes", []))) for w in windows)
       ui_elements = env.get_state(wait_to_stabilize=True).ui_elements
-      out.update(
-          ok=True,
-          windows=len(windows),
-          nodes=nodes,
-          ui_elements=len(ui_elements),
-      )
+      out.update(ok=True, windows=len(windows), nodes=nodes, ui_elements=len(ui_elements))
     finally:
       env.close()
   except Exception as e:  # noqa: BLE001 — record any failure verbatim
@@ -113,112 +107,96 @@ def read_aw_forest(console_port: int, grpc_port: int, adb_path: str) -> dict:
 
 
 def uiautomator_dump(serial: str) -> dict:
-  """Run uiautomator dump; success needs a second UiAutomation on the device."""
   remote = "/sdcard/aw_probe_dump.xml"
   adb(serial, ["shell", "rm", "-f", remote])
   proc = adb(serial, ["shell", "uiautomator", "dump", remote], timeout=60)
   combined = f"{proc.stdout}{proc.stderr}"
   size = 0
-  node_count = 0
   try:
     ls = adb(serial, ["shell", "wc", "-c", remote])
     size = int(ls.stdout.strip().split()[0]) if ls.stdout.strip() else 0
-    if size > 0:
-      cat = adb(serial, ["shell", "cat", remote])
-      node_count = cat.stdout.count("<node")
   except Exception:  # noqa: BLE001
     pass
-  ok = "dumped to" in combined.lower() and size > 0
-  return {
-      "ok": ok,
-      "bytes": size,
-      "nodes": node_count,
-      "output": combined.strip()[:400],
-  }
+  return {"ok": "dumped to" in combined.lower() and size > 0, "bytes": size}
+
+
+def run_phase(
+    label: str, serial: str, dont_suppress: bool, console_port: int, grpc_port: int, adb_path: str
+) -> dict:
+  print(f"\n[probe] === phase {label} (dontSuppressA11y={dont_suppress}) ===")
+  proc, port = start_instrumentation(serial, dont_suppress)
+  alive = port is not None
+  print(f"[probe] instrumentation_alive={alive} port={port}")
+  phase: dict = {"instrumentation_alive": alive, "instrumentation_port": port}
+  if alive:
+    time.sleep(3)  # hold the UiAutomation before reading
+    phase["aw_forest"] = read_aw_forest(console_port, grpc_port, adb_path)
+    print(f"[probe]   aw_forest -> {phase['aw_forest']}")
+    phase["uiautomator_dump"] = uiautomator_dump(serial)
+    print(f"[probe]   uiautomator_dump -> {phase['uiautomator_dump']}")
+  stop_instrumentation(serial, proc)
+  return phase
 
 
 def main() -> int:
-  ap = argparse.ArgumentParser(description="AW-1 a11y-suppression probe")
+  ap = argparse.ArgumentParser(description="AW-1 a11y opt-in gating probe (both ways)")
   ap.add_argument("--serial", default="emulator-5554")
   ap.add_argument("--grpc-port", type=int, default=8554)
   ap.add_argument("--console-port", type=int, default=5554)
-  ap.add_argument("--apk", required=True, help="path to argent-device-control-*.apk")
-  ap.add_argument("--out", required=True, help="probe.json output path")
+  ap.add_argument("--apk", required=True)
+  ap.add_argument("--out", required=True)
   args = ap.parse_args()
 
-  adb_path = subprocess.run(
-      ["which", "adb"], capture_output=True, text=True
-  ).stdout.strip() or "adb"
+  adb_path = subprocess.run(["which", "adb"], capture_output=True, text=True).stdout.strip() or "adb"
 
   print(f"[probe] installing {args.apk}")
   install = adb(args.serial, ["install", "-r", "-t", args.apk], timeout=180)
   print(install.stdout.strip() or install.stderr.strip())
 
-  print("[probe] launching our instrumentation (must stay alive during reads)")
-  proc, port = start_instrumentation(args.serial)
-  instrumentation_alive = port is not None
-  print(f"[probe] instrumentation_alive={instrumentation_alive} port={port}")
-  # Give the server a moment to hold its UiAutomation connection.
-  time.sleep(3)
+  result: dict = {"serial": args.serial}
+  # Default start FIRST (suppressing), then the opt-in arm.
+  result["default"] = run_phase(
+      "default", args.serial, False, args.console_port, args.grpc_port, adb_path
+  )
+  result["dontSuppressA11y"] = run_phase(
+      "dontSuppressA11y", args.serial, True, args.console_port, args.grpc_port, adb_path
+  )
 
-  result: dict = {
-      "serial": args.serial,
-      "instrumentation_alive": instrumentation_alive,
-      "instrumentation_port": port,
-  }
-  if not instrumentation_alive:
-    result["fatal"] = "our instrumentation never reported a port; cannot probe"
-  else:
-    print("[probe] uiautomator dump (direct suppression signal)")
-    result["uiautomator_dump"] = uiautomator_dump(args.serial)
-    print(f"        -> {result['uiautomator_dump']}")
+  def forest_ok(phase: dict) -> bool:
+    f = phase.get("aw_forest", {})
+    return bool(f.get("ok")) and f.get("nodes", 0) > 0
 
-    print("[probe] AndroidWorld a11y forest (harness path)")
-    result["aw_forest"] = read_aw_forest(args.console_port, args.grpc_port, adb_path)
-    print(f"        -> {result['aw_forest']}")
-
-  # Verdict keys on AW's FORWARDER forest — the harness reads the a11y forwarder
-  # app (A11Y_FORWARDER_APP method), not `uiautomator dump`. `uiautomator dump`
-  # spins up its OWN UiAutomation (a separate connection), which conflicts with
-  # our instrumentation regardless of FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES,
-  # so it stays unavailable and is recorded as informational only.
-  suppression = False
-  if instrumentation_alive:
-    forest = result.get("aw_forest", {})
-    forest_ok = forest.get("ok", False) and forest.get("nodes", 0) > 0
-    suppression = not forest_ok
-    result["suppression_detected"] = suppression
-    result["uiautomator_dump_note"] = (
-        "uiautomator dump needs its own UiAutomation and stays unavailable while "
-        "our instrumentation is alive; the harness uses AW's forwarder forest, "
-        "not the dump — this field is informational."
-    )
-    result["recommendation"] = (
-        "ADD FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES to "
-        "DeviceControlInstrumentation.getUiAutomation, re-probe, and schedule "
-        "AW-1.1 latency re-measurement against run 34870686468."
-        if suppression
-        else "NO FLAG NEEDED — shape (b): AW keeps adb/checkers, our server is "
-        "the only observation; the forest is never read by the harness."
-    )
-
-  # Try to end the instrumentation cleanly.
-  try:
-    adb(args.serial, ["shell", "am", "force-stop", PACKAGE_NAME])
-    proc.terminate()
-    proc.wait(timeout=10)
-  except Exception:  # noqa: BLE001
-    proc.kill()
+  default_suppressed = not forest_ok(result["default"])
+  optin_ok = forest_ok(result["dontSuppressA11y"])
+  gating_proven = default_suppressed and optin_ok
+  result["default_suppressed"] = default_suppressed
+  result["optin_forest_ok"] = optin_ok
+  result["gating_proven"] = gating_proven
+  result["verdict"] = (
+      "OPT-IN GATING PROVEN — default start suppresses AW's forest; "
+      "`-e dontSuppressA11y true` restores it."
+      if gating_proven
+      else f"UNEXPECTED — default_suppressed={default_suppressed}, "
+      f"optin_forest_ok={optin_ok}; inspect per-phase results."
+  )
+  result["uiautomator_dump_note"] = (
+      "uiautomator dump needs its own UiAutomation (a separate connection) and can "
+      "stay unavailable regardless of the flag; the harness uses AW's forwarder "
+      "forest, not the dump — this field is informational."
+  )
 
   with open(args.out, "w", encoding="utf-8") as f:
     json.dump(result, f, indent=2)
   print("\n===== PROBE RESULT =====")
   print(json.dumps(result, indent=2))
   print("========================")
-  # The probe is diagnostic: a clean run (even one that detects suppression) is
-  # a SUCCESS — it answers the pre-registration question. Only a probe that
-  # could not run at all fails the job.
-  return 0 if instrumentation_alive else 1
+
+  both_alive = result["default"]["instrumentation_alive"] and result[
+      "dontSuppressA11y"
+  ]["instrumentation_alive"]
+  # Diagnostic run: a clean run answers the question even if gating were not
+  # proven. Only a probe where our instrumentation could not start at all fails.
+  return 0 if both_alive else 1
 
 
 if __name__ == "__main__":

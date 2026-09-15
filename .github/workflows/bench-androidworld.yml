@@ -174,12 +174,20 @@ jobs:
           npm run build:android-device-server
           ls -la packages/android-device-server/bin/
 
+      - name: Kotlin unit tests (JUnit — incl. UiAutomationFlagsTest)
+        # assembleDebug above proves the refactored Kotlin compiles; this compiles
+        # + runs the JVM unit tests (UiAutomationFlags arg parsing, EmulatorDetect,
+        # inject strategies, serializers). local.properties was written by build.sh.
+        run: |
+          cd packages/android-device-server
+          ./gradlew --no-daemon testDebugUnitTest
+
       - name: Install AndroidWorld (Python)
         run: |
           python -m pip install --upgrade pip
           pip install -r bench/androidworld/requirements.txt
 
-      - name: Probe — our instrumentation alive + AW forest + uiautomator dump
+      - name: Probe — opt-in gating both ways (default suppresses, arg restores)
         id: probe
         env:
           OPEN_SERVER_SERIAL: emulator-5554
