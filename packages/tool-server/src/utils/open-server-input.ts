@@ -654,25 +654,6 @@ export function resolveIndexTarget(
 }
 
 /**
- * Resolve an index `target` to a device-pixel tap point by reading the current
- * device state (tree + fingerprints for the live `version`). Throws
- * {@link IndexTargetError} on a stale or out-of-range index; any other failure is
- * an RPC/transport error the caller falls back on.
- */
-export function resolveTargetTapPoint(
-  registry: Registry,
-  device: DeviceInfo,
-  target: IndexTarget
-): Promise<{ x: number; y: number }> {
-  const ref = openDeviceServerRef(device);
-  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
-    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const state = await server.getState({ includeScreenshot: false, fingerprints: true });
-    return resolveIndexTarget(state.tree, state.version, target);
-  });
-}
-
-/**
  * Tap the element addressed by an index `target` (A2 §B): read the current state,
  * verify the snapshot version (refuse `stale_index` if it moved), and tap the
  * element's bounds centre — all in ONE device lock. Backs the additive `target`

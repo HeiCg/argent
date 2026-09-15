@@ -9,6 +9,7 @@ import {
   shouldUseOpenServer,
   openServerTap,
   openServerTapWithOutcome,
+  openServerTapAtIndex,
 } from "../../utils/open-server-input";
 import { shouldUseIosOpenServer, iosOpenServerTap } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
@@ -32,6 +33,21 @@ const zodSchema = z.object({
       "Number of taps/clicks dispatched as ONE multi-tap gesture (2 = double-tap / double-click). " +
         "The taps land inside the OS double-tap window; on Chromium each click carries an escalating " +
         "CDP clickCount so dblclick actually fires. Default 1."
+    ),
+  // A2 §B (additive): tap by element index from a `describe` `tier:"index"` read,
+  // resolved on the device against the SAME snapshot version — refused as
+  // stale_index if the screen moved. Android open-device-server only; when present,
+  // x/y are ignored. Kept optional so every existing coordinate tap is unchanged.
+  target: z
+    .object({
+      index: z.number().int().min(0).describe('0-based index from a describe tier:"index" line'),
+      version: z.number().int().describe("the AX version that index tier was rendered at"),
+    })
+    .optional()
+    .describe(
+      "Android open-device-server only: tap the element at this index from the last describe " +
+        'tier:"index" read, verified against the same snapshot version (refused if the screen moved). ' +
+        "When set, x and y are ignored."
     ),
 });
 
@@ -130,6 +146,18 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       const device = resolveDevice(params.udid);
       const timestampMs = Date.now();
       const clickCount = params.clickCount ?? 1;
+      // A2 §B (additive): tap by element index (open path only). Resolves the index
+      // against the current snapshot, refuses a stale index, and taps the element
+      // bounds; x/y are ignored. No proprietary-path equivalent.
+      if (params.target !== undefined) {
+        if (!shouldUseOpenServer(device)) {
+          throw new Error(
+            "gesture-tap `target` (element index) requires the Android open-device-server (`open-device-server` flag)."
+          );
+        }
+        await openServerTapAtIndex(registry, device, params.target, clickCount);
+        return { tapped: true, timestampMs };
+      }
       if (device.platform === "chromium") {
         const chromium = services.chromium as ChromiumCdpApi;
         // Mouse dispatch stalls at ~5s per event on a hidden window.
