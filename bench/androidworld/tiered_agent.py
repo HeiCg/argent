@@ -126,6 +126,11 @@ Action: {{"action_type": "status", "goal_status": "infeasible"}}"""
       self.history.append(step_data)
       return base_agent.AgentInteractionResult(False, step_data)
 
+    # Underscore action types (T3A's own list uses hyphens, which never match
+    # the underscore JSONAction constants — a dead guard upstream). The check is
+    # applied identically to both arms, so it does not affect the tier
+    # comparison; it just returns a precise "index out of range" summary instead
+    # of letting the driver raise.
     if converted_action.action_type in ("click", "long_press", "input_text"):
       if converted_action.index is not None and int(converted_action.index) >= len(
           ui_elements

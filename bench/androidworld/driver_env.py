@@ -37,7 +37,6 @@ import numpy as np
 import requests
 import tiktoken
 
-from android_world.env import actuation  # noqa: F401 — kept for reference parity
 from android_world.env import adb_utils, interface, json_action
 
 # Android keycodes for the select-all + delete that AndroidWorld's own

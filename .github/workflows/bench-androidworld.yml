@@ -46,26 +46,12 @@ on:
         description: "task_random_seed (harness; pinned per run)"
         required: false
         default: "30"
-  # AW-1 Step 0 dispatch aid: a brand-new workflow that lives only on a feature
-  # branch is NOT registered for workflow_dispatch, so the probe cannot be
-  # triggered from the API before this file reaches the default branch. This
-  # branch-scoped push trigger lets the Step 0 probe run on push from the feature
-  # branch; it is REMOVED before the PR is opened (only the probe job is gated on
-  # `push`, so no model key is ever needed on a push).
-  push:
-    branches:
-      - feat/androidworld-aw1
-    paths:
-      - ".github/workflows/bench-androidworld.yml"
-      - "bench/androidworld/**"
 
 jobs:
   # ── Step 0: a11y-suppression probe (no model key) ─────────────────────────
   probe:
     name: AW a11y-suppression probe (API 33, x86_64 KVM)
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'probe')
+    if: ${{ github.event.inputs.job == 'probe' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 

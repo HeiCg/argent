@@ -30,9 +30,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from android_world import registry
 from android_world.env import env_launcher
-from android_world.task_evals import task_eval  # noqa: F401 — type reference
 
 from claude_wrapper import ClaudeWrapper
 from driver_env import OpenDriverEnv, ToolServerClient
@@ -342,8 +343,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         raise ValueError(f"Task {task_name} not in AndroidWorld registry.")
       task_type = aw_registry[task_name]
       # One seeded param set per task, reused across tiers so the tier is the
-      # only variable. n_task_combinations is pinned at 1.
+      # only variable. n_task_combinations is pinned at 1. Seed both PRNGs since
+      # AndroidWorld task params may draw from either.
       random.seed(args.task_random_seed + ti)
+      np.random.seed(args.task_random_seed + ti)
       params = task_type.generate_random_params()
       meta.setdefault("task_complexity", {})[task_name] = task_type.complexity
       for tier in tiers:
