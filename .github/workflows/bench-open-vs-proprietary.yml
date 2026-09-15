@@ -594,10 +594,15 @@ jobs:
           BENCH_JOB_STARTED: ${{ github.run_started_at }}
         run: |
           set -euo pipefail
-          echo "[bench-sg] run_id=${{ github.run_id }} job_started=${{ github.run_started_at }} — fresh $BENCH_OUT"
+          # `github.run_started_at` is not a valid context for workflow_dispatch (it
+          # resolved empty on run 34904658366), so fall back to the step's wall clock.
+          export BENCH_JOB_STARTED="${BENCH_JOB_STARTED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
           rm -rf "$BENCH_OUT"; mkdir -p "$BENCH_OUT"
+          # Stamp the log's FIRST line with the run id (tee, overwrite), then append the
+          # node output (tee -a) so sg-matrix.log itself is attributable to this run.
+          echo "[bench-sg] run_id=${{ github.run_id }} job_started=$BENCH_JOB_STARTED — fresh $BENCH_OUT" | tee "$RUNNER_TEMP/sg-matrix.log"
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
-            2>&1 | tee "$RUNNER_TEMP/sg-matrix.log"
+            2>&1 | tee -a "$RUNNER_TEMP/sg-matrix.log"
 
       - name: Stage screen-graph artifacts
         if: always()
