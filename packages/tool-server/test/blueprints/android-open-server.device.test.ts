@@ -23,20 +23,25 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   androidOpenServerBlueprint,
+  openDeviceServerRef,
   type OpenDeviceServerApi,
   type OpenServerInfo,
 } from "../../src/blueprints/android-open-server";
 import type { OpenServerElement } from "../../src/tools/describe/platforms/android/open-server-tree";
 import { buildIndexElements } from "../../src/tools/describe/platforms/android/index-tier";
 import { resolveIndexTarget, IndexTargetError } from "../../src/utils/open-server-input";
-import type { DeviceInfo } from "@argent/registry";
+import { clearIncident } from "../../src/utils/open-server-incident";
+import { Registry } from "@argent/registry";
+import type { DeviceInfo, ServiceInstance, ServiceBlueprint } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
 import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
 import { resolveVerify, boundsCenter } from "../../src/utils/open-server-verify";
 import type { QueryNodeLite } from "../../src/screen-graph/bench/locate";
-import { pct } from "../../src/screen-graph/bench/tokens";
+import { pct, tiktokenCount } from "../../src/screen-graph/bench/tokens";
 import { createGestureTapTool } from "../../src/tools/gesture-tap";
-import { setFlag, unsetFlag } from "@argent/configuration-core";
+import { createDescribeTool } from "../../src/tools/describe";
+import { createGestureSequenceTool } from "../../src/tools/gesture-sequence";
+import { setFlag, unsetFlag, isFlagEnabled } from "@argent/configuration-core";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
@@ -299,6 +304,54 @@ let api: OpenDeviceServerApi;
 let dispose: () => Promise<void>;
 let serial = "";
 
+// Ticket A3 (A1-M4 / A2-M3): the tool-level device cases drive the REAL tools
+// (`gesture-tap`, `describe`, `gesture-sequence`) through `registry.invokeTool` —
+// the same call sites the bench and an agent hit — instead of the raw `api`. To
+// avoid a SECOND `am instrument` (UiAutomation is a single exclusive channel), the
+// registry does not spawn its own open server: a stub blueprint hands every
+// resolution the ALREADY-open `instance` from beforeAll, so every tool injects
+// through the one on-device server whose `getInfo().injectStrategyCounts` the effect
+// oracle reads. Flag gating mirrors production (`isFlagEnabled`).
+let reg: Registry;
+
+function buildToolRegistry(instance: ServiceInstance<OpenDeviceServerApi>): Registry {
+  const r = new Registry({ isFlagEnabled: (flag) => isFlagEnabled(flag) });
+  const stub: ServiceBlueprint<OpenDeviceServerApi, { device: DeviceInfo }> = {
+    namespace: androidOpenServerBlueprint.namespace,
+    getURN: (ctx) => openDeviceServerRef(ctx.device).urn,
+    factory: async () => instance,
+  };
+  r.registerBlueprint(stub);
+  r.registerTool(createGestureTapTool(r));
+  r.registerTool(createDescribeTool(r));
+  r.registerTool(createGestureSequenceTool(r));
+  return r;
+}
+
+/** Sum of the per-strategy injection counts — the effect oracle for "no tap was
+ * injected" (unchanged across a refusal) vs "a tap landed" (incremented). */
+const injectTotal = (info: OpenServerInfo): number =>
+  Object.values(info.injectStrategyCounts ?? {}).reduce((a, b) => a + b, 0);
+
+/** The AX `version` a `describe tier:"index"` header names (so a `target` can echo
+ * it): `index tier (active window only; version 175) — …`. Null if none present. */
+function parseIndexVersion(description: string): number | null {
+  const m = /version (\d+)/.exec(description);
+  return m ? Number(m[1]) : null;
+}
+
+/** The index of the first `[i] label (role)` line whose label matches `re`. */
+function firstIndexedRow(description: string, re: RegExp): { index: number; line: string } | null {
+  for (const line of description.split("\n")) {
+    const m = /^\[(\d+)\]/.exec(line);
+    if (m && re.test(line)) return { index: Number(m[1]), line };
+  }
+  return null;
+}
+
+// Settings top-level rows that navigate on tap (used to pick a burst/index target).
+const NAV_ROW_RE = /network|connected|apps|notifications|battery|storage|sound|display|security/i;
+
 async function resolveSerial(): Promise<string> {
   if (process.env.OPEN_SERVER_DEVICE_SERIAL) return process.env.OPEN_SERVER_DEVICE_SERIAL;
   const { stdout } = await runAdb(["devices"]);
@@ -339,6 +392,8 @@ suite("android open-device-server on-device", () => {
     const instance = await androidOpenServerBlueprint.factory({}, device, { device });
     api = instance.api;
     dispose = instance.dispose;
+    // A3: a tool registry that reuses THIS instance (no second server spawn).
+    reg = buildToolRegistry(instance as ServiceInstance<OpenDeviceServerApi>);
     expect(api.isReady()).toBe(true);
   }, 120_000);
 
@@ -1616,4 +1671,369 @@ suite("android open-device-server on-device", () => {
       "createGestureTapTool verify_not_found; no tap, screen unchanged"
     );
   }, 90_000);
+
+  // ── Ticket A3 — consolidation run: tool-level device coverage ──────────────
+  // Every case below drives a REAL tool through `reg.invokeTool` (the bench's and
+  // an agent's call site), not the raw `api`. The registry reuses the one open
+  // server (no second `am instrument`), so `api.getInfo().injectStrategyCounts` —
+  // the effect oracle — reads the SAME process the tools inject through: a refusal
+  // must leave it unchanged, a landed tap must advance it.
+
+  // A3 §1 (A1-M4): a `verify` refusal issues NO injection, records the incident
+  // that the NEXT describe prepends, and a subsequent success clears it.
+  it("A3 §1 (A1-M4) — gesture-tap verify_not_found (invokeTool): no injection, incident header in next describe, cleared by a success", async () => {
+    await freshSettings();
+    clearIncident(serial); // isolate from any earlier tool-level refusal in the suite
+    setFlag("open-device-server", true, "global");
+    try {
+      const injectBefore = injectTotal(await api.getInfo());
+      const refusal = (await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        x: 0.5,
+        y: 0.4,
+        verify: { selector: { text: "__argent_no_such_row__" } },
+      })) as { tapped: boolean; verified?: boolean; verifyCode?: string };
+      expect(refusal.tapped).toBe(false);
+      expect(refusal.verified).toBe(false);
+      expect(refusal.verifyCode).toBe("verify_not_found");
+      // Effect oracle: not one injection strategy count advanced on the refusal.
+      const injectAfterRefusal = injectTotal(await api.getInfo());
+      expect(injectAfterRefusal).toBe(injectBefore);
+      // The incident line is prepended to the NEXT describe (open Android path).
+      const d1 = (await reg.invokeTool("describe", { udid: serial })) as { description: string };
+      expect(d1.description.split("\n")[0]).toMatch(
+        /^incident: gesture-tap verify_not_found ×\d+ —/
+      );
+      // A success clears it: a real verified tap on a present, navigating row.
+      const ok = (await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        verify: { selector: { text: NET_ROW } },
+      })) as { tapped: boolean; verified?: boolean };
+      expect(ok.tapped).toBe(true);
+      expect(ok.verified).toBe(true);
+      // Positive control: the landed tap DID advance the injection count.
+      const injectAfterSuccess = injectTotal(await api.getInfo());
+      expect(injectAfterSuccess).toBeGreaterThan(injectBefore);
+      await api.waitForIdle(3000).catch(() => undefined);
+      const d2 = (await reg.invokeTool("describe", { udid: serial })) as { description: string };
+      expect(d2.description.split("\n")[0]).not.toMatch(/^incident:/);
+      record(
+        "A3 A1-M4 not_found",
+        "PASS",
+        `invokeTool verify_not_found: inject ${injectBefore}→${injectAfterRefusal} (unchanged); ` +
+          `incident header shown; success advanced inject to ${injectAfterSuccess} and cleared the header`
+      );
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 120_000);
+
+  // A3 §1 (A1-M4): a coordinate cross-check that misses the resolved element
+  // refuses `verify_mismatch` — again with no injection and an incident header.
+  it("A3 §1 (A1-M4) — gesture-tap verify_mismatch (invokeTool): no injection, mismatch incident header", async () => {
+    await freshSettings();
+    clearIncident(serial);
+    setFlag("open-device-server", true, "global");
+    try {
+      const injectBefore = injectTotal(await api.getInfo());
+      // Correct selector, but the coordinate points at the top-left corner (far off
+      // the row's bounds), tolerancePx 0 → verify_mismatch, no injection.
+      const refusal = (await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        x: 0.01,
+        y: 0.01,
+        verify: { selector: { text: NET_ROW }, tolerancePx: 0 },
+      })) as { tapped: boolean; verifyCode?: string; mismatchLabel?: string };
+      expect(refusal.tapped).toBe(false);
+      expect(refusal.verifyCode).toBe("verify_mismatch");
+      const injectAfter = injectTotal(await api.getInfo());
+      expect(injectAfter).toBe(injectBefore);
+      const d = (await reg.invokeTool("describe", { udid: serial })) as { description: string };
+      expect(d.description.split("\n")[0]).toMatch(/^incident: gesture-tap verify_mismatch ×\d+ —/);
+      record(
+        "A3 A1-M4 mismatch",
+        "PASS",
+        `invokeTool verify_mismatch (label="${refusal.mismatchLabel ?? ""}"): ` +
+          `inject ${injectBefore}→${injectAfter} (unchanged); mismatch incident header shown`
+      );
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 120_000);
+
+  // A3 §2 (A2-M3): a `gesture-sequence` burst that contains a `{kind:"wait"}` step
+  // (the `wait` pseudo-method), driven through the tool, and it navigates.
+  it("A3 §2 (A2-M3) — gesture-sequence with a {kind:'wait'} step (invokeTool): the wait pseudo-method runs, the burst navigates", async () => {
+    const info = await freshSettings();
+    setFlag("open-device-server", true, "global");
+    try {
+      const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+      const beforeTexts = textSet(before);
+      // A navigating top-level Settings row (label whose center lands a clickable row).
+      const clickables = before.filter(
+        (e) =>
+          e.clickable === true &&
+          e.bounds.y1 > info.screenHeight * 0.12 &&
+          e.bounds.y2 < info.screenHeight * 0.85
+      );
+      const inside = (p: { x: number; y: number }, e: Element): boolean =>
+        p.x >= e.bounds.x1 && p.x <= e.bounds.x2 && p.y >= e.bounds.y1 && p.y <= e.bounds.y2;
+      const row =
+        before.find(
+          (e) =>
+            NAV_ROW_RE.test(label(e)) &&
+            (e.clickable === true || clickables.some((cl) => cl !== e && inside(center(e), cl)))
+        ) ?? clickables.find((e) => label(e).length > 0);
+      if (!row) throw new Error("A3 wait-burst: no navigable Settings row found");
+      const c = center(row);
+      // wait (a pure on-device beat) THEN the navigating tap — one batch RPC.
+      const result = (await reg.invokeTool("gesture-sequence", {
+        udid: serial,
+        steps: [
+          { kind: "wait", waitMs: 400 },
+          { kind: "tap", x: c.x / info.screenWidth, y: c.y / info.screenHeight },
+        ],
+      })) as {
+        completed: number;
+        total: number;
+        totalMs: number;
+        steps: Array<{ kind: string; success?: boolean; skipped?: boolean; ms?: number }>;
+      };
+      expect(result.total).toBe(2);
+      expect(result.completed).toBe(2);
+      expect(result.steps).toHaveLength(2);
+      expect(result.steps[0]!.kind).toBe("wait");
+      for (const s of result.steps) {
+        expect(s.skipped).toBeFalsy();
+        expect(typeof s.ms).toBe("number");
+      }
+      await sleep(1200);
+      await api.waitForIdle(3000);
+      const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+      const gained = [...afterTexts].filter((t) => !beforeTexts.has(t));
+      const lost = [...beforeTexts].filter((t) => !afterTexts.has(t));
+      expect(gained.length + lost.length).toBeGreaterThan(0);
+      const stepMs = result.steps.map((s) => (s.ms ?? -1).toFixed(1));
+      record(
+        "A3 A2-M3 wait-burst",
+        "PASS",
+        `gesture-sequence [wait, tap] (ms=[${stepMs.join(", ")}]) navigated +${gained.length}/-${lost.length} labels`
+      );
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 120_000);
+
+  // A3 §2 (A2-M3): the full tool-level index-tap path — `describe tier:"index"`
+  // for the index+version, then `gesture-tap target:{index,version}` navigates.
+  it("A3 §2 (A2-M3) — tool-level index tap: describe tier:'index' → gesture-tap target navigates", async () => {
+    await freshSettings();
+    setFlag("open-device-server", true, "global");
+    try {
+      const beforeTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+      const injectBefore = injectTotal(await api.getInfo());
+      const idx = (await reg.invokeTool("describe", {
+        udid: serial,
+        tier: "index",
+      })) as { description: string; source: string };
+      const version = parseIndexVersion(idx.description);
+      expect(version).not.toBeNull();
+      const picked = firstIndexedRow(idx.description, NAV_ROW_RE);
+      if (!picked) throw new Error("A3 index tap: no navigable indexed row in the tier");
+      const tap = (await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        target: { index: picked.index, version: version! },
+      })) as { tapped: boolean; targetIndex?: number; targetLabel?: string };
+      expect(tap.tapped).toBe(true);
+      expect(tap.targetIndex).toBe(picked.index);
+      // A real tap: the injection count advanced.
+      expect(injectTotal(await api.getInfo())).toBeGreaterThan(injectBefore);
+      await api.waitForIdle(3000);
+      const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+      const gained = [...afterTexts].filter((t) => !beforeTexts.has(t));
+      const lost = [...beforeTexts].filter((t) => !afterTexts.has(t));
+      expect(gained.length + lost.length).toBeGreaterThan(0);
+      record(
+        "A3 A2-M3 index tap",
+        "PASS",
+        `describe tier:index @v${version} → gesture-tap target:{index ${picked.index} "${tap.targetLabel ?? ""}"} ` +
+          `navigated +${gained.length}/-${lost.length} labels`
+      );
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 120_000);
+
+  // A3 §2 (A2-M3): the fixed stale-index case, tool-level — read an index tier,
+  // navigate, then tap the OLD index+version against the moved screen: refused
+  // `stale_index` with no injection.
+  it("A3 §2 (A2-M3) — tool-level stale index: after navigating, gesture-tap target with the old version refuses stale_index, no injection", async () => {
+    await freshSettings();
+    setFlag("open-device-server", true, "global");
+    try {
+      const idx = (await reg.invokeTool("describe", {
+        udid: serial,
+        tier: "index",
+      })) as { description: string };
+      const v1 = parseIndexVersion(idx.description);
+      expect(v1).not.toBeNull();
+      const picked = firstIndexedRow(idx.description, NAV_ROW_RE);
+      if (!picked) throw new Error("A3 stale index: no navigable indexed row in the tier");
+      // Navigate with the still-fresh index+version.
+      const nav = (await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        target: { index: picked.index, version: v1! },
+      })) as { tapped: boolean };
+      expect(nav.tapped).toBe(true);
+      await api.waitForIdle(3000);
+      // The navigation advances the armed AX clock; poll for the version to move.
+      let s = await api.getState({ includeScreenshot: false, fingerprints: true });
+      for (let i = 0; i < 6 && s.version === v1; i++) {
+        await sleep(400);
+        s = await api.getState({ includeScreenshot: false, fingerprints: true });
+      }
+      expect(s.version).not.toBe(v1);
+      const injectBefore = injectTotal(await api.getInfo());
+      // Tap the OLD index+version against the moved screen → stale_index, no tap.
+      const stale = (await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        target: { index: picked.index, version: v1! },
+      })) as { tapped: boolean; targetCode?: string };
+      expect(stale.tapped).toBe(false);
+      expect(stale.targetCode).toBe("stale_index");
+      expect(injectTotal(await api.getInfo())).toBe(injectBefore);
+      record(
+        "A3 A2-M3 stale index",
+        "PASS",
+        `index tier v${v1} → navigated to v${s.version}; gesture-tap target with v${v1} ` +
+          `refused targetCode=stale_index; inject unchanged (${injectBefore})`
+      );
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 120_000);
+
+  // A3 §2 (A2-M3): two index targets in ONE burst are refused `stale_index_in_burst`
+  // BEFORE anything is injected (the second index would resolve against the pre-burst
+  // snapshot the first step navigated away from).
+  it("A3 §2 (A2-M3) — gesture-sequence with two index targets refuses stale_index_in_burst before any injection", async () => {
+    await freshSettings();
+    setFlag("open-device-server", true, "global");
+    try {
+      const idx = (await reg.invokeTool("describe", {
+        udid: serial,
+        tier: "index",
+      })) as { description: string };
+      const version = parseIndexVersion(idx.description);
+      expect(version).not.toBeNull();
+      const indexed = idx.description
+        .split("\n")
+        .map((l) => /^\[(\d+)\]/.exec(l))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => Number(m[1]));
+      if (indexed.length < 2) throw new Error("A3 two-target burst: need >=2 indexed rows");
+      const injectBefore = injectTotal(await api.getInfo());
+      let refused = false;
+      let detail = "";
+      try {
+        await reg.invokeTool("gesture-sequence", {
+          udid: serial,
+          steps: [
+            { kind: "tap", target: { index: indexed[0]!, version: version! } },
+            { kind: "tap", target: { index: indexed[1]!, version: version! } },
+          ],
+        });
+      } catch (e) {
+        const cause = (e as { cause?: unknown }).cause;
+        const msg = e instanceof Error ? e.message : String(e);
+        detail = msg;
+        refused =
+          cause instanceof IndexTargetError
+            ? cause.code === "stale_index_in_burst"
+            : /stale_index_in_burst/.test(msg);
+      }
+      expect(refused).toBe(true);
+      // Refused before the batch RPC — no injection.
+      expect(injectTotal(await api.getInfo())).toBe(injectBefore);
+      record(
+        "A3 A2-M3 two-index burst",
+        "PASS",
+        `two index targets [${indexed[0]}, ${indexed[1]}] @v${version} refused stale_index_in_burst; ` +
+          `inject unchanged (${injectBefore})`
+      );
+      void detail;
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 120_000);
+
+  // A3 §3 (A2-M1 device half): on-device o200k token medians for `describe
+  // tier:"index"` vs `tier:"compact"` on the Settings root and one sub-screen
+  // (N=5 each). Retires the reconstruction the committed token table measured —
+  // both sides here are the SHIPPED renderers, read live through the tool.
+  it("A3 §3 (A2-M1) — on-device token medians: describe tier:'index' vs tier:'compact' (N=5, two screens)", async () => {
+    setFlag("open-device-server", true, "global");
+    try {
+      const measure = async (
+        screen: string
+      ): Promise<{
+        screen: string;
+        indexMedian: number;
+        compactMedian: number;
+        idx: number[];
+        cmp: number[];
+      }> => {
+        const idx: number[] = [];
+        const cmp: number[] = [];
+        for (let i = 0; i < 5; i++) {
+          const di = (await reg.invokeTool("describe", {
+            udid: serial,
+            tier: "index",
+          })) as { description: string };
+          idx.push(tiktokenCount(di.description));
+          const dc = (await reg.invokeTool("describe", {
+            udid: serial,
+            tier: "compact",
+          })) as { description: string };
+          cmp.push(tiktokenCount(dc.description));
+        }
+        return {
+          screen,
+          indexMedian: pct(
+            idx.slice().sort((a, b) => a - b),
+            50
+          ),
+          compactMedian: pct(
+            cmp.slice().sort((a, b) => a - b),
+            50
+          ),
+          idx,
+          cmp,
+        };
+      };
+      await freshSettings();
+      const root = await measure("Settings root");
+      // Navigate into a sub-screen (a verified tap on the Network row) and measure again.
+      await reg.invokeTool("gesture-tap", {
+        udid: serial,
+        verify: { selector: { text: NET_ROW } },
+      });
+      await api.waitForIdle(3000);
+      const sub = await measure(NET_ROW);
+      for (const r of [root, sub]) {
+        expect(r.indexMedian).toBeGreaterThan(0);
+        expect(r.compactMedian).toBeGreaterThan(0);
+      }
+      record(
+        "A3 A2-M1 token pair",
+        "PASS",
+        `[${root.screen}] index p50=${root.indexMedian} vs compact p50=${root.compactMedian} ` +
+          `(index=[${root.idx.join(",")}] compact=[${root.cmp.join(",")}]); ` +
+          `[${sub.screen}] index p50=${sub.indexMedian} vs compact p50=${sub.compactMedian} ` +
+          `(index=[${sub.idx.join(",")}] compact=[${sub.cmp.join(",")}]); N=5 each, o200k_base`
+      );
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+  }, 180_000);
 });
