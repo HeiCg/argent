@@ -221,13 +221,6 @@ jobs:
             cat /tmp/sb.err || true
           fi
 
-      - name: Stop the runner and simulator
-        if: always()
-        shell: bash
-        run: |
-          if [ -f build/runner.pid ]; then kill "$(cat build/runner.pid)" 2>/dev/null || true; fi
-          xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || true
-
       - name: Stamp artifacts with the run id
         if: always()
         shell: bash
@@ -244,6 +237,10 @@ jobs:
             esac
           done
 
+      # Upload BEFORE teardown: run 3 hung in the Stop step and its if:always upload
+      # never ran, losing every result. The bench cleans up its screenshots as it
+      # goes (rmShot), so build/shots and the large runner.xcresult are NOT uploaded
+      # — only the JSON/logs/scoreboard that carry the numbers, which uploads fast.
       - name: Upload bench artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -253,9 +250,20 @@ jobs:
             .bench-results
             build/build-sim.log
             build/runner.log
-            build/runner.xcresult
-            build/shots
             build-sim-input.log
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Stop the runner and simulator
+        if: always()
+        shell: bash
+        run: |
+          # Guard every teardown command with a timeout: run 3 HUNG here on a bare
+          # `xcrun simctl shutdown` (the XCUITest runner still held the sim). The
+          # artifact is already uploaded above, so a slow teardown can no longer lose
+          # the results.
+          if [ -f build/runner.pid ]; then kill "$(cat build/runner.pid)" 2>/dev/null || true; fi
+          pkill -f "xcodebuild test-without-building" 2>/dev/null || true
+          timeout 45 xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || echo "simctl shutdown timed out — continuing"
+          timeout 45 xcrun simctl shutdown all 2>/dev/null || true

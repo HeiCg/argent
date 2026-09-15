@@ -32,7 +32,7 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as os from "node:os";
 import { createRegistry } from "../src/utils/setup-registry";
@@ -189,6 +189,20 @@ async function simctlScreenshot(tag: string): Promise<string> {
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/** Delete a screenshot PNG and its derived BMP. The bench takes thousands of
+ * screenshots; leaving them under TMPDIR bloats the runner and made the artifact
+ * upload crawl (run 3 hung in teardown). Best-effort, never throws. */
+function rmShot(...pngs: string[]): void {
+  for (const png of pngs) {
+    try {
+      rmSync(png, { force: true });
+      rmSync(png.replace(/\.png$/, ".bmp"), { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 interface Bmp {
@@ -867,6 +881,9 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
       if (record) locateFailed++;
       return;
     }
+    // Brief render settle (untimed): a HID (sim-input) tap on a still-animating
+    // row can be dropped by the OS; let the relaunched root fully render first.
+    await sleep(300);
     const before = await simctlScreenshot("tap-before");
     const t0 = Date.now();
     let tapErr: unknown;
@@ -885,8 +902,10 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
       await sleep(800);
       const after = await simctlScreenshot("tap-after");
       const ratio = await neutralPixelDiffRatio(before, after).catch(() => 0);
+      rmShot(after);
       if (ratio >= 0.02) landed = true;
     }
+    rmShot(before);
     if (record) {
       if (tapErr) {
         errors++;
@@ -963,6 +982,7 @@ async function timeSwipeOptical(arm: Arm): Promise<{ verb: VerbResult; scroll: S
     await sleep(500); // settle OUTSIDE the timed window before the optical read
     const after = await simctlScreenshot("swipe-after");
     const off = await opticalScrollOffset(before, after, region).catch(() => ({ dyPx: NaN, confidence: 0, refused: true }));
+    rmShot(before, after);
     if (record) {
       if (err) {
         errors++;
@@ -1067,6 +1087,7 @@ async function oracleSelfTestOnce(arm: Arm, target: string): Promise<{ selfTestP
     await sleep(1000);
     const backShot = await simctlScreenshot("oracle-back");
     const rootDiff = await neutralPixelDiffRatio(rootShot, backShot);
+    rmShot(rootShot, navShot, backShot);
     // Navigation must have changed the screen (navDiff high) and BACK must have
     // largely restored the root (rootDiff low relative to navDiff).
     const selfTestPassed = navDiff >= 0.02 && rootDiff < navDiff;

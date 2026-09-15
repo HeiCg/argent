@@ -118,6 +118,18 @@ iPhone 17** (`com.apple.CoreSimulator.SimDeviceType.iPhone-17`). Tokenizer
   `hittable`, on-screen, topmost match; WARMUP trimmed 3→1 for runtime margin
   (run 2's bench step finished at ~72 min, under the 90-min cap).
 
+- **34920382022** (run 3, locate fix) — the bench step **completed failure** (the
+  merge threw on a gate), but the job then **hung in the "Stop the runner and
+  simulator" post-step** on a bare `xcrun simctl shutdown` (the XCUITest runner
+  still held the sim). Because the `if: always()` Upload step ran AFTER Stop, no
+  artifact uploaded and the run had to be cancelled — its merge.log/scoreboard
+  were lost (a cancelled run's step logs come back empty). Fixes for run 4:
+  guard every teardown command with `timeout` and **upload the artifact BEFORE
+  teardown**; the bench now deletes each screenshot right after its diff
+  (`rmShot`) so `build/shots` no longer accumulates thousands of files (which
+  also slowed the upload); a brief render settle before each HID tap. So run 4 is
+  guaranteed to produce a readable artifact whatever the gate outcome.
+
 _(subsequent run ids appended as the runs progress.)_
 
 ### Scoreboard
