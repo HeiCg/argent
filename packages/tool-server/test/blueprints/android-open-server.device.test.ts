@@ -1848,6 +1848,11 @@ suite("android open-device-server on-device", () => {
       expect(tap.targetIndex).toBe(picked.index);
       // A real tap: the injection count advanced.
       expect(injectTotal(await api.getInfo())).toBeGreaterThan(injectBefore);
+      // Let the navigation transition start rendering before the after-read — the
+      // same settle the sibling navigating cases (3c, "A2 index tap") use; without
+      // it waitForIdle can return on the pre-transition idle and the read catches
+      // the old tree.
+      await sleep(1200);
       await api.waitForIdle(3000);
       const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
       const gained = [...afterTexts].filter((t) => !beforeTexts.has(t));
@@ -2022,6 +2027,7 @@ suite("android open-device-server on-device", () => {
         udid: serial,
         verify: { selector: { text: NET_ROW } },
       });
+      await sleep(1200);
       await api.waitForIdle(3000);
       const sub = await measure(NET_ROW);
       for (const r of [root, sub]) {
