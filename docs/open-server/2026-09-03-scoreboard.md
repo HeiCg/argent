@@ -555,3 +555,41 @@ O1/O2/O4 equivalent.
 - 3g: stage timings inside describe during transitions; popup/dialog
   window-filter safety; tap ordering fix.
 - C.1: valid oracle, B1 baseline, H2 over same-screen steps, H4.
+
+## iOS (simulator) — first like-for-like run, report-only
+
+> **iOS (simulator) — first like-for-like run, report-only.** Run **34926722346**
+> (sha `ab05ce6a`), `macos-latest`, Xcode 26.6 (Build 17F113), iOS 26.5 simulator,
+> iPhone 17, N = 20 per verb per block, blocks OFF-1 → ON-xcuitest → ON-siminput → OFF-2
+> in one job. **Not a capability comparison:** the OFF arms are driven through the
+> tool-server (`invokeTool`), both ON arms directly over the runner socket with
+> bench-local logic, so every ON latency excludes the host tool layer. The three arms
+> also acknowledge differently (closed server = acceptance; XCUITest = dispatched and
+> quiescent; sim-input = HID message posted) and did not tap the same located target.
+> No win/loss verdict from this run enters the scoreboard. Adversarial review:
+> `2026-09-15-review-ios2-findings.md`.
+
+1. **describe payload per TREE backend (G4).** ax-service **1126 o200k tokens @ 30
+   elements**; XCUITest snapshot **1775 @ 54**; identical in both blocks of each backend;
+   element cap 400 (never binding); per element 37.5 vs 32.9 tok/el. Idle Settings root.
+2. **describe fidelity.** Jaccard **0.861** on id/text identity tokens, OFF-1 (ax-service,
+   33 tokens) vs ON-xcuitest (XCUITest, 34); 31 shared, 2 OFF-only (`Toolbar`), 3 ON-only
+   (`AdditionalDimmingOverlay`, `Settings`, `chevron.forward`). The backends see the same
+   labels; the element gap is structural nodes.
+3. **tap latency per arm, ack semantics stated, no verdict.** closed server 66 / 61 ms p50
+   (OFF-1 / OFF-2, ack = acceptance) · open XCUITest **1038 ms p50** (blocks until
+   dispatched _and_ the app is quiescent) · sim-input HID **168 ms p50** (ack = HID message
+   posted; includes a mandatory 50 ms hold). No Δ, no verdict.
+4. **landing, ON-xcuitest and OFF only.** OFF-1 20/20, ON-xcuitest 20/20, OFF-2 19/20,
+   first-attempt, effect = ≥ 2 % neutral-pixel change within 2.4 s of the tap, oracle
+   polled outside the timed window; the OFF and ON arms located the target with different
+   code, so the rates are per-arm, not a comparison.
+5. **process (G5).** run id, sha, Xcode 26.6 (17F113), iOS 26.5,
+   `SimDeviceType.iPhone-17`, N = 20, WARMUP = 1, tokenizer `js-tiktoken o200k_base`,
+   **74.1 min wall / ≈ 750 billed minutes for this run** (runs 1–3 are estimates).
+
+Withheld until iOS-2.1 (harness fixes, `2026-09-15-ios-phase2-1-harness-fixes.md`): the
+whole ON-siminput arm (landing 10/20 is an upper bound; the effect threshold let a
+0.055 self-test pass), every G2 Δ/CI/verdict, describe latency (identical-code ON blocks
+drift 53 ms), swipe + optical scroll (censored, raster units), await-\*, tap+describe, G3
+as a gate. No further macOS run without the owner's approval (10× billing).
