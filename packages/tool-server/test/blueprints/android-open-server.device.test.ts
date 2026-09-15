@@ -33,6 +33,8 @@ import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
 import { resolveVerify, boundsCenter } from "../../src/utils/open-server-verify";
 import type { QueryNodeLite } from "../../src/screen-graph/bench/locate";
 import { pct } from "../../src/screen-graph/bench/tokens";
+import { createGestureTapTool } from "../../src/tools/gesture-tap";
+import { setFlag, unsetFlag } from "@argent/configuration-core";
 import { PNG } from "pngjs";
 
 const ENABLED = process.env.OPEN_SERVER_DEVICE_TESTS === "1";
@@ -1421,5 +1423,46 @@ suite("android open-device-server on-device", () => {
     const sorted = ms.slice().sort((a, b) => a - b);
     const p50 = pct(sorted, 50);
     record("A1 verifyMs", "PASS", `query p50=${p50}ms over N=${ms.length} [${ms.join(",")}]ms`);
+  }, 90_000);
+
+  // A1-M4 (review): unlike the three cases above (which drive the resolver + api
+  // directly), this drives the REAL `createGestureTapTool` end to end, proving the
+  // TOOL issues no injection on a refusal. NEW as of the A1 review — it runs on the
+  // NEXT bench (A2's or later), not run 34935973523.
+  it("A1-M4 tool-level — gesture-tap `verify` refusal issues no injection", async () => {
+    await freshSettings();
+    const before = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    // A registry that resolves the open-device-server URN to the live blueprint api.
+    const registry = { resolveService: async () => api } as never;
+    setFlag("open-device-server", true, "global");
+    try {
+      const tool = createGestureTapTool(registry);
+      const result = await tool.execute(
+        {} as never,
+        {
+          udid: serial,
+          x: 0.5,
+          y: 0.4,
+          verify: { selector: { text: "__argent_no_such_row__" } },
+        } as never
+      );
+      expect(result.tapped).toBe(false);
+      expect(result.verified).toBe(false);
+      expect(result.verifyCode).toBe("verify_not_found");
+    } finally {
+      unsetFlag("open-device-server", "global");
+    }
+    // No injection: the screen must be unchanged.
+    await sleep(500);
+    const after = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const churn =
+      [...after].filter((t) => !before.has(t)).length +
+      [...before].filter((t) => !after.has(t)).length;
+    expect(churn).toBe(0);
+    record(
+      "A1-M4 tool refusal",
+      "PASS",
+      "createGestureTapTool verify_not_found; no tap, screen unchanged"
+    );
   }, 90_000);
 });

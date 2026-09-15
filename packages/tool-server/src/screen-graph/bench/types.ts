@@ -16,6 +16,12 @@ export interface BenchSelector {
   id?: string;
   /** Visible text / content-desc (case-insensitive substring). */
   text?: string;
+  /**
+   * Class name. Never set by the scripted bench policy (which selects on
+   * id/text); carried so the verified-tap resolver (`resolveVerify`) can
+   * disambiguate a `class` selector on the same `pickUniqueNode` precedence.
+   */
+  class?: string;
 }
 
 export type BenchAction =

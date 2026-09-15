@@ -146,7 +146,8 @@ describe("verified tap — unique match taps the bounds center", () => {
     });
 
     expect(api.query).toHaveBeenCalledTimes(1);
-    expect(api.query).toHaveBeenCalledWith({ text: "Network & internet" });
+    // limit 6 = 5 candidates + 1 to detect >5 (A1-M3).
+    expect(api.query).toHaveBeenCalledWith({ text: "Network & internet" }, { limit: 6 });
     expect(api.tapWithOutcome).toHaveBeenCalledTimes(1);
     expect(api.tapWithOutcome).toHaveBeenCalledWith(500, 300, {
       clickCount: 1,
@@ -279,6 +280,102 @@ describe("verified swipe — start point resolution", () => {
     });
     expect(api.swipe).not.toHaveBeenCalled();
     expect((result as { verifyCode?: string }).verifyCode).toBe("verify_not_found");
+  });
+});
+
+describe("A1-H3 — x/y optional under verify", () => {
+  it("no coordinates + unique match -> taps the center, no requestedPx", async () => {
+    const api = makeApi();
+    const tool = createGestureTapTool(makeRegistry(api));
+    const result = await tool.execute(
+      {} as never,
+      {
+        udid: ANDROID_SERIAL,
+        verify: { selector: { text: "Network & internet" } },
+      } as never
+    );
+    expect(api.tapWithOutcome).toHaveBeenCalledWith(500, 300, {
+      clickCount: 1,
+      holdMs: 50,
+      inject: "input-manager",
+    });
+    expect(result.verified).toBe(true);
+    expect(result.requestedPx).toBeUndefined();
+  });
+});
+
+describe("A1-M5 — verify refuses verify_unsupported off the Android open path", () => {
+  it("flag off (proprietary Android) -> verify_unsupported, no tap, no query", async () => {
+    flagEnabledMock = () => false; // open-device-server OFF -> shouldUseOpenServer false
+    const api = makeApi();
+    const tool = createGestureTapTool(makeRegistry(api));
+    const result = await tool.execute({} as never, {
+      udid: ANDROID_SERIAL,
+      x: 0.5,
+      y: 0.15,
+      verify: { selector: { text: "Network & internet" } },
+    });
+    expect(result.tapped).toBe(false);
+    expect(result.verified).toBe(false);
+    expect(result.verifyCode).toBe("verify_unsupported");
+    expect(api.query).not.toHaveBeenCalled();
+    expect(api.tap).not.toHaveBeenCalled();
+    expect(api.tapWithOutcome).not.toHaveBeenCalled();
+  });
+
+  it("gesture-swipe: flag off -> verify_unsupported, no swipe", async () => {
+    flagEnabledMock = () => false;
+    const api = makeApi();
+    const tool = createGestureSwipeTool(makeRegistry(api));
+    const result = (await tool.execute({} as never, {
+      udid: ANDROID_SERIAL,
+      fromX: 0.5,
+      fromY: 0.15,
+      toX: 0.5,
+      toY: 0.05,
+      durationMs: 160,
+      verify: { selector: { text: "x" } },
+    })) as { swiped: boolean; verifyCode?: string };
+    expect(result.swiped).toBe(false);
+    expect(result.verifyCode).toBe("verify_unsupported");
+    expect(api.query).not.toHaveBeenCalled();
+    expect(api.swipe).not.toHaveBeenCalled();
+  });
+});
+
+describe("A1-H2 — a refusal is not narrated as a tap", () => {
+  it("gesture-tap completedMsg names the refusal code, not 'Tapped at'", () => {
+    const tool = createGestureTapTool(makeRegistry(makeApi()));
+    const params = { udid: ANDROID_SERIAL, x: 0.5, y: 0.9, verify: { selector: { text: "x" } } };
+    const refusal = {
+      tapped: false,
+      timestampMs: 0,
+      verified: false,
+      verifyCode: "verify_mismatch",
+    };
+    const msg = tool.interaction!.completedMsg!({ params, result: refusal } as never);
+    expect(msg).toContain("verify_mismatch");
+    expect(msg).not.toMatch(/Tapped at/);
+    // A landed tap still reads as a tap.
+    const ok = tool.interaction!.completedMsg!({
+      params,
+      result: { tapped: true, timestampMs: 0, verified: true },
+    } as never);
+    expect(ok).toMatch(/Tapped/);
+  });
+
+  it("gesture-swipe completedMsg names the refusal code, not 'Swiped'", () => {
+    const tool = createGestureSwipeTool(makeRegistry(makeApi()));
+    const params = { udid: ANDROID_SERIAL, fromX: 0.5, fromY: 0.9, toX: 0.5, toY: 0.1 };
+    const refusal = {
+      swiped: false,
+      timestampMs: 0,
+      verified: false,
+      verifyCode: "verify_not_found",
+    };
+    const msg = tool.interaction!.completedMsg!({ params, result: refusal } as never);
+    expect(msg).toContain("verify_not_found");
+    expect(msg).not.toMatch(/^Swiped/);
   });
 });
 

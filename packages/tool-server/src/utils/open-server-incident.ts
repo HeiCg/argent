@@ -50,6 +50,17 @@ const incidents = new Map<string, OpenServerIncident>();
 /** After this many consecutive failures the line adds the escalation clause. */
 const ESCALATE_AT = 3;
 
+/** An incident older than this ages out on read, so a stale line never sticks. */
+const INCIDENT_TTL_MS = 5 * 60 * 1000;
+
+/** Max characters of the mismatch label carried into the ≤30-token describe line. */
+const LABEL_MAX = 40;
+
+/** Clamp a label so an oversized node text cannot blow the header token budget. */
+function clampLabel(label: string): string {
+  return label.length > LABEL_MAX ? `${label.slice(0, LABEL_MAX - 1)}…` : label;
+}
+
 /**
  * Record a classified failure against `deviceId`. Increments the consecutive
  * count off whatever incident was already active (any code counts — the count
@@ -60,14 +71,14 @@ export function recordIncident(
   deviceId: string,
   input: { tool: string; code: OpenServerIncidentCode; message: string; label?: string }
 ): OpenServerIncident {
-  const prev = incidents.get(deviceId);
+  const prev = getIncident(deviceId);
   const incident: OpenServerIncident = {
     tool: input.tool,
     code: input.code,
     message: input.message,
     at: Date.now(),
     consecutiveFailures: (prev?.consecutiveFailures ?? 0) + 1,
-    ...(input.label !== undefined ? { label: input.label } : {}),
+    ...(input.label !== undefined ? { label: clampLabel(input.label) } : {}),
   };
   incidents.set(deviceId, incident);
   return incident;
@@ -78,9 +89,19 @@ export function clearIncident(deviceId: string): void {
   incidents.delete(deviceId);
 }
 
-/** The active incident for a device, or undefined when the last action succeeded. */
+/**
+ * The active incident for a device, or undefined when the last action succeeded
+ * or the incident has aged out (A1-M1). A stale entry is deleted on read so a
+ * long-idle device never shows an ancient line.
+ */
 export function getIncident(deviceId: string): OpenServerIncident | undefined {
-  return incidents.get(deviceId);
+  const incident = incidents.get(deviceId);
+  if (!incident) return undefined;
+  if (Date.now() - incident.at > INCIDENT_TTL_MS) {
+    incidents.delete(deviceId);
+    return undefined;
+  }
+  return incident;
 }
 
 /** Test seam: drop all in-memory incidents. */

@@ -97,13 +97,15 @@ function needle(m: OpenServerStringMatch | undefined): string | undefined {
   return m.equals ?? m.contains;
 }
 
-/** Project a verify selector onto the `{ id?, text? }` BenchSelector. */
+/** Project a verify selector onto the `{ id?, text?, class? }` BenchSelector. */
 export function toBenchSelector(selector: OpenServerSelector): BenchSelector {
   const out: BenchSelector = {};
   const id = needle(selector.id);
   const text = needle(selector.text);
+  const cls = needle(selector.class);
   if (id !== undefined) out.id = id;
   if (text !== undefined) out.text = text;
+  if (cls !== undefined) out.class = cls;
   return out;
 }
 
@@ -125,8 +127,27 @@ export function resolveVerify(
   guard?: VerifyGuard
 ): VerifyResolution {
   const picked = pickUniqueNode(nodes, toBenchSelector(selector));
-  if (picked.node) {
-    const b = picked.node.bounds;
+  // The `pickUniqueNode` tiers reason over id/text/class only. Fields the bench
+  // selector cannot carry (`regex`, `containsDescendant`, `visible`, `index`, and
+  // a contains-only `id`) are already enforced SERVER-SIDE by the `query` RPC, so
+  // every returned node satisfies the full selector. When the projection resolves
+  // nothing, accept the server's answer by COUNT: a lone match is unique, several
+  // are ambiguous (review A1-H1).
+  let node = picked.node;
+  let ambiguous = picked.ambiguous;
+  // Candidates of the ambiguous set: the colliding tier when `pickUniqueNode`
+  // reported it, else the whole server-filtered set (review A1-M6).
+  let ambiguousNodes: readonly QueryNodeLite[] = picked.candidates ?? nodes;
+  if (!node && !ambiguous) {
+    if (nodes.length === 1) {
+      node = nodes[0];
+    } else if (nodes.length > 1) {
+      ambiguous = true;
+      ambiguousNodes = nodes;
+    }
+  }
+  if (node) {
+    const b = node.bounds;
     if (guard) {
       const t = Math.max(0, guard.tolerancePx);
       const inside =
@@ -135,16 +156,17 @@ export function resolveVerify(
         guard.yPx >= b.y1 - t &&
         guard.yPx <= b.y2 + t;
       if (!inside) {
-        return { kind: "mismatch", bounds: b, node: picked.node, label: nodeLabel(picked.node) };
+        return { kind: "mismatch", bounds: b, node, label: nodeLabel(node) };
       }
     }
-    return { kind: "match", bounds: b, node: picked.node };
+    return { kind: "match", bounds: b, node };
   }
-  if (picked.ambiguous) {
-    // The matches ARE the candidates (the server already filtered to the
-    // selector); list up to 5 with a label and bounds so the caller can add a
-    // second field.
-    const candidates = nodes.slice(0, 5).map((n) => ({ label: nodeLabel(n), bounds: n.bounds }));
+  if (ambiguous) {
+    // List up to 5 of the colliding candidates (label, bounds) so the caller can
+    // add a second field.
+    const candidates = ambiguousNodes
+      .slice(0, 5)
+      .map((n) => ({ label: nodeLabel(n), bounds: n.bounds }));
     return { kind: "ambiguous", candidates };
   }
   return { kind: "not_found" };

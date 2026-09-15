@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   recordIncident,
   clearIncident,
@@ -54,6 +54,58 @@ describe("incident state machine — set / count / reset", () => {
     recordIncident("emulator-5556", { tool: "gesture-tap", code: "timeout", message: "x" });
     expect(getIncident(DEV)?.code).toBe("verify_not_found");
     expect(getIncident("emulator-5556")?.consecutiveFailures).toBe(1);
+  });
+});
+
+describe("A1-M1 — incident ages out after 5 minutes", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("getIncident returns undefined once the incident is older than 5 min", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T00:00:00Z"));
+    recordIncident(DEV, { tool: "gesture-tap", code: "verify_not_found", message: "x" });
+    expect(getIncident(DEV)).toBeDefined();
+    vi.setSystemTime(new Date("2026-09-15T00:04:59Z")); // 4m59s — still active
+    expect(getIncident(DEV)).toBeDefined();
+    vi.setSystemTime(new Date("2026-09-15T00:05:01Z")); // 5m01s — aged out
+    expect(getIncident(DEV)).toBeUndefined();
+  });
+
+  it("a stale incident does not inflate the next count", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T00:00:00Z"));
+    recordIncident(DEV, { tool: "gesture-tap", code: "verify_not_found", message: "x" });
+    vi.setSystemTime(new Date("2026-09-15T00:06:00Z"));
+    const next = recordIncident(DEV, {
+      tool: "gesture-tap",
+      code: "verify_ambiguous",
+      message: "x",
+    });
+    expect(next.consecutiveFailures).toBe(1);
+  });
+});
+
+describe("A1-M2 — the mismatch label is clamped", () => {
+  it("a long label is truncated to 40 chars with an ellipsis", () => {
+    const long = "A".repeat(120);
+    const inc = recordIncident(DEV, {
+      tool: "gesture-tap",
+      code: "verify_mismatch",
+      message: "x",
+      label: long,
+    });
+    expect(inc.label!.length).toBe(40);
+    expect(inc.label!.endsWith("…")).toBe(true);
+  });
+
+  it("a short label is kept verbatim", () => {
+    const inc = recordIncident(DEV, {
+      tool: "gesture-tap",
+      code: "verify_mismatch",
+      message: "x",
+      label: "Battery",
+    });
+    expect(inc.label).toBe("Battery");
   });
 });
 

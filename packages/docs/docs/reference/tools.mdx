@@ -83,8 +83,14 @@ only. It does not survive a tool-server restart and it adds no device call.
 ### Verified tap and swipe (Android open server)
 
 `gesture-tap` and `gesture-swipe` accept an optional `verify` parameter. `verify`
-applies only on Android when the open device server is active. When `verify` is
-absent, the tap and swipe paths do not change.
+applies only on Android when the open device server is active. On iOS or the
+proprietary Android path, Argent refuses a `verify` request with
+`verify_unsupported` and issues no tap. When `verify` is absent, the tap and
+swipe paths do not change.
+
+With `verify`, the coordinates are optional. Omit `x` and `y` (or `fromX` and
+`fromY` for a swipe) to tap or start at the resolved element center. Supply them
+to cross-check the resolved element.
 
 `verify` takes a `selector` and an optional `tolerancePx`:
 
@@ -108,20 +114,23 @@ string for an exact match, or an object `{ contains }`, `{ equals }` or
 
 Argent runs a `query` on the live accessibility tree before it injects the
 gesture. Argent resolves one unique node with a fixed precedence: exact id, then
-exact text, then exact content description, then a single contains match. On a
-unique match Argent taps the center of the element bounds. For a swipe, Argent
-starts the swipe at the center of the element bounds and keeps the end point as
-given.
+exact text, then exact content description, then a single contains match, then
+class. Fields the server matches directly — `regex`, `containsDescendant`,
+`visible`, `index` and a contains-only `id` — resolve the same way: when the
+server returns exactly one node, Argent taps it. On a unique match Argent taps
+the center of the element bounds. For a swipe, Argent starts the swipe at the
+center of the element bounds and keeps the end point as given.
 
 The reply reports `verified: true`, `resolvedBounds`, `version` and `verifyMs`.
 `verifyMs` is the time of the one `query` call. Argent refuses without injecting
-in three cases:
+in these cases:
 
-| Error code         | Cause                                                                                                                             |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `verify_not_found` | No element matched the selector. The reply carries no bounds.                                                                     |
-| `verify_ambiguous` | More than one element matched. The reply lists up to five candidates.                                                             |
-| `verify_mismatch`  | The x and y fall outside the matched bounds ± `tolerancePx`. The reply returns the requested coordinates and the matched element. |
+| Error code           | Cause                                                                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify_not_found`   | No element matched the selector. The reply carries no bounds.                                                                                                                 |
+| `verify_ambiguous`   | More than one element matched. The reply lists up to five of the colliding candidates.                                                                                        |
+| `verify_mismatch`    | The x and y fall outside the matched bounds ± `tolerancePx` (default 0). The reply returns the requested coordinates and the matched element. Only when x and y are supplied. |
+| `verify_unsupported` | The device is not on the Android open path (iOS or the proprietary backend). Argent issues no tap.                                                                            |
 
 ## JavaScript runtime debugging
 

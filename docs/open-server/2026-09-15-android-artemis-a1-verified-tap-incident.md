@@ -124,15 +124,24 @@ at, consecutiveFailures, label? }` in a host Map (no device RPC, no restart
 
 ### Unit tests (all green, `vitest --maxWorkers=2`)
 
-- `open-server-verify.test.ts` (23): unique/none/ambiguous/mismatch, CONTAINS-tier,
-  tolerance, `toBenchSelector`, and precedence parity with `pickUniqueNode`.
-- `open-server-incident.test.ts` (11): set/count/reset, per-device isolation, hint table,
-  header line, ≤30-token budget (worst 24).
-- `open-server-verify-tap.test.ts` (11): **default path sends NO `query` RPC** and the
-  plain tap/swipe args are byte-identical; verify taps the center; each refusal issues no
-  tap and no proprietary fallback; records/clears the incident; tolerance widens the band.
+Counts are the corrected figures (the first Result overstated them as 23/11/11/4 = 49; the
+measured original was 18/10/10/4 = 42). After the 2026-09-15 review fixes the suite grew to
+**26 / 15 / 14 / 4 / 2 = 61** (`vitest` reports 61):
+
+- `open-server-verify.test.ts` (26): unique/none/ambiguous/mismatch, CONTAINS-tier,
+  tolerance, `toBenchSelector`, precedence parity with `pickUniqueNode`, the H1 per-field
+  cases (class/regex/containsDescendant/visible/index/id:{contains}), the server-count
+  fallback, and the M6 colliding-tier candidates.
+- `open-server-incident.test.ts` (14): set/count/reset, per-device isolation, hint table,
+  header line, ≤30-token budget (worst 24), the M1 five-minute age-out, and the M2 label clamp.
+- `open-server-verify-tap.test.ts` (15): **default path sends NO `query` RPC** and the plain
+  tap/swipe args are unchanged; verify taps the center; each refusal issues no tap and no
+  proprietary fallback; records/clears the incident; tolerance widens the band; H3 optional
+  coordinates; M5 `verify_unsupported`; H2 refusal messages.
 - `open-server-describe-incident.test.ts` (4): open describe prepends the line while active,
   per device.
+- `open-server-verify-observation.test.ts` (2): M8 screen-graph observation on the verified
+  tap when recording is on, none when off.
 - Full tool-server unit suite green in CI (Unit tests check, run 34936814986). `tsc`
   clean for src and tests; Prettier-clean.
 
@@ -164,14 +173,19 @@ Verb p50 (ms):
 | await-screen-idle | 497   | 305    | 304              | 499   | 2             |
 | await-ui-element  | 76    | 43     | 44               | 76    | 0             |
 | tap+describe      | 421   | —      | —                | 420   | 1             |
+| paste             | 891   | 331    | 433              | 723   | 168           |
+
+`paste` has the largest OFF↔OFF drift (168 ms) and is included for completeness; it does not
+touch the A1 code path, so it is a reporting row, not a regression signal (review A1-M7).
 
 Default (verify-absent) path unchanged vs the reference verdict of run 34904658366:
-gesture-swipe −24 (P3 PASS, CI [−33,−6.5]), gesture-pinch −24.5 (P4 PASS), gesture-tap
-+2 at a ±0 floor (P2 pre-registered fail-by-2, planner-accepted parity), P6 PASS; the
-untouched proprietary OFF blocks reproduce the reference floor (describe 52, tap 53, swipe
-296). `injectStrategyCounts.unavailable` = 0/161; first-attempt landing PASS. The
-byte-identical default path is proven at the unit level (no `query` RPC, identical plain
-tap/swipe args when `verify` is absent).
+gesture-swipe −24 (P3 PASS, CI [−33,−6.5]), gesture-pinch −22 (P4 PASS, Δ vs min(OFF) per
+`scoreboard.md`, CI [−32.5,−17]), gesture-tap +2 at a ±0 floor (P2 pre-registered fail-by-2,
+planner-accepted parity), P6 PASS; the untouched proprietary OFF blocks reproduce the
+reference floor (describe 52, tap 53, swipe 296). `injectStrategyCounts.unavailable` = 0/161;
+first-attempt landing PASS. The default path adds **no new RPC and no new await** (three
+`Map.delete` calls — `clearIncident` on the successful plain gesture — are new host work but
+not measurable at the bench's ms resolution); the no-`query` proof is at the unit level.
 
 ### Docs
 
@@ -197,3 +211,42 @@ tap/swipe args when `verify` is absent).
   not in-repo and the one-download budget was spent on the run under test. The equivalence
   is instead established by the reproduced proprietary OFF floor, the matching gate
   verdicts, and the unit-level no-`query` proof.
+
+## Result — review fixes (2026-09-15, verdict merge-with-fixes)
+
+Applied on the same branch/worktree after `docs/open-server/2026-09-15-review-a1-findings.md`.
+No new bench run (device-affecting changes are covered by the M4 case on the next bench);
+PR #5 hygiene checks only.
+
+- **A1-H1** — `toBenchSelector` now carries `class`; `BenchSelector`/`QueryNodeLite`/
+  `pickUniqueNode` gained a `class` tier (exact then contains, tried last, never set by the
+  bench). `resolveVerify` adds a server-count fallback: the `query` already filtered by the
+  full selector, so a field the projection cannot carry (`regex`, `containsDescendant`,
+  `visible`, `index`, contains-only `id`) still resolves — one server node → match, several →
+  ambiguous, none → not_found. One unit test per field.
+- **A1-H2** — `gesture-tap`/`gesture-swipe` `completedMsg` now reads the result: a refusal
+  reads `Verify refused (<code>); no tap/swipe issued`, never `Tapped at …`. Tested.
+- **A1-H3** — `x`/`y` (tap) and `fromX`/`fromY` (swipe) are OPTIONAL when `verify` is present
+  (schema `refine` requires them otherwise). With a unique match and no coordinate, Argent
+  taps/starts at the center; with a coordinate it cross-checks (`tolerancePx` default 0).
+  Docs updated.
+- **A1-M1** — a successful open-driver gesture clears the incident (tap/swipe already did;
+  `openServerGesture` now clears too, covering pinch/rotate/custom); `getIncident` ages an
+  incident out after 5 minutes. Feature note corrected to "next successful gesture … expires
+  after a few minutes".
+- **A1-M2** — the incident `label` is clamped to 40 chars + ellipsis before storing.
+- **A1-M3** — the verify `query` passes `{ limit: 6 }` (5 candidates + 1 to detect > 5).
+- **A1-M5** — `verify` on iOS or the proprietary Android path refuses `verify_unsupported`
+  (no silent unverified tap). New reply code; docs + schema updated.
+- **A1-M6** — `verify_ambiguous` candidates are the colliding tier (`pickUniqueNode` now
+  returns them), not the first 5 of the whole result set.
+- **A1-M8** — a verified tap records the screen-graph observation (coordinate + outcome) when
+  recording is on, like `openServerTapWithOutcome`.
+- **A1-M4** — a tool-level device case (`createGestureTapTool` + `verify`, asserting no
+  injection on a `verify_not_found`) is added; it runs on the NEXT bench, not run 34935973523.
+- **Result corrections** — unit counts corrected (42, now 59); P4 Δ −22 per `scoreboard.md`;
+  `paste` row added (OFF-1 891 / OFF-2 723, 168 ms drift, out of scope); "byte-identical"
+  replaced with "no new RPC and no new await (three `Map.delete` calls added)".
+
+Not done here (deferred, as directed): L1–L7 beyond the Result corrections above, and the
+`docusaurus build` + `npm run format` in the MAIN checkout (post-merge).

@@ -74,6 +74,21 @@ describe("resolveVerify — unique / none / ambiguous", () => {
     if (r.kind === "ambiguous") expect(r.candidates).toHaveLength(5);
   });
 
+  it("A1-M6: candidates are the colliding tier, not the whole result set", () => {
+    // 2 EXACT-text "Wi-Fi" hits sit inside 4 CONTAINS-"wi" nodes; the ambiguous
+    // tier is the 2 exact hits, so only those are listed.
+    const wifiA = { text: "Wi-Fi", bounds: bounds(0, 0, 100, 100) };
+    const wifiB = { text: "Wi-Fi", bounds: bounds(0, 100, 100, 200) };
+    const wide1 = { text: "Wi-Fi calling", bounds: bounds(0, 200, 100, 300) };
+    const wide2 = { text: "Wi-Fi Direct", bounds: bounds(0, 300, 100, 400) };
+    const r = resolveVerify([wide1, wifiA, wide2, wifiB], { text: "Wi-Fi" });
+    expect(r.kind).toBe("ambiguous");
+    if (r.kind === "ambiguous") {
+      expect(r.candidates).toHaveLength(2);
+      expect(r.candidates.map((c) => c.bounds)).toEqual([wifiA.bounds, wifiB.bounds]);
+    }
+  });
+
   it("EXACT text wins over a CONTAINS toolbar title (D2-H3 precedence)", () => {
     // The collapsing toolbar title "Network & internet" contains "Internet"; the
     // real row's EXACT text "Internet" must win rather than tap the title.
@@ -164,15 +179,15 @@ describe("toBenchSelector — ScreenSelector grammar projection", () => {
 });
 
 describe("precedence parity with pickUniqueNode", () => {
-  // The tool must resolve IDENTICALLY to the screen-graph harness: same nodes +
-  // same (projected) selector => same pick. Drive both over a fixture matrix.
+  // Where `pickUniqueNode`'s id/text/class tiers engage, the tool resolves the
+  // SAME node as the screen-graph harness (they share the one resolver). Only
+  // selectors whose projection engages a tier are compared here; the empty-
+  // projection extension is covered by "server-count fallback" below.
   const nodes = [NETWORK_ROW, DISPLAY_ROW, BATTERY_ROW];
   const cases: OpenServerSelector[] = [
     { text: "Display" }, // unique via EXACT text
     { text: "Internet" }, // unique via CONTAINS ("Network & internet")
-    { text: "Bluetooth" }, // none (no exact, no contains)
     { id: "android:id/title" }, // ambiguous via EXACT id
-    { id: "android:id/nope" }, // none
   ];
   for (const sel of cases) {
     it(`matches pickUniqueNode for ${JSON.stringify(sel)}`, () => {
@@ -188,6 +203,72 @@ describe("precedence parity with pickUniqueNode", () => {
       }
     });
   }
+});
+
+describe("A1-H1 — every advertised selector field resolves a unique SERVER match", () => {
+  // resolveVerify is always fed the server-FILTERED matches, so a field the
+  // projection cannot carry (regex/containsDescendant/visible/index) still
+  // resolves by count. One case per field, proving a lone server match → match.
+  const one = (extra: Partial<QueryNodeLite>): QueryNodeLite => ({
+    bounds: bounds(0, 300, 1080, 400),
+    ...extra,
+  });
+
+  it("class — a lone class match resolves via the class tier", () => {
+    const node = one({ class: "android.widget.Switch", text: "Wi-Fi" });
+    const r = resolveVerify([node], { class: "android.widget.Switch" });
+    expect(r.kind).toBe("match");
+    if (r.kind === "match") expect(r.node).toBe(node);
+  });
+
+  it("regex (text) — a lone server match resolves via the count fallback", () => {
+    const node = one({ text: "Network & internet" });
+    const r = resolveVerify([node], { text: { regex: "Net.*" } });
+    expect(r.kind).toBe("match");
+    if (r.kind === "match") expect(r.node).toBe(node);
+  });
+
+  it("containsDescendant — a lone server match resolves", () => {
+    const node = one({ text: "Settings container" });
+    const r = resolveVerify([node], { containsDescendant: { text: "Wi-Fi" } });
+    expect(r.kind).toBe("match");
+  });
+
+  it("visible — a lone server match resolves", () => {
+    const node = one({ text: "OnlyVisible" });
+    const r = resolveVerify([node], { visible: true });
+    expect(r.kind).toBe("match");
+  });
+
+  it("index — a lone server match resolves", () => {
+    const node = one({ text: "Row", class: "android.widget.TextView" });
+    const r = resolveVerify([node], { class: { contains: "TextView" }, index: 1 });
+    expect(r.kind).toBe("match");
+  });
+
+  it("id:{contains} — a lone server match resolves (qualified id contains the needle)", () => {
+    const node = one({ id: "com.android.settings:id/title", text: "Display" });
+    const r = resolveVerify([node], { id: { contains: "title" } });
+    expect(r.kind).toBe("match");
+    if (r.kind === "match") expect(r.node).toBe(node);
+  });
+});
+
+describe("A1-H1 — server-count fallback for an empty projection", () => {
+  const a = { text: "A", bounds: bounds(0, 0, 100, 100) };
+  const b = { text: "B", bounds: bounds(0, 100, 100, 200) };
+
+  it("no projection + one server node -> match", () => {
+    expect(resolveVerify([a], { visible: true }).kind).toBe("match");
+  });
+  it("no projection + several server nodes -> ambiguous", () => {
+    const r = resolveVerify([a, b], { visible: true });
+    expect(r.kind).toBe("ambiguous");
+    if (r.kind === "ambiguous") expect(r.candidates).toHaveLength(2);
+  });
+  it("no projection + zero server nodes -> not_found", () => {
+    expect(resolveVerify([], { visible: true }).kind).toBe("not_found");
+  });
 });
 
 describe("nodeLabel", () => {
