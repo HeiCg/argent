@@ -39,7 +39,7 @@ and run `bench-open-vs-proprietary.yml -f suite=latency`.
    be rejected by `PositionMapper` only when displayData is set — should be
    null in control-only).
 5. Device-side: check `scrcpy` server logcat lines for `Ignore positional
-   event` / `Could not inject` during the failed tap in the run's emulator
+event` / `Could not inject` during the failed tap in the run's emulator
    log (artifact `logs/emulator.log` or the device test output).
    Fix the real cause; add a unit test that the tap message sequence matches
    scrcpy's own click sequence (DOWN pressure 1, buttons per pointer type, UP

@@ -213,8 +213,8 @@ the measurement; the failure is surfaced here rather than hidden.
 
 ## Deviations from the ticket
 
-- **Emulator image = API 34, not 35.** The ticket says "x86_64 API 35 google_apis
-  _if that is what upstream uses_ — read it". Upstream `wayland-e2e.yml` uses
+- **Emulator image = API 34, not 35.** The ticket says "x86*64 API 35 google_apis
+  \_if that is what upstream uses* — read it". Upstream `wayland-e2e.yml` uses
   `system-images;android-34;google_apis;x86_64`, and the open-server APK targets
   `compileSdk/targetSdk 34`, so API 34 is what boots under KVM on this runner and is
   used verbatim. (Local v4–v6 were API 35 arm64.)

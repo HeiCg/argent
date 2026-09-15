@@ -1227,9 +1227,7 @@ async function measureRpcBreakdown(
  * spawns. before = the old cost, after ≈ 0 = the new cost. Runs on both configs
  * (adb is available in both).
  */
-async function measureAdbFormFactorCost(
-  n: number
-): Promise<{
+async function measureAdbFormFactorCost(n: number): Promise<{
   beforeP50: number | null;
   beforeP95: number | null;
   afterP50: number | null;
