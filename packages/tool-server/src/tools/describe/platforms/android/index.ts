@@ -21,7 +21,11 @@ import {
 } from "../../../../blueprints/android-open-server";
 import { openServerNestedToDescribeNode, nestedTreeTruncated } from "./open-server-tree";
 import { openDeviceServerMutex } from "../../../../utils/device-mutex";
-import { getIncident, incidentHeaderLine } from "../../../../utils/open-server-incident";
+import {
+  getIncident,
+  incidentHeaderLine,
+  type OpenServerIncident,
+} from "../../../../utils/open-server-incident";
 
 // Appended to the describe hint when the on-device tree was truncated (F13).
 const TRUNCATION_HINT =
@@ -162,7 +166,7 @@ export async function describeAndroid(
       // active on this device (a prior verify refusal / no-effect / timeout), so
       // the agent sees the failure IN CONTEXT on its next read. Host state only —
       // no RPC, nothing device-side.
-      const incident = getIncident(serial);
+      const incident: OpenServerIncident | undefined = getIncident(serial);
       const incidentLine = incident ? incidentHeaderLine(incident) : undefined;
       // waitedMs/captureMs ride the result metadata (never the rendered text) so
       // the idle-gate-vs-serialization split of describe is measurable.

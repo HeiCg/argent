@@ -91,11 +91,19 @@ describe("describe header line", () => {
   });
 
   it("adds the escalation clause after 3 consecutive failures", () => {
-    let inc = recordIncident(DEV, { tool: "gesture-tap", code: "verify_ambiguous", message: "x" });
-    inc = recordIncident(DEV, { tool: "gesture-tap", code: "verify_ambiguous", message: "x" });
-    expect(incidentHeaderLine(inc)).not.toContain("consider a different approach");
-    inc = recordIncident(DEV, { tool: "gesture-tap", code: "verify_ambiguous", message: "x" });
-    expect(incidentHeaderLine(inc)).toBe(
+    recordIncident(DEV, { tool: "gesture-tap", code: "verify_ambiguous", message: "x" });
+    const two = recordIncident(DEV, {
+      tool: "gesture-tap",
+      code: "verify_ambiguous",
+      message: "x",
+    });
+    expect(incidentHeaderLine(two)).not.toContain("consider a different approach");
+    const three = recordIncident(DEV, {
+      tool: "gesture-tap",
+      code: "verify_ambiguous",
+      message: "x",
+    });
+    expect(incidentHeaderLine(three)).toBe(
       "incident: gesture-tap verify_ambiguous ×3 — add a second field to the selector; consider a different approach"
     );
   });
@@ -127,24 +135,16 @@ describe("token cost — the line is ≤ 30 tokens", () => {
     for (const code of codes) {
       __resetIncidents();
       // Push to 3 so the escalation clause is included in the measurement.
-      let inc = recordIncident(DEV, {
-        tool: "gesture-swipe",
-        code,
-        message: "x",
-        label: "Network & internet",
-      });
-      inc = recordIncident(DEV, {
-        tool: "gesture-swipe",
-        code,
-        message: "x",
-        label: "Network & internet",
-      });
-      inc = recordIncident(DEV, {
-        tool: "gesture-swipe",
-        code,
-        message: "x",
-        label: "Network & internet",
-      });
+      const push = () =>
+        recordIncident(DEV, {
+          tool: "gesture-swipe",
+          code,
+          message: "x",
+          label: "Network & internet",
+        });
+      push();
+      push();
+      const inc = push();
       const line = incidentHeaderLine(inc);
       const tokens = tiktokenCount(line);
       if (tokens > worst) {
