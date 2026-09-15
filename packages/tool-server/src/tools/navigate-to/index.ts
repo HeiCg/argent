@@ -21,11 +21,13 @@ import {
   GRID,
   buildSummary,
   hash8,
+  isScrollingElement,
   multisetJaccard,
   nodeResourceIds,
   parseSelectorKey,
   plan,
   planToSelectorStable,
+  planToTemplate,
   renderSummary,
   runNavigation,
   selectorKeys,
@@ -347,6 +349,101 @@ export async function resolveTapPoint(
   return { cx: Math.round(size.width / 2), cy: Math.round(size.height / 2) };
 }
 
+/**
+ * Phase E (design D1): how many times `navigate-to` scrolls the container while
+ * looking for the concrete item behind a template step before giving up.
+ */
+const TEMPLATE_MAX_SCROLLS = 8;
+
+const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
+
+/** Swipe up inside the largest live scrollable's bounds (else the screen). */
+async function scrollContainerUp(
+  server: OpenDeviceServerApi,
+  size: { width: number; height: number }
+): Promise<void> {
+  let sx = Math.round(size.width / 2);
+  let sy = Math.round(size.height * 0.72);
+  let ey = Math.round(size.height * 0.28);
+  try {
+    const st = await server.getState({ includeScreenshot: false });
+    let bestArea = -1;
+    for (const el of st.tree as OpenServerElement[]) {
+      if (!isScrollingElement(el)) continue;
+      const b = el.bounds;
+      const a = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+      if (a > bestArea) {
+        bestArea = a;
+        sx = Math.round((b.x1 + b.x2) / 2);
+        sy = Math.round(b.y1 + (b.y2 - b.y1) * 0.72);
+        ey = Math.round(b.y1 + (b.y2 - b.y1) * 0.28);
+      }
+    }
+  } catch {
+    /* fall back to the screen-centre swipe */
+  }
+  await server.swipeWithOutcome(sx, sy, sx, ey, 10);
+}
+
+/** The result of resolving a template step's concrete item on the live tree. */
+interface TemplateStepOutcome {
+  tapped: boolean;
+  afterHash: string;
+  afterResourceIds: string[];
+  reason?: string;
+}
+
+/**
+ * Phase E (design D1): resolve the concrete item for a template step. Query the
+ * live tree for `wantedText`, requiring exactly one EXACT match (the same
+ * uniqueness discipline as D.1 Fix A); scroll the container up to
+ * `TEMPLATE_MAX_SCROLLS` times, re-querying after each, when it is not yet on
+ * screen; fail closed (never tap) on an ambiguous or unresolved item.
+ */
+export async function executeTemplateStep(
+  server: OpenDeviceServerApi,
+  size: { width: number; height: number },
+  wantedText: string
+): Promise<TemplateStepOutcome> {
+  const want = norm(wantedText);
+  for (let attempt = 0; attempt <= TEMPLATE_MAX_SCROLLS; attempt++) {
+    const q = await server.query(
+      { text: { contains: wantedText, caseInsensitive: true }, visible: true },
+      { limit: 20 }
+    );
+    const exact = q.nodes.filter((n) => norm(n.text) === want || norm(n.cd) === want);
+    if (exact.length === 1) {
+      const b = exact[0]!.bounds;
+      const cx = Math.round((b.x1 + b.x2) / 2);
+      const cy = Math.round((b.y1 + b.y2) / 2);
+      await server.tapWithOutcome(cx, cy);
+      const after = await server.getState({ includeScreenshot: false, fingerprints: true });
+      return {
+        tapped: true,
+        afterHash: idOf(after),
+        afterResourceIds: resourceIdsOf(after.tree),
+      };
+    }
+    if (exact.length > 1) {
+      const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
+      return {
+        tapped: false,
+        afterHash: idOf(cur),
+        afterResourceIds: resourceIdsOf(cur.tree),
+        reason: "selector ambiguous on live tree",
+      };
+    }
+    if (attempt < TEMPLATE_MAX_SCROLLS) await scrollContainerUp(server, size);
+  }
+  const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
+  return {
+    tapped: false,
+    afterHash: idOf(cur),
+    afterResourceIds: resourceIdsOf(cur.tree),
+    reason: "selector unresolved on live tree",
+  };
+}
+
 function swipeVector(
   size: { width: number; height: number },
   dir: CanonicalAction["dir"]
@@ -461,9 +558,18 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       const stablePlan = params.target.selector
         ? planToSelectorStable(graph, currentHash, liveResourceIds, params.target.selector)
         : null;
-      const planned: PlanResult | null = params.target.screen
+      // Phase E (design D1): when the target selector names an ITEM that no node
+      // indexes (per R5 item text is not indexed), fall back to a TEMPLATE route —
+      // plan to the container's template node, and resolve the concrete item on the
+      // live tree at execute time. Only used when a plain plan does not exist.
+      const wantedItemText = params.target.selector?.text;
+      let planned: PlanResult | null = params.target.screen
         ? plan(graph, currentHash, params.target.screen)
         : stablePlan;
+      if (!planned && wantedItemText) {
+        const tpl = planToTemplate(graph, currentHash);
+        if (tpl) planned = tpl;
+      }
       const fromVia =
         stablePlan?.fromVia ?? (currentHash && graph.nodes[currentHash] ? "exact" : "none");
       const fromScore = stablePlan?.fromScore;
@@ -491,6 +597,19 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       let divergeReason: string | undefined;
       const nav = await runNavigation(currentHash, planned.steps, {
         execute: async (action, step: PlanStep) => {
+          // Phase E (design D1): a TEMPLATE step resolves the concrete item on the
+          // live tree (query + bounded in-container scroll), never a stale
+          // coordinate. On failure it records the miss on the template edge so its
+          // weight decays (design D1 step 5), then diverges.
+          if (step.template && wantedItemText) {
+            const out = await executeTemplateStep(server, size, wantedItemText);
+            if (!out.tapped) {
+              if (out.reason) divergeReason = out.reason;
+              store.observe(stepFrom, action, step.to, { success: false });
+            }
+            stepFrom = step.to;
+            return { afterHash: out.afterHash, afterResourceIds: out.afterResourceIds };
+          }
           const fromIndex = store.getNode(stepFrom)?.index;
           await executeCanonicalAction(server, size, action, fromIndex, step.selector, (reason) => {
             if (reason) divergeReason = reason;
