@@ -100,15 +100,23 @@ spawn arg `ARGENT_OPEN_SERVER_DONT_SUPPRESS_A11Y=1`, set only by
 `run_aw.start_tool_server`). When the arg is unset the default suppressing `uiAutomation`
 connection is used — **byte-identical to the pre-AW-1 driver**.
 
-**Re-probe run 34947435250 (with the flag): harness blocker RESOLVED.** With our server
-alive, AndroidWorld's a11y forwarder forest now returns — `aw_forest.ok=true`, **2 windows,
-23 nodes, 19 ui_elements** — so AW's env (reset + checkers) reads the tree it needs.
-`uiautomator dump` still returns 0 bytes, but that is informational: `uiautomator dump`
-needs its own separate `UiAutomation`, which conflicts with our instrumentation regardless
-of the flag, and the harness uses AW's forwarder forest (`A11Y_FORWARDER_APP` method), not
-the dump. The probe verdict was refined to key on the forwarder forest (the
-harness-relevant signal); the flag is validated and the harness is a go once the secret
-lands.
+**Re-probe run 34947435250 (flag on, unconditional): harness blocker RESOLVED** — with our
+server alive AndroidWorld's forwarder forest returns (`aw_forest.ok=true`, 2 windows, 23
+nodes, 19 ui_elements). `uiautomator dump` stays at 0 bytes but is informational (it needs
+its own separate `UiAutomation`; the harness uses the `A11Y_FORWARDER_APP` forest, not the
+dump).
+
+**Opt-in gating proven on device — run 34950761649 (both ways in one job):**
+
+| arm                        | AW forwarder forest                                   |
+| -------------------------- | ----------------------------------------------------- |
+| default start (no arg)     | NOT readable (`Could not get a11y tree`) — suppressed |
+| `-e dontSuppressA11y true` | 2 windows, **23 nodes, 19 ui_elements** — restored    |
+
+`gating_proven=true`. The same job also **compiled the refactored Kotlin** (`assembleDebug`)
+and **ran the JVM unit tests** (`gradlew testDebugUnitTest`, including
+`UiAutomationFlagsTest`) — both green. So the default driver is byte-identical (suppressing)
+and the flag engages only under the opt-in arg; the harness is a go once the secret lands.
 
 **Latency caveat — bounded to the harness arm; NOT a merge blocker:** suppression is also
 what makes our describe reads cheap, so the non-suppressing connection is a driver behavior
@@ -200,8 +208,9 @@ for a harness defect (never a task flake); re-run the same seed before reading a
 
 ### Runs / hygiene
 
-- Probe **34946274170** (suppression confirmed); re-probe **34947435250** (flag validated —
-  forwarder forest returns 23 nodes/19 elements with our server alive).
+- Probe **34946274170** (suppression confirmed); re-probe **34947435250** (flag validated);
+  opt-in gating proof **34950761649** (default suppresses, arg restores; Kotlin compiled +
+  JUnit `testDebugUnitTest` green).
 - PR **#7** → `open/main`: Prettier, ESLint, Knip, Static checks, Unit tests, lockfile all
   PASS. `bench/androidworld/` is Python-only and outside knip's JS/TS workspace
   scope, so no knip config change or rule-disable was needed (knip stays green). Prettier
