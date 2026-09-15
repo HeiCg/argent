@@ -36,7 +36,7 @@ const clipboardUnsupported = new Set<string>();
 const consecutiveDefiniteFalses = new Map<string, number>();
 
 /** Outcome of one on-device `setClipboard` attempt. */
-export type ClipboardOutcome = "ok" | "transient" | "definitive-false";
+type ClipboardOutcome = "ok" | "transient" | "definitive-false";
 
 /** Whether this device has already proven `setClipboard` does not round-trip. */
 export function isClipboardUnsupported(deviceId: string): boolean {

@@ -212,7 +212,7 @@ export interface OpenServerSelector {
   visible?: boolean;
 }
 
-export interface OpenServerCompactNode {
+interface OpenServerCompactNode {
   id?: string;
   text?: string;
   cd?: string;

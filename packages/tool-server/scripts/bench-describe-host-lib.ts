@@ -22,7 +22,7 @@ import { buildDescribeTreeFromParsedRoot } from "../src/tools/describe/platforms
 import { formatDescribeTree } from "../src/tools/describe/format-tree";
 import { getEncoding } from "js-tiktoken";
 
-export interface HostBenchFixture {
+interface HostBenchFixture {
   description?: string;
   screen: { width: number; height: number };
   tree: OpenServerNestedElement[];
@@ -129,7 +129,7 @@ function timeIt(iterations: number, fn: () => void): number[] {
   return out;
 }
 
-export interface RunHostBenchOptions {
+interface RunHostBenchOptions {
   iterations?: number;
   warmup?: number;
   tokenize?: boolean;

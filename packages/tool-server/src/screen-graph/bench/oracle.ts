@@ -44,12 +44,12 @@ export interface AssertionMatch {
   field: "text" | "contentDescription";
 }
 
-export interface OracleResult {
+interface OracleResult {
   matched: boolean;
   matches: AssertionMatch[];
 }
 
-export interface OracleOptions {
+interface OracleOptions {
   /** `contains` (default, substring) or `equals` (whole-field) matching. */
   mode?: "contains" | "equals";
   /**
@@ -124,7 +124,7 @@ export function evaluateAssertion(
 /* -------------------------------------------------------------------------- */
 
 /** The minimal per-run shape the accounting reads. */
-export interface AccountableRun {
+interface AccountableRun {
   success: boolean;
   /** the task was aborted because a tap target could not be located. */
   locateFailed?: boolean;
@@ -172,7 +172,7 @@ export function isPreActionInfraError(message: string): boolean {
   return INFRA_ERROR_RE.test(message ?? "");
 }
 
-export interface SuccessAccount {
+interface SuccessAccount {
   /** all task-runs for the config. */
   total: number;
   /** runs actually judged by the oracle (`total - excluded`). */

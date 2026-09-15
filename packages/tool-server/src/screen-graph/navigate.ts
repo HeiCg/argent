@@ -8,7 +8,7 @@ import type { CanonicalAction } from "./types";
 import type { PlanStep } from "./plan";
 
 /** Outcome of executing one action on the device. */
-export interface StepOutcome {
+interface StepOutcome {
   afterHash: string;
   /**
    * Live resource-id multiset of the screen the action landed on (C.4 work item
@@ -19,7 +19,7 @@ export interface StepOutcome {
   afterResourceIds?: string[];
 }
 
-export interface NavigateDeps {
+interface NavigateDeps {
   /** Perform one action and return the resulting screen's structural hash. */
   execute: (action: CanonicalAction, step: PlanStep) => Promise<StepOutcome>;
   /**
@@ -33,14 +33,14 @@ export interface NavigateDeps {
   matches?: (step: PlanStep, outcome: StepOutcome) => boolean;
 }
 
-export interface NavigateDivergence {
+interface NavigateDivergence {
   /** 1-based index of the step whose result did not match the plan. */
   reachedStep: number;
   expected: string;
   actual: string;
 }
 
-export interface NavigateResult {
+interface NavigateResult {
   ok: boolean;
   /** Number of steps that landed on their expected screen. */
   completedSteps: number;

@@ -44,7 +44,7 @@ export function tokenizerName(): string {
     : "chars/4 (js-tiktoken o200k_base failed to load)";
 }
 
-export interface Summary {
+interface Summary {
   n: number;
   p50: number;
   p95: number;

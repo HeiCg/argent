@@ -14,7 +14,7 @@
  * without importing `open-server-input` (which imports the blueprint — a cycle).
  */
 
-export interface CachedScreenSize {
+interface CachedScreenSize {
   width: number;
   height: number;
   rotation: number;

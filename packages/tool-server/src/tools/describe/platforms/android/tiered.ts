@@ -24,7 +24,7 @@ import {
 import { buildSummary, renderSummary, resolveCompactTier } from "../../../../screen-graph";
 import { describeAndroid } from "./index";
 
-export type DescribeTier = "summary" | "compact" | "full";
+type DescribeTier = "summary" | "compact" | "full";
 
 /**
  * Tier-aware Android describe. `summary` / `compact` consult the screen graph;

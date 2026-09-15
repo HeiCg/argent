@@ -18,7 +18,7 @@ export interface QueryNodeLite {
   bounds: { x1: number; y1: number; x2: number; y2: number };
 }
 
-export interface PickResult {
+interface PickResult {
   node?: QueryNodeLite;
   /** A resolution tier had >1 candidate and none was unique — do NOT tap. */
   ambiguous: boolean;

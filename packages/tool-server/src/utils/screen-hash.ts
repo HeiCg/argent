@@ -35,8 +35,8 @@ export interface HashNode {
 // Flag bit positions — MUST match ScreenHash.kt.
 export const FLAG_CLICKABLE = 1 << 0;
 export const FLAG_SCROLLABLE = 1 << 1;
-export const FLAG_EDITABLE = 1 << 2;
-export const FLAG_CHECKABLE = 1 << 3;
+const FLAG_EDITABLE = 1 << 2;
+const FLAG_CHECKABLE = 1 << 3;
 export const FLAG_ENABLED = 1 << 4;
 export const FLAG_FOCUSED = 1 << 5;
 
@@ -84,7 +84,7 @@ const HID_VOLATILE_TEXT =
   /^\s*(?:\d{1,3}\s*%|\d{1,2}:\d{2}(?:\s*[ap]m)?|\d[\d.,]*\s*(?:%|min|hr|hrs|h|GB|MB|KB|B)?|[A-Z][a-z]{2}\s+\d{1,2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*$/i;
 
 /** True when `text` is purely volatile content (mirror of `ScreenHash.isVolatileText`). */
-export function isVolatileText(text: string): boolean {
+function isVolatileText(text: string): boolean {
   return HID_VOLATILE_TEXT.test(text.trim());
 }
 

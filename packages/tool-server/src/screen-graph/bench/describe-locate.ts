@@ -20,7 +20,7 @@
 import type { BenchSelector } from "./types";
 import { pickUniqueNode, type QueryNodeLite } from "./locate";
 
-export interface LocatedNorm {
+interface LocatedNorm {
   xNorm: number;
   yNorm: number;
   found: boolean;

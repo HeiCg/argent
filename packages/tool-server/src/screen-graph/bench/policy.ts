@@ -23,7 +23,7 @@ export type ObservationKind =
   | "graph-lookup" // host graph localization: cheap summary of a known screen
   | "none"; // the action outcome sufficed — no observation round-trip
 
-export interface StepContext {
+interface StepContext {
   /**
    * The action's own outcome, when the config's action path returns one (O2+).
    * `undefined` for B1/B2/O1, whose actions do not carry a before/after delta.
@@ -35,7 +35,7 @@ export interface StepContext {
   knownTarget?: boolean;
 }
 
-export interface PolicyDecision {
+interface PolicyDecision {
   /** Observation round-trips to make after the action, in order. */
   observations: ObservationKind[];
   /** O5: replace the tap+observe loop with a single `navigate-to` plan. */

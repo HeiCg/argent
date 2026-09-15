@@ -346,9 +346,3 @@ export async function recordOpenServerObservation(
     pendingRecordMs += Date.now() - recordStart;
   }
 }
-
-/** Test-only: drop the module-level caches. */
-export function __resetScreenGraphWiringForTests(): void {
-  versionCodeCache.clear();
-  storeCache.clear();
-}

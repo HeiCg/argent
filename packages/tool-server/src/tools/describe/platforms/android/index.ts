@@ -35,7 +35,7 @@ export const androidRequires: ToolDependency[] = ["adb"];
 // which reads the tree with no quiescence wait — so the two describe backends
 // differ in policy, not speed. `true` = a 500 ms quiescence (the settled read,
 // the superior product feature), and a number is a custom cap in ms.
-export const SETTLE_QUIESCENCE_MS = 500;
+const SETTLE_QUIESCENCE_MS = 500;
 export function settleToWaitTimeoutMs(settle: boolean | number | undefined): number {
   if (settle === true) return SETTLE_QUIESCENCE_MS;
   if (typeof settle === "number" && Number.isFinite(settle) && settle > 0) {

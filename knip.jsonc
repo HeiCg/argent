@@ -60,7 +60,29 @@
     // Knip analyzes JS and TS only, so the shell half of scripts/ — the whole
     // scripts/e2e-full/ harness included — is outside the gate however it runs.
     ".": {
-      "entry": ["scripts/ci/windows-chromium-e2e.mjs"],
+      // windows-chromium-e2e.mjs: the Windows E2E driver, run from a PowerShell
+      // job whose body knip's github-actions plugin cannot parse (see below).
+      //
+      // run-fling.js / merge-fling.js: the optical-fling harness (ticket 3o). Both
+      // are reached only by path — run-bench.js builds their paths with
+      // `path.join(__dirname, …)` behind the `FLING` blocks token, and
+      // gates.test.js `execFileSync`s merge-fling.js — neither of which knip can
+      // trace, so they read as unused files. Kept (not deleted): the bench-CI gate
+      // tests exercise merge-fling.js, and 3o resumes the harness.
+      "entry": [
+        "scripts/ci/windows-chromium-e2e.mjs",
+        ".github/bench-ci/run-fling.js",
+        ".github/bench-ci/merge-fling.js",
+      ],
+      // `require("ts-node")` in .github/bench-ci/run-bench.js (and the inline
+      // node -e loaders in bench-open-vs-proprietary.yml): ts-node is a devDep of
+      // packages/tool-server, hoisted to the root node_modules, but not declared in
+      // the root manifest — so a root-attributed require reads as unlisted.
+      "ignoreDependencies": ["ts-node"],
+      // `vitest` is invoked as a binary in two workflows (the bench harness self-
+      // test and the iOS device-test job) but is a per-package devDependency, never
+      // a root one, so knip's github-actions plugin flags it unlisted at the root.
+      "ignoreBinaries": ["vitest"],
     },
 
     // @swmansion/argent is a thin dispatcher whose real payload is an esbuild
@@ -132,6 +154,28 @@
     // file here passes too — so the list holds only packages this workspace
     // genuinely cannot declare.
     "packages/tool-server": {
+      // The scripts/ bench harnesses are all reached only in ways knip cannot
+      // trace, so each is declared here or it reads as an unused file:
+      //   - bench-open-vs-proprietary.ts — run-bench.js path-loads it via ts-node.
+      //   - bench-preflight.ts / bench-screen-graph.ts — the bench workflow's inline
+      //     `node -e "require('ts-node')…require('…bench-screen-graph.ts')"` loaders
+      //     (and the run-preflight.cjs / run-bench-sg.cjs local runners) load them
+      //     by resolved path.
+      //   - bench-fling-fidelity.ts — run-fling.js path-loads it (ticket 3o).
+      //   - bench-describe-host.ts — a standalone CLI (`npx tsx …`); its pure
+      //     harness lives in bench-describe-host-lib.ts, which IS reached (imported
+      //     by the CLI and by test/bench-describe-host.test.ts) and so is not listed.
+      //   - run-bench-sg.cjs / run-preflight.cjs — local dev runners; CI inlines the
+      //     same loader, so nothing imports these files.
+      "entry": [
+        "scripts/bench-open-vs-proprietary.ts",
+        "scripts/bench-preflight.ts",
+        "scripts/bench-screen-graph.ts",
+        "scripts/bench-fling-fidelity.ts",
+        "scripts/bench-describe-host.ts",
+        "scripts/run-bench-sg.cjs",
+        "scripts/run-preflight.cjs",
+      ],
       "ignoreDependencies": [
         // --- Declared in package.json, loaded too dynamically to detect.
         //     Without these: "unused dependencies". ---

@@ -14,7 +14,7 @@ export interface LabelNode {
   bounds: { x1: number; y1: number; x2: number; y2: number };
 }
 
-export interface LabelInput {
+interface LabelInput {
   /** Fully-qualified activity, e.g. `com.android.settings.SubSettings`. */
   activity?: string;
   /** The screen's flat nodes (id / text / bounds). */
