@@ -199,7 +199,61 @@ describe("a nested run-sequence reports its own verdict", () => {
   });
 });
 
-describe("the check is deliberately scoped to the two orchestrator tools", () => {
+describe("a nested gesture-sequence reports its own verdict (A2-H3)", () => {
+  // gesture-sequence, like run-sequence, has no verdict field: a failing step is
+  // `success:false` (with `error`/`dropped`) and the rest are `skipped:true`. An
+  // aborted burst must fail the flow step, not pass as #606.
+  it("fails the step when a burst step failed and the rest were skipped", async () => {
+    const { result } = await run("gesture-sequence", {
+      completed: 1,
+      total: 3,
+      totalMs: 42,
+      steps: [
+        { kind: "tap", success: true, ms: 12 },
+        { kind: "swipe", success: false, error: "open-device-server swipe was dropped", ms: 8 },
+        { kind: "tap", success: false, skipped: true },
+      ],
+    });
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).toMatch(/gesture-sequence stopped at swipe/);
+    expect(result.steps[0].reason).toMatch(/1 of 3/);
+    expect(result.steps[0].reason).toMatch(/dropped/);
+    expect(result.ok).toBe(false);
+  });
+
+  it("fails a burst whose first step was dropped (no error string)", async () => {
+    const { result } = await run("gesture-sequence", {
+      completed: 0,
+      total: 2,
+      totalMs: 5,
+      steps: [
+        { kind: "tap", success: false, dropped: true, ms: 5 },
+        { kind: "tap", success: false, skipped: true },
+      ],
+    });
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).toMatch(/gesture-sequence stopped at tap/);
+    expect(result.steps[0].reason).toMatch(/dropped/);
+    expect(result.ok).toBe(false);
+  });
+
+  it("still passes a burst that ran every step", async () => {
+    const { result } = await run("gesture-sequence", {
+      completed: 2,
+      total: 2,
+      totalMs: 30,
+      steps: [
+        { kind: "tap", success: true, ms: 12 },
+        { kind: "key", success: true, ms: 6 },
+      ],
+    });
+    expect(result.steps[0].status).toBe("pass");
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("the check is deliberately scoped to the orchestrator tools", () => {
   // There is no `ok` contract in this codebase to generalise: await-ui-element
   // spells it `success`, run-sequence spells it neither way, and the generic
   // `tool` step dispatches tools whose results are typed `unknown` — some

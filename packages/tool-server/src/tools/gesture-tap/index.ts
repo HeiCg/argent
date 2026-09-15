@@ -9,6 +9,9 @@ import {
   shouldUseOpenServer,
   openServerTap,
   openServerTapWithOutcome,
+  openServerTapAtIndex,
+  resolveTargetNorm,
+  IndexTargetError,
   openServerVerifiedTap,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
@@ -32,7 +35,7 @@ const zodSchema = z
       .optional()
       .describe(
         "Normalized horizontal position 0.0–1.0 (left=0, right=1), not pixels. Required unless " +
-          "`verify` is given on the Android open path, where it is an optional cross-check of the " +
+          "`verify` or `target` is given on the Android open path, where it is an optional cross-check of the " +
           "resolved element."
       ),
     y: z
@@ -40,7 +43,7 @@ const zodSchema = z
       .optional()
       .describe(
         "Normalized vertical position 0.0–1.0 (top=0, bottom=1), not pixels. Required unless " +
-          "`verify` is given on the Android open path, where it is an optional cross-check of the " +
+          "`verify` or `target` is given on the Android open path, where it is an optional cross-check of the " +
           "resolved element."
       ),
     clickCount: z
@@ -68,12 +71,31 @@ const zodSchema = z
           "the proprietary Android path `verify` refuses `verify_unsupported` (never a silent tap). When " +
           "absent the tap path is unchanged."
       ),
+    // A2 §B (additive): tap by element index from a `describe` `tier:"index"` read,
+    // resolved on the device against the SAME snapshot version — refused as
+    // stale_index if the screen moved. Android open-device-server only; when present,
+    // x/y are ignored. Kept optional so every existing coordinate tap is unchanged.
+    target: z
+      .object({
+        index: z.number().int().min(0).describe('0-based index from a describe tier:"index" line'),
+        version: z.number().int().describe("the AX version that index tier was rendered at"),
+      })
+      .optional()
+      .describe(
+        "Android open-device-server only: tap the element at this index from the last describe " +
+          'tier:"index" read, verified against the same snapshot version (refused if the screen moved). ' +
+          "When set, x and y are ignored."
+      ),
   })
-  .refine((p) => p.verify !== undefined || (p.x !== undefined && p.y !== undefined), {
-    message:
-      "x and y are required unless `verify` is given (with verify, x/y are an optional cross-check).",
-    path: ["x"],
-  });
+  .refine(
+    (p) =>
+      p.verify !== undefined || p.target !== undefined || (p.x !== undefined && p.y !== undefined),
+    {
+      message:
+        "x and y are required unless `verify` or `target` is given (with verify, x/y are an optional cross-check).",
+      path: ["x"],
+    }
+  );
 
 type Params = z.infer<typeof zodSchema>;
 
@@ -104,6 +126,16 @@ interface Result {
   requestedPx?: { x: number; y: number };
   /** `verify_mismatch`: the element the caller's coordinates actually hit. */
   mismatchLabel?: string;
+  /**
+   * A2 §B (`target`) — present on the Android open path. `targetIndex` / `targetLabel`
+   * name the element the index resolved to (so a log/agent knows WHAT was tapped);
+   * `targetCode` is a structured refusal (mirrors `verifyCode`): `target_unsupported`
+   * off the open path, or the `IndexTargetError` code (`stale_index`,
+   * `index_out_of_range`, `stale_index_in_burst`) — no tap issued on a refusal.
+   */
+  targetIndex?: number;
+  targetLabel?: string;
+  targetCode?: "target_unsupported" | "stale_index" | "index_out_of_range" | "stale_index_in_burst";
 }
 
 function tapVerb(count: number, tense: "present" | "past"): string {
@@ -220,8 +252,91 @@ Before tapping, determine the correct coordinates by using discovery tools — p
           verifyCode: "verify_unsupported",
         };
       }
-      // x/y are only optional under `verify` on the open path (schema refine);
-      // every path below is reached with `verify` absent, so both are present.
+      // A2 §B (additive): tap by element index (open path only). Resolves the index
+      // against the current snapshot, refuses a stale index, and taps the element
+      // bounds; x/y are ignored. No proprietary-path equivalent.
+      if (params.target !== undefined) {
+        // A2-M10: off the open path, refuse with a STRUCTURED result (mirrors A1's
+        // verify_unsupported) rather than a bare thrown Error.
+        if (!shouldUseOpenServer(device)) {
+          return { tapped: false, timestampMs, targetCode: "target_unsupported" };
+        }
+        try {
+          // A2-H1: when `verify` is ALSO given, NEVER drop it — resolve the index to
+          // its coordinates, then run the verify path so the selector is cross-checked
+          // on the LIVE tree (a coordinate outside the match ⇒ verify_mismatch). The
+          // useful semantics: "tap index 7 AND confirm it is still labelled X".
+          if (params.verify) {
+            const t = await resolveTargetNorm(registry, device, params.target);
+            const vr = await openServerVerifiedTap(
+              registry,
+              device,
+              t.xNorm,
+              t.yNorm,
+              clickCount,
+              params.verify
+            );
+            const targetIds = { targetIndex: t.index, targetLabel: t.label };
+            if (vr.outcome === "tapped") {
+              if (vr.changed) {
+                clearIncident(device.id);
+              } else {
+                recordIncident(device.id, {
+                  tool: "gesture-tap",
+                  code: "no_effect",
+                  message: "verified index tap landed but the screen did not change",
+                });
+              }
+              return {
+                tapped: true,
+                timestampMs,
+                verified: true,
+                ...targetIds,
+                resolvedBounds: vr.resolvedBounds,
+                version: vr.version,
+                verifyMs: vr.verifyMs,
+                ...(vr.actionOutcome ? { outcome: vr.actionOutcome } : {}),
+              };
+            }
+            const verifyCode =
+              vr.outcome === "not_found"
+                ? "verify_not_found"
+                : vr.outcome === "ambiguous"
+                  ? "verify_ambiguous"
+                  : "verify_mismatch";
+            recordIncident(device.id, {
+              tool: "gesture-tap",
+              code: verifyCode,
+              message: `verified index tap refused: ${verifyCode}`,
+              ...(vr.label !== undefined ? { label: vr.label } : {}),
+            });
+            return {
+              tapped: false,
+              timestampMs,
+              verified: false,
+              verifyCode,
+              ...targetIds,
+              version: vr.version,
+              verifyMs: vr.verifyMs,
+              ...(vr.resolvedBounds ? { resolvedBounds: vr.resolvedBounds } : {}),
+              ...(vr.candidates ? { candidates: vr.candidates } : {}),
+              ...(vr.requestedPx ? { requestedPx: vr.requestedPx } : {}),
+              ...(vr.label !== undefined ? { mismatchLabel: vr.label } : {}),
+            };
+          }
+          // `target` alone: tap by index and NAME what was tapped (A2-M10).
+          const r = await openServerTapAtIndex(registry, device, params.target, clickCount);
+          return { tapped: true, timestampMs, targetIndex: r.index, targetLabel: r.label };
+        } catch (err) {
+          // A2-M10: surface the IndexTargetError code as a structured refusal.
+          if (err instanceof IndexTargetError) {
+            return { tapped: false, timestampMs, targetCode: err.code };
+          }
+          throw err;
+        }
+      }
+      // x/y are only optional under `verify`/`target` on the open path (schema
+      // refine); every path below is reached with both absent, so x/y are present.
       const px = params.x ?? 0;
       const py = params.y ?? 0;
       if (device.platform === "chromium") {

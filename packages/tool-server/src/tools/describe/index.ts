@@ -10,6 +10,7 @@ import type { DescribeResult, DescribeTreeData } from "./contract";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import { describeAndroid, androidRequires } from "./platforms/android";
 import { describeAndroidTiered } from "./platforms/android/tiered";
+import { describeAndroidIndexTier } from "./platforms/android/index-tier";
 import { iosRequires, describeIos, withBootCaveatOncePerDevice } from "./platforms/ios";
 import { describeChromium } from "./platforms/chromium";
 import { describeTv } from "./platforms/tv";
@@ -79,13 +80,16 @@ const zodSchema = z.object({
         "tree right after a navigating tap."
     ),
   tier: z
-    .enum(["summary", "compact", "full"])
+    .enum(["summary", "compact", "full", "index"])
     .optional()
     .describe(
       "Android open-device-server path only. `summary`: the screen graph's label + top affordances " +
         "(~100 tokens); `compact` (the default when omitted): the current pruned tree, served from the " +
-        "screen-graph cache when the screen is unchanged; `full`: the full tree. `summary` and the " +
-        "compact cache require the `screen-graph` flag; other platforms ignore this."
+        "screen-graph cache when the screen is unchanged; `full`: the full tree; `index`: one " +
+        "`[i] label (role)` line per interactive element with a per-screen index — tap it back with " +
+        "`gesture-tap` / `gesture-sequence` `target: { index, version }`. `summary` and the compact " +
+        "cache require the `screen-graph` flag; `index` needs only `open-device-server`; other " +
+        "platforms ignore this."
     ),
 });
 
@@ -164,6 +168,23 @@ function makeDescribeExecute(
         // every describe, inside the timed window. Thread the known `isTv: false`
         // through so describeAndroid doesn't re-probe.
         if (await isAndroidTvCached(device.id)) return describeTv(registry, device);
+        // The `index` tier (A2 §B) is its OWN module, wired behind the param so it
+        // never touches the shared tiered/describe-header path; it needs only the
+        // open server (no screen-graph flag). Any failure throws to the fallback.
+        if (params.tier === "index") {
+          try {
+            return await describeAndroidIndexTier(registry, device);
+          } catch (err) {
+            console.debug(
+              `[describe.android.index] index tier failed, falling back: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+            return withDescription(
+              await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)
+            );
+          }
+        }
         // A `tier` request routes through the screen-graph-aware path; it falls
         // back to the standard describe on any failure, so the default (no
         // `tier`) keeps the exact current behaviour.

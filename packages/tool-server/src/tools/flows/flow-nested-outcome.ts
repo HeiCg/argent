@@ -22,6 +22,7 @@ import type { StepStatus } from "./flow-run";
 
 const FLOW_EXECUTE_TOOL_ID = "flow-execute";
 const RUN_SEQUENCE_TOOL_ID = "run-sequence";
+const GESTURE_SEQUENCE_TOOL_ID = "gesture-sequence";
 
 interface NestedOutcome {
   status: StepStatus;
@@ -130,6 +131,50 @@ function runSequenceOutcome(result: Record<string, unknown>): NestedOutcome | un
 }
 
 /**
+ * A nested `gesture-sequence` result (A2-H3).
+ *
+ * The burst runs its steps on the device and reports `{ completed, total,
+ * steps:[{ kind, success, dropped?, ms, skipped? }] }`. On the FIRST failing step
+ * the device runs no more and marks the rest `skipped`. Like `run-sequence`, there
+ * is no verdict field: a step that did not succeed (`success:false`, with `error`
+ * or `dropped`) or any `skipped` step means the burst stopped short, so the flow
+ * step must FAIL — otherwise a burst that aborted at step 0 counts as a pass (the
+ * #606 class this module exists to prevent).
+ */
+function gestureSequenceOutcome(result: Record<string, unknown>): NestedOutcome | undefined {
+  const steps = result.steps;
+  if (!Array.isArray(steps)) return undefined;
+
+  const failed = steps.find((s) => isRecord(s) && s.success === false && s.skipped !== true);
+  const anySkipped = steps.some((s) => isRecord(s) && s.skipped === true);
+  if (failed && isRecord(failed)) {
+    const kind = typeof failed.kind === "string" ? failed.kind : "step";
+    const why =
+      typeof failed.error === "string"
+        ? failed.error
+        : failed.dropped === true
+          ? "the injection was dropped"
+          : "the step did not succeed";
+    return {
+      status: "fail",
+      reason:
+        `gesture-sequence stopped at ${kind} after ${count(result.completed)} of ` +
+        `${count(result.total)} steps: ${why}`,
+    };
+  }
+  // A skip with no failing step recorded (defensive): still a short burst → fail.
+  if (anySkipped) {
+    return {
+      status: "fail",
+      reason:
+        `gesture-sequence stopped short: ${count(result.completed)} of ` +
+        `${count(result.total)} steps ran, the rest were skipped`,
+    };
+  }
+  return undefined;
+}
+
+/**
  * One list, so a caller asking only WHETHER a tool runs a nested flow — the
  * flow runner spends its tree-outage verdict on one — cannot drift from this
  * dispatch.
@@ -140,6 +185,7 @@ const NESTED_ORCHESTRATORS = new Map<
 >([
   [FLOW_EXECUTE_TOOL_ID, flowExecuteOutcome],
   [RUN_SEQUENCE_TOOL_ID, runSequenceOutcome],
+  [GESTURE_SEQUENCE_TOOL_ID, gestureSequenceOutcome],
 ]);
 
 /** Whether a `tool:` step runs other tools through a run of its own. */

@@ -27,6 +27,8 @@ import {
   type OpenServerInfo,
 } from "../../src/blueprints/android-open-server";
 import type { OpenServerElement } from "../../src/tools/describe/platforms/android/open-server-tree";
+import { buildIndexElements } from "../../src/tools/describe/platforms/android/index-tier";
+import { resolveIndexTarget, IndexTargetError } from "../../src/utils/open-server-input";
 import type { DeviceInfo } from "@argent/registry";
 import { runAdb, adbShell, parseAdbDevices } from "../../src/utils/adb";
 import { EMPTY_TREE_HASH } from "../../src/utils/screen-hash";
@@ -1313,6 +1315,155 @@ suite("android open-device-server on-device", () => {
       "3k getScreenSize@fling",
       "PASS",
       `5 calls during fling: [${timings.join(", ")}]ms, worst ${worst}ms < ${GATE_MS}`
+    );
+  }, 90_000);
+
+  // ── Artemis A2 §A — gesture-sequence burst (one `batch` RPC) ───────────────
+  it("A2 sequence — Settings search: tap → type → tap first result in ONE batch (delays + per-step ms, no skip)", async () => {
+    const info = await freshSettings();
+    const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+    const beforeTexts = textSet(before);
+    // The Settings search entry point (same anchor as 3g paste).
+    const search = before.find(
+      (e) =>
+        (e.clickable === true || (e.resourceId ?? "").toLowerCase().includes("search")) &&
+        /search/i.test(label(e) + " " + (e.resourceId ?? ""))
+    );
+    if (!search) throw new Error("A2 sequence: no Settings search entry found");
+    const sc = center(search);
+    // The first result row sits just under the search field once text is entered;
+    // a transient-UI burst taps where it WILL be (no host read between steps).
+    const firstResultX = Math.round(info.screenWidth / 2);
+    const firstResultY = Math.round(info.screenHeight * 0.16);
+    // ONE batch: tap search (pause for the field), type a query (pause for results
+    // to render), tap the first result. delayMs pauses ON-DEVICE between steps.
+    const { results } = await api.batch(
+      [
+        { method: "tap", params: { x: sc.x, y: sc.y, holdMs: 50 }, delayMs: 600 },
+        { method: "typeText", params: { text: "battery" }, delayMs: 800 },
+        { method: "tap", params: { x: firstResultX, y: firstResultY, holdMs: 50 }, delayMs: 300 },
+      ],
+      20_000
+    );
+    // §A contract: 1:1 per-step results, each carrying `ms`, none skipped, all ok.
+    expect(results).toHaveLength(3);
+    for (const r of results) {
+      expect((r as { skipped?: boolean }).skipped).toBeFalsy();
+      expect(typeof (r as { ms?: number }).ms).toBe("number");
+      expect((r as { success?: boolean; error?: unknown }).error).toBeUndefined();
+    }
+    await sleep(1200);
+    await api.waitForIdle(3000);
+    const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const gained = [...afterTexts].filter((t) => !beforeTexts.has(t));
+    const lost = [...beforeTexts].filter((t) => !afterTexts.has(t));
+    // Neutral navigation check: the burst moved the UI off the Settings root.
+    expect(gained.length + lost.length).toBeGreaterThan(0);
+    const stepMs = results.map((r) => (r as { ms?: number }).ms ?? -1);
+    record(
+      "A2 sequence",
+      "PASS",
+      `one batch of 3 steps (ms=[${stepMs.map((m) => m.toFixed(1)).join(", ")}]); ` +
+        `search→type→tap moved the UI +${gained.length}/-${lost.length} labels (navigation confirmed)`
+    );
+  }, 120_000);
+
+  it("A2 sequence — a failing step skips the rest (skip semantics)", async () => {
+    await freshSettings();
+    // First step a bad method (fails), then a real tap that must be reported skipped.
+    const { results } = await api.batch(
+      [
+        { method: "no_such_method", params: {} },
+        { method: "tap", params: { x: 10, y: 10, holdMs: 50 } },
+      ],
+      10_000
+    );
+    expect(results).toHaveLength(2);
+    expect((results[0] as { error?: unknown }).error).toBeDefined();
+    expect((results[1] as { skipped?: boolean }).skipped).toBe(true);
+    record(
+      "A2 sequence skip",
+      "PASS",
+      `step 0 error → step 1 skipped (remaining steps not executed after first failure)`
+    );
+  }, 60_000);
+
+  // ── Artemis A2 §B — index tier + target:{index,version} ────────────────────
+  it("A2 index tap — resolve an index target and navigate; version verified", async () => {
+    // Start on a known screen (the prior test may have navigated away): a
+    // top-level Settings row is guaranteed to navigate.
+    await freshSettings();
+    const st = await api.getState({ includeScreenshot: false, fingerprints: true });
+    const beforeTexts = textSet(st.tree as OpenServerElement[]);
+    const version = st.version;
+    const els = buildIndexElements(st.tree as OpenServerElement[]);
+    // Pick a labelled row that navigates (a Settings top-level entry).
+    const navRe = /network|connected|apps|notifications|battery|storage|sound|display|security/i;
+    const targetEl = els.find((e) => navRe.test(e.label));
+    if (!targetEl) throw new Error("A2 index: no navigable indexed row on Settings");
+    // Resolve exactly as gesture-tap `target` does: verify the version, tap centre.
+    const pt = resolveIndexTarget(st.tree as OpenServerElement[], version, {
+      index: targetEl.index,
+      version: version ?? 0,
+    });
+    await api.tap(pt.x, pt.y);
+    await sleep(1200);
+    await api.waitForIdle(3000);
+    const afterTexts = textSet((await api.getAccessibilityTree({ maxElements: 200 })).tree);
+    const gained = [...afterTexts].filter((t) => !beforeTexts.has(t));
+    const lost = [...beforeTexts].filter((t) => !afterTexts.has(t));
+    expect(gained.length + lost.length).toBeGreaterThan(0);
+    record(
+      "A2 index tap",
+      "PASS",
+      `index [${targetEl.index}] "${targetEl.label}" @v${version} → tap (${pt.x},${pt.y}); ` +
+        `+${gained.length}/-${lost.length} labels changed`
+    );
+  }, 90_000);
+
+  it("A2 stale index — a target from a moved snapshot is refused (stale_index)", async () => {
+    // Start on the Settings root so the picked row is a real navigating entry, and
+    // the getState below arms the AX clock. Read v1 and pick an index, navigate so
+    // the AX version advances, then resolve the OLD index against the NEW tree — the
+    // stale-index rule must refuse it.
+    await freshSettings();
+    const s1 = await api.getState({ includeScreenshot: false, fingerprints: true });
+    const els = buildIndexElements(s1.tree as OpenServerElement[]);
+    const navRe = /network|connected|apps|notifications|battery|storage|sound|display|security/i;
+    const staleIndex = els.find((e) => navRe.test(e.label))?.index ?? 0;
+    const v1 = s1.version ?? 0;
+    const pt = resolveIndexTarget(s1.tree as OpenServerElement[], v1, {
+      index: staleIndex,
+      version: v1,
+    });
+    await api.tap(pt.x, pt.y);
+    await sleep(1200);
+    await api.waitForIdle(3000);
+    // The navigation advances the armed AX clock; poll briefly for the version to
+    // move past v1 before asserting the stale-index refusal.
+    let s2 = await api.getState({ includeScreenshot: false, fingerprints: true });
+    for (let i = 0; i < 6 && s2.version === v1; i++) {
+      await sleep(400);
+      s2 = await api.getState({ includeScreenshot: false, fingerprints: true });
+    }
+    expect(s2.version).not.toBe(v1); // the snapshot moved
+    let refused = false;
+    let code = "";
+    try {
+      resolveIndexTarget(s2.tree as OpenServerElement[], s2.version, {
+        index: staleIndex,
+        version: v1,
+      });
+    } catch (e) {
+      refused = e instanceof IndexTargetError;
+      code = e instanceof IndexTargetError ? e.code : "";
+    }
+    expect(refused).toBe(true);
+    expect(code).toBe("stale_index");
+    record(
+      "A2 stale index",
+      "PASS",
+      `index tier v${v1} → navigated to v${s2.version}; resolving the v${v1} index refused as stale_index`
     );
   }, 90_000);
 

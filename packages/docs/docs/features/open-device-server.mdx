@@ -30,6 +30,13 @@ The agent uses the same tools; only the backend they reach changes.
 - **`gesture-tap`** and **`gesture-swipe`** dispatch their touches through the
   server instead of the proprietary simulator-server. This is the first fully
   open-source touch path on Android.
+- **`gesture-sequence`** runs a burst of taps, swipes, keys and pauses in one
+  on-device call. The agent uses it when a transient element, such as a bottom
+  sheet, must survive between steps. The server runs the steps without a host
+  round trip for each one.
+- **`describe`** can list each interactive element with a short per-screen index.
+  The agent taps an element by its index instead of by coordinates. Argent checks
+  the index against the current screen and refuses it when the screen moved.
 
 Keyboard text already goes through `adb input` on Android and is unchanged.
 

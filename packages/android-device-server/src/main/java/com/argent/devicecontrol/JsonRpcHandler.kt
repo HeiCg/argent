@@ -278,16 +278,47 @@ class JsonRpcHandler(
             put("idHash", snap.idHash)
         }
 
+    /**
+     * Run a burst of actions back-to-back on the device in ONE RPC (ticket A2 §A —
+     * `gesture-sequence`), so a transient sheet can be dismissed and the revealed
+     * control tapped before it disappears, with no host round trip per step. Per
+     * action beyond the base `{method, params}`:
+     *
+     *  - `delayMs` pauses that long ON-DEVICE after the step, so the beat between a
+     *    dismiss and the revealed tap is not a host round trip;
+     *  - a `wait` method performs no device action — it only sleeps `delayMs`
+     *    (the pause primitive the host maps a `wait` step to);
+     *  - each result carries `ms`, the on-device wall time of the step.
+     *
+     * Skip semantics: on the FIRST failed step (a JSON-RPC `error`, a `success:false`,
+     * or a `dropped:true` injection) the remaining steps do NOT run and are reported
+     * as `{skipped:true}`, so the burst stops the moment a dismiss/tap misses rather
+     * than firing the rest blind. The result array stays 1:1 with `actions`.
+     */
     private fun executeBatch(params: JSONObject): JSONObject {
         val actions = params.optJSONArray("actions")
             ?: throw IllegalArgumentException("Missing 'actions' array")
 
         val results = JSONArray()
+        var aborted = false
         for (i in 0 until actions.length()) {
             val action = actions.getJSONObject(i)
+            if (aborted) {
+                results.put(JSONObject().apply { put("skipped", true) })
+                continue
+            }
             val method = action.getString("method")
-            val actionParams = action.optJSONObject("params") ?: JSONObject()
+            val delayMs = action.optLong("delayMs", 0L)
 
+            // A `wait` step is a pure pause between two injections: no device action,
+            // just the on-device delay. Sleep once and report `ms`.
+            if (method == "wait") {
+                if (delayMs > 0L) try { Thread.sleep(delayMs) } catch (_: InterruptedException) {}
+                results.put(JSONObject().apply { put("success", true); put("ms", delayMs) })
+                continue
+            }
+
+            val actionParams = action.optJSONObject("params") ?: JSONObject()
             val request = JSONObject().apply {
                 put("jsonrpc", "2.0")
                 put("method", method)
@@ -298,17 +329,58 @@ class JsonRpcHandler(
             // Recurse through the full handle() so each batched getState's tree is
             // spliced into its own sub-response (per-request; the raw-tree member is
             // removed there, never shipped). `.line` is that sub-response's JSON.
+            val startNs = System.nanoTime()
             val responseStr = handle(request.toString()).line
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0
+
+            var failed = false
             try {
                 val responseJson = JSONObject(responseStr)
-                if (responseJson.has("result")) {
-                    results.put(responseJson.get("result"))
-                } else if (responseJson.has("error")) {
-                    results.put(JSONObject().apply { put("error", responseJson.get("error")) })
+                when {
+                    responseJson.has("result") -> {
+                        val r = responseJson.get("result")
+                        if (r is JSONObject) {
+                            r.put("ms", elapsedMs)
+                            results.put(r)
+                            // A step that ran but did not land (an explicit success:false,
+                            // or a dispatcher-dropped injection) stops the burst.
+                            if (r.has("success") && !r.optBoolean("success", true)) failed = true
+                            if (r.optBoolean("dropped", false)) failed = true
+                        } else {
+                            results.put(JSONObject().apply {
+                                put("result", r)
+                                put("ms", elapsedMs)
+                            })
+                        }
+                    }
+                    responseJson.has("error") -> {
+                        results.put(JSONObject().apply {
+                            put("error", responseJson.get("error"))
+                            put("ms", elapsedMs)
+                        })
+                        failed = true
+                    }
+                    else -> {
+                        results.put(JSONObject().apply {
+                            put("error", "No result or error in response")
+                            put("ms", elapsedMs)
+                        })
+                        failed = true
+                    }
                 }
             } catch (_: Exception) {
-                results.put(JSONObject().apply { put("error", "Failed to parse response") })
+                results.put(JSONObject().apply {
+                    put("error", "Failed to parse response")
+                    put("ms", elapsedMs)
+                })
+                failed = true
             }
+
+            if (failed) {
+                aborted = true
+                continue
+            }
+            if (delayMs > 0L) try { Thread.sleep(delayMs) } catch (_: InterruptedException) {}
         }
         return JSONObject().apply { put("results", results) }
     }

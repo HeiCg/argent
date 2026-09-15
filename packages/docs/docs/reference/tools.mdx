@@ -65,20 +65,65 @@ only. It does not survive a tool-server restart and it adds no device call.
 
 ## Interacting
 
-| Tool                     | Description                                                     |
-| ------------------------ | --------------------------------------------------------------- |
-| `gesture-tap`            | Tap at normalized coordinates                                   |
-| `gesture-swipe`          | Smooth swipe or drag between two points                         |
-| `gesture-scroll`         | Scroll a Chromium app by dispatching mouse-wheel events         |
-| `gesture-drag`           | Press, move, and release the mouse in a Chromium app            |
-| `gesture-pinch`          | Pinch to zoom around a center point                             |
-| `gesture-rotate`         | Two-finger circular arc that rotates on-screen content          |
-| `gesture-custom`         | Send an arbitrary sequence of touch events for complex gestures |
-| `keyboard`               | Type text or press special keys                                 |
-| `paste`                  | Put text on the device clipboard and paste it (sim/emu only)    |
-| `run-sequence`           | Execute several interaction steps in a single call              |
-| `screen-recording-start` | Start recording the screen to an h264 mp4                       |
-| `screen-recording-stop`  | Stop the recording and retrieve the video                       |
+| Tool                     | Description                                                      |
+| ------------------------ | ---------------------------------------------------------------- |
+| `gesture-tap`            | Tap at normalized coordinates                                    |
+| `gesture-swipe`          | Smooth swipe or drag between two points                          |
+| `gesture-scroll`         | Scroll a Chromium app by dispatching mouse-wheel events          |
+| `gesture-drag`           | Press, move, and release the mouse in a Chromium app             |
+| `gesture-pinch`          | Pinch to zoom around a center point                              |
+| `gesture-rotate`         | Two-finger circular arc that rotates on-screen content           |
+| `gesture-custom`         | Send an arbitrary sequence of touch events for complex gestures  |
+| `keyboard`               | Type text or press special keys                                  |
+| `paste`                  | Put text on the device clipboard and paste it (sim/emu only)     |
+| `run-sequence`           | Execute several interaction steps in a single call               |
+| `gesture-sequence`       | Run a burst of steps in one on-device call (Android open server) |
+| `screen-recording-start` | Start recording the screen to an h264 mp4                        |
+| `screen-recording-stop`  | Stop the recording and retrieve the video                        |
+
+### Gesture bursts on the Android open server
+
+`gesture-sequence` runs a burst of steps back-to-back in one on-device call. The
+agent uses it when a transient element must survive between steps. One example is
+a bottom sheet that the agent dismisses and then a control the sheet revealed that
+the agent taps before the sheet animates away. The tool needs the Android
+open-device-server. Other targets use `run-sequence`.
+
+Each step names a `kind` and its parameters:
+
+| `kind`  | Parameters                                                                  |
+| ------- | --------------------------------------------------------------------------- |
+| `tap`   | `x`, `y` (normalized 0–1), or `target: { index, version }`; `clickCount?`   |
+| `swipe` | `fromX`, `fromY`, `toX`, `toY` (normalized 0–1); `durationMs?`; `momentum?` |
+| `key`   | `key` (for example `enter`, `back`, `home`)                                 |
+| `wait`  | `waitMs` (a pause on the device between two steps)                          |
+
+Every step also takes an optional `delayMs`. The device waits that long after the
+step, before the next one. The tool returns `{ completed, total, totalMs, steps }`.
+Each entry in `steps` reports `{ kind, success, dropped?, ms, skipped? }`. On the
+first failing step the device skips the remaining steps and reports them as
+`skipped`, so the burst stops the moment a dismiss or a tap misses.
+
+A burst allows at most **one** `target` index step. Every index resolves against
+the one screen snapshot read before the burst. A second index step would act on a
+screen an earlier step already left, so Argent refuses it with
+`stale_index_in_burst`. Use an index step first, and tap later transient controls
+by coordinate.
+
+### Element-index taps
+
+The `describe` tool has a `tier` parameter on the Android open-device-server path.
+The `index` tier renders one `[i] label (role)` line per interactive element, with
+a per-screen index and a header that names the screen version. The tier lists the
+**active window only**, so an element under a dialog or the keyboard, or past the
+node cap, does not appear. The header states the scope and flags a truncated list.
+
+The agent taps an element by its index. It passes `target: { index, version }` to
+`gesture-tap` or to a `gesture-sequence` `tap` step. Argent reads the live screen
+and resolves the index against the same snapshot version. Argent refuses the tap
+with `stale_index` when the screen moved since the `describe`, and with
+`index_out_of_range` when the index is not on the current screen — no tap is issued
+on a refusal.
 
 ### Verified tap and swipe (Android open server)
 
