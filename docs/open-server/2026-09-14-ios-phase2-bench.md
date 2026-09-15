@@ -14,6 +14,7 @@ review findings (drift floors measured, per-sample arrays, bootstrap CIs, pre-re
 gates, same-run control, effect oracle outside the timed window, no censored metric).
 
 ## Arms
+
 - **OFF-1 / OFF-2**: closed `simulator-server ios` + `ax-service` (the smoke workflow
   already downloads and runs them on `macos-latest` — reuse that recipe; the LICENSE
   forbids redistribution, so fetch at run time only).
@@ -28,6 +29,7 @@ gates, same-run control, effect oracle outside the timed window, no censored met
   is scored per TREE backend, never per input arm — say so in every table).
 
 ## Verbs (N = 20 per verb per block, p50/p95, per-sample arrays persisted)
+
 describe (idle; tree backend `ax-service` vs XCUITest snapshot — two rows, not one),
 gesture-tap (RPC), tap+describe(settle:false), gesture-swipe (250 ms), await-screen-idle,
 await-ui-element. `paste` and `gesture-pinch`: no ON counterpart yet — print the row as
@@ -40,11 +42,13 @@ report the raw offset distribution per arm with IQR (no ratio gate in this phase
 fling gate is a 3o/iOS-3 concern).
 
 ## Pre-registered gates (write into `## Result` BEFORE the run; every gate vs the
+
 proprietary blocks, measured floors from OFF-1↔OFF-2, bootstrap 95 % CI on the p50 Δ)
+
 - G0 control: both OFF blocks and both ON arms present; oracle self-test passed per block.
 - G1 landing ≥ 95 % first-attempt on every block; 0 runner crashes; 0 `sim-input` acks
   timed out.
-- G2 report-only this phase: tap / swipe / await-* / describe Δ vs OFF with CIs and
+- G2 report-only this phase: tap / swipe / await-\* / describe Δ vs OFF with CIs and
   verdict at the floor (win / parity / loss); no promotion decision here.
 - G3 `Σ(stages) ≈ captureMs` for the open tree (≤ 10 ms on 20 samples).
 - G4 tokens: describe payload o200k tokens per tree backend at equal element cap
@@ -53,6 +57,7 @@ proprietary blocks, measured floors from OFF-1↔OFF-2, bootstrap 95 % CI on the
   artifact and the results file header; each artifact file stamped with the run id.
 
 ## Deliverables
+
 `packages/tool-server/scripts/bench-ios-open-vs-proprietary.ts` (mirror of the Android
 script's block/verb/oracle/per-sample structure; iOS drivers behind one interface),
 `.github/bench-ci/merge-blocks-ios.js` + scoreboard rows (or parametrise the Android
@@ -65,6 +70,7 @@ statistic/block/N/run id, `## Result` on this ticket. Scoreboard untouched (plan
 adds an iOS section after adversarial review).
 
 ## Constraints
+
 Worktree `../argent-fork-wt-ios2` on branch `feat/ios-open-server-2-bench` off
 `open/main` (never /tmp; root `node_modules` symlinked; no npm install / Xcode / swift
 build / simulators locally — all in CI; vitest `--maxWorkers=2`). Budget: up to FOUR
@@ -79,6 +85,7 @@ bench files another agent (3n.3) is editing: `.github/bench-ci/merge-blocks.js`,
 you parametrise by platform, do it in NEW files and leave the Android ones alone.
 
 ## Acceptance
+
 One run with all four blocks complete, G0/G1/G3/G5 green, G2 and G4 reported with CIs
 and floors, optical scroll offsets per arm, results file + Result written; adversarial
 review before any iOS row enters the scoreboard.
@@ -114,7 +121,7 @@ arm — ON-xcuitest and ON-siminput share the one XCUITest describe row.
   loop: navDiff ≥ 0.02 AND rootDiff < navDiff after BACK). FATAL.
 - **G1 landing** — first-attempt landing ≥ 95 % on every block; 0 runner crashes;
   0 `sim-input` acks timed out. FATAL.
-- **G2 report-only** — tap / swipe / await-* / describe Δ vs pooled OFF with a
+- **G2 report-only** — tap / swipe / await-\* / describe Δ vs pooled OFF with a
   bootstrap 95 % CI on the p50 Δ and a verdict at the drift floor (win / parity /
   loss). No promotion decision this phase.
 - **G3 stage sums** — `Σ(stages) ≈ captureMs` for the open tree (≤ 10 ms on 20

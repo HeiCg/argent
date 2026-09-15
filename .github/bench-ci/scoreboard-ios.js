@@ -15,7 +15,14 @@ const path = require("path");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
-const VERBS = ["describe", "gesture-tap", "tap+describe(settle:false)", "gesture-swipe", "await-screen-idle", "await-ui-element"];
+const VERBS = [
+  "describe",
+  "gesture-tap",
+  "tap+describe(settle:false)",
+  "gesture-swipe",
+  "await-screen-idle",
+  "await-ui-element",
+];
 
 function latestMerged() {
   const cands = fs
@@ -39,7 +46,9 @@ const merged = latestMerged();
 const bl = blocks();
 const present = ALL.filter((n) => bl[n]);
 const L = [];
-L.push("## iOS-2 open-driver bench — scoreboard (NOT the shared scoreboard; planner adds the iOS section after review)\n");
+L.push(
+  "## iOS-2 open-driver bench — scoreboard (NOT the shared scoreboard; planner adds the iOS section after review)\n"
+);
 
 // Process header (G5).
 const env = merged ? merged.env : present[0] ? bl[present[0]].env : {};
@@ -52,7 +61,9 @@ L.push(`| runtime | ${env.runtime || "—"} |`);
 L.push(`| device type | ${env.deviceType || "—"} |`);
 L.push(`| tokenizer | ${env.tokenizer || "—"} |`);
 L.push(`| N per verb | ${env.N || "—"} |`);
-L.push(`| describe cap (G4) | ${env.describeCap || (merged && merged.g4 && merged.g4.cap) || "—"} |`);
+L.push(
+  `| describe cap (G4) | ${env.describeCap || (merged && merged.g4 && merged.g4.cap) || "—"} |`
+);
 L.push(`| blocks ran | ${present.join(", ") || "—"} |\n`);
 
 // Verb table per block.
@@ -70,11 +81,15 @@ for (const verb of VERBS) {
   L.push(`| ${verb} | ${cells.join(" | ")} |`);
 }
 // paste / pinch N/A row is emitted by the verbs themselves above.
-L.push("\n_describe has two TREE-backend rows by construction: ax-service (OFF-1/OFF-2) vs XCUITest snapshot (ON-xcuitest/ON-siminput). ON-siminput shares the ON-xcuitest tree — its describe row is the XCUITest backend, not a separate input arm. `paste` and `gesture-pinch` are `N/A (iOS-4)`._\n");
+L.push(
+  "\n_describe has two TREE-backend rows by construction: ax-service (OFF-1/OFF-2) vs XCUITest snapshot (ON-xcuitest/ON-siminput). ON-siminput shares the ON-xcuitest tree — its describe row is the XCUITest backend, not a separate input arm. `paste` and `gesture-pinch` are `N/A (iOS-4)`._\n"
+);
 
 // G2 Δ vs OFF.
 if (merged && merged.g2) {
-  L.push("### G2 (report-only) — Δ vs pooled OFF per verb, drift floor, bootstrap 95% CI on the p50 Δ, verdict\n");
+  L.push(
+    "### G2 (report-only) — Δ vs pooled OFF per verb, drift floor, bootstrap 95% CI on the p50 Δ, verdict\n"
+  );
   L.push("| verb | OFF p50 (OFF-1/OFF-2) | floor | arm | ON p50 | Δ | CI95 | verdict |");
   L.push("|---|---|---|---|---|---|---|---|");
   for (const verb of VERBS) {
@@ -82,7 +97,9 @@ if (merged && merged.g2) {
     if (!row) continue;
     const armNames = Object.keys(row.arms);
     if (armNames.length === 0) {
-      L.push(`| ${verb} | ${fx(row.offP50)} (${fx(row.off1P50)}/${fx(row.off2P50)}) | ${fx(row.floor, 2)} | — | — | — | — | — |`);
+      L.push(
+        `| ${verb} | ${fx(row.offP50)} (${fx(row.off1P50)}/${fx(row.off2P50)}) | ${fx(row.floor, 2)} | — | — | — | — | — |`
+      );
       continue;
     }
     armNames.forEach((a, i) => {
@@ -92,23 +109,31 @@ if (merged && merged.g2) {
       );
     });
   }
-  L.push("\n_Verdict at the floor: win = CI entirely below −floor (ON faster than OFF by more than same-run drift); loss = CI entirely above +floor; else parity. Report-only this phase — no promotion._\n");
+  L.push(
+    "\n_Verdict at the floor: win = CI entirely below −floor (ON faster than OFF by more than same-run drift); loss = CI entirely above +floor; else parity. Report-only this phase — no promotion._\n"
+  );
 }
 
 // Landing rates.
 L.push("### G1 — first-attempt landing per block (with denominators)\n");
-L.push("| block | first-attempt landed / checked | rate | runner crashes | sim-input ack timeouts |");
+L.push(
+  "| block | first-attempt landed / checked | rate | runner crashes | sim-input ack timeouts |"
+);
 L.push("|---|---|---|---|---|");
 for (const n of present) {
   const b = bl[n].block;
   const c = b.effectCheckedTotal || 0;
   const landed = c - (b.firstTapNoEffectTotal || 0);
-  L.push(`| ${n} | ${landed} / ${c} | ${c > 0 ? ((landed / c) * 100).toFixed(1) + "%" : "—"} | ${b.runnerCrashes || 0} | ${b.simInputAckTimeouts || 0} |`);
+  L.push(
+    `| ${n} | ${landed} / ${c} | ${c > 0 ? ((landed / c) * 100).toFixed(1) + "%" : "—"} | ${b.runnerCrashes || 0} | ${b.simInputAckTimeouts || 0} |`
+  );
 }
 L.push("");
 
 // Optical scroll offsets.
-L.push("### Optical scroll offset per arm (strip cross-correlation on simctl screenshots; pixels, no clamp)\n");
+L.push(
+  "### Optical scroll offset per arm (strip cross-correlation on simctl screenshots; pixels, no clamp)\n"
+);
 L.push("| block | median dyPx | IQR (q1–q3) | confidence refusals | n (accepted) |");
 L.push("|---|---|---|---|---|");
 for (const n of present) {
@@ -117,19 +142,31 @@ for (const n of present) {
     L.push(`| ${n} | — | — | — | — |`);
     continue;
   }
-  L.push(`| ${n} | ${fx(s.median)} | ${fx(s.q1)}–${fx(s.q3)} (IQR ${fx(s.iqr)}) | ${s.refusals} | ${s.n} |`);
+  L.push(
+    `| ${n} | ${fx(s.median)} | ${fx(s.q1)}–${fx(s.q3)} (IQR ${fx(s.iqr)}) | ${s.refusals} | ${s.n} |`
+  );
 }
-L.push("\n_Optical, not tree survivorship; no ratio gate this phase (the fling gate is 3o/iOS-3). Refusals = ambiguous cross-correlation matches, excluded from the distribution and counted._\n");
+L.push(
+  "\n_Optical, not tree survivorship; no ratio gate this phase (the fling gate is 3o/iOS-3). Refusals = ambiguous cross-correlation matches, excluded from the distribution and counted._\n"
+);
 
 // G4 tokens.
 if (merged && merged.g4) {
-  L.push(`### G4 — describe tokens per TREE backend at the equal element cap (cap = ${merged.g4.cap})\n`);
-  L.push("| tree backend | source | elements (denominator) | tokens (uncapped) | tokens@cap | capElements |");
+  L.push(
+    `### G4 — describe tokens per TREE backend at the equal element cap (cap = ${merged.g4.cap})\n`
+  );
+  L.push(
+    "| tree backend | source | elements (denominator) | tokens (uncapped) | tokens@cap | capElements |"
+  );
   L.push("|---|---|---|---|---|---|");
   for (const [backend, d] of Object.entries(merged.g4.backends)) {
-    L.push(`| ${backend} | ${d.source} | ${d.elements} | ${d.tokens} | ${d.capTokens} | ${d.capElements} |`);
+    L.push(
+      `| ${backend} | ${d.source} | ${d.elements} | ${d.tokens} | ${d.capTokens} | ${d.capElements} |`
+    );
   }
-  L.push("\n_o200k tokens. The cap is the equal element budget; the denominator is the per-backend element count at the idle Settings root._\n");
+  L.push(
+    "\n_o200k tokens. The cap is the equal element budget; the denominator is the per-backend element count at the idle Settings root._\n"
+  );
 }
 
 // G3 stage sums.
@@ -145,8 +182,12 @@ if (merged && merged.gates && merged.gates.G3) {
 
 // Fidelity.
 if (merged && merged.fidelity) {
-  L.push(`### Fidelity — OFF-1 (ax-service) vs ${merged.fidelity.off1_vs} (XCUITest) describe identity\n`);
-  L.push(`Jaccard = ${merged.fidelity.jaccard} (OFF elements ${merged.fidelity.offCount}, ON elements ${merged.fidelity.onCount}).\n`);
+  L.push(
+    `### Fidelity — OFF-1 (ax-service) vs ${merged.fidelity.off1_vs} (XCUITest) describe identity\n`
+  );
+  L.push(
+    `Jaccard = ${merged.fidelity.jaccard} (OFF elements ${merged.fidelity.offCount}, ON elements ${merged.fidelity.onCount}).\n`
+  );
 }
 
 // Gate verdicts.
@@ -154,10 +195,16 @@ L.push("### Gate verdicts\n");
 if (merged && merged.gates) {
   const g = merged.gates;
   const status = (x) => (x.passed ? "GREEN" : "RED");
-  L.push(`- G0 control: ${status(g.G0)}${g.G0.notes && g.G0.notes.length ? " — " + g.G0.notes.join("; ") : ""}`);
-  L.push(`- G1 landing/crashes/ack: ${status(g.G1)}${g.G1.notes && g.G1.notes.length ? " — " + g.G1.notes.join("; ") : ""}`);
+  L.push(
+    `- G0 control: ${status(g.G0)}${g.G0.notes && g.G0.notes.length ? " — " + g.G0.notes.join("; ") : ""}`
+  );
+  L.push(
+    `- G1 landing/crashes/ack: ${status(g.G1)}${g.G1.notes && g.G1.notes.length ? " — " + g.G1.notes.join("; ") : ""}`
+  );
   L.push(`- G2 report-only: reported above (no pass/fail)`);
-  L.push(`- G3 stage sums: ${status(g.G3)}${g.G3.notes && g.G3.notes.length ? " — " + g.G3.notes.join("; ") : ""}`);
+  L.push(
+    `- G3 stage sums: ${status(g.G3)}${g.G3.notes && g.G3.notes.length ? " — " + g.G3.notes.join("; ") : ""}`
+  );
   L.push(`- G4 tokens: reported above (no pass/fail)`);
   L.push(`- G5 process: header above`);
 } else {

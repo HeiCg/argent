@@ -70,7 +70,14 @@ describe("IosSimInputService — framing", () => {
     expect(lines).toHaveLength(2);
     const cmd1 = JSON.parse(lines[0]!);
     const cmd2 = JSON.parse(lines[1]!);
-    expect(cmd1).toMatchObject({ id: 1, type: "tap", x: 10, y: 20, screenWidth: 390, screenHeight: 844 });
+    expect(cmd1).toMatchObject({
+      id: 1,
+      type: "tap",
+      x: 10,
+      y: 20,
+      screenWidth: 390,
+      screenHeight: 844,
+    });
     expect(cmd2).toMatchObject({ id: 2, type: "text", text: "hi" });
     // id must be the FIRST key (stamped before the envelope spread).
     expect(Object.keys(cmd1)[0]).toBe("id");
@@ -87,7 +94,14 @@ describe("IosSimInputService — framing", () => {
     const { svc, children, written } = serviceWithChild();
     const p = svc.swipe("UDID-A", { fromX: 1, fromY: 2, toX: 3, toY: 4, width: 390, height: 844 });
     const cmd = JSON.parse(written[0]!.join("").trim());
-    expect(cmd).toMatchObject({ type: "swipe", fromX: 1, toY: 4, durationMs: 250, screenWidth: 390, screenHeight: 844 });
+    expect(cmd).toMatchObject({
+      type: "swipe",
+      fromX: 1,
+      toY: 4,
+      durationMs: 250,
+      screenWidth: 390,
+      screenHeight: 844,
+    });
     pushAck(children[0]!, { id: cmd.id, ok: true });
     await expect(p).resolves.toBeUndefined();
   });
@@ -118,8 +132,12 @@ describe("IosSimInputService — ack queue", () => {
   it("falls back to FIFO when the ack carries no id", async () => {
     const { svc, children } = serviceWithChild();
     const seen: string[] = [];
-    const p1 = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 }).then(() => seen.push("first"));
-    const p2 = svc.tap("UDID-A", { x: 2, y: 2, width: 10, height: 10 }).then(() => seen.push("second"));
+    const p1 = svc
+      .tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 })
+      .then(() => seen.push("first"));
+    const p2 = svc
+      .tap("UDID-A", { x: 2, y: 2, width: 10, height: 10 })
+      .then(() => seen.push("second"));
     // No id on either ack → pop the head of the pending queue each time.
     pushAck(children[0]!, { ok: true });
     await p1;

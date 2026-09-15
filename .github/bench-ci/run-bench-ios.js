@@ -19,4 +19,9 @@ require("ts-node").register({
     ignoreDeprecations: "6.0",
   },
 });
-require(require("node:path").resolve(process.cwd(), "packages/tool-server/scripts/bench-ios-open-vs-proprietary.ts"));
+require(
+  require("node:path").resolve(
+    process.cwd(),
+    "packages/tool-server/scripts/bench-ios-open-vs-proprietary.ts"
+  )
+);

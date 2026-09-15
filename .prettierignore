@@ -21,8 +21,3 @@ scripts/e2e-full/results/
 
 # Assets Prettier has no parser for.
 **/*.svg
-
-# Owned by the in-flight ios-2 bench agent (worktree wt-ios2, branch
-# feat/ios-open-server-2-bench). It is unformatted on open/main; formatting it
-# here would collide with that agent. ios-2 formats and un-ignores it on merge.
-docs/open-server/2026-09-14-ios-phase2-bench.md

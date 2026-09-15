@@ -36,7 +36,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as os from "node:os";
 import { createRegistry } from "../src/utils/setup-registry";
-import { setFlag, unsetFlag } from "@argent/configuration-core";
+import { unsetFlag } from "@argent/configuration-core";
 import {
   IosOpenServerClient,
   type IosOpenServerNode,
@@ -65,7 +65,8 @@ const DESCRIBE_CAP = Number(process.env.BENCH_DESCRIBE_CAP ?? 400);
 const SETTINGS = "com.apple.Preferences";
 const TARGET_LABEL = process.env.BENCH_TAP_TARGET ?? "General";
 
-if (!UDID) throw new Error("BENCH_UDID / IOS_OPEN_SERVER_UDID must be set (the booted simulator udid)");
+if (!UDID)
+  throw new Error("BENCH_UDID / IOS_OPEN_SERVER_UDID must be set (the booted simulator udid)");
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -160,13 +161,6 @@ function capDescribe(desc: string, cap: number): string {
   const body = describeBody(desc).slice(0, cap);
   return [...head, ...body].join("\n");
 }
-function jaccard(a: string[], b: string[]): number {
-  const A = new Set(a);
-  const B = new Set(b);
-  const inter = [...A].filter((x) => B.has(x)).length;
-  const uni = new Set([...a, ...b]).size;
-  return uni === 0 ? 1 : Number((inter / uni).toFixed(3));
-}
 
 /* -------------------------------------------------------------------------- */
 /* simctl screenshots + optical metrics (backend-independent)                 */
@@ -218,7 +212,9 @@ interface Bmp {
  * on a hosted runner while staying well above the 2% effect threshold. */
 async function toBmp(png: string, longest = 160): Promise<Bmp> {
   const bmp = png.replace(/\.png$/, ".bmp");
-  await execFileAsync("sips", ["-s", "format", "bmp", "-Z", String(longest), png, "--out", bmp], { timeout: 20_000 });
+  await execFileAsync("sips", ["-s", "format", "bmp", "-Z", String(longest), png, "--out", bmp], {
+    timeout: 20_000,
+  });
   const buf = readFileSync(bmp);
   const offset = buf.readUInt32LE(10);
   const width = buf.readInt32LE(18);
@@ -434,7 +430,9 @@ class OffArm implements Arm {
   }
   async ensureRoot(): Promise<void> {
     await relaunchViaSimctl();
-    await this.reg.invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 2500 }).catch(() => undefined);
+    await this.reg
+      .invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 2500 })
+      .catch(() => undefined);
   }
   async goBack(): Promise<void> {
     // iOS has no reliable global back gesture; relaunching Settings is the only
@@ -507,7 +505,9 @@ function findTappableByLabel(
   };
   const hittable = matches.filter((n) => n.hittable && onScreen(n));
   const pool = hittable.length ? hittable : matches.filter(onScreen);
-  const chosen = (pool.length ? pool : matches).slice().sort((a, b) => a.bounds.y1 - b.bounds.y1)[0];
+  const chosen = (pool.length ? pool : matches)
+    .slice()
+    .sort((a, b) => a.bounds.y1 - b.bounds.y1)[0];
   return chosen;
 }
 function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | undefined {
@@ -530,7 +530,11 @@ class OpenTree {
   }
   async describe(): Promise<DescribeSample> {
     const st = await this.client.getNestedState();
-    const node = openServerIosNestedToDescribeNode(st.tree, st.info.screenWidth, st.info.screenHeight);
+    const node = openServerIosNestedToDescribeNode(
+      st.tree,
+      st.info.screenWidth,
+      st.info.screenHeight
+    );
     const text = formatDescribeTree(node, { source: "open-device-server" });
     return {
       backend: "xcuitest",
@@ -790,13 +794,19 @@ function parseFrame(line: string): { x: number; y: number; width: number; height
 
 async function relaunchViaSimctl(): Promise<void> {
   try {
-    execFileSync("xcrun", ["simctl", "terminate", UDID, SETTINGS], { stdio: "ignore", timeout: 15_000 });
+    execFileSync("xcrun", ["simctl", "terminate", UDID, SETTINGS], {
+      stdio: "ignore",
+      timeout: 15_000,
+    });
   } catch {
     /* not running */
   }
   await sleep(200);
   try {
-    execFileSync("xcrun", ["simctl", "launch", UDID, SETTINGS], { stdio: "ignore", timeout: 15_000 });
+    execFileSync("xcrun", ["simctl", "launch", UDID, SETTINGS], {
+      stdio: "ignore",
+      timeout: 15_000,
+    });
   } catch {
     /* ignore */
   }
@@ -841,10 +851,18 @@ async function timeCalls(
       lat.push(Date.now() - t0);
     } catch (e) {
       errors++;
-      if (errorSamples.length < 5) errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+      if (errorSamples.length < 5)
+        errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  return { verb: label, latency: summarize(lat), latencySamples: lat.slice(), errors, errorSamples, extra: extra?.() };
+  return {
+    verb: label,
+    latency: summarize(lat),
+    latencySamples: lat.slice(),
+    errors,
+    errorSamples,
+    extra: extra?.(),
+  };
 }
 
 interface TapEffectResult extends VerbResult {
@@ -870,7 +888,7 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
   const errorSamples: string[] = [];
   let effectChecked = 0;
   let effectZero = 0;
-  let originLost = 0;
+  const originLost = 0;
   let locateFailed = 0;
   const noEffectSamples: string[] = [];
 
@@ -909,14 +927,18 @@ async function timeTapEffect(arm: Arm, target: string): Promise<TapEffectResult>
     if (record) {
       if (tapErr) {
         errors++;
-        if (errorSamples.length < 5) errorSamples.push(`tap: ${tapErr instanceof Error ? tapErr.message : String(tapErr)}`);
+        if (errorSamples.length < 5)
+          errorSamples.push(`tap: ${tapErr instanceof Error ? tapErr.message : String(tapErr)}`);
       } else {
         lat.push(dt);
       }
       effectChecked++;
       if (!landed) {
         effectZero++;
-        if (noEffectSamples.length < 8) noEffectSamples.push(`${arm.name} tap@(${coord.x.toFixed(3)},${coord.y.toFixed(3)}) no-effect`);
+        if (noEffectSamples.length < 8)
+          noEffectSamples.push(
+            `${arm.name} tap@(${coord.x.toFixed(3)},${coord.y.toFixed(3)}) no-effect`
+          );
       }
     }
     // No trailing restore: the NEXT iteration's `ensureRoot()` (relaunch) is the
@@ -981,12 +1003,17 @@ async function timeSwipeOptical(arm: Arm): Promise<{ verb: VerbResult; scroll: S
     const dt = Date.now() - t0;
     await sleep(500); // settle OUTSIDE the timed window before the optical read
     const after = await simctlScreenshot("swipe-after");
-    const off = await opticalScrollOffset(before, after, region).catch(() => ({ dyPx: NaN, confidence: 0, refused: true }));
+    const off = await opticalScrollOffset(before, after, region).catch(() => ({
+      dyPx: NaN,
+      confidence: 0,
+      refused: true,
+    }));
     rmShot(before, after);
     if (record) {
       if (err) {
         errors++;
-        if (errorSamples.length < 5) errorSamples.push(`swipe: ${err instanceof Error ? err.message : String(err)}`);
+        if (errorSamples.length < 5)
+          errorSamples.push(`swipe: ${err instanceof Error ? err.message : String(err)}`);
       } else {
         lat.push(dt);
       }
@@ -1000,7 +1027,13 @@ async function timeSwipeOptical(arm: Arm): Promise<{ verb: VerbResult; scroll: S
 
   const q = iqr(offsets);
   return {
-    verb: { verb: "gesture-swipe", latency: summarize(lat), latencySamples: lat.slice(), errors, errorSamples },
+    verb: {
+      verb: "gesture-swipe",
+      latency: summarize(lat),
+      latencySamples: lat.slice(),
+      errors,
+      errorSamples,
+    },
     scroll: {
       arm: arm.name,
       offsetsPx: offsets.slice(),
@@ -1036,7 +1069,13 @@ interface BlockResult {
   };
   describeStages: { n: number; maxDelta: number; samples: StageSample[] } | null;
   scroll: ScrollResult | null;
-  oracle: { selfTestPassed: boolean; target: string; navDiff: number; rootDiff: number; note: string };
+  oracle: {
+    selfTestPassed: boolean;
+    target: string;
+    navDiff: number;
+    rootDiff: number;
+    note: string;
+  };
   effectCheckedTotal: number;
   firstTapNoEffectTotal: number;
   effectZeroTotal: number;
@@ -1068,16 +1107,28 @@ function makeArm(block: string): Arm {
 
 /** G0 oracle self-test with one retry (a transient screenshot blip or a first
  * cold tap must not fail the block on its own). */
-async function oracleSelfTest(arm: Arm, target: string): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
+async function oracleSelfTest(
+  arm: Arm,
+  target: string
+): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
   let last = await oracleSelfTestOnce(arm, target);
   if (!last.selfTestPassed) last = await oracleSelfTestOnce(arm, target);
   return last;
 }
-async function oracleSelfTestOnce(arm: Arm, target: string): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
+async function oracleSelfTestOnce(
+  arm: Arm,
+  target: string
+): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
   try {
     await arm.ensureRoot();
     const coord = await arm.locate(target);
-    if (!coord) return { selfTestPassed: false, navDiff: 0, rootDiff: 0, note: `target "${target}" not found on root` };
+    if (!coord)
+      return {
+        selfTestPassed: false,
+        navDiff: 0,
+        rootDiff: 0,
+        note: `target "${target}" not found on root`,
+      };
     const rootShot = await simctlScreenshot("oracle-root");
     await arm.tap(coord);
     await sleep(1200);
@@ -1095,10 +1146,17 @@ async function oracleSelfTestOnce(arm: Arm, target: string): Promise<{ selfTestP
       selfTestPassed,
       navDiff: Number(navDiff.toFixed(4)),
       rootDiff: Number(rootDiff.toFixed(4)),
-      note: selfTestPassed ? "ok" : `navDiff=${navDiff.toFixed(4)} rootDiff=${rootDiff.toFixed(4)} (needs navDiff>=0.02 and rootDiff<navDiff)`,
+      note: selfTestPassed
+        ? "ok"
+        : `navDiff=${navDiff.toFixed(4)} rootDiff=${rootDiff.toFixed(4)} (needs navDiff>=0.02 and rootDiff<navDiff)`,
     };
   } catch (e) {
-    return { selfTestPassed: false, navDiff: 0, rootDiff: 0, note: `self-test threw: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      selfTestPassed: false,
+      navDiff: 0,
+      rootDiff: 0,
+      note: `self-test threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
 }
 
@@ -1120,7 +1178,8 @@ async function runBlock(block: string): Promise<BlockResult> {
     await sleep(600);
     desc = await arm.describe();
   }
-  if (desc.elements === 0) notes.push("describe tree was still empty after warmup (backend not injectable?)");
+  if (desc.elements === 0)
+    notes.push("describe tree was still empty after warmup (backend not injectable?)");
   const capped = capDescribe(desc.text, DESCRIBE_CAP);
   const describeSample = {
     backend: desc.backend,
@@ -1157,7 +1216,11 @@ async function runBlock(block: string): Promise<BlockResult> {
       if (s) samples.push(s);
     }
     if (samples.length) {
-      describeStages = { n: samples.length, maxDelta: Math.max(...samples.map((s) => s.delta)), samples };
+      describeStages = {
+        n: samples.length,
+        maxDelta: Math.max(...samples.map((s) => s.delta)),
+        samples,
+      };
     }
   }
 
@@ -1198,7 +1261,9 @@ async function runBlock(block: string): Promise<BlockResult> {
   );
   verbs.push(awaitIdleVerb);
   if (awaitIdleVerb.latency.min >= 3990 && awaitIdleVerb.latency.n > 0) {
-    degradedReasons.push("await-screen-idle capped on every iteration (wrong/never-settling screen)");
+    degradedReasons.push(
+      "await-screen-idle capped on every iteration (wrong/never-settling screen)"
+    );
   }
 
   // ---- verb: await-ui-element -----------------------------------------------
@@ -1212,12 +1277,29 @@ async function runBlock(block: string): Promise<BlockResult> {
   }
 
   // ---- paste / gesture-pinch: no ON counterpart yet (iOS-4) -----------------
-  verbs.push({ verb: "paste", latency: summarize([]), latencySamples: [], errors: 0, errorSamples: [], extra: { na: "N/A (iOS-4)" } });
-  verbs.push({ verb: "gesture-pinch", latency: summarize([]), latencySamples: [], errors: 0, errorSamples: [], extra: { na: "N/A (iOS-4)" } });
+  verbs.push({
+    verb: "paste",
+    latency: summarize([]),
+    latencySamples: [],
+    errors: 0,
+    errorSamples: [],
+    extra: { na: "N/A (iOS-4)" },
+  });
+  verbs.push({
+    verb: "gesture-pinch",
+    latency: summarize([]),
+    latencySamples: [],
+    errors: 0,
+    errorSamples: [],
+    extra: { na: "N/A (iOS-4)" },
+  });
 
   const effectCheckedTotal = tapVerb.effectChecked;
   const firstTapNoEffectTotal = tapVerb.firstTapNoEffect;
-  const landingRate = effectCheckedTotal > 0 ? Number(((effectCheckedTotal - firstTapNoEffectTotal) / effectCheckedTotal).toFixed(4)) : null;
+  const landingRate =
+    effectCheckedTotal > 0
+      ? Number(((effectCheckedTotal - firstTapNoEffectTotal) / effectCheckedTotal).toFixed(4))
+      : null;
 
   const result: BlockResult = {
     block,
@@ -1261,8 +1343,12 @@ async function xcodebuildVersion(): Promise<string> {
 }
 async function simctlRuntime(): Promise<{ runtime: string; deviceType: string }> {
   try {
-    const { stdout } = await execFileAsync("xcrun", ["simctl", "list", "devices", "-j"], { timeout: 15_000 });
-    const j = JSON.parse(stdout) as { devices: Record<string, Array<{ udid: string; name: string; deviceTypeIdentifier?: string }>> };
+    const { stdout } = await execFileAsync("xcrun", ["simctl", "list", "devices", "-j"], {
+      timeout: 15_000,
+    });
+    const j = JSON.parse(stdout) as {
+      devices: Record<string, Array<{ udid: string; name: string; deviceTypeIdentifier?: string }>>;
+    };
     for (const [runtime, list] of Object.entries(j.devices)) {
       const hit = list.find((d) => d.udid === UDID);
       if (hit) return { runtime, deviceType: hit.deviceTypeIdentifier ?? hit.name };
@@ -1292,21 +1378,19 @@ async function main(): Promise<void> {
     deviceType,
     macosVersion: os.release(),
   };
-  // eslint-disable-next-line no-console
   console.log("[bench-ios] env:", JSON.stringify(env));
 
   const ALL_BLOCKS = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
   const only = process.env.BENCH_ONLY;
   const toRun = only ? ALL_BLOCKS.filter((b) => b === only) : ALL_BLOCKS;
-  if (only && toRun.length === 0) throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.join("|")}`);
+  if (only && toRun.length === 0)
+    throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.join("|")}`);
 
   const blocks: BlockResult[] = [];
   for (const block of toRun) {
-    // eslint-disable-next-line no-console
     console.log(`########## BLOCK ${block} ##########`);
     const r = await runBlock(block);
     blocks.push(r);
-    // eslint-disable-next-line no-console
     console.log(
       `[bench-ios][${block}] backend=${r.treeBackend} oracleSelfTest=${r.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
         `landing=${r.effectCheckedTotal - r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
@@ -1325,14 +1409,16 @@ async function main(): Promise<void> {
   }
 
   const outPath = join(OUT_DIR, `bench-ios-${started.replace(/[:.]/g, "-")}.json`);
-  writeFileSync(outPath, JSON.stringify({ env, blocks, finishedAt: new Date().toISOString() }, null, 2));
+  writeFileSync(
+    outPath,
+    JSON.stringify({ env, blocks, finishedAt: new Date().toISOString() }, null, 2)
+  );
   process.stdout.write(`RESULT_JSON=${outPath}\n`);
 }
 
 main()
   .then(() => process.exit(0))
   .catch((e) => {
-    // eslint-disable-next-line no-console
     console.error("[bench-ios] FATAL", e);
     process.exit(1);
   });

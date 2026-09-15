@@ -157,6 +157,10 @@
       // The scripts/ bench harnesses are all reached only in ways knip cannot
       // trace, so each is declared here or it reads as an unused file:
       //   - bench-open-vs-proprietary.ts — run-bench.js path-loads it via ts-node.
+      //   - bench-ios-open-vs-proprietary.ts — run-bench-ios.js path-loads it via
+      //     ts-node (iOS simulator latency bench, ticket ios-2). The .js loader and
+      //     merge-blocks-ios.js / scoreboard-ios.js are each `node`-invoked from a
+      //     run: step the github-actions plugin parses, so only the .ts is untraceable.
       //   - bench-preflight.ts / bench-screen-graph.ts — the bench workflow's inline
       //     `node -e "require('ts-node')…require('…bench-screen-graph.ts')"` loaders
       //     (and the run-preflight.cjs / run-bench-sg.cjs local runners) load them
@@ -169,6 +173,7 @@
       //     same loader, so nothing imports these files.
       "entry": [
         "scripts/bench-open-vs-proprietary.ts",
+        "scripts/bench-ios-open-vs-proprietary.ts",
         "scripts/bench-preflight.ts",
         "scripts/bench-screen-graph.ts",
         "scripts/bench-fling-fidelity.ts",

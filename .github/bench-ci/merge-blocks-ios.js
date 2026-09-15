@@ -18,7 +18,14 @@ const path = require("path");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
-const VERBS = ["describe", "gesture-tap", "tap+describe(settle:false)", "gesture-swipe", "await-screen-idle", "await-ui-element"];
+const VERBS = [
+  "describe",
+  "gesture-tap",
+  "tap+describe(settle:false)",
+  "gesture-swipe",
+  "await-screen-idle",
+  "await-ui-element",
+];
 const LANDING_FLOOR = 0.95;
 const STAGE_DELTA_MS = 10;
 const BOOT = Number(process.env.BENCH_BOOTSTRAP || 2000);
@@ -39,7 +46,10 @@ function pct(sortedAsc, p) {
   return sortedAsc[Math.max(0, idx)];
 }
 function p50(xs) {
-  return pct(xs.slice().sort((a, b) => a - b), 50);
+  return pct(
+    xs.slice().sort((a, b) => a - b),
+    50
+  );
 }
 function resample(xs, rng) {
   const out = new Array(xs.length);
@@ -69,7 +79,9 @@ function bootstrapDiffCI(on, off) {
 
 function verbSamples(block, verb) {
   const v = (block.verbs || []).find((x) => x.verb === verb);
-  return v && Array.isArray(v.latencySamples) ? v.latencySamples.filter((n) => Number.isFinite(n)) : [];
+  return v && Array.isArray(v.latencySamples)
+    ? v.latencySamples.filter((n) => Number.isFinite(n))
+    : [];
 }
 
 // ---- load + presence (G0) --------------------------------------------------
@@ -78,7 +90,10 @@ const present = ALL.filter((n) => files[n]);
 console.log(`iOS blocks present: ${present.join(", ") || "(none)"}`);
 for (const n of present) {
   const b = files[n].block;
-  const land = b.effectCheckedTotal > 0 ? ((b.effectCheckedTotal - b.firstTapNoEffectTotal) / b.effectCheckedTotal) * 100 : null;
+  const land =
+    b.effectCheckedTotal > 0
+      ? ((b.effectCheckedTotal - b.firstTapNoEffectTotal) / b.effectCheckedTotal) * 100
+      : null;
   console.log(
     `  ${n}: backend=${b.treeBackend} oracleSelfTest=${b.oracle && b.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
       `landing=${b.effectCheckedTotal - b.firstTapNoEffectTotal}/${b.effectCheckedTotal}` +
@@ -91,8 +106,11 @@ const failures = [];
 
 // G0 control: both OFF blocks and both ON arms present + oracle self-test passed.
 const missing = ALL.filter((n) => !files[n]);
-if (missing.length) failures.push(`G0: missing block(s): ${missing.join(", ")} (all four required)`);
-const oracleFailed = present.filter((n) => !(files[n].block.oracle && files[n].block.oracle.selfTestPassed));
+if (missing.length)
+  failures.push(`G0: missing block(s): ${missing.join(", ")} (all four required)`);
+const oracleFailed = present.filter(
+  (n) => !(files[n].block.oracle && files[n].block.oracle.selfTestPassed)
+);
 if (oracleFailed.length)
   failures.push(
     `G0: oracle self-test FAILED on block(s): ${oracleFailed.map((n) => `${n} (${files[n].block.oracle && files[n].block.oracle.note})`).join("; ")}`
@@ -105,12 +123,17 @@ for (const n of present) {
   if (c > 0) {
     const miss = b.firstTapNoEffectTotal || 0;
     const rate = (c - miss) / c;
-    if (rate < LANDING_FLOOR) failures.push(`G1: landing ${(rate * 100).toFixed(1)}% < 95% on ${n} (${c - miss}/${c})`);
+    if (rate < LANDING_FLOOR)
+      failures.push(`G1: landing ${(rate * 100).toFixed(1)}% < 95% on ${n} (${c - miss}/${c})`);
   } else {
-    failures.push(`G1: ${n} armed 0 effect-checked taps (denominator 0 — the tap oracle never ran)`);
+    failures.push(
+      `G1: ${n} armed 0 effect-checked taps (denominator 0 — the tap oracle never ran)`
+    );
   }
-  if ((b.runnerCrashes || 0) > 0) failures.push(`G1: ${n} runnerCrashes=${b.runnerCrashes} (must be 0)`);
-  if ((b.simInputAckTimeouts || 0) > 0) failures.push(`G1: ${n} sim-input ackTimeouts=${b.simInputAckTimeouts} (must be 0)`);
+  if ((b.runnerCrashes || 0) > 0)
+    failures.push(`G1: ${n} runnerCrashes=${b.runnerCrashes} (must be 0)`);
+  if ((b.simInputAckTimeouts || 0) > 0)
+    failures.push(`G1: ${n} sim-input ackTimeouts=${b.simInputAckTimeouts} (must be 0)`);
 }
 
 // Degraded-arm gate (mirrors the Android merge): a block on the wrong screen for
@@ -129,9 +152,13 @@ for (const n of present) {
   const b = files[n].block;
   if (b.treeBackend === "xcuitest") {
     if (!b.describeStages || !b.describeStages.n) {
-      failures.push(`G3: ${n} produced no describe stage samples (open tree must expose snapshot/serialize/encode/capture)`);
+      failures.push(
+        `G3: ${n} produced no describe stage samples (open tree must expose snapshot/serialize/encode/capture)`
+      );
     } else if (b.describeStages.maxDelta > STAGE_DELTA_MS) {
-      failures.push(`G3: ${n} Σ(stages) vs captureMs maxDelta=${b.describeStages.maxDelta}ms > ${STAGE_DELTA_MS}ms over ${b.describeStages.n} samples`);
+      failures.push(
+        `G3: ${n} Σ(stages) vs captureMs maxDelta=${b.describeStages.maxDelta}ms > ${STAGE_DELTA_MS}ms over ${b.describeStages.n} samples`
+      );
     }
   }
 }
@@ -148,14 +175,21 @@ if (files["OFF-1"] && files["OFF-2"]) {
     const off2s = verbSamples(off2, verb);
     const offPooled = off1s.concat(off2s);
     const floor = Number(Math.abs(p50(off1s) - p50(off2s)).toFixed(2));
-    const row = { floor, offP50: Number(p50(offPooled).toFixed(1)), off1P50: Number(p50(off1s).toFixed(1)), off2P50: Number(p50(off2s).toFixed(1)), arms: {} };
+    const row = {
+      floor,
+      offP50: Number(p50(offPooled).toFixed(1)),
+      off1P50: Number(p50(off1s).toFixed(1)),
+      off2P50: Number(p50(off2s).toFixed(1)),
+      arms: {},
+    };
     for (const n of onBlocks) {
       const on = verbSamples(files[n].block, verb);
       const d = Number((p50(on) - p50(offPooled)).toFixed(2));
       const [lo, hi] = bootstrapDiffCI(on, offPooled);
       let verdict = "parity";
       if (Number.isFinite(lo) && Number.isFinite(hi)) {
-        if (hi < -floor) verdict = "win"; // ON faster than OFF by more than the drift floor
+        if (hi < -floor)
+          verdict = "win"; // ON faster than OFF by more than the drift floor
         else if (lo > floor) verdict = "loss";
       } else verdict = "n/a";
       row.arms[n] = { onP50: Number(p50(on).toFixed(1)), delta: d, ci95: [lo, hi], verdict };
@@ -194,14 +228,28 @@ if (files["OFF-1"] && firstOn) {
   const B = new Set(b);
   const inter = [...A].filter((x) => B.has(x)).length;
   const uni = new Set([...a, ...b]).size;
-  fidelity = { off1_vs: firstOn, jaccard: uni === 0 ? 1 : Number((inter / uni).toFixed(3)), offCount: a.length, onCount: b.length };
+  fidelity = {
+    off1_vs: firstOn,
+    jaccard: uni === 0 ? 1 : Number((inter / uni).toFixed(3)),
+    offCount: a.length,
+    onCount: b.length,
+  };
 }
 
 // ---- scroll per arm --------------------------------------------------------
 const scroll = {};
 for (const n of present) {
   const s = files[n].block.scroll;
-  if (s) scroll[n] = { median: s.median, q1: s.q1, q3: s.q3, iqr: s.iqr, refusals: s.refusals, n: s.n, offsetsPx: s.offsetsPx };
+  if (s)
+    scroll[n] = {
+      median: s.median,
+      q1: s.q1,
+      q3: s.q3,
+      iqr: s.iqr,
+      refusals: s.refusals,
+      n: s.n,
+      offsetsPx: s.offsetsPx,
+    };
 }
 
 // ---- G3 sums ---------------------------------------------------------------
@@ -216,9 +264,19 @@ const merged = {
   envPerBlock: Object.fromEntries(present.map((n) => [n, files[n].env])),
   blocksRan: present,
   gates: {
-    G0: { passed: failures.filter((f) => f.startsWith("G0")).length === 0, notes: failures.filter((f) => f.startsWith("G0")) },
-    G1: { passed: failures.filter((f) => f.startsWith("G1")).length === 0, notes: failures.filter((f) => f.startsWith("G1")) },
-    G3: { passed: failures.filter((f) => f.startsWith("G3")).length === 0, sums: g3, notes: failures.filter((f) => f.startsWith("G3")) },
+    G0: {
+      passed: failures.filter((f) => f.startsWith("G0")).length === 0,
+      notes: failures.filter((f) => f.startsWith("G0")),
+    },
+    G1: {
+      passed: failures.filter((f) => f.startsWith("G1")).length === 0,
+      notes: failures.filter((f) => f.startsWith("G1")),
+    },
+    G3: {
+      passed: failures.filter((f) => f.startsWith("G3")).length === 0,
+      sums: g3,
+      notes: failures.filter((f) => f.startsWith("G3")),
+    },
   },
   g2,
   g4,
@@ -228,7 +286,14 @@ const merged = {
     present.map((n) => {
       const b = files[n].block;
       const c = b.effectCheckedTotal || 0;
-      return [n, { firstTapLanded: c - (b.firstTapNoEffectTotal || 0), effectChecked: c, rate: c > 0 ? Number(((c - (b.firstTapNoEffectTotal || 0)) / c).toFixed(4)) : null }];
+      return [
+        n,
+        {
+          firstTapLanded: c - (b.firstTapNoEffectTotal || 0),
+          effectChecked: c,
+          rate: c > 0 ? Number(((c - (b.firstTapNoEffectTotal || 0)) / c).toFixed(4)) : null,
+        },
+      ];
     })
   ),
   finishedAt: new Date().toISOString(),
