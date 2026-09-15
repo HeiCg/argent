@@ -151,8 +151,12 @@ Each step: { kind: "tap"|"swipe"|"key"|"wait", ...params, delayMs? }. delayMs pa
 Returns { completed, total, totalMs, steps: [{ kind, success, dropped?, ms, skipped? }] }.
 Skip semantics: on the FIRST failing step the remaining steps do NOT run and are reported as skipped — the burst stops the moment a dismiss/tap misses.
 A stale index target (the screen moved since the describe) is refused BEFORE anything is injected.
+At most ONE index target per burst: every index resolves against the ONE snapshot read before the burst, so a second index target — which would land on a screen an earlier step navigated away from — is refused (stale_index_in_burst). Use an index target as the first acting step; tap later transient controls by coordinate.
 When you need to OBSERVE the screen between steps, use single tool calls instead; this tool is for known-in-advance bursts.`,
-    alwaysLoad: true,
+    // Not alwaysLoad (A2-M8): this is an Android-open-device-server-only tool (918
+    // tokens of schema+description); the searchHint surfaces it when a burst is
+    // needed rather than carrying it in every session on every platform.
+    alwaysLoad: false,
     longRunning: true,
     searchHint: "sequence burst batch transient sheet dismiss tap swipe key index target one rpc",
     zodSchema,

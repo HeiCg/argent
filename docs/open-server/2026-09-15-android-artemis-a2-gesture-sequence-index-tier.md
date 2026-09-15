@@ -102,34 +102,48 @@ skipped? }] }`. Per-step `ms` is the on-device wall time; `totalMs` is the host
   set); it merges with A1's `verify` under one refine (x/y required unless `verify`
   OR `target`).
 
-### Token table (o200k) — 24 committed Settings capture screens
+### Token table (o200k)
 
 Reproduce: `npx vitest run test/index-tier-tokens.test.ts --disableConsoleIntercept`.
-The `index` rendering is reconstructed from the same describe fixtures (`node.compact`),
-which were captured before the A1 incident feature existed — **no incident header line
-is present in any measured screen**. On the open path the describe already serves the
-pruned tree, so `full` == `compact` (no larger un-pruned rendering in the capture).
+Scope and caveats (review A2-M1/M2):
 
-| tier    | median tokens | total tokens |
-| ------- | ------------- | ------------ |
-| full    | 1294          | 35249        |
-| compact | 1294          | 35249        |
-| summary | 25.5          | 753          |
-| index   | 367.5         | 10253        |
+- The 24 rows are **two CI captures of one Settings crawl**: **14 distinct screen
+  hashes / 15 distinct compact texts** (some screens recur). This is NOT the ticket's
+  "20-screen matrix" — it is what the committed fixtures contain.
+- The `index` column is a **reconstruction** from the stored describe text
+  (`renderIndexFromDescribe(node.compact)`), NOT the shipped renderer
+  (`buildIndexElements(state.tree)`) — same line format, different source/filter, so
+  the delta is representative, not measured on a device (A2-M1; an on-device
+  `tier:"index"` vs `tier:"compact"` pair is queued for the next run).
+- `full` is **not measured** — it is set equal to `compact` by construction (the open
+  path serves the pruned tree; no larger un-pruned rendering exists in the capture).
+- The fixtures were captured before the A1 incident feature existed — **no incident
+  header line is present in any measured screen**.
 
-- Median index-vs-compact savings: **71.2%** (index 367.5 vs compact 1294).
-- Locate (exact-match proxy over all screens): compact by-label **608/676** unique;
-  index (unique by index) **676/676** addressable — index locate ≥ compact.
+| tier    | median tokens                  | total tokens |
+| ------- | ------------------------------ | ------------ |
+| full    | 1294 (= compact, not measured) | 35249        |
+| compact | 1294                           | 35249        |
+| summary | 25.5                           | 753          |
+| index   | 367.5                          | 10253        |
+
+- Median index-vs-compact savings: **71.2%** (index 367.5 vs compact 1294); robust to
+  dedup (per the reviewer's recompute over the 15 distinct texts: **71.0%**).
+- Locate (exact-match proxy), counted the SAME way on both sides (target label unique
+  among the rows): compact **608/676**, index **608/676** — **parity**. The earlier
+  "676/676 addressable" counted a different thing (label present, not unique); the
+  `indexAddressable >= uniqueByLabel` gate is an identity, so the honest claim is
+  **parity at 71% fewer tokens**, not "index locate ≥ compact".
 
 ### Ship / opt-in decision
 
-The rule (`index` ≥ 20% below the best per-element-locate tier at ≥ that tier's
-locate) is **cleared**: index is 71.2% below compact at ≥ compact locate, so index is
-eligible to be a default. It ships this phase as an **opt-in** tier (`tier:"index"`)
-plus the `target` tap path; the global `describe` default stays `compact`. Flipping
-the default is a coordinate-removing behavior change (agents must adopt
-`target:{index}`) and touches the A1-owned describe header, so it is deferred, not
-done in A2.
+Only the **savings** half of the rule carries: index is 71% below compact at
+**parity** locate (608/676 both). It ships this phase as an **opt-in** tier
+(`tier:"index"`) plus the `target` tap path; the global `describe` default stays
+`compact`. `index` is NOT made a default — beyond the coordinate-removing behavior
+change, the tier is active-window-only with a silent node cap (A2-M7), skips `settle`
+/ the incident line / the graph observation (A2-M9), and its on-device token delta is
+still unmeasured (A2-M1). Default-tier promotion is deferred to a future phase.
 
 ### Unit tests (all green, `--maxWorkers=2`)
 
@@ -187,13 +201,55 @@ attempt landing 100% every block; 0 `unavailable` inject fallbacks (161/161).
 (burst + index-tap notes). `npx docusaurus build` + `npm run format` to run in the
 MAIN checkout after merge — NOT run in the worktree (docs devDeps not installed).
 
+### Adversarial-review fixes (2026-09-15-review-a2-findings.md → merge-with-fixes)
+
+Applied on the same branch (PR #6 hygiene only, no new bench run):
+
+- **A2-H1** — `gesture-tap { target, verify }` no longer drops `verify`: the target
+  resolves to its coordinate and the verify path then cross-checks the selector on
+  the LIVE tree (mismatch → `verify_mismatch`). Tested both the match and the refusal.
+- **A2-H3** — `gesture-sequence` registered in `flow-nested-outcome.ts`, so an aborted
+  burst FAILS the flow step (a step `error`/`dropped`/`skipped` → fail), closing the
+  #606 class. Tested.
+- **A2-H2/M1/M2** — Result wording above: locate is **parity** (608/608, counted the
+  same way); "eligible to be a default" removed; the token table is a reconstruction
+  over 14 distinct Settings screens from 2 runs with `full` = `compact` by
+  construction. The generator now scores index locate like-for-like (identity gate
+  retired).
+- **A2-M5** — at most ONE index `target` per burst; a later index target is refused
+  `stale_index_in_burst` before any injection (every index resolves against the
+  pre-burst snapshot). Tested + documented in the tool and `tools.mdx`.
+- **A2-M6** — `resolveIndexTarget` now fails **closed**: an undefined live version
+  refuses `stale_index` (was fail-open). The fail-open test is inverted.
+- **A2-M7** — the `index` header states **active window only** and flags `truncated`
+  at the node cap; documented in `tools.mdx`.
+- **A2-M8** — `gesture-sequence` is `alwaysLoad: false` (Android-open-only, ~918
+  tokens/session); the `searchHint` surfaces it on demand.
+- **A2-M10** — `target` off the open path returns a structured
+  `targetCode:"target_unsupported"` (not a thrown Error); a successful index tap
+  returns `targetIndex`/`targetLabel`; `IndexTargetError` codes surface as structured
+  `targetCode`. Tested.
+- **Docs (A2-L6)** — "on the device" corrected to a host resolve; `index_out_of_range`,
+  the one-index-per-burst rule, and active-window-only documented.
+
+Pending for the NEXT pre-registered device/bench run (not done here):
+
+- **A2-M3** — tool-level device coverage: drive `gesture-sequence`,
+  `gesture-tap { target }`, `describe tier:"index"` through the registry (not
+  `api.batch`), and a `{method:"wait"}` step.
+- **A2-M4** — bench the MERGED head, not a pre-merge SHA, and diff the full verb table
+  against 34939934318 at the OFF↔OFF floors.
+- **A2-M1 (device half)** — one on-device `tier:"index"` vs `tier:"compact"` token pair
+  on the same screen, to replace the reconstruction.
+- **A2-M9** — `settle` threading, the A1 incident line, and the screen-graph
+  observation in the index tier (blockers only for a future default-tier promotion).
+
 ### Could not verify
 
-- The fixed **A2 stale-index device case** is not re-benched (one-bench-run rule); it
-  is unit-green and the fix is a test-ordering correction, but its on-device green is
-  unconfirmed.
+- The fixed **A2 stale-index device case** and all the review fixes above are
+  unit-green but NOT re-benched on a device (one-bench-run rule); their on-device
+  green is inferred, and is batched into the next pre-registered run (A2-M3/M4).
 - Full type-aware **ESLint** ran in CI (green after removing an unused
   `eslint-disable`); locally it could not run (docs `@docusaurus/tsconfig` not
   installed in the worktree — resource policy forbids `npm install`).
-- Whether to flip the global `describe` default to `index` (measurement-cleared) is
-  left to the owner.
+- Default-tier promotion of `index` is deferred (A2-M7/M9/M1), not decided here.

@@ -816,14 +816,20 @@ export interface IndexTarget {
 }
 
 /**
- * Thrown when an index `target` cannot be honoured: `stale_index` when the device
- * snapshot moved past `target.version` (the index the agent saw is no longer
- * valid — re-describe), `index_out_of_range` when the index is not on the current
- * screen. `code` is stable so callers/tests can branch on it.
+ * Thrown when an index `target` cannot be honoured. `code` is stable so
+ * callers/tests can branch on it:
+ *  - `stale_index` — the device snapshot moved off `target.version`, OR the device
+ *    reported NO live version (fail closed, review A2-M6): the index the agent saw
+ *    is no longer trustworthy, so re-describe.
+ *  - `index_out_of_range` — the index is not on the current screen.
+ *  - `stale_index_in_burst` — more than one index `target` in one `gesture-sequence`
+ *    burst: every index resolves against the ONE pre-burst snapshot, so a target
+ *    after the first acting step would tap stale coordinates (review A2-M5). Only
+ *    one index target per burst is allowed.
  */
 export class IndexTargetError extends Error {
   constructor(
-    readonly code: "stale_index" | "index_out_of_range",
+    readonly code: "stale_index" | "index_out_of_range" | "stale_index_in_burst",
     message: string
   ) {
     super(message);
@@ -833,22 +839,23 @@ export class IndexTargetError extends Error {
 
 /**
  * Resolve a `target: { index, version }` against a freshly-read tree to the tap
- * point (device-pixel centre of the element's bounds). Refuses with
+ * point (device-pixel centre) and the element's label. Refuses with
  * `IndexTargetError("stale_index")` when the live `version` moved off
- * `target.version` (the ticket's stale-index rule — the index tier the agent read
- * is out of date), and `index_out_of_range` when the index is absent on the
- * current screen. Pure over `(tree, version)` so the sequence path and the single
- * tap share it.
+ * `target.version` OR is undefined (fail closed — A2-M6), and `index_out_of_range`
+ * when the index is absent on the current screen. Pure over `(tree, version)` so
+ * the sequence path and the single tap share it.
  */
 export function resolveIndexTarget(
   tree: OpenServerElement[],
   liveVersion: number | undefined,
   target: IndexTarget
-): { x: number; y: number } {
-  if (liveVersion !== undefined && liveVersion !== target.version) {
+): { x: number; y: number; label: string } {
+  // Fail closed (A2-M6): a missing live version is NOT proof the snapshot is
+  // current, so refuse rather than tapping unverified — the safety this tier sells.
+  if (liveVersion === undefined || liveVersion !== target.version) {
     throw new IndexTargetError(
       "stale_index",
-      `stale_index: the screen moved (index tier version ${target.version}, device now ${liveVersion}). Re-describe with tier:"index" and tap the fresh index.`
+      `stale_index: the screen moved or reports no version (index tier version ${target.version}, device now ${liveVersion ?? "unknown"}). Re-describe with tier:"index" and tap the fresh index.`
     );
   }
   const elements = buildIndexElements(tree);
@@ -860,27 +867,55 @@ export function resolveIndexTarget(
     );
   }
   const b = el.bounds;
-  return { x: Math.round((b.x1 + b.x2) / 2), y: Math.round((b.y1 + b.y2) / 2) };
+  return {
+    x: Math.round((b.x1 + b.x2) / 2),
+    y: Math.round((b.y1 + b.y2) / 2),
+    label: el.label,
+  };
+}
+
+/**
+ * Read the current state and resolve an index `target` to NORMALIZED coordinates
+ * (0–1) plus the element's label/index — the form the verified-tap path
+ * (`openServerVerifiedTap`) consumes, so a `gesture-tap { target, verify }` can
+ * tap by index AND cross-check the selector on the live tree (A2-H1). Refuses via
+ * {@link IndexTargetError} on a stale/out-of-range index.
+ */
+export function resolveTargetNorm(
+  registry: Registry,
+  device: DeviceInfo,
+  target: IndexTarget
+): Promise<{ xNorm: number; yNorm: number; label: string; index: number }> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const state = await server.getState({ includeScreenshot: false, fingerprints: true });
+    const { x, y, label } = resolveIndexTarget(state.tree, state.version, target);
+    const w = state.info.screenWidth || 1;
+    const h = state.info.screenHeight || 1;
+    return { xNorm: x / w, yNorm: y / h, label, index: target.index };
+  });
 }
 
 /**
  * Tap the element addressed by an index `target` (A2 §B): read the current state,
  * verify the snapshot version (refuse `stale_index` if it moved), and tap the
- * element's bounds centre — all in ONE device lock. Backs the additive `target`
- * param on `gesture-tap`. Throws {@link IndexTargetError} on a stale/out-of-range
- * index; throws on a dropped injection or RPC failure so the caller falls back.
+ * element's bounds centre — all in ONE device lock. Returns the resolved element's
+ * `index` and `label` so the tool can name WHAT it tapped (A2-M10). Backs the
+ * additive `target` param on `gesture-tap`. Throws {@link IndexTargetError} on a
+ * stale/out-of-range index; throws on a dropped injection or RPC failure.
  */
 export function openServerTapAtIndex(
   registry: Registry,
   device: DeviceInfo,
   target: IndexTarget,
   clickCount: number
-): Promise<void> {
+): Promise<{ index: number; label: string }> {
   const ref = openDeviceServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     const state = await server.getState({ includeScreenshot: false, fingerprints: true });
-    const { x, y } = resolveIndexTarget(state.tree, state.version, target);
+    const { x, y, label } = resolveIndexTarget(state.tree, state.version, target);
     const res = await server.tap(x, y, {
       clickCount,
       holdMs: TAP_HOLD_MS,
@@ -890,6 +925,7 @@ export function openServerTapAtIndex(
     if (res.dropped || res.success === false) {
       throw new Error("open-device-server tap was dropped by the input dispatcher");
     }
+    return { index: target.index, label };
   });
 }
 
@@ -957,6 +993,16 @@ export function buildSequenceActions(
   size: { width: number; height: number },
   resolveTarget: (target: IndexTarget) => { x: number; y: number }
 ): { actions: OpenServerBatchAction[]; budgetMs: number } {
+  // A2-M5: every index target resolves against the ONE pre-burst snapshot, so a
+  // second index target (after an earlier step navigated) would tap stale
+  // coordinates. Allow at most ONE index target per burst; refuse the rest before
+  // anything is injected. Coordinate taps after the index target are fine.
+  if (steps.filter((s) => s.kind === "tap" && s.target !== undefined).length > 1) {
+    throw new IndexTargetError(
+      "stale_index_in_burst",
+      "stale_index_in_burst: at most one index `target` per gesture-sequence burst — every index resolves against the pre-burst snapshot, so a later index target would tap stale coordinates. Use it as the first acting step, or split the burst."
+    );
+  }
   const actions: OpenServerBatchAction[] = [];
   let budgetMs = SEQ_BASE_BUDGET_MS;
   for (const step of steps) {

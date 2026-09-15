@@ -67,7 +67,13 @@ export interface TierMeasure {
     targets: number;
     /** Targets uniquely resolvable by label over the full/compact node set. */
     uniqueByLabel: number;
-    /** Targets present as an index row (each addressable by its unique index). */
+    /**
+     * Targets uniquely resolvable by label among the index ROWS — counted the SAME
+     * way as `uniqueByLabel` (review A2-H2), so the two are like-for-like. The index
+     * rendering carries the same labels as compact and no extra tie-breaker in the
+     * text, so this is parity with `uniqueByLabel`, not a win. (In practice the
+     * agent disambiguates by the index NUMBER, which this label-only proxy ignores.)
+     */
     indexAddressable: number;
   };
   /** (compact − index) / compact, as a percentage (positive = index is smaller). */
@@ -103,15 +109,18 @@ export function measureScreenTiers(input: ScreenInput): TierMeasure {
   const targets = input.targets ?? [
     ...new Set(nodes.map((n) => (n.text ?? "").trim()).filter((t) => t.length > 0)),
   ];
-  const indexRows = indexLinesFromDescribe(input.compactText);
-  const indexLabels = new Set(indexRows.map((r) => r.label));
+  // Index-row nodes, in the SAME QueryNodeLite shape compact is scored over, so
+  // `pickUniqueNode` counts the index side identically (review A2-H2).
+  const indexNodes = indexLinesFromDescribe(input.compactText).map((r) => ({
+    text: r.label,
+    bounds: { x1: 0, y1: 0, x2: 0, y2: 0 },
+  }));
 
   let uniqueByLabel = 0;
   let indexAddressable = 0;
   for (const label of targets) {
-    const picked = pickUniqueNode(nodes, { text: label });
-    if (picked.node) uniqueByLabel++;
-    if (indexLabels.has(label)) indexAddressable++;
+    if (pickUniqueNode(nodes, { text: label }).node) uniqueByLabel++;
+    if (pickUniqueNode(indexNodes, { text: label }).node) indexAddressable++;
   }
 
   return {
@@ -167,8 +176,11 @@ export function summarizeTierTable(rows: TierMeasure[]): TierTableSummary {
     { uniqueByLabel: 0, indexAddressable: 0, targets: 0 }
   );
   const medianSavings = median(rows.map((r) => r.indexVsCompactPct));
-  // Ship as default only when index is ≥ 20 % below compact (the best tier that
-  // keeps per-element locate) AND index locate is at least compact's.
+  // The SAVINGS half of the rule: index ≥ 20 % below compact. Locate is scored
+  // like-for-like (A2-H2), so `indexAddressable == uniqueByLabel` — PARITY, not a
+  // win; the token savings is what clears the bar. This flag only reports rule
+  // eligibility; the phase decision keeps `index` opt-in regardless (see the Result:
+  // active-window-only cap, no settle/incident/graph, unmeasured on-device delta).
   const shipAsDefault = medianSavings >= 20 && locate.indexAddressable >= locate.uniqueByLabel;
   return {
     rows,

@@ -10,6 +10,8 @@ import {
   openServerTap,
   openServerTapWithOutcome,
   openServerTapAtIndex,
+  resolveTargetNorm,
+  IndexTargetError,
   openServerVerifiedTap,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
@@ -124,6 +126,16 @@ interface Result {
   requestedPx?: { x: number; y: number };
   /** `verify_mismatch`: the element the caller's coordinates actually hit. */
   mismatchLabel?: string;
+  /**
+   * A2 §B (`target`) — present on the Android open path. `targetIndex` / `targetLabel`
+   * name the element the index resolved to (so a log/agent knows WHAT was tapped);
+   * `targetCode` is a structured refusal (mirrors `verifyCode`): `target_unsupported`
+   * off the open path, or the `IndexTargetError` code (`stale_index`,
+   * `index_out_of_range`, `stale_index_in_burst`) — no tap issued on a refusal.
+   */
+  targetIndex?: number;
+  targetLabel?: string;
+  targetCode?: "target_unsupported" | "stale_index" | "index_out_of_range" | "stale_index_in_burst";
 }
 
 function tapVerb(count: number, tense: "present" | "past"): string {
@@ -244,13 +256,84 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       // against the current snapshot, refuses a stale index, and taps the element
       // bounds; x/y are ignored. No proprietary-path equivalent.
       if (params.target !== undefined) {
+        // A2-M10: off the open path, refuse with a STRUCTURED result (mirrors A1's
+        // verify_unsupported) rather than a bare thrown Error.
         if (!shouldUseOpenServer(device)) {
-          throw new Error(
-            "gesture-tap `target` (element index) requires the Android open-device-server (`open-device-server` flag)."
-          );
+          return { tapped: false, timestampMs, targetCode: "target_unsupported" };
         }
-        await openServerTapAtIndex(registry, device, params.target, clickCount);
-        return { tapped: true, timestampMs };
+        try {
+          // A2-H1: when `verify` is ALSO given, NEVER drop it — resolve the index to
+          // its coordinates, then run the verify path so the selector is cross-checked
+          // on the LIVE tree (a coordinate outside the match ⇒ verify_mismatch). The
+          // useful semantics: "tap index 7 AND confirm it is still labelled X".
+          if (params.verify) {
+            const t = await resolveTargetNorm(registry, device, params.target);
+            const vr = await openServerVerifiedTap(
+              registry,
+              device,
+              t.xNorm,
+              t.yNorm,
+              clickCount,
+              params.verify
+            );
+            const targetIds = { targetIndex: t.index, targetLabel: t.label };
+            if (vr.outcome === "tapped") {
+              if (vr.changed) {
+                clearIncident(device.id);
+              } else {
+                recordIncident(device.id, {
+                  tool: "gesture-tap",
+                  code: "no_effect",
+                  message: "verified index tap landed but the screen did not change",
+                });
+              }
+              return {
+                tapped: true,
+                timestampMs,
+                verified: true,
+                ...targetIds,
+                resolvedBounds: vr.resolvedBounds,
+                version: vr.version,
+                verifyMs: vr.verifyMs,
+                ...(vr.actionOutcome ? { outcome: vr.actionOutcome } : {}),
+              };
+            }
+            const verifyCode =
+              vr.outcome === "not_found"
+                ? "verify_not_found"
+                : vr.outcome === "ambiguous"
+                  ? "verify_ambiguous"
+                  : "verify_mismatch";
+            recordIncident(device.id, {
+              tool: "gesture-tap",
+              code: verifyCode,
+              message: `verified index tap refused: ${verifyCode}`,
+              ...(vr.label !== undefined ? { label: vr.label } : {}),
+            });
+            return {
+              tapped: false,
+              timestampMs,
+              verified: false,
+              verifyCode,
+              ...targetIds,
+              version: vr.version,
+              verifyMs: vr.verifyMs,
+              ...(vr.resolvedBounds ? { resolvedBounds: vr.resolvedBounds } : {}),
+              ...(vr.candidates ? { candidates: vr.candidates } : {}),
+              ...(vr.requestedPx ? { requestedPx: vr.requestedPx } : {}),
+              ...(vr.label !== undefined ? { mismatchLabel: vr.label } : {}),
+            };
+          }
+          // `target` alone: tap by index and NAME what was tapped (A2-M10).
+          const r = await openServerTapAtIndex(registry, device, params.target, clickCount);
+          return { tapped: true, timestampMs, targetIndex: r.index, targetLabel: r.label };
+        } catch (err) {
+          // A2-M10: surface the IndexTargetError code as a structured refusal.
+          if (err instanceof IndexTargetError) {
+            return { tapped: false, timestampMs, targetCode: err.code };
+          }
+          throw err;
+        }
       }
       // x/y are only optional under `verify`/`target` on the open path (schema
       // refine); every path below is reached with both absent, so x/y are present.

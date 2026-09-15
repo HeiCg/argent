@@ -104,15 +104,26 @@ Each entry in `steps` reports `{ kind, success, dropped?, ms, skipped? }`. On th
 first failing step the device skips the remaining steps and reports them as
 `skipped`, so the burst stops the moment a dismiss or a tap misses.
 
+A burst allows at most **one** `target` index step. Every index resolves against
+the one screen snapshot read before the burst. A second index step would act on a
+screen an earlier step already left, so Argent refuses it with
+`stale_index_in_burst`. Use an index step first, and tap later transient controls
+by coordinate.
+
 ### Element-index taps
 
 The `describe` tool has a `tier` parameter on the Android open-device-server path.
 The `index` tier renders one `[i] label (role)` line per interactive element, with
-a per-screen index and a header that names the screen version. The agent taps an
-element by its index. It passes `target: { index, version }` to `gesture-tap` or to
-a `gesture-sequence` `tap` step. Argent resolves the index on the device against the
-same snapshot version. Argent refuses the tap with `stale_index` when the screen
-moved since the `describe`, so a stale index never taps the wrong element.
+a per-screen index and a header that names the screen version. The tier lists the
+**active window only**, so an element under a dialog or the keyboard, or past the
+node cap, does not appear. The header states the scope and flags a truncated list.
+
+The agent taps an element by its index. It passes `target: { index, version }` to
+`gesture-tap` or to a `gesture-sequence` `tap` step. Argent reads the live screen
+and resolves the index against the same snapshot version. Argent refuses the tap
+with `stale_index` when the screen moved since the `describe`, and with
+`index_out_of_range` when the index is not on the current screen — no tap is issued
+on a refusal.
 
 ### Verified tap and swipe (Android open server)
 

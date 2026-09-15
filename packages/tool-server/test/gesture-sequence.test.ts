@@ -168,8 +168,12 @@ describe("resolveIndexTarget — stale-index rule", () => {
     el(3, { x1: 0, y1: 300, x2: 200, y2: 400 }, { text: "Apps", clickable: true }),
   ];
 
-  it("taps the element bounds centre when the version still matches", () => {
-    expect(resolveIndexTarget(tree, 42, { index: 1, version: 42 })).toEqual({ x: 100, y: 250 });
+  it("taps the element bounds centre and names the element when the version matches", () => {
+    expect(resolveIndexTarget(tree, 42, { index: 1, version: 42 })).toEqual({
+      x: 100,
+      y: 250,
+      label: "Connected devices",
+    });
   });
 
   it("refuses stale_index when the device version moved", () => {
@@ -192,10 +196,41 @@ describe("resolveIndexTarget — stale-index rule", () => {
     }
   });
 
-  it("still resolves when the live version is unknown (no fingerprints)", () => {
-    expect(resolveIndexTarget(tree, undefined, { index: 0, version: 42 })).toEqual({
-      x: 100,
-      y: 150,
-    });
+  it("A2-M6: fails CLOSED (stale_index) when the device reports no version", () => {
+    try {
+      resolveIndexTarget(tree, undefined, { index: 0, version: 42 });
+      throw new Error("expected stale_index");
+    } catch (e) {
+      expect(e).toBeInstanceOf(IndexTargetError);
+      expect((e as IndexTargetError).code).toBe("stale_index");
+    }
+  });
+});
+
+describe("A2-M5 — one index target per burst", () => {
+  it("refuses stale_index_in_burst when a burst carries two index targets", () => {
+    const steps: SequenceStep[] = [
+      { kind: "tap", target: { index: 1, version: 7 } },
+      { kind: "wait", waitMs: 50 },
+      { kind: "tap", target: { index: 2, version: 7 } },
+    ];
+    try {
+      buildSequenceActions(steps, SIZE, () => ({ x: 1, y: 1 }));
+      throw new Error("expected stale_index_in_burst");
+    } catch (e) {
+      expect(e).toBeInstanceOf(IndexTargetError);
+      expect((e as IndexTargetError).code).toBe("stale_index_in_burst");
+    }
+  });
+
+  it("allows one index target followed by coordinate taps", () => {
+    const steps: SequenceStep[] = [
+      { kind: "tap", target: { index: 1, version: 7 } },
+      { kind: "tap", x: 0.5, y: 0.5 },
+    ];
+    const { actions } = buildSequenceActions(steps, SIZE, () => ({ x: 10, y: 20 }));
+    expect(actions).toHaveLength(2);
+    expect(actions[0]).toMatchObject({ method: "tap", params: { x: 10, y: 20 } });
+    expect(actions[1]).toMatchObject({ method: "tap", params: { x: 500, y: 1000 } });
   });
 });

@@ -78,12 +78,23 @@ export function buildIndexElements(tree: OpenServerElement[]): IndexElement[] {
  * agent knows what to echo in `target`) and one `[i] label (role)` line each. An
  * unlabelled target renders its role in place of the label so the line is never
  * `[i]  (role)` with an empty slot.
+ *
+ * The header states the tier's SCOPE (A2-M7): the `index` tier lists the ACTIVE
+ * WINDOW only (unlike the standard describe, which also spans the IME/dialogs), and
+ * flags `truncated` when the device serialized to its node cap — so an agent knows
+ * a missing element may be under a dialog/keyboard or past the cap, not absent.
  */
-export function renderIndexTier(elements: IndexElement[], version: number | undefined): string {
+export function renderIndexTier(
+  elements: IndexElement[],
+  version: number | undefined,
+  opts: { truncated?: boolean } = {}
+): string {
+  const scope = "active window only";
+  const trunc = opts.truncated ? "; truncated at the node cap — some rows omitted" : "";
   const header =
     version !== undefined
-      ? `index tier (version ${version}) — tap with target: { index, version: ${version} }`
-      : "index tier — tap with target: { index, version }";
+      ? `index tier (${scope}; version ${version}${trunc}) — tap with target: { index, version: ${version} }`
+      : `index tier (${scope}${trunc}) — tap with target: { index, version }`;
   const lines = [header];
   for (const el of elements) {
     const shown = el.label.length > 0 ? el.label : `(${el.role})`;
@@ -117,7 +128,9 @@ export async function describeAndroidIndexTier(
     const state = await server.getState({ includeScreenshot: false, fingerprints: true });
     const elements = buildIndexElements(state.tree);
     return {
-      description: renderIndexTier(elements, state.version),
+      description: renderIndexTier(elements, state.version, {
+        truncated: state.truncated === true,
+      }),
       source: "open-device-server" as const,
     };
   });
