@@ -92,7 +92,11 @@ describe("gesture-tap → open-device-server outcome (Screen-graph Phase A)", ()
 
     // ONE tapWithOutcome RPC carrying the timeline (holdMs, clickCount 1, no gap)
     // AND the outcome request.
-    expect(openApi.tapWithOutcome).toHaveBeenCalledWith(500, 1000, { clickCount: 1, holdMs: 50 });
+    expect(openApi.tapWithOutcome).toHaveBeenCalledWith(500, 1000, {
+      clickCount: 1,
+      holdMs: 50,
+      inject: "input-manager",
+    });
     expect(result.tapped).toBe(true);
     expect(result.outcome).toEqual(OUTCOME);
   });
@@ -117,6 +121,7 @@ describe("gesture-tap → open-device-server outcome (Screen-graph Phase A)", ()
       clickCount: 3,
       holdMs: 50,
       gapMs: 100,
+      inject: "input-manager",
     });
     expect(result.outcome?.before.hash).toBe("aaaa");
     expect(result.outcome?.after.hash).toBe("bbbb");

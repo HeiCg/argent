@@ -76,16 +76,11 @@ describe("gesture-swipe momentum → open-device-server holdEndMs (T7)", () => {
     const result = await tool.execute({}, base);
 
     expect(openApi.swipeWithOutcome).toHaveBeenCalledTimes(1);
-    // startX,startY,endX,endY,steps,holdEndMs,outcomeOpts — 500,1400,500,400,10,undefined,undefined
-    expect(openApi.swipeWithOutcome).toHaveBeenCalledWith(
-      500,
-      1400,
-      500,
-      400,
-      10,
-      undefined,
-      undefined
-    );
+    // startX,startY,endX,endY,steps,holdEndMs,opts — the opts bag carries the shipped
+    // 3n.1 inject default (`input-manager`); no holdEndMs keeps the fling.
+    expect(openApi.swipeWithOutcome).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined, {
+      inject: "input-manager",
+    });
     // The fingerprint delta rides back additively on the tool result.
     expect((result as { outcome?: unknown }).outcome).toEqual(OUTCOME);
   });

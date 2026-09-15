@@ -1,12 +1,20 @@
 import { describe, it, expect } from "vitest";
+import { join } from "node:path";
 import {
   loadFixture,
   countNodes,
   percentile,
   stat,
   runHostBench,
-  DEFAULT_FIXTURE_PATH,
-} from "../scripts/bench-describe-host";
+} from "../scripts/bench-describe-host-lib";
+
+// The default fixture the CLI (`bench-describe-host.ts`) resolves from
+// `import.meta.url`; resolved here from the test's own dir so the CommonJS test
+// compile never imports the `import.meta` CLI entry (TS1343).
+const DEFAULT_FIXTURE_PATH = join(
+  __dirname,
+  "../scripts/fixtures/describe-host-idle-settings.nested.json"
+);
 
 // Harness unit test for the phase 3i host micro-bench. Pins the committed fixture
 // shape and the pure stat helpers so the bench numbers stay comparable run to run.

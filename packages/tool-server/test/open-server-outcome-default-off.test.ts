@@ -101,7 +101,13 @@ describe("gesture-tap: outcome path gated on the screen graph", () => {
     // Plain `tap` carries the timeline; `tapWithOutcome` (the settle-bearing RPC)
     // is never sent.
     expect(api.tap).toHaveBeenCalledTimes(1);
-    expect(api.tap).toHaveBeenCalledWith(500, 1000, { clickCount: 1, holdMs: 50 });
+    // `inject: "input-manager"` is the shipped 3n.1 default (resolveInjectStrategy);
+    // gating the graph off changes only the outcome path, not the injection strategy.
+    expect(api.tap).toHaveBeenCalledWith(500, 1000, {
+      clickCount: 1,
+      holdMs: 50,
+      inject: "input-manager",
+    });
     expect(api.tapWithOutcome).not.toHaveBeenCalled();
     expect(result.tapped).toBe(true);
     // No `outcome` key on the result when the flag is off.
@@ -129,7 +135,12 @@ describe("gesture-tap: outcome path gated on the screen graph", () => {
     await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5, clickCount: 3 });
 
     expect(api.tap).toHaveBeenCalledTimes(1);
-    expect(api.tap).toHaveBeenCalledWith(500, 1000, { clickCount: 3, holdMs: 50, gapMs: 100 });
+    expect(api.tap).toHaveBeenCalledWith(500, 1000, {
+      clickCount: 3,
+      holdMs: 50,
+      gapMs: 100,
+      inject: "input-manager",
+    });
     expect(api.tapWithOutcome).not.toHaveBeenCalled();
   });
 });
@@ -153,7 +164,10 @@ describe("gesture-swipe: outcome path gated on the screen graph", () => {
 
     // steps = round(160/16) = 10; plain swipe, no holdEndMs for a plain fling.
     expect(api.swipe).toHaveBeenCalledTimes(1);
-    expect(api.swipe).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined);
+    // 7th arg is the inject-options bag; `input-manager` is the shipped 3n.1 default.
+    expect(api.swipe).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined, {
+      inject: "input-manager",
+    });
     expect(api.swipeWithOutcome).not.toHaveBeenCalled();
     expect(result.swiped).toBe(true);
     expect(Object.hasOwn(result, "outcome")).toBe(false);
