@@ -61,7 +61,7 @@ the budget; `planToTemplate` routes).
 ## CI
 
 One run: `bench-open-vs-proprietary.yml`, `suite=screen-graph`, `sg_mode=matrix`,
-`churn=true` (→ `BENCH_CHURN=1`). Both arms in the one job on the same device.
+`blocks=churn` (→ `BENCH_CHURN=1`). Both arms in the one job on the same device.
 
 ## Out of scope for E-1
 
@@ -75,7 +75,7 @@ is measured but the overlap stress is E-2).
 ## Result
 
 Run: **PENDING** — `bench-open-vs-proprietary.yml`, `suite=screen-graph`,
-`sg_mode=matrix`, `churn=true`. This section is pre-registered BEFORE the run;
+`sg_mode=matrix`, `blocks=churn`. This section is pre-registered BEFORE the run;
 the outcomes column is filled from `churn-results.md` / `churn.json` /
 `sg-matrix.log` in the run artifact and the invariants line, never blended with
 run 34801849653 (D.4.1) or 34870686468 (`README.md:108-117`).
