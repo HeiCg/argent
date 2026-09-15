@@ -170,16 +170,22 @@ def main() -> int:
     result["aw_forest"] = read_aw_forest(args.console_port, args.grpc_port, adb_path)
     print(f"        -> {result['aw_forest']}")
 
-  # Verdict: suppression is confirmed when, WITH our server alive, uiautomator
-  # dump fails OR AW's forest is empty/unreadable.
+  # Verdict keys on AW's FORWARDER forest — the harness reads the a11y forwarder
+  # app (A11Y_FORWARDER_APP method), not `uiautomator dump`. `uiautomator dump`
+  # spins up its OWN UiAutomation (a separate connection), which conflicts with
+  # our instrumentation regardless of FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES,
+  # so it stays unavailable and is recorded as informational only.
   suppression = False
   if instrumentation_alive:
-    dump = result.get("uiautomator_dump", {})
     forest = result.get("aw_forest", {})
-    dump_failed = not dump.get("ok", False)
-    forest_empty = (not forest.get("ok", False)) or forest.get("nodes", 0) == 0
-    suppression = dump_failed or forest_empty
+    forest_ok = forest.get("ok", False) and forest.get("nodes", 0) > 0
+    suppression = not forest_ok
     result["suppression_detected"] = suppression
+    result["uiautomator_dump_note"] = (
+        "uiautomator dump needs its own UiAutomation and stays unavailable while "
+        "our instrumentation is alive; the harness uses AW's forwarder forest, "
+        "not the dump — this field is informational."
+    )
     result["recommendation"] = (
         "ADD FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES to "
         "DeviceControlInstrumentation.getUiAutomation, re-probe, and schedule "

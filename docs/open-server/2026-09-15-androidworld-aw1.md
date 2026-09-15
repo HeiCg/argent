@@ -96,8 +96,16 @@ AndroidWorld's forwarder forest and `uiautomator dump` are dead.
 `reset`/checkers — so it must coexist with our `UiAutomation`.
 `DeviceControlInstrumentation.getUiAutomation` now passes the flag (minimal Kotlin diff,
 `packages/android-device-server/src/main/java/com/argent/devicecontrol/DeviceControlInstrumentation.kt:63`).
-Re-probe run **34947435250** was dispatched to validate that the forest + `uiautomator
-dump` return once the flag ships (its outcome is the go/no-go for the harness run).
+
+**Re-probe run 34947435250 (with the flag): harness blocker RESOLVED.** With our server
+alive, AndroidWorld's a11y forwarder forest now returns — `aw_forest.ok=true`, **2 windows,
+23 nodes, 19 ui_elements** — so AW's env (reset + checkers) reads the tree it needs.
+`uiautomator dump` still returns 0 bytes, but that is informational: `uiautomator dump`
+needs its own separate `UiAutomation`, which conflicts with our instrumentation regardless
+of the flag, and the harness uses AW's forwarder forest (`A11Y_FORWARDER_APP` method), not
+the dump. The probe verdict was refined to key on the forwarder forest (the
+harness-relevant signal); the flag is validated and the harness is a go once the secret
+lands.
 
 **Latency caveat — AW-1.1, NOT folded into AW-1:** suppression is also what makes our
 describe reads cheap, so the flag is a driver behavior change. The describe latencies must
@@ -187,9 +195,10 @@ for a harness defect (never a task flake); re-run the same seed before reading a
 
 ### Runs / hygiene
 
-- Probe **34946274170** (suppression confirmed); re-probe **34947435250** (flag validation).
-- PR **#7** → `open/main`: Prettier, ESLint, Knip, Static checks, lockfile PASS; unit
-  tests finishing. `bench/androidworld/` is Python-only and outside knip's JS/TS workspace
+- Probe **34946274170** (suppression confirmed); re-probe **34947435250** (flag validated —
+  forwarder forest returns 23 nodes/19 elements with our server alive).
+- PR **#7** → `open/main`: Prettier, ESLint, Knip, Static checks, Unit tests, lockfile all
+  PASS. `bench/androidworld/` is Python-only and outside knip's JS/TS workspace
   scope, so no knip config change or rule-disable was needed (knip stays green). Prettier
   clean. No iOS files or A2-branch files touched; scoreboard untouched; `open/main` not
   fast-forwarded (PR only).
