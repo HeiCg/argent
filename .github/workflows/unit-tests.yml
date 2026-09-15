@@ -49,3 +49,9 @@ jobs:
         # observed to fire"). Pure Node, no build/emulator — proves each gate
         # fires/does-not-fire against synthetic block/fling JSONs.
         run: node --test .github/bench-ci/gates.test.js
+
+      - name: Test iOS bench CI gates
+        # iOS-2.1 (IOS2-M4/M9/H3): per-verb errors, short latency runs (n < N),
+        # runner crashes and tap-coordinate drift each fire / do-not-fire against
+        # synthetic iOS block JSONs.
+        run: node --test .github/bench-ci/gates-ios.test.js

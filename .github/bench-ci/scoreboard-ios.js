@@ -18,7 +18,7 @@ const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
 const VERBS = [
   "describe",
   "gesture-tap",
-  "tap+describe(settle:false)",
+  "tap+describe",
   "gesture-swipe",
   "await-screen-idle",
   "await-ui-element",
@@ -56,6 +56,7 @@ L.push("### Process (G5)\n");
 L.push("| field | value |");
 L.push("|---|---|");
 L.push(`| run id | ${env.runId || process.env.GITHUB_RUN_ID || "—"} |`);
+L.push(`| tested sha | ${env.sha || process.env.GITHUB_SHA || "—"} |`);
 L.push(`| xcodebuild | ${(env.xcodebuild || "—").replace(/\n/g, " ")} |`);
 L.push(`| runtime | ${env.runtime || "—"} |`);
 L.push(`| device type | ${env.deviceType || "—"} |`);
@@ -114,40 +115,46 @@ if (merged && merged.g2) {
   );
 }
 
-// Landing rates.
+// Landing rates (IOS2-H4: calibrated per-block threshold from the G0 navDiff).
 L.push("### G1 — first-attempt landing per block (with denominators)\n");
 L.push(
-  "| block | first-attempt landed / checked | rate | runner crashes | sim-input ack timeouts |"
+  "| block | input path | landed / checked | rate | G0 navDiff | land threshold | runner crashes | sim-input ack timeouts |"
 );
-L.push("|---|---|---|---|---|");
+L.push("|---|---|---|---|---|---|---|---|");
 for (const n of present) {
   const b = bl[n].block;
   const c = b.effectCheckedTotal || 0;
   const landed = c - (b.firstTapNoEffectTotal || 0);
+  const inputPath = b.inputIsProductTool ? "gesture-tap tool" : "sim-input HID (bench-local)";
+  const nav = b.oracle && Number.isFinite(b.oracle.navDiff) ? b.oracle.navDiff : "—";
+  const thr =
+    b.oracle && Number.isFinite(b.oracle.landingThreshold) ? b.oracle.landingThreshold : "—";
   L.push(
-    `| ${n} | ${landed} / ${c} | ${c > 0 ? ((landed / c) * 100).toFixed(1) + "%" : "—"} | ${b.runnerCrashes || 0} | ${b.simInputAckTimeouts || 0} |`
+    `| ${n} | ${inputPath} | ${landed} / ${c} | ${c > 0 ? ((landed / c) * 100).toFixed(1) + "%" : "—"} | ${nav} | ${thr} | ${b.runnerCrashes || 0} | ${b.simInputAckTimeouts || 0} |`
   );
 }
-L.push("");
-
-// Optical scroll offsets.
 L.push(
-  "### Optical scroll offset per arm (strip cross-correlation on simctl screenshots; pixels, no clamp)\n"
+  "\n_Landing = neutral-pixel diff ratio ≥ 0.5 × the block's own G0 navDiff (IOS2-H4). The per-tap ratio, coordinate and poll index are persisted in the block JSON `tapRecords`; the OFF and ON arms locate the target with the SAME shared open-tree code (IOS2-H3)._\n"
 );
-L.push("| block | median dyPx | IQR (q1–q3) | confidence refusals | n (accepted) |");
-L.push("|---|---|---|---|---|");
+
+// Optical scroll offsets (IOS2-H5: screen POINTS, full-res NCC, no half-window clamp).
+L.push("### Optical scroll offset per arm (full-res NCC on simctl screenshots; screen POINTS)\n");
+L.push(
+  "| block | median dyPts | IQR (q1–q3) | raster scale (px/pt) | confidence refusals | n (accepted) |"
+);
+L.push("|---|---|---|---|---|---|");
 for (const n of present) {
   const s = bl[n].block.scroll;
   if (!s) {
-    L.push(`| ${n} | — | — | — | — |`);
+    L.push(`| ${n} | — | — | — | — | — |`);
     continue;
   }
   L.push(
-    `| ${n} | ${fx(s.median)} | ${fx(s.q1)}–${fx(s.q3)} (IQR ${fx(s.iqr)}) | ${s.refusals} | ${s.n} |`
+    `| ${n} | ${fx(s.median)} | ${fx(s.q1)}–${fx(s.q3)} (IQR ${fx(s.iqr)}) | ${fx(s.rasterScale, 3)} | ${s.refusals} | ${s.n} |`
   );
 }
 L.push(
-  "\n_Optical, not tree survivorship; no ratio gate this phase (the fling gate is 3o/iOS-3). Refusals = ambiguous cross-correlation matches, excluded from the distribution and counted._\n"
+  "\n_Offsets are in SCREEN POINTS via `optical-scroll.ts` (full-resolution NCC, maxShift 0.9 of the region, refuse only on confidence < 0.6 — no half-window clamp); the framebuffer-px→points scale is stated. Per-swipe `from`/`to`/`scrollRegion`/`dyPx`/`confidence` are persisted in the block JSON `scroll.records`, with a few before/after PNG pairs under `.bench-results/shots/<block>/`. No ratio gate this phase (the fling gate is 3o/iOS-3)._\n"
 );
 
 // G4 tokens.
@@ -156,12 +163,13 @@ if (merged && merged.g4) {
     `### G4 — describe tokens per TREE backend at the equal element cap (cap = ${merged.g4.cap})\n`
   );
   L.push(
-    "| tree backend | source | elements (denominator) | tokens (uncapped) | tokens@cap | capElements |"
+    "| tree backend | source | elements (denominator) | tokens (uncapped) | tok/element | tokens@cap | capElements |"
   );
-  L.push("|---|---|---|---|---|---|");
+  L.push("|---|---|---|---|---|---|---|");
   for (const [backend, d] of Object.entries(merged.g4.backends)) {
+    const tokPerEl = d.elements > 0 ? (d.tokens / d.elements).toFixed(1) : "—";
     L.push(
-      `| ${backend} | ${d.source} | ${d.elements} | ${d.tokens} | ${d.capTokens} | ${d.capElements} |`
+      `| ${backend} | ${d.source} | ${d.elements} | ${d.tokens} | ${tokPerEl} | ${d.capTokens} | ${d.capElements} |`
     );
   }
   L.push(
@@ -171,8 +179,10 @@ if (merged && merged.g4) {
 
 // G3 stage sums.
 if (merged && merged.gates && merged.gates.G3) {
-  L.push("### G3 — Σ(stages) ≈ captureMs on the open tree\n");
-  L.push("| block | samples | max |Σ−capture| (ms) |");
+  L.push("### G3 — Σ(stages) ≈ captureMs on the open tree (direct socket; bench-local)\n");
+  // IOS2-L3: escape the pipes in |Σ−capture| so the header renders (5 cells before,
+  // against a 3-cell separator).
+  L.push("| block | samples | max \\|Σ−capture\\| (ms) |");
   L.push("|---|---|---|");
   for (const [n, s] of Object.entries(merged.gates.G3.sums || {})) {
     L.push(`| ${n} | ${s.n} | ${fx(s.maxDelta, 3)} |`);
@@ -186,7 +196,7 @@ if (merged && merged.fidelity) {
     `### Fidelity — OFF-1 (ax-service) vs ${merged.fidelity.off1_vs} (XCUITest) describe identity\n`
   );
   L.push(
-    `Jaccard = ${merged.fidelity.jaccard} (OFF elements ${merged.fidelity.offCount}, ON elements ${merged.fidelity.onCount}).\n`
+    `Jaccard = ${merged.fidelity.jaccard} (OFF identity tokens ${merged.fidelity.offCount}, ON identity tokens ${merged.fidelity.onCount} — id:/text: tokens, NOT element counts, IOS2-L2).\n`
   );
 }
 

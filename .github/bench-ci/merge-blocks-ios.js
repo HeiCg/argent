@@ -18,10 +18,12 @@ const path = require("path");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
+// iOS-2.1 (IOS2-H6): the tap+describe verb is no longer mislabelled `settle:false`
+// (settle is Android-only and no iOS arm passes it).
 const VERBS = [
   "describe",
   "gesture-tap",
-  "tap+describe(settle:false)",
+  "tap+describe",
   "gesture-swipe",
   "await-screen-idle",
   "await-ui-element",
@@ -29,6 +31,9 @@ const VERBS = [
 const LANDING_FLOOR = 0.95;
 const STAGE_DELTA_MS = 10;
 const BOOT = Number(process.env.BENCH_BOOTSTRAP || 2000);
+// IOS2-H3: the four blocks locate the SAME target from the shared open tree; their
+// per-block median tap coordinate must agree within this normalized tolerance.
+const TAP_COORD_TOL = Number(process.env.BENCH_TAP_COORD_TOL || 0.03);
 
 function readBlocks() {
   const files = {};
@@ -136,6 +141,49 @@ for (const n of present) {
     failures.push(`G1: ${n} sim-input ackTimeouts=${b.simInputAckTimeouts} (must be 0)`);
 }
 
+// IOS2-M4: gate on errors, short samples, block notes and locate failures — a
+// verb that errors 20/20 (run-1 OFF gesture-swipe / await-ui-element) or a block
+// that dropped iterations to a locate miss is not a valid baseline. N/A verbs
+// (`extra.na`, e.g. the ON await-* rows with no product path) are exempt.
+for (const n of present) {
+  const b = files[n].block;
+  const N = (files[n].env && files[n].env.N) || 20;
+  if ((b.notes || []).length) failures.push(`M4: ${n} carries notes: ${b.notes.join("; ")}`);
+  if ((b.locateFailedTotal || 0) > 0)
+    failures.push(`M4: ${n} locateFailedTotal=${b.locateFailedTotal} (must be 0)`);
+  for (const v of b.verbs || []) {
+    if (v.extra && v.extra.na) continue; // N/A verb, not measured
+    if ((v.errors || 0) > 0)
+      failures.push(`M4: ${n} verb "${v.verb}" errors=${v.errors} (must be 0)`);
+    const got = Array.isArray(v.latencySamples) ? v.latencySamples.length : 0;
+    if (got !== N)
+      failures.push(`M4: ${n} verb "${v.verb}" latencySamples=${got} != N=${N} (short run)`);
+    if ((v.locateFailed || 0) > 0)
+      failures.push(`M4: ${n} verb "${v.verb}" locateFailed=${v.locateFailed} (must be 0)`);
+  }
+}
+
+// IOS2-H3: the four blocks tap the SAME located target. Every present block's
+// median tap coordinate must agree within TAP_COORD_TOL; otherwise the landing
+// rates are not comparable across arms.
+{
+  const coords = present
+    .map((n) => ({ n, c: files[n].block.medianTapCoord }))
+    .filter((x) => x.c && Number.isFinite(x.c.x) && Number.isFinite(x.c.y));
+  for (let i = 0; i < coords.length; i++) {
+    for (let j = i + 1; j < coords.length; j++) {
+      const a = coords[i].c;
+      const b = coords[j].c;
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (dist > TAP_COORD_TOL)
+        failures.push(
+          `H3: tap coordinate drift ${coords[i].n} (${a.x.toFixed(3)},${a.y.toFixed(3)}) vs ` +
+            `${coords[j].n} (${b.x.toFixed(3)},${b.y.toFixed(3)}) = ${dist.toFixed(3)} > ${TAP_COORD_TOL}`
+        );
+    }
+  }
+}
+
 // Degraded-arm gate (mirrors the Android merge): a block on the wrong screen for
 // part of the run is not a valid baseline.
 for (const n of present) {
@@ -236,19 +284,21 @@ if (files["OFF-1"] && firstOn) {
   };
 }
 
-// ---- scroll per arm --------------------------------------------------------
+// ---- scroll per arm (IOS2-H5: screen POINTS, raster scale stated) ----------
 const scroll = {};
 for (const n of present) {
   const s = files[n].block.scroll;
   if (s)
     scroll[n] = {
+      unit: s.unit || "screen-points",
+      rasterScale: s.rasterScale,
       median: s.median,
       q1: s.q1,
       q3: s.q3,
       iqr: s.iqr,
       refusals: s.refusals,
       n: s.n,
-      offsetsPx: s.offsetsPx,
+      offsetsPoints: s.offsetsPoints,
     };
 }
 
@@ -269,8 +319,25 @@ const merged = {
       notes: failures.filter((f) => f.startsWith("G0")),
     },
     G1: {
-      passed: failures.filter((f) => f.startsWith("G1")).length === 0,
-      notes: failures.filter((f) => f.startsWith("G1")),
+      // Landing/crashes/acks PLUS the iOS-2.1 integrity gates (M4 errors/short-run/
+      // notes/locate-miss, H3 tap-coord drift, degraded arm, gesture-param drift).
+      passed:
+        failures.filter(
+          (f) =>
+            f.startsWith("G1") ||
+            f.startsWith("M4") ||
+            f.startsWith("H3") ||
+            f.startsWith("degraded") ||
+            f.startsWith("gesture params")
+        ).length === 0,
+      notes: failures.filter(
+        (f) =>
+          f.startsWith("G1") ||
+          f.startsWith("M4") ||
+          f.startsWith("H3") ||
+          f.startsWith("degraded") ||
+          f.startsWith("gesture params")
+      ),
     },
     G3: {
       passed: failures.filter((f) => f.startsWith("G3")).length === 0,

@@ -1,0 +1,179 @@
+# iOS-4 sim-input discriminating test — ON-siminput ONLY, no OFF arms, no
+# describe/swipe loops (review 2026-09-15-review-ios2-findings.md). It taps a
+# FROZEN coordinate 20× per cell and records the neutral-pixel diff ratio per tap,
+# to decide whether the sim-input landing failure is HID recogniser timing or a
+# delivery recipe iOS 26.5 never consumes as a tap.
+#
+# COST: macOS runners bill at 10x Linux minutes. Manual trigger only. This is a
+# SEPARATE, short job — it is NOT bundled into the four-block bench run. Today only
+# the 0.05s hold cell runs (the sim-input CLI hardcodes the tap hold; the longer
+# holds are the iOS-4 Swift change), so it is a single sim-input cell + one
+# XCUITest control cell.
+name: bench-ios-siminput-discriminating
+
+on:
+  workflow_dispatch:
+    inputs:
+      taps:
+        description: "Taps per cell (DISC_TAPS)"
+        required: false
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  siminput-discriminating:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      DISC_TAPS: ${{ github.event.inputs.taps || '20' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Pin Xcode and print the version
+        shell: bash
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then echo "::error::no Xcode found under /Applications"; exit 1; fi
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Install deps
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+          npm install @rollup/rollup-darwin-arm64 --no-save
+
+      - name: Build the workspace TypeScript
+        shell: bash
+        run: npx tsc --build
+
+      - name: Build sim-input
+        shell: bash
+        run: |
+          set -o pipefail
+          bash packages/ios-sim-input/scripts/build-sim-input.sh 2>&1 | tee build-sim-input.log
+          echo "IOS_SIM_INPUT_BINARY=$PWD/packages/ios-sim-input/bin/sim-input" >> "$GITHUB_ENV"
+
+      - name: Create and boot an iPhone simulator
+        shell: bash
+        run: |
+          RUNTIME=$(xcrun simctl list runtimes -j \
+            | jq -r '[.runtimes[] | select(.platform=="iOS" and .isAvailable)]
+                     | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')
+          CANDIDATES=$(xcrun simctl list devicetypes -j \
+            | jq -r '[.devicetypes[] | select(.name | test("^iPhone [0-9]+"))]
+                     | map(. + {n: (.name | capture("iPhone (?<x>[0-9]+)").x | tonumber)})
+                     | sort_by(.n) | reverse | .[].identifier')
+          UDID=""
+          for DT in $CANDIDATES; do
+            if UDID=$(xcrun simctl create "argent-ios-disc" "$DT" "$RUNTIME" 2>/dev/null); then break; fi
+            UDID=""
+          done
+          if [ -z "$UDID" ]; then echo "::error::no compatible iPhone device type"; exit 1; fi
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl launch "$UDID" com.apple.Preferences || true
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build the runner (build-for-testing)
+        shell: bash
+        run: |
+          mkdir -p build
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project packages/ios-device-server/ArgentRunner/ArgentRunner.xcodeproj \
+            -scheme ArgentRunner \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/ios-open-derived \
+            ONLY_ACTIVE_ARCH=YES ENABLE_CODE_COVERAGE=NO \
+            2>&1 | tee build/build-sim.log
+
+      - name: Launch the runner and run the discriminating cells
+        shell: bash
+        env:
+          NODE_OPTIONS: "--max-old-space-size=3072"
+        run: |
+          set -uo pipefail
+          export BENCH_OUT="$PWD/.bench-results"
+          mkdir -p "$BENCH_OUT" build/shots
+          export TMPDIR="$PWD/build/shots"
+
+          XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun 2>/dev/null | grep -i simulator | head -1)
+          [ -z "$XCTESTRUN" ] && XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun | head -1)
+          PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+
+          TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT xcodebuild test-without-building \
+            -xctestrun "$XCTESTRUN" \
+            -only-testing:ArgentRunnerUITests/ArgentRunnerSession/testServeCommands \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -test-timeouts-enabled NO \
+            -resultBundlePath build/runner.xcresult \
+            > build/runner.log 2>&1 &
+          RUNNER_PID=$!
+          echo "$RUNNER_PID" > build/runner.pid
+
+          READY=""
+          for i in $(seq 1 120); do
+            if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
+              echo "::error::runner exited before answering"; tail -120 build/runner.log || true; exit 1
+            fi
+            if node -e "
+              const net=require('net');
+              const s=net.connect($PORT,'127.0.0.1');
+              s.on('connect',()=>s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping'})+'\n'));
+              s.on('data',()=>process.exit(0));
+              s.on('error',()=>process.exit(1));
+              setTimeout(()=>process.exit(1),1500);
+            " 2>/dev/null; then READY=1; break; fi
+            sleep 1
+          done
+          if [ -z "$READY" ]; then
+            echo "::error::runner did not answer ping within 120s"; tail -120 build/runner.log || true
+            kill "$RUNNER_PID" 2>/dev/null || true; exit 1
+          fi
+
+          export IOS_OPEN_SERVER_PORT=$PORT
+          export IOS_OPEN_SERVER_UDID=$SIM_UDID
+          export BENCH_UDID=$SIM_UDID
+          node .github/bench-ci/run-siminput-discriminating.js 2>&1 | tee "$BENCH_OUT/disc-log.txt"
+          RC=${PIPESTATUS[0]}
+          kill "$RUNNER_PID" 2>/dev/null || true
+          exit "$RC"
+
+      - name: Stamp artifacts with the run id
+        if: always()
+        shell: bash
+        run: |
+          export BENCH_OUT="$PWD/.bench-results"
+          mkdir -p "$BENCH_OUT"
+          echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }} sha=${{ github.sha }}" > "$BENCH_OUT/RUN_ID.txt"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-ios-siminput-discriminating
+          path: |
+            .bench-results
+            build/build-sim.log
+            build/runner.log
+            build-sim-input.log
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop the runner and simulator
+        if: always()
+        shell: bash
+        run: |
+          if [ -f build/runner.pid ]; then kill "$(cat build/runner.pid)" 2>/dev/null || true; fi
+          pkill -f "xcodebuild test-without-building" 2>/dev/null || true
+          timeout 45 xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || echo "simctl shutdown timed out — continuing"
+          timeout 45 xcrun simctl shutdown all 2>/dev/null || true

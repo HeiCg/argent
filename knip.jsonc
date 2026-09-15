@@ -174,6 +174,9 @@
       "entry": [
         "scripts/bench-open-vs-proprietary.ts",
         "scripts/bench-ios-open-vs-proprietary.ts",
+        // iOS-4 sim-input discriminating test — run-siminput-discriminating.js
+        // path-loads it via ts-node (dispatch-only workflow).
+        "scripts/bench-ios-siminput-discriminating.ts",
         "scripts/bench-preflight.ts",
         "scripts/bench-screen-graph.ts",
         "scripts/bench-fling-fidelity.ts",
