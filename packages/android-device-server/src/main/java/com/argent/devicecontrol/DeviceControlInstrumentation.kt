@@ -50,17 +50,28 @@ class DeviceControlInstrumentation : Instrumentation() {
     override fun onStart() {
         super.onStart()
         val uiDevice = UiDevice.getInstance(this)
-        // AW-1 probe (run 34946274170) confirmed research §2: a default
-        // UiAutomation connection SUPPRESSES other accessibility services for its
-        // lifetime, so while our server is alive AndroidWorld's a11y forwarder
-        // forest comes back empty ("Could not get a11y tree") and `uiautomator
-        // dump` yields 0 bytes. FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES lets our
-        // UiAutomation coexist with AW's forwarder on one emulator. NOTE: this is a
-        // driver behavior change (suppression is also what makes our reads cheap),
-        // so the describe latencies must be re-measured against run 34870686468 at
-        // the drift floor before any latency row is trusted on this build (AW-1.1;
-        // not folded into the AW-1 harness run).
-        val uiAutomation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        // AW-1 probe (run 34946274170) confirmed research §2: a default UiAutomation
+        // connection SUPPRESSES other accessibility services for its lifetime, so
+        // while our server is alive AndroidWorld's a11y forwarder forest comes back
+        // empty ("Could not get a11y tree"). FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
+        // lets our UiAutomation coexist with AW's forwarder on one emulator (re-probe
+        // 34947435250: forest returns 23 nodes/19 elements). Suppression is ALSO what
+        // makes our describe reads cheap, so this is OPT-IN via `-e dontSuppressA11y
+        // true`, set only by the AndroidWorld harness. When the arg is unset the
+        // default `uiAutomation` (suppressing) connection is used, byte-identical to
+        // before AW-1 — so no describe-latency re-measure is needed to merge. The
+        // AW harness path (arg ON) carries its own latency caveat (AW-1.1).
+        val dontSuppressA11y =
+            UiAutomationFlags.dontSuppressA11y(
+                startArgs?.getString(UiAutomationFlags.ARG_DONT_SUPPRESS_A11Y)
+            )
+        val uiAutomation =
+            if (dontSuppressA11y) {
+                Log.w(TAG, "dontSuppressA11y is ON — UiAutomation will not suppress other a11y services (AW harness path)")
+                getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+            } else {
+                uiAutomation
+            }
 
         // Enable the interactive-windows API so `uiAutomation.windows` is populated
         // and the active window's root can be read from that snapshot instead of via

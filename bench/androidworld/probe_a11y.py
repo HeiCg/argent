@@ -49,10 +49,17 @@ def adb(serial: str, args: list[str], timeout: int = 60) -> subprocess.Completed
   )
 
 
-def start_instrumentation(serial: str) -> tuple[subprocess.Popen, int | None]:
-  """Launch am instrument and wait for the ephemeral-port status line."""
+def start_instrumentation(
+    serial: str, dont_suppress_a11y: bool = True
+) -> tuple[subprocess.Popen, int | None]:
+  """Launch am instrument and wait for the ephemeral-port status line.
+
+  The probe exercises the OPT-IN path (`-e dontSuppressA11y true`), which is what
+  the AndroidWorld harness uses; the default driver start stays suppressing.
+  """
+  extra = ["-e", "dontSuppressA11y", "true"] if dont_suppress_a11y else []
   proc = subprocess.Popen(
-      ["adb", "-s", serial, "shell", "am", "instrument", "-w", INSTRUMENTATION_RUNNER],
+      ["adb", "-s", serial, "shell", "am", "instrument", "-w", *extra, INSTRUMENTATION_RUNNER],
       stdout=subprocess.PIPE,
       stderr=subprocess.STDOUT,
       text=True,

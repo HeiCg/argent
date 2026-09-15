@@ -92,6 +92,10 @@ def start_tool_server(port: int, host: str) -> subprocess.Popen:
   env["ARGENT_PORT"] = str(port)
   env["ARGENT_HOST"] = host
   env.pop("ARGENT_AUTH_TOKEN", None)
+  # AW-1: opt into the non-suppressing UiAutomation (arg `-e dontSuppressA11y
+  # true`) so AndroidWorld's a11y forwarder coexists with our server. This is the
+  # ONLY caller that sets it; the default driver stays suppressing (byte-identical).
+  env["ARGENT_OPEN_SERVER_DONT_SUPPRESS_A11Y"] = "1"
   proc = subprocess.Popen(
       ["node", "packages/tool-server/dist/index.js", "start"],
       cwd=str(REPO_ROOT),

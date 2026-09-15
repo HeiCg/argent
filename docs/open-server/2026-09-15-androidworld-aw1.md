@@ -90,12 +90,15 @@ Research §2's inference is confirmed on device: a default `UiAutomation` connec
 suppresses other accessibility services for its lifetime, so while our server is alive
 AndroidWorld's forwarder forest and `uiautomator dump` are dead.
 
-**Pre-registered choice (before any harness run): ADD
-`FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`.** The harness keeps AW's own env for
-`initialize_task`/`is_successful`/`tear_down`/adb, and AW's env reads the forest on
-`reset`/checkers — so it must coexist with our `UiAutomation`.
-`DeviceControlInstrumentation.getUiAutomation` now passes the flag (minimal Kotlin diff,
-`packages/android-device-server/src/main/java/com/argent/devicecontrol/DeviceControlInstrumentation.kt:63`).
+**Pre-registered choice (before any harness run): make
+`FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` OPT-IN, off by default.** The harness keeps
+AW's own env for `initialize_task`/`is_successful`/`tear_down`/adb, and AW's env reads the
+forest on `reset`/checkers — so it must coexist with our `UiAutomation`. The flag is
+requested ONLY when the instrumentation is started with `-e dontSuppressA11y true`
+(`UiAutomationFlags.dontSuppressA11y`, unit-tested; wired through the blueprint's env-gated
+spawn arg `ARGENT_OPEN_SERVER_DONT_SUPPRESS_A11Y=1`, set only by
+`run_aw.start_tool_server`). When the arg is unset the default suppressing `uiAutomation`
+connection is used — **byte-identical to the pre-AW-1 driver**.
 
 **Re-probe run 34947435250 (with the flag): harness blocker RESOLVED.** With our server
 alive, AndroidWorld's a11y forwarder forest now returns — `aw_forest.ok=true`, **2 windows,
@@ -107,11 +110,13 @@ the dump. The probe verdict was refined to key on the forwarder forest (the
 harness-relevant signal); the flag is validated and the harness is a go once the secret
 lands.
 
-**Latency caveat — AW-1.1, NOT folded into AW-1:** suppression is also what makes our
-describe reads cheap, so the flag is a driver behavior change. The describe latencies must
-be re-measured against run 34870686468 at the within-run drift floor before any latency
-row is trusted on a build carrying this flag; do not reuse 34870686468 as a comparator for
-this build.
+**Latency caveat — bounded to the harness arm; NOT a merge blocker:** suppression is also
+what makes our describe reads cheap, so the non-suppressing connection is a driver behavior
+change — but ONLY on the opt-in path. Because the default start is byte-identical, **no
+describe-latency re-measure is needed to merge this change.** The re-measure is needed only
+for the AndroidWorld harness runs themselves (which set the arg): those must be compared at
+the within-run drift floor and must not reuse run 34870686468 as a cross-build comparator
+(AW-1.1).
 
 ### Step 1 — adapter (`bench/androidworld/`, outside `packages/`, nothing vendored)
 
