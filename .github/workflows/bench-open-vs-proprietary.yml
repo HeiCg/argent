@@ -42,6 +42,11 @@ on:
         options:
           - matrix
           - capture
+      churn:
+        description: "Phase E (E-1): build + install the synthetic churn app and run the template-edge churn experiment (BENCH_CHURN=1) after the matrix"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # ── Latency bench (4 blocks) + device smoke ───────────────────────────────
@@ -537,6 +542,15 @@ jobs:
           npm run build:android-device-server
           ls -la packages/android-device-server/bin/
 
+      - name: Build churn app (Phase E, E-1)
+        if: ${{ github.event.inputs.churn == 'true' }}
+        # Reuses the android-device-server Gradle wrapper via `-p`, so no second
+        # wrapper.jar. Only builds under the `churn` input.
+        run: |
+          set -euo pipefail
+          bash bench/churn-app/scripts/build.sh
+          ls -la bench/churn-app/build/outputs/apk/debug/
+
       - name: Fetch proprietary binaries (B1 config)
         run: |
           set -e
@@ -567,10 +581,20 @@ jobs:
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-preflight.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-preflight.log"
 
+      - name: Install churn app (Phase E, E-1)
+        if: ${{ github.event.inputs.churn == 'true' && github.event.inputs.sg_mode != 'capture' }}
+        run: |
+          set -euo pipefail
+          APK="$(find bench/churn-app/build/outputs/apk/debug -name '*.apk' | head -n1)"
+          adb -s emulator-5554 install -r "$APK"
+          adb -s emulator-5554 shell pm list packages | grep com.argent.churnapp
+
       - name: Screen-graph matrix
         if: ${{ github.event.inputs.sg_mode != 'capture' }}
         env:
           BENCH_SERIAL: emulator-5554
+          # Phase E (E-1): run the churn experiment after the matrix when requested.
+          BENCH_CHURN: ${{ github.event.inputs.churn == 'true' && '1' || '' }}
           # C.4 work item F: 5 reps for a tighter Wilson interval above the noise floor.
           BENCH_REPS: "5"
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
