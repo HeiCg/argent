@@ -291,11 +291,17 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
       upsertFeed(on, launch);
       upsertFeed(off, launch);
 
-      // --- 8 item taps (top rows, no scroll needed) ---
+      // --- 8 item taps: RELAUNCH the feed before EACH tap. A detail `back` does
+      //     not reliably return to a queryable feed on this app/emulator (run
+      //     34957934222 got stuck on the first detail and only ever tapped item 0),
+      //     so every tap sees a fresh top-of-feed — the same relaunch pattern the
+      //     nav phase already uses successfully. ---
       for (let i = 0; i < TAPS_PER_SESSION; i++) {
-        const story = `Story ${i}`;
+        launchFeed(seed);
+        await sleep(1200);
         const before = await snapshot(server);
         if (!before) continue;
+        const story = `Story ${i}`;
         const pt = await findExact(server, story);
         if (!pt) {
           log(`[churn] ${story} not found on ${condition} s${session}`);
@@ -310,17 +316,17 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
         } catch {
           continue;
         }
-        await sleep(600);
+        await sleep(700);
         const after = await snapshot(server);
         if (after && after.idHash && after.idHash !== before.idHash) {
           recordTap(on, off, before, after, pt.x, pt.y, story);
         }
-        await back(server);
-        await sleep(500);
       }
 
       // --- one carousel tap (containment audit: expect the carousel, not the list) ---
       {
+        launchFeed(seed);
+        await sleep(1200);
         const before = await snapshot(server);
         const pt = before ? await findExact(server, "Card 0") : null;
         if (before && pt) {
@@ -329,21 +335,22 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
           if (stripId(cont?.resourceId) === "carousel") carouselAttr += 1;
           try {
             await server.tapWithOutcome(pt.x, pt.y);
-            await sleep(600);
+            await sleep(700);
             const after = await snapshot(server);
             if (after && after.idHash && after.idHash !== before.idHash) {
               recordTap(on, off, before, after, pt.x, pt.y, "Card 0");
             }
-            await back(server);
-            await sleep(400);
           } catch {
             /* best-effort */
           }
         }
       }
 
-      // --- 10 scrolls: churn the feed content, upsert the feed node each time
-      //     (drives volatility), and sample the summary tokens per arm ---
+      // --- 10 scrolls on a FRESH feed (relaunch so the scroll phase runs on the
+      //     feed, not a stuck detail): churn content + upsert the feed each time
+      //     (drives volatility) + sample the summary tokens per arm ---
+      launchFeed(seed);
+      await sleep(1200);
       const summaryTokOn: number[] = [];
       const summaryTokOff: number[] = [];
       for (let s = 0; s < SCROLLS_PER_SESSION; s++) {
