@@ -43,8 +43,15 @@ export default tseslint.config(
         // Explicit list rather than `projectService`, which would not pick up
         // the per-package tsconfig.test.json. The glob also matches
         // packages/docs, which is outside the npm workspaces, so `npm ci` there
-        // has to run before this lint (see .github/workflows/lint.yml).
-        project: ["packages/*/tsconfig.json", "packages/*/tsconfig.test.json"],
+        // has to run before this lint (see .github/workflows/lint.yml). The
+        // per-package scripts/tsconfig.json covers the bench scripts under
+        // packages/*/scripts, which the type-aware parser otherwise rejects as
+        // "file not found in any project".
+        project: [
+          "packages/*/tsconfig.json",
+          "packages/*/tsconfig.test.json",
+          "packages/*/scripts/tsconfig.json",
+        ],
         tsconfigRootDir: import.meta.dirname,
       },
       globals: { ...globals.node },

@@ -196,9 +196,6 @@ function adb(args: string[], timeoutMs = 20_000): string {
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
-function adbShell(cmd: string, timeoutMs = 20_000): string {
-  return adb(["shell", cmd], timeoutMs);
-}
 function adbTry(args: string[], timeoutMs = 20_000): string {
   try {
     return adb(args, timeoutMs);
@@ -1592,8 +1589,9 @@ function erroredTaskRecord(
   // Phase D.3 (D2-M6): exclude the run as pre-action infra ONLY when the throw is
   // a device/adb/open-server connectivity fault; any other exception is the
   // config's own failure and counts against it (no outcome-shaped exclusion).
+  const errMessage = (err as { message?: string })?.message;
   const infraPreAction = isPreActionInfraError(
-    String((err as { message?: string })?.message ?? err ?? "")
+    typeof errMessage === "string" ? errMessage : typeof err === "string" ? err : ""
   );
   return {
     config,
@@ -2069,7 +2067,7 @@ function buildReport(
   // stale/foreign report can never be mistaken for this run's (the 34888577404 artifact
   // carried a four-hours-earlier execution's results-ci.md with no way to tell).
   L.push(
-    `Generated ${new Date().toISOString()} · run ${env.runId ?? "?"} · job started ${env.jobStartedAt ?? "?"}. Harness:`
+    `Generated ${new Date().toISOString()} · run ${typeof env.runId === "string" ? env.runId : "?"} · job started ${typeof env.jobStartedAt === "string" ? env.jobStartedAt : "?"}. Harness:`
   );
   L.push("`packages/tool-server/scripts/bench-screen-graph.ts` (opt-in).");
   L.push("");

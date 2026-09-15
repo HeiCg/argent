@@ -1,5 +1,5 @@
 import * as net from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { IosOpenServerClient } from "../src/utils/ios-open-server-client";
 
 // A fake NDJSON JSON-RPC server on loopback: it asserts the client's on-the-wire

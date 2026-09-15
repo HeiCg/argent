@@ -16,10 +16,10 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": [
-    "bench-describe-host.ts",
-    "bench-open-vs-proprietary.ts",
-    "optical-scroll.ts",
-    "bench-fling-fidelity.ts"
-  ]
+  // Every bench `.ts` in this directory (the fixtures/ tree is JSON only). A
+  // glob rather than a hand-kept list so a new bench script is typechecked here
+  // and picked up by eslint's `parserOptions.project` automatically — a stale
+  // list is what left bench-preflight.ts and bench-screen-graph.ts outside
+  // every project and unparseable by the type-aware lint.
+  "include": ["*.ts"]
 }

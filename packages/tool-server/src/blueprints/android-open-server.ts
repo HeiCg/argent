@@ -851,7 +851,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
     if (isEmulatorSerial(serial) && spawned.allPort !== undefined && consoleToken !== null) {
       const consolePort = emulatorConsolePort(serial)!;
       let redirClient: AndroidOpenServerClient | null = null;
-      let redirOk = false;
+      let redirOk: boolean;
       try {
         const hostPort = await freeHostPort();
         await redirAdd(consolePort, hostPort, spawned.allPort, consoleToken);

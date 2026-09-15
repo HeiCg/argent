@@ -21,12 +21,7 @@ import {
   bumpSkippedNoIdHash,
   resolveStoreForCurrentApp,
 } from "../../../../utils/screen-graph-open-wiring";
-import {
-  buildSummary,
-  renderSummary,
-  resolveCompactTier,
-  type ScreenGraphStore,
-} from "../../../../screen-graph";
+import { buildSummary, renderSummary, resolveCompactTier } from "../../../../screen-graph";
 import { describeAndroid } from "./index";
 
 export type DescribeTier = "summary" | "compact" | "full";
