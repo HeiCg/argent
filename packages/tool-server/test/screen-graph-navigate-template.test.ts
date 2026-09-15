@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { executeTemplateStep } from "../src/tools/navigate-to";
-import { planToTemplate } from "../src/screen-graph/plan";
+import { multisetJaccard, planToTemplate } from "../src/screen-graph/plan";
+import { nonScrollRids, type TemplateElement } from "../src/screen-graph/template";
 import type { Edge, ScreenNode } from "../src/screen-graph/types";
 
 const size = { width: 1080, height: 2400 };
@@ -55,6 +56,65 @@ describe("template-step navigation (design D1)", () => {
     expect(out.tapped).toBe(false);
     expect(out.reason).toBe("selector ambiguous on live tree");
     expect(calls.tap).toBe(0);
+  });
+
+  it("returns a system-decor-free arrival key that matches a template node (Jaccard 1.0)", async () => {
+    // The landed detail tree carries decor bars the template node's stored
+    // `nonScrollRids` excludes; the arrival key must exclude them too, or the
+    // Jaccard drops below 0.9 (run 34957934222 measured 7/9 = 0.78).
+    const detail: TemplateElement[] = [
+      {
+        className: "X",
+        resourceId: "com:id/detail_toolbar",
+        index: 1,
+        bounds: { x1: 0, y1: 0, x2: 1, y2: 1 },
+      },
+      {
+        className: "X",
+        resourceId: "com:id/title",
+        index: 2,
+        bounds: { x1: 0, y1: 0, x2: 1, y2: 1 },
+      },
+      {
+        className: "X",
+        resourceId: "com:id/detail_body",
+        index: 3,
+        bounds: { x1: 0, y1: 0, x2: 1, y2: 1 },
+      },
+      {
+        className: "X",
+        resourceId: "android:id/statusBarBackground",
+        index: 4,
+        bounds: { x1: 0, y1: 0, x2: 1, y2: 1 },
+      },
+      {
+        className: "X",
+        resourceId: "android:id/navigationBarBackground",
+        index: 5,
+        bounds: { x1: 0, y1: 0, x2: 1, y2: 1 },
+      },
+    ];
+    const item = [{ text: "Story 37", bounds: { x1: 0, y1: 800, x2: 1080, y2: 1000 } }];
+    const calls = { query: 0, tap: 0 };
+    const server: any = {
+      query: async () => {
+        calls.query += 1;
+        return { nodes: item };
+      },
+      tapWithOutcome: async () => {
+        calls.tap += 1;
+        return { after: { idHash: "detail" } };
+      },
+      swipeWithOutcome: async () => ({ after: { idHash: "feed" } }),
+      getState: async () => ({ idHash: "detail", tree: detail }),
+    };
+    const out = await executeTemplateStep(server, size, "Story 37");
+    expect(out.tapped).toBe(true);
+    expect(out.afterResourceIds).not.toContain("statusBarBackground");
+    expect(out.afterResourceIds).not.toContain("navigationBarBackground");
+    // A template node stores `nonScrollRids` of the same tree — arrival is exact.
+    const templateRids = nonScrollRids(detail, "");
+    expect(multisetJaccard(out.afterResourceIds, templateRids)).toBe(1);
   });
 
   it("gives up after the scroll budget and reports unresolved", async () => {

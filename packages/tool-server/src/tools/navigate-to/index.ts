@@ -24,6 +24,7 @@ import {
   isScrollingElement,
   multisetJaccard,
   nodeResourceIds,
+  nonScrollRids,
   parseSelectorKey,
   plan,
   planToSelectorStable,
@@ -38,6 +39,7 @@ import {
   type PlanStep,
   type ScreenGraphStore,
   type ScreenNode,
+  type TemplateElement,
 } from "../../screen-graph";
 import type { OpenServerElement } from "../describe/platforms/android/open-server-tree";
 
@@ -421,7 +423,11 @@ export async function executeTemplateStep(
       return {
         tapped: true,
         afterHash: idOf(after),
-        afterResourceIds: resourceIdsOf(after.tree),
+        // Phase E: a template node stores the destination's NON-scroll rid multiset
+        // (system + inside-scroll ids removed), so the arrival Jaccard must compare
+        // the live side the SAME way — else the live `statusBar`/`navigationBar`
+        // decor ids drop the score below 0.9 (run 34957934222: 7/9 = 0.78).
+        afterResourceIds: nonScrollRids(after.tree as unknown as TemplateElement[], ""),
       };
     }
     if (exact.length > 1) {
