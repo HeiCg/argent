@@ -33,6 +33,25 @@ The agent uses the same tools; only the backend they reach changes.
 
 Keyboard text already goes through `adb input` on Android and is unchanged.
 
+## Verified taps
+
+The open server can confirm a target before it taps. The agent names the element
+it wants to press. Argent reads the live screen, finds that element, and taps its
+center. Argent refuses to tap when the element is missing, when several elements
+match, or when the coordinates point somewhere else. A verified tap turns a blind
+coordinate press into a checked action, so a stale coordinate no longer taps the
+wrong thing.
+
+When a verified gesture fails, the next screen description starts with a short
+incident line. The line names the failure and suggests a fix, and it counts the
+failures in a row. The agent sees the problem in context and changes approach
+instead of repeating a tap that does nothing. The next successful gesture clears
+the line, and the line expires after a few minutes.
+
+These behaviors apply only when the open device server drives the device. For the
+parameters, the selector fields and the error codes, see the
+[tools reference](../reference/tools.mdx).
+
 ## Automatic fallback
 
 Every path degrades safely. If the server is not installed, cannot start, or

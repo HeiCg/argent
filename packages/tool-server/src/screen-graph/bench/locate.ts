@@ -15,6 +15,7 @@ export interface QueryNodeLite {
   id?: string;
   text?: string;
   cd?: string;
+  class?: string;
   bounds: { x1: number; y1: number; x2: number; y2: number };
 }
 
@@ -22,6 +23,12 @@ interface PickResult {
   node?: QueryNodeLite;
   /** A resolution tier had >1 candidate and none was unique — do NOT tap. */
   ambiguous: boolean;
+  /**
+   * The nodes of the tier that was ambiguous (>1), so a caller can list exactly
+   * the colliding candidates rather than the whole result set (review A1-M6).
+   * Present only when `ambiguous` is true.
+   */
+  candidates?: QueryNodeLite[];
 }
 
 export const normLc = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
@@ -35,9 +42,10 @@ export const normLc = (s: string | undefined): string => (s ?? "").trim().toLowe
 export function pickUniqueNode(nodes: readonly QueryNodeLite[], sel: BenchSelector): PickResult {
   const wid = normLc(sel.id);
   const wt = normLc(sel.text);
+  const wc = normLc(sel.class);
   const uniq = (cands: QueryNodeLite[]): PickResult | null => {
     if (cands.length === 1) return { node: cands[0]!, ambiguous: false };
-    if (cands.length > 1) return { ambiguous: true };
+    if (cands.length > 1) return { ambiguous: true, candidates: cands };
     return null;
   };
   if (wid) {
@@ -50,6 +58,14 @@ export function pickUniqueNode(nodes: readonly QueryNodeLite[], sel: BenchSelect
     r = uniq(nodes.filter((n) => normLc(n.cd) === wt));
     if (r) return r;
     r = uniq(nodes.filter((n) => normLc(n.text).includes(wt) || normLc(n.cd).includes(wt)));
+    if (r) return r;
+  }
+  // `class` is the weakest discriminator, tried last (exact then contains). Only
+  // the verified-tap resolver ever sets it; the scripted bench never does.
+  if (wc) {
+    let r = uniq(nodes.filter((n) => normLc(n.class) === wc));
+    if (r) return r;
+    r = uniq(nodes.filter((n) => normLc(n.class).includes(wc)));
     if (r) return r;
   }
   return { ambiguous: false };

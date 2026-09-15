@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { isFlagEnabled } from "@argent/configuration-core";
 import type { DeviceInfo, Registry } from "@argent/registry";
 import {
@@ -25,6 +26,16 @@ import {
 } from "./screen-graph-open-wiring";
 import type { EdgeSelector } from "../screen-graph";
 import type { OpenServerElement } from "../tools/describe/platforms/android/open-server-tree";
+import {
+  resolveVerify,
+  boundsCenter,
+  type VerifyBounds,
+  type VerifyCandidate,
+  type VerifyGuard,
+  type VerifyResolution,
+} from "./open-server-verify";
+import { clearIncident } from "./open-server-incident";
+import type { QueryNodeLite } from "../screen-graph/bench/locate";
 
 // Defaults for the multi-tap timeline the on-device server builds (F1/F8/F9).
 // Kept in sync with the host constants of the same name in `gesture-tap`.
@@ -356,6 +367,202 @@ export function openServerTapWithOutcome(
   });
 }
 
+/* ------------------------------------------------------------------------- */
+/* Ticket Artemis A1 (part A) — verified tap / swipe (`verify: { selector }`)  */
+/* ------------------------------------------------------------------------- */
+
+/** The `verify` argument shared by the verified tap and swipe-start paths. */
+export interface OpenServerVerify {
+  selector: OpenServerSelector;
+  /** Slack around the match's bounds for the coordinate cross-check; default 0. */
+  tolerancePx?: number;
+}
+
+/**
+ * The reply of a verified tap/swipe. `outcome` is the resolution verdict; the
+ * refusal variants carry the context the tool returns to the caller and records
+ * as an incident (part B). `version` is the AX version clock at the query (the
+ * `query` read arms it, phase 3m lazy-arm), so the caller can key a follow-up
+ * `awaitChange` off a fresh clock. `verifyMs` is the host round-trip of the ONE
+ * `query` RPC, for the bench.
+ */
+export interface OpenServerVerifiedResult {
+  outcome: "tapped" | "swiped" | "not_found" | "ambiguous" | "mismatch";
+  version: number;
+  verifyMs: number;
+  /** The resolved match's bounds (on `tapped` / `swiped` / `mismatch`). */
+  resolvedBounds?: VerifyBounds;
+  /** Up to 5 matches on `ambiguous` (label + bounds). */
+  candidates?: VerifyCandidate[];
+  /** The pixel coordinates the caller proposed, echoed on `mismatch`. */
+  requestedPx?: { x: number; y: number };
+  /** The element the caller's coordinates actually pointed at (on `mismatch`). */
+  label?: string;
+  /** Whether the LANDED tap moved the UI (present on `tapped` only). */
+  changed?: boolean;
+  /** The before/after fingerprint delta of a landed tap (present on `tapped`). */
+  actionOutcome?: OpenServerActionOutcome;
+}
+
+// Verify `query` limit: 5 candidates to list on ambiguity + 1 to know there are
+// more than 5, so a broad selector never serialises the whole matching forest
+// (review A1-M3).
+const VERIFY_QUERY_LIMIT = 6;
+
+/** Build the coordinate guard only when the caller supplied x AND y (A1-H3). */
+function verifyGuard(
+  size: { width: number; height: number },
+  xNorm: number | undefined,
+  yNorm: number | undefined,
+  tolerancePx: number | undefined
+): { px: { x: number; y: number }; guard: VerifyGuard } | undefined {
+  if (xNorm === undefined || yNorm === undefined) return undefined;
+  const px = toPixels(size, xNorm, yNorm);
+  return { px, guard: { xPx: px.x, yPx: px.y, tolerancePx: tolerancePx ?? 0 } };
+}
+
+/**
+ * Verify a tap target on the LIVE tree, then tap its bounds CENTER — or refuse
+ * without injecting. Runs the server-side `query` RPC (never a cached describe),
+ * resolves a unique node with `pickUniqueNode`'s precedence, and — WHEN the caller
+ * also supplied x/y — cross-checks that coordinate against the match. With no
+ * coordinate the unique match is tapped unconditionally (A1-H3). On a landed tap
+ * it reads the before/after delta (via `tapWithOutcome`) so the caller can tell a
+ * no-effect tap (recorded as an incident) from a real one. The whole thing runs
+ * under ONE device lock so the query and the tap see the same tree.
+ */
+export function openServerVerifiedTap(
+  registry: Registry,
+  device: DeviceInfo,
+  xNorm: number | undefined,
+  yNorm: number | undefined,
+  clickCount: number,
+  verify: OpenServerVerify
+): Promise<OpenServerVerifiedResult> {
+  return withServer(registry, device, async (server, size) => {
+    const t0 = performance.now();
+    // `query` arms the version clock and returns the live matches (capped) — the
+    // like-for-like read the screen-graph harness uses (`locateNorm`).
+    const q = await server.query(verify.selector, { limit: VERIFY_QUERY_LIMIT });
+    const verifyMs = Number((performance.now() - t0).toFixed(3));
+    const version = q.version;
+    const g = verifyGuard(size, xNorm, yNorm, verify.tolerancePx);
+    const res: VerifyResolution = resolveVerify(
+      q.nodes as QueryNodeLite[],
+      verify.selector,
+      g?.guard
+    );
+    if (res.kind === "not_found") return { outcome: "not_found", version, verifyMs };
+    if (res.kind === "ambiguous")
+      return { outcome: "ambiguous", version, verifyMs, candidates: res.candidates };
+    if (res.kind === "mismatch")
+      return {
+        outcome: "mismatch",
+        version,
+        verifyMs,
+        resolvedBounds: res.bounds,
+        ...(g ? { requestedPx: g.px } : {}),
+        label: res.label,
+      };
+    // Unique match — tap its center. Use the outcome-bearing RPC so a landed but
+    // ineffective tap is detectable (`changed:false`).
+    const c = boundsCenter(res.bounds);
+    const cx = Math.round(c.x);
+    const cy = Math.round(c.y);
+    const raw = await server.tapWithOutcome(cx, cy, {
+      clickCount,
+      holdMs: TAP_HOLD_MS,
+      ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+      ...injectOpt(),
+    });
+    if ((raw as { dropped?: boolean }).dropped || raw.success === false) {
+      throw new Error("open-device-server tap was dropped by the input dispatcher");
+    }
+    const actionOutcome = toOutcome(raw);
+    // A1-M8: when the screen graph is recording, record the tap as an observation
+    // like `openServerTapWithOutcome` does, so the edge is not lost. The acted
+    // node is the verified match, but the compact `query` node lacks the child
+    // path an `EdgeSelector` bucket needs, so the coordinate observation (target
+    // = the tapped center) is recorded rather than a reconstructed selector.
+    if (screenGraphRecordingEnabled()) {
+      await recordOpenServerObservation(
+        device,
+        server,
+        size,
+        { kind: "tap", x: cx, y: cy },
+        actionOutcome
+      );
+    }
+    return {
+      outcome: "tapped",
+      version,
+      verifyMs,
+      resolvedBounds: res.bounds,
+      changed: actionOutcome.changed,
+      actionOutcome,
+    };
+  });
+}
+
+/**
+ * Verify a swipe's START point on the LIVE tree, then swipe from the match's
+ * CENTER to the given end point — or refuse without injecting. Same resolution
+ * and coordinate cross-check as [openServerVerifiedTap]; the end point is taken
+ * as authored (only the start is verified). `momentum: false` still rides on
+ * `holdEndMs`.
+ */
+export function openServerVerifiedSwipe(
+  registry: Registry,
+  device: DeviceInfo,
+  fromXNorm: number | undefined,
+  fromYNorm: number | undefined,
+  toXNorm: number,
+  toYNorm: number,
+  steps: number,
+  verify: OpenServerVerify,
+  holdEndMs?: number
+): Promise<OpenServerVerifiedResult> {
+  return withServer(registry, device, async (server, size) => {
+    const to = toPixels(size, toXNorm, toYNorm);
+    const t0 = performance.now();
+    const q = await server.query(verify.selector, { limit: VERIFY_QUERY_LIMIT });
+    const verifyMs = Number((performance.now() - t0).toFixed(3));
+    const version = q.version;
+    const g = verifyGuard(size, fromXNorm, fromYNorm, verify.tolerancePx);
+    const res: VerifyResolution = resolveVerify(
+      q.nodes as QueryNodeLite[],
+      verify.selector,
+      g?.guard
+    );
+    if (res.kind === "not_found") return { outcome: "not_found", version, verifyMs };
+    if (res.kind === "ambiguous")
+      return { outcome: "ambiguous", version, verifyMs, candidates: res.candidates };
+    if (res.kind === "mismatch")
+      return {
+        outcome: "mismatch",
+        version,
+        verifyMs,
+        resolvedBounds: res.bounds,
+        ...(g ? { requestedPx: g.px } : {}),
+        label: res.label,
+      };
+    const c = boundsCenter(res.bounds);
+    const swipeRes = await server.swipe(
+      Math.round(c.x),
+      Math.round(c.y),
+      to.x,
+      to.y,
+      steps,
+      holdEndMs,
+      injectOpt()
+    );
+    if ((swipeRes as { dropped?: boolean }).dropped || swipeRes.success === false) {
+      throw new Error("open-device-server swipe was dropped by the input dispatcher");
+    }
+    return { outcome: "swiped", version, verifyMs, resolvedBounds: res.bounds };
+  });
+}
+
 /**
  * Swipe between two normalized points via the open server. The server runs its
  * own UiAutomator interpolation (`steps`), so this is one RPC rather than the
@@ -559,6 +766,9 @@ export function openServerGesture(
     if ((res as { dropped?: boolean }).dropped || res.success === false) {
       throw new Error("open-device-server gesture was dropped by the input dispatcher");
     }
+    // A1-M1: a successful open-driver gesture (pinch / rotate / custom) clears any
+    // standing execution incident on this device, like tap and swipe do.
+    clearIncident(device.id);
   });
 }
 
