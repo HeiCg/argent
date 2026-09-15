@@ -29,6 +29,14 @@ export interface CanonicalAction {
   bucket?: { x: number; y: number };
   /** Key name for `kind: 'key'` (e.g. `enter`, `KEYCODE_TAB`). */
   key?: string;
+  /**
+   * Phase E (design D1): the tap resolved INSIDE a scrollable container, and the
+   * `screen-graph` flag's `ARGENT_SG_TEMPLATES` mode is on. When present, the
+   * action's signature is namespaced by `(containerKey, itemTemplate)` so every
+   * item tap in one container folds onto ONE edge (`template.ts`). Additive and
+   * optional; absent on every non-template action and on the feature-off path.
+   */
+  template?: { containerKey: string; itemTemplate: string };
 }
 
 /** A stored selector index entry: where a selector was, and its flags. */
@@ -136,6 +144,27 @@ export interface ScreenNode {
   thumbnailPath?: string;
   /** `compact` text was dropped because the screen held a secret. */
   redacted?: boolean;
+  /**
+   * Phase E (design D1): a SYNTHETIC template node — the destination of a template
+   * edge, standing in for up to N per-item detail screens. It carries `instances`
+   * (distinct concrete destinations folded) and an `exemplar` rendering, and —
+   * load-bearing — NEVER a `stateHash`, which makes `resolveCompactTier`
+   * structurally unable to serve `cache`/`patch` for it (`describe-tiers.ts`), so
+   * one item's cached text can never be served for another. `compact` holds the
+   * exemplar. Enforced by invariant G-I5.
+   */
+  template?: boolean;
+  /** Phase E: distinct concrete destinations folded onto a template node. */
+  instances?: number;
+  /**
+   * Phase E (design D2 R4): volatility tracker maintained on every upsert by
+   * comparing the incoming `stateHash` to the stored one. A node is `volatile`
+   * (its `compact` is dropped on persist and the summary flags it) when
+   * `samples >= 4 && distinctStates / samples >= 0.75` — an `H_id` that holds
+   * while `stateHash` churns, i.e. a live-content screen (E-0 §F1 / architecture
+   * §221-222).
+   */
+  volatility?: { samples: number; distinctStates: number };
 }
 
 /** A transition: `action` took screen `from` to screen `to`. */
@@ -155,6 +184,23 @@ export interface Edge {
   successes: number;
   /** epoch ms of the most recent observation (staleness). */
   lastSeen: number;
+  /**
+   * Phase E (design D1): present only on a TEMPLATE edge — a container-item tap
+   * folded onto one edge. `instances` is the number of distinct CONCRETE
+   * destinations folded in (the number `describe` reports); `targets` is the
+   * capped distinct-destination set it is derived from; `lastItemTexts` a small
+   * ring of recently-tapped item labels for the summary line. The edge's `to` is
+   * the synthetic template node, so it has exactly one destination.
+   */
+  template?: {
+    containerKey: string;
+    itemTemplate: string;
+    instances: number;
+    /** The container's stripped resource id (`list`), for the summary line. */
+    containerId?: string;
+    targets?: string[];
+    lastItemTexts?: string[];
+  };
 }
 
 /** The persisted graph document for one `(packageName, versionCode)`. */
@@ -214,6 +260,13 @@ export function selectorKeys(selector: GraphSelector): SelectorKey[] {
  * edge; the plan weight aggregates over them.
  */
 export function actionSignature(a: CanonicalAction): string {
+  // Phase E (design D1): a container-item tap keys ONLY on its template, so every
+  // item tapped in the same container dedupes onto one `(from, signature)` edge —
+  // which is exactly what keeps `duplicateEdgeTargets` green on a churning feed
+  // (E-0 §F4). Independent of target/bucket, which are per-item and volatile.
+  if (a.template) {
+    return `${a.kind}${US}tpl=${a.template.containerKey}#${a.template.itemTemplate}`;
+  }
   const parts: string[] = [a.kind];
   if (a.target?.id) parts.push(`id=${a.target.id}`);
   else if (a.target?.text) parts.push(`text=${a.target.text}`);
@@ -221,6 +274,17 @@ export function actionSignature(a: CanonicalAction): string {
   if (a.dir) parts.push(`dir=${a.dir}`);
   if (a.key) parts.push(`key=${a.key}`);
   return parts.join(US);
+}
+
+/** Phase E (design D2 R4): the volatility threshold — 4+ samples, ≥ 75 % churn. */
+export const VOLATILE_MIN_SAMPLES = 4;
+export const VOLATILE_CHURN_RATIO = 0.75;
+
+/** Whether a node's `volatility` tracker has crossed the volatile threshold. */
+export function isNodeVolatile(node: ScreenNode): boolean {
+  const v = node.volatility;
+  if (!v || v.samples < VOLATILE_MIN_SAMPLES) return false;
+  return v.distinctStates / v.samples >= VOLATILE_CHURN_RATIO;
 }
 
 /** A human-facing one-liner for an action, used in summaries and plans. */

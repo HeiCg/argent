@@ -3,6 +3,7 @@
  * actions, planner, describe tiers, labels, and the navigate-to runner.
  */
 export * from "./types";
+export * from "./template";
 export * from "./canonical";
 export * from "./plan";
 export * from "./store";
