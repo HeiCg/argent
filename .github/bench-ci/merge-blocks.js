@@ -191,19 +191,41 @@ if (redirBad.length) {
   );
 }
 
-// Zero-fallback gate for the ON-input-manager arm (only if it ran). Phase 3n.2: the
-// scrcpy zero-fast-inject-fallback gate was replaced by the strategy fallback counter
-// — any host-side inject fallback on the input-manager arm means the reflective pipe
-// degraded mid-run (the on-device unavailable→uia-async split is in the strategy echo).
-let strategyFallbacks = null;
+// Zero-fallback gate for the ON-input-manager arm (only if it ran). Phase 3n.3
+// (3N2-H1): the AUTHORITATIVE fallback signal is the on-device
+// `injectStrategyCounts["unavailable"]` accumulated over the block via `getInfo` (the
+// Kotlin `InjectStrategyCounter` records "unavailable" for every input-manager RPC that
+// hit the hiddenapi policy and fell back to uia-async). The old gate summed the host
+// `verb.fallbacks` counter, which phase 3n.2 made STRUCTURALLY ZERO — its only emitter
+// (the scrcpy `[open-server-fast-inject] … falling back` line) was deleted — so it
+// passed on any run, including one where every injection fell back. This gate now reads
+// the block JSON's raw counts (carried by bench-open-vs-proprietary.ts), fails on any
+// `unavailable`, and ALSO fails on a missing/zero denominator (a dead or absent counter
+// cannot certify a clean input-manager arm).
+let strategyUnavailable = null;
+let strategyTotal = null;
+let measuredInjectRpcs = null;
 if (files["ON-input-manager"]) {
   const im = files["ON-input-manager"].block;
-  strategyFallbacks = (im.verbs || []).reduce((s, v) => s + (v.fallbacks || 0), 0);
-  if (strategyFallbacks > 0) {
+  const counts = im.injectStrategyCounts || {};
+  strategyTotal =
+    im.injectStrategyTotal != null
+      ? im.injectStrategyTotal
+      : Object.values(counts).reduce((s, n) => s + n, 0);
+  strategyUnavailable = counts["unavailable"] || 0;
+  measuredInjectRpcs = im.measuredInjectRpcs != null ? im.measuredInjectRpcs : null;
+  if (strategyTotal === 0) {
     throw new Error(
-      `ON-input-manager took ${strategyFallbacks} inject fallback(s) — the reflective pipe ` +
-        `degraded, so the measurement is NOT a clean input-manager arm. Verbs: ` +
-        (im.verbs || []).filter((v) => v.fallbacks).map((v) => `${v.verb}=${v.fallbacks}`).join(", ")
+      "ON-input-manager reported NO on-device injections (injectStrategyCounts empty / total 0) — " +
+        "the strategy counter never ran (getInfo unread, or an absent counter), so this run cannot " +
+        "certify a clean input-manager arm. Expected the process-wide inject total (e.g. 161)."
+    );
+  }
+  if (strategyUnavailable > 0) {
+    throw new Error(
+      `ON-input-manager fell back to uia-async on ${strategyUnavailable}/${strategyTotal} injection(s) ` +
+        `(injectStrategyCounts.unavailable) — the reflective pipe degraded, so the measurement is NOT a ` +
+        `clean input-manager arm. Counts: ${JSON.stringify(counts)}`
     );
   }
 }
@@ -250,7 +272,11 @@ const result = {
   blocksRan: present,
   offArmPresent: !!(files["OFF-1"] || files["OFF-2"]),
   blocks,
-  strategyFallbacks,
+  // Phase 3n.3 (3N2-H1/M6): the on-device fallback signal + its denominators, carried
+  // for the scoreboard so Q4 states real numbers (not the dead host counter).
+  strategyUnavailable,
+  strategyTotal,
+  measuredInjectRpcs,
   // Phase 3h: parity + effect evidence carried into the scoreboard.
   tapTimelines: Object.fromEntries(tls.map(({ block, tl }) => [block, tl])),
   effectByBlock: Object.fromEntries(
@@ -282,7 +308,11 @@ const outPath = path.join(OUT, `bench-merged-${Date.now()}.json`);
 fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
 console.log(
   `blocks merged: ${present.join(", ")}` +
-    (strategyFallbacks === null ? " (no ON-input-manager arm)" : `; ON-input-manager inject fallbacks: ${strategyFallbacks} (gate 0) — OK`)
+    (strategyUnavailable === null
+      ? " (no ON-input-manager arm)"
+      : `; ON-input-manager on-device inject fallbacks (injectStrategyCounts.unavailable): ` +
+        `${strategyUnavailable}/${strategyTotal} (gate 0) — OK` +
+        (measuredInjectRpcs != null ? `; measured gated-inject RPCs: ${measuredInjectRpcs}` : ""))
 );
 console.log("tap effect-check (ON fatal, OFF tolerated) — " + effectLine + " — ON gate OK");
 if (tls.length) {

@@ -252,6 +252,69 @@ describe("androidOpenServerBlueprint.factory", () => {
     await instance.dispose!();
   });
 
+  // Phase 3n.3 (3N2-M7): the host `flush` option (on the read RPCs) and the
+  // `flushInput()` RPC are RETAINED after the scrcpy removal — the Kotlin
+  // FlushInputHandler is still live (HierarchyHandler/StateHandler call it) and an
+  // out-of-process injector can request the inline drain. The only test that covered the
+  // wire semantics was deleted with the scrcpy blueprint tests; this restores it: `flush`
+  // threads `flush:true` onto the wire ONLY when opted in, and `flushInput()` issues the
+  // `flushInput` RPC.
+  it("threads `flush:true` onto the read RPCs only when opted in, and flushInput() issues the RPC", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startFakeDeviceServer((line, s) => {
+      const req = JSON.parse(line) as {
+        id: number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      seen.push({ method: req.method, params: req.params ?? {} });
+      const result =
+        req.method === "getState"
+          ? { tree: [], info: { screenWidth: 1080, screenHeight: 1920 }, screenshot: "", waitedMs: 0, captureMs: 0, version: 0 }
+          : req.method === "getAccessibilityTree"
+            ? { tree: [] }
+            : req.method === "flushInput"
+              ? { success: true }
+              : req.method === "ping"
+                ? { status: "ok" }
+                : {};
+      s.write(JSON.stringify({ id: req.id, result }) + "\n");
+    });
+    wireSpawnAndForward();
+
+    const instance = await androidOpenServerBlueprint.factory(
+      {} as never,
+      undefined as never,
+      { device: DEVICE } as never
+    );
+    const api = instance.api as OpenDeviceServerApi;
+
+    // No opt-in: no `flush` key on the wire.
+    await api.getAccessibilityTree({});
+    await api.getNestedAccessibilityTree({});
+    await api.getState({});
+    await api.getNestedState({});
+    // Opted in: `flush:true` on the wire.
+    await api.getAccessibilityTree({ flush: true });
+    await api.getNestedAccessibilityTree({ flush: true });
+    await api.getState({ flush: true });
+    await api.getNestedState({ flush: true });
+    // The standalone drain RPC.
+    expect((await api.flushInput()).success).toBe(true);
+
+    const reads = seen.filter((r) => r.method === "getState" || r.method === "getAccessibilityTree");
+    // 8 read RPCs: 4 without flush, 4 with. (getNested* dispatch the same method names.)
+    expect(reads.length).toBe(8);
+    const withFlush = reads.filter((r) => r.params.flush === true);
+    const withoutFlush = reads.filter((r) => !("flush" in r.params));
+    expect(withFlush.length).toBe(4);
+    expect(withoutFlush.length).toBe(4);
+    // flushInput() went to the wire as its own RPC.
+    expect(seen.some((r) => r.method === "flushInput")).toBe(true);
+
+    await instance.dispose!();
+  });
+
   it("emits terminated when the helper process exits unexpectedly", async () => {
     await startFakeDeviceServer((line, s) => {
       const req = JSON.parse(line) as { id: number };

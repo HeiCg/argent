@@ -33,9 +33,13 @@ const MULTI_TAP_GAP_MS = 100;
  * RPC. The `open-device-server-inject-strategy` flag documents the capability, but
  * the boolean flag store cannot hold a value, so the active strategy is carried by
  * the `ARGENT_OPEN_INJECT_STRATEGY` env var, so the bench flips it per block within
- * one CI run. Unset / unknown → undefined =
- * today's behaviour (a tap's async UP, a swipe/gesture's blocking UP), and the
- * `inject` param is omitted so the on-device DEFAULT path is byte-for-byte unchanged.
+ * one CI run. Resolution (kept in sync with the body below, 3N2-M5):
+ *   - unset / unknown  → `input-manager` — the SHIPPED default since the 3n.1 flip; the
+ *     host sends `inject:"input-manager"` and the on-device server falls back to
+ *     `uia-async` by itself on a hiddenapi block.
+ *   - `default` / `uia` → undefined — the pre-3n.1 Kotlin DEFAULT path; the `inject`
+ *     param is OMITTED so a tap keeps its async UP and a swipe/gesture its blocking UP
+ *     (this is what the `ON-uiautomation` control block, gate P0, runs).
  */
 export function resolveInjectStrategy(): OpenInjectStrategy | undefined {
   const v = process.env.ARGENT_OPEN_INJECT_STRATEGY;

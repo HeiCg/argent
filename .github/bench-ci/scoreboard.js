@@ -311,6 +311,24 @@ if (onIm && off1Blk && off2Blk) {
   if (onIm.injectStrategyReported) {
     L.push(`- **P7 echo** — ON-input-manager \`injectStrategyReported\`: ${onIm.injectStrategyReported}`);
   }
+  // Phase 3n.3 (3N2-H1/M6): the AUTHORITATIVE fallback signal is the on-device
+  // injectStrategyCounts.unavailable (the host counter was removed in 3n.2). Print it
+  // as a real number alongside the measured-RPC denominator so Q4 is not prose.
+  if (onIm.injectStrategyCounts) {
+    const c = onIm.injectStrategyCounts;
+    const total = onIm.injectStrategyTotal != null ? onIm.injectStrategyTotal : Object.values(c).reduce((s, n) => s + n, 0);
+    const unavail = c.unavailable || 0;
+    const measured = onIm.measuredInjectRpcs;
+    L.push(
+      `- **Q4 fallbacks (on-device)** — \`injectStrategyCounts.unavailable\` = **${unavail}/${total}** ` +
+        `(counts ${JSON.stringify(c)}) — the authoritative fallback signal; the host \`fastInject\` ` +
+        `counter was removed in 3n.2 and is not evidence (3N2-H1).` +
+        (measured != null
+          ? ` Measured gated-inject RPCs (Q4 denominator) = **${measured}** of ${total} process-wide ` +
+            `(the remainder is warmups + oracle self-test + describe-split + locate/restore taps).`
+          : "")
+    );
+  }
   L.push("");
   L.push("_Gates are graded vs the proprietary OFF blocks at the measured floor (P1); the promotion decision (P0–P7 + P9 + P10 green) is the planner's, from these numbers._");
   L.push("");

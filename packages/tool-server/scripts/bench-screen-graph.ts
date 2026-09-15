@@ -2065,7 +2065,12 @@ function buildReport(
   const L: string[] = [];
   L.push("# Results: screen-graph Phase C — cold/warm, tokens/step, RTT");
   L.push("");
-  L.push(`Generated ${new Date().toISOString()}. Harness:`);
+  // Phase 3n.3 (3N2-H4): stamp the report with the CI run id + job start time so a
+  // stale/foreign report can never be mistaken for this run's (the 34888577404 artifact
+  // carried a four-hours-earlier execution's results-ci.md with no way to tell).
+  L.push(
+    `Generated ${new Date().toISOString()} · run ${env.runId ?? "?"} · job started ${env.jobStartedAt ?? "?"}. Harness:`
+  );
   L.push("`packages/tool-server/scripts/bench-screen-graph.ts` (opt-in).");
   L.push("");
   L.push("## Environment");
@@ -2579,6 +2584,20 @@ async function main(): Promise<void> {
     return;
   }
   validateTasks(ALL_TASKS);
+  // Phase 3n.3 (3N2-H4): start from an EMPTY output dir and (when asked) an empty
+  // persisted graph store, so this run's artifact can never carry a previous
+  // execution's `results-ci.md` / `bench-sg-*.json` / `graph-store`. `BENCH_FRESH_STORE`
+  // is set by the CI workflow; local runs that intentionally reuse a store leave it off.
+  const runId = process.env.BENCH_RUN_ID ?? process.env.GITHUB_RUN_ID ?? "local";
+  const jobStartedAt = process.env.BENCH_JOB_STARTED ?? "(unset)";
+  // Phase 3n.3 (3N2-L5): pin the injection strategy EXPLICITLY instead of relying on
+  // "env unset ⇒ the default" (the same assumption that produced 3N1-H1). The open
+  // configs (B2/O1–O5) inject through this; a caller can still override it.
+  process.env.ARGENT_OPEN_INJECT_STRATEGY = process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "input-manager";
+  if (process.env.BENCH_FRESH_STORE) {
+    rmSync(OUT_DIR, { recursive: true, force: true });
+    rmSync(graphDir(), { recursive: true, force: true });
+  }
   mkdirSync(OUT_DIR, { recursive: true });
   const started = new Date().toISOString();
 
@@ -2590,6 +2609,11 @@ async function main(): Promise<void> {
     tokenizer: tokenizerName(),
     androidHome: process.env.ANDROID_HOME ?? "(unset)",
     startedAt: started,
+    runId,
+    jobStartedAt,
+    // Phase 3n.3 (3N2-L5): the resolved injection strategy the open configs ran, recorded
+    // in the run env block so it is never an unstated assumption.
+    injectStrategy: process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "(default)",
   };
 
   const allRecords: TaskRecord[] = [];
@@ -2767,7 +2791,13 @@ async function main(): Promise<void> {
     if (existsSync(src)) {
       const dst = join(OUT_DIR, "graph-store");
       cpSync(src, dst, { recursive: true });
-      realDebug(`[bench-sg] copied graph store ${src} -> ${dst}`);
+      // Phase 3n.3 (3N2-H4): stamp the copied store with this run's id + timings, so an
+      // audit can tell whose store `graph-store/<pkg>/<vc>.json` belongs to.
+      writeFileSync(
+        join(dst, "_run-meta.json"),
+        JSON.stringify({ runId, jobStartedAt, benchStartedAt: started, generatedAt: new Date().toISOString() }, null, 2)
+      );
+      realDebug(`[bench-sg] copied graph store ${src} -> ${dst} (run ${runId})`);
     }
   } catch (e) {
     realDebug(`[bench-sg] graph-store copy skipped: ${String(e)}`);
@@ -2781,12 +2811,14 @@ async function main(): Promise<void> {
   const storeViolations = checkStoreInvariants();
   if (storeViolations.length > 0) {
     process.stderr.write(
-      `\n[bench-sg] STORE INVARIANT FAILURE (phase D.3):\n  ${storeViolations.join("\n  ")}\n`
+      `\n[bench-sg] STORE INVARIANT FAILURE (phase D.3) — run ${runId}:\n  ${storeViolations.join("\n  ")}\n`
     );
     process.exitCode = 1;
   } else {
+    // Phase 3n.3 (3N2-H4): print the run id on the invariants line so the planner can
+    // confirm THIS run's "store invariants OK" from the job log, not a foreign one.
     process.stdout.write(
-      "[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges\n"
+      `[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges (run ${runId}, job started ${jobStartedAt})\n`
     );
   }
 
