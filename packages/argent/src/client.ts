@@ -33,6 +33,8 @@ export interface ArgentToolResult<T = unknown> {
 export interface CallToolOptions {
   /** Receive progress events while a long-running tool works. */
   onProgress?: (event: unknown) => void;
+  /** Stop waiting for the call. It rejects with the signal's reason, not ArgentToolError. */
+  signal?: AbortSignal;
 }
 
 /** The tool-server rejected or failed a call. */
@@ -72,7 +74,7 @@ export function listFlags(): ArgentFlag[] {
 }
 
 export interface ArgentClient {
-  listTools(): Promise<ArgentTool[]>;
+  listTools(options?: { signal?: AbortSignal }): Promise<ArgentTool[]>;
   callTool<T = unknown>(
     name: string,
     args?: Record<string, unknown>,
@@ -95,8 +97,8 @@ export function createArgentClient(): ArgentClient {
     return stopped;
   }
 
-  async function listTools(): Promise<ArgentTool[]> {
-    const tools = await client.fetchTools();
+  async function listTools(options?: { signal?: AbortSignal }): Promise<ArgentTool[]> {
+    const tools = await client.fetchTools({ signal: options?.signal });
     return tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
   }
 
@@ -107,15 +109,20 @@ export function createArgentClient(): ArgentClient {
   ): Promise<ArgentToolResult<T>> {
     try {
       const response = await client.callTool(name, args, options);
+      const { url, token } = await client.baseUrl();
+      // Aborted after the reply: skip materialization, which can copy or download files.
+      options?.signal?.throwIfAborted();
       // Same artifact handling as `argent run`: a handle becomes a local path,
       // read in place when the tool-server shares this filesystem and
       // downloaded otherwise.
-      const { url, token } = await client.baseUrl();
       const { result } = await materializeArtifacts(response.data, {
         toolsUrl: url,
         authToken: token,
         deviceId: getDeviceIdFromArgs(args),
+        signal: options?.signal,
       });
+      // An aborted download reads as a missing file; report the abort instead.
+      options?.signal?.throwIfAborted();
       return { data: result as T, note: response.note };
     } catch (err) {
       if (err instanceof ToolInvocationError) {
