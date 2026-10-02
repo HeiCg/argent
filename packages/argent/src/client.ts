@@ -6,9 +6,11 @@
  * The public types are declared here rather than re-exported, so the emitted
  * client.d.ts references no private workspace package.
  */
+import { FLAG_REGISTRY, isFeatureEnabled } from "@argent/configuration-core";
 import {
   createToolsClient,
   getDeviceIdFromArgs,
+  killToolServer,
   materializeArtifacts,
   ToolInvocationError,
 } from "@argent/tools-client";
@@ -53,6 +55,22 @@ export class ArgentToolError extends Error {
   }
 }
 
+export interface ArgentFlag {
+  name: string;
+  description: string;
+  /** Effective state, as `argent flags` reports it. */
+  enabled: boolean;
+}
+
+/** Feature flags and their effective state: project overrides global, then the default. */
+export function listFlags(): ArgentFlag[] {
+  return FLAG_REGISTRY.map(({ name, description }) => ({
+    name,
+    description,
+    enabled: isFeatureEnabled(name),
+  }));
+}
+
 export interface ArgentClient {
   listTools(): Promise<ArgentTool[]>;
   callTool<T = unknown>(
@@ -60,10 +78,22 @@ export interface ArgentClient {
     args?: Record<string, unknown>,
     options?: CallToolOptions
   ): Promise<ArgentToolResult<T>>;
+  /**
+   * Stop this install's local tool-server, like `argent server stop`. The next
+   * call starts a fresh one. Resolves false when none was running.
+   */
+  stopServer(): Promise<boolean>;
 }
 
 export function createArgentClient(): ArgentClient {
-  const client = createToolsClient({ paths: BUNDLED_RUNTIME_PATHS });
+  let client = createToolsClient({ paths: BUNDLED_RUNTIME_PATHS });
+
+  async function stopServer(): Promise<boolean> {
+    const stopped = await killToolServer(BUNDLED_RUNTIME_PATHS.bundlePath);
+    // The tools client caches the server it reached; drop it with the server.
+    client = createToolsClient({ paths: BUNDLED_RUNTIME_PATHS });
+    return stopped;
+  }
 
   async function listTools(): Promise<ArgentTool[]> {
     const tools = await client.fetchTools();
@@ -99,5 +129,5 @@ export function createArgentClient(): ArgentClient {
     }
   }
 
-  return { listTools, callTool };
+  return { listTools, callTool, stopServer };
 }
