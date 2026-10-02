@@ -306,7 +306,12 @@ export function spawnToolsServer(
       logFd = fs.openSync("/dev/null", "w");
     }
 
-    const child = spawn("node", [paths.bundlePath, "start"], {
+    // Reuse the running Node binary while it still exists; Bun, Deno and
+    // Electron (whose execPath launches the app itself) fall back to `node` on PATH.
+    const { bun, deno, electron } = process.versions;
+    const nodeBin =
+      !(bun || deno || electron) && fs.existsSync(process.execPath) ? process.execPath : "node";
+    const child = spawn(nodeBin, [paths.bundlePath, "start"], {
       detached: true,
       stdio: ["ignore", "pipe", logFd],
       env: buildToolsServerEnv(paths, port, process.env, options),
@@ -316,7 +321,17 @@ export function spawnToolsServer(
 
     const pid = child.pid;
     if (!pid) {
-      reject(new Error("Failed to get PID of spawned tools server"));
+      // A failed spawn emits `error` (ENOENT/EACCES) on the next tick; with no
+      // listener it is an unhandled event that crashes the host process.
+      child.once("error", (err: NodeJS.ErrnoException) =>
+        reject(
+          new Error(
+            err.code === "ENOENT" && nodeBin === "node"
+              ? "Could not start the argent tool-server: `node` was not found on PATH. Install Node.js 20+ or add it to PATH."
+              : `Could not start the argent tool-server: ${err.message}`
+          )
+        )
+      );
       return;
     }
 
@@ -701,7 +716,7 @@ function couldBeOurToolServer(pid: number, marker: string | undefined): boolean 
     return false;
   }
   if (!cmd) return false;
-  // Our servers run `node <bundlePath> start`. Requiring the path at an
+  // Our servers run `<any node path> <bundlePath> start`. Requiring the path at an
   // argument boundary followed by `start` keeps a mention that is not being run
   // from matching, though a command line embedding the pair mid-argv — a
   // `sh -c` wrapper — still does; matching the raw command string rather than
