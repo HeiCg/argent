@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Registry } from "@argent/registry";
 import type { DescribeNode } from "../src/tools/describe/contract";
 
-vi.mock("../src/utils/device-info", () => ({
+vi.mock("../src/utils/device-info", async () => ({
+  ...(await vi.importActual<typeof import("../src/utils/device-info")>("../src/utils/device-info")),
   resolveDevice: vi.fn(() => ({
     platform: "ios",
     udid: "TEST-UDID",

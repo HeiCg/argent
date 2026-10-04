@@ -86,7 +86,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   {
     name: "open-ios-device-server",
     description:
-      "Route iOS describe, screenshot and tap/swipe/long-press/type/key input through the open-source on-device XCUITest server (`@argent/ios-device-server`) instead of the proprietary simulator-server. When on and the runner is reachable it serves describe (source: xcuitest-runner), screenshot (with an `xcrun simctl io` fallback if the runner is not ready), and the gesture/text verbs; every path falls back to the current one if the runner is unavailable. Experimental; simulator and physical device. Off by default; requires the built runner (CI on macOS).",
+      "Route iOS describe, screenshot and tap/swipe/long-press/type/key input through the open-source on-device XCUITest server (`@argent/ios-device-server`) instead of the proprietary simulator-server. When on and the runner is reachable it serves describe (source: xcuitest-runner), screenshot (with an `xcrun simctl io` fallback if the runner is not ready), and the gesture/text verbs; every path falls back to the current one if the runner is unavailable. Experimental; simulators only, physical iPhones keep the built-in runner. Off by default; requires the built runner (CI on macOS).",
   },
 ];
 

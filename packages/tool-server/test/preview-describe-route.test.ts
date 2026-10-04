@@ -11,13 +11,16 @@ import type { Registry } from "@argent/registry";
 // without any device / adb / ax-service I/O.
 vi.mock("../src/tools/describe/platforms/ios", () => ({ describeIos: vi.fn() }));
 vi.mock("../src/tools/describe/platforms/android", () => ({ describeAndroid: vi.fn() }));
+vi.mock("../src/tools/describe/platforms/ios-device", () => ({ describeIosDevice: vi.fn() }));
 
 import { createPreviewRouter } from "../src/preview";
 import { describeIos } from "../src/tools/describe/platforms/ios";
 import { describeAndroid } from "../src/tools/describe/platforms/android";
+import { describeIosDevice } from "../src/tools/describe/platforms/ios-device";
 
 const mockedIos = describeIos as unknown as Mock;
 const mockedAndroid = describeAndroid as unknown as Mock;
+const mockedIosDevice = describeIosDevice as unknown as Mock;
 
 // Pure string inputs to `classifyDevice` (a regex, NO device interaction):
 // an all-zero UUID matches the 8-4-4-4-12 hex shape -> "ios"; a non-UUID
@@ -28,6 +31,8 @@ const ANDROID_SERIAL = "emulator-5554";
 const CHROMIUM_ID = "chromium-cdp-9222";
 // `amazon-<id>` is classified as platform "vega" by shape alone.
 const VEGA_ID = "amazon-vvd-0001";
+// Modern physical-iPhone UDID shape -> platform "ios", kind "device".
+const IOS_PHYSICAL_UDID = "00008110-000978540290401E";
 
 const TREE = {
   role: "AXGroup",
@@ -59,6 +64,7 @@ function makeApp(
 beforeEach(() => {
   mockedIos.mockReset();
   mockedAndroid.mockReset();
+  mockedIosDevice.mockReset();
 });
 
 describe("GET /preview/describe/:udid (describe-based; post-#197 text-contract revert)", () => {
@@ -97,6 +103,26 @@ describe("GET /preview/describe/:udid (describe-based; post-#197 text-contract r
     // dispatched as describeAndroid(registry, serial) — mirrors the describe tool
     expect(mockedAndroid).toHaveBeenCalledWith(expect.anything(), ANDROID_SERIAL);
     expect(mockedIos).not.toHaveBeenCalled();
+  });
+
+  it("physical iOS udid -> describeIosDevice (upstream runner), never describeIos", async () => {
+    mockedIosDevice.mockResolvedValue({ tree: TREE, source: "xcuitest-runner" });
+
+    const res = await request(makeApp([{ platform: "ios", udid: IOS_PHYSICAL_UDID }])).get(
+      `/describe/${IOS_PHYSICAL_UDID}`
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.tree).toEqual(TREE);
+    expect(res.body.source).toBe("xcuitest-runner");
+    expect(mockedIosDevice).toHaveBeenCalledTimes(1);
+    expect(mockedIosDevice.mock.calls[0]![1]).toMatchObject({
+      id: IOS_PHYSICAL_UDID,
+      platform: "ios",
+      kind: "device",
+    });
+    expect(mockedIos).not.toHaveBeenCalled();
+    expect(mockedAndroid).not.toHaveBeenCalled();
   });
 
   it("forwards should_restart verbatim when the adapter sets it", async () => {

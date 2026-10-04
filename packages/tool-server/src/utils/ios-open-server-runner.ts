@@ -11,14 +11,11 @@ import { IosOpenServerClient } from "./ios-open-server-client";
 
 /**
  * Build and launch the open iOS XCUITest server (`@argent/ios-device-server`),
- * adapted from base B's `runner-build.ts` / runner-launch logic. Simulator-first:
+ * adapted from base B's `runner-build.ts` / runner-launch logic. Simulators only:
  * `build-for-testing` once per Xcode version (the cache key folds in
  * `xcodebuild -version`), then `test-without-building` detached against a
- * simulator destination; readiness is a `ping` within 120 s.
- *
- * The physical-device path keeps base B's `ARGENT_IOS_TEAM_ID` auto-signing and
- * the `iphoneos` xctestrun. It is compiled but not exercised in hosted CI
- * (iOS-1); the CI device test drives the simulator path only.
+ * simulator destination; readiness is a `ping` within 120 s. Physical iPhones
+ * use the upstream runner (`ios-device-runner`), never this one.
  */
 
 const execFileAsync = promisify(execFile);
@@ -28,11 +25,9 @@ const TEST_IDENTIFIER = "ArgentRunnerUITests/ArgentRunnerSession/testServeComman
 const BUILD_BUDGET_MS = 15 * 60 * 1000;
 const READY_TIMEOUT_MS = 120 * 1000;
 
-export interface IosRunnerTarget {
-  /** Simulator or physical-device UDID. */
+interface IosRunnerTarget {
+  /** Simulator UDID (loopback socket, no signing). */
   udid: string;
-  /** `simulator` uses a loopback socket + no signing; `device` uses usbmux + team. */
-  kind: "simulator" | "device";
 }
 
 interface SpawnedIosRunner {
@@ -57,11 +52,7 @@ function derivedDataRoot(): string {
   );
 }
 
-function runnerError(
-  message: string,
-  stage: string,
-  kind: "validation" | "subprocess" | "timeout"
-): FailureError {
+function runnerError(message: string, stage: string, kind: "subprocess" | "timeout"): FailureError {
   return new FailureError(message, {
     error_code: FAILURE_CODES.OPEN_DEVICE_SERVER_READY_TIMEOUT,
     failure_stage: stage,
@@ -111,15 +102,13 @@ async function cacheKey(
 }
 
 function destinationFor(target: IosRunnerTarget): string {
-  return target.kind === "simulator"
-    ? `platform=iOS Simulator,id=${target.udid}`
-    : `platform=iOS,id=${target.udid}`;
+  return `platform=iOS Simulator,id=${target.udid}`;
 }
 
 /**
  * `build-for-testing`, cached per (Xcode version, source tree, destination). A
  * stamp mismatch wipes the derived dir and rebuilds. Returns the built
- * `.xctestrun` path for the destination's platform.
+ * simulator `.xctestrun` path.
  */
 async function buildForTesting(target: IosRunnerTarget): Promise<string> {
   const projectPath = resolveRunnerProjectPath();
@@ -148,21 +137,6 @@ async function buildForTesting(target: IosRunnerTarget): Promise<string> {
       "ONLY_ACTIVE_ARCH=YES",
       "ENABLE_CODE_COVERAGE=NO",
     ];
-    if (target.kind === "device") {
-      const teamId = process.env.ARGENT_IOS_TEAM_ID?.trim();
-      if (!teamId)
-        throw runnerError(
-          "ARGENT_IOS_TEAM_ID is required to build for a physical device",
-          "ios_open_server_signing",
-          "validation"
-        );
-      args.push(
-        "-allowProvisioningUpdates",
-        "CODE_SIGN_STYLE=Automatic",
-        `DEVELOPMENT_TEAM=${teamId}`,
-        `ARGENT_RUNNER_APP_BUNDLE_ID=com.argent.runner.t${teamId.toLowerCase()}`
-      );
-    }
     await execFileAsync("xcodebuild", args, {
       timeout: BUILD_BUDGET_MS,
       maxBuffer: 64 * 1024 * 1024,
@@ -170,16 +144,14 @@ async function buildForTesting(target: IosRunnerTarget): Promise<string> {
     fs.writeFileSync(stamp, key);
   }
 
-  return findXctestrun(path.join(derived, "Build", "Products"), target.kind);
+  return findXctestrun(path.join(derived, "Build", "Products"));
 }
 
-/** The `.xctestrun` for the target platform (iphonesimulator vs iphoneos). */
-function findXctestrun(productsDir: string, kind: IosRunnerTarget["kind"]): string {
-  const wantSim = kind === "simulator";
+/** The simulator (`iphonesimulator`) `.xctestrun`. */
+function findXctestrun(productsDir: string): string {
   const entries = fs.existsSync(productsDir) ? fs.readdirSync(productsDir) : [];
   const runs = entries.filter((e) => e.endsWith(".xctestrun"));
-  const match =
-    runs.find((e) => (wantSim ? /simulator/i.test(e) : /iphoneos|device/i.test(e))) ?? runs[0];
+  const match = runs.find((e) => /simulator/i.test(e)) ?? runs[0];
   if (!match)
     throw runnerError(
       `no .xctestrun produced in ${productsDir}`,

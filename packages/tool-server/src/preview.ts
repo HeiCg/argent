@@ -7,7 +7,7 @@ import { isFlagEnabled } from "@argent/configuration-core";
 import type { Registry } from "@argent/registry";
 import { track } from "@argent/telemetry";
 import { simulatorServerRef, type SimulatorServerApi } from "./blueprints/simulator-server";
-import { resolveDevice } from "./utils/device-info";
+import { isIosPhysicalDevice, resolveDevice } from "./utils/device-info";
 import { resolveLivePanel, streamUrlForScreen, unresolvedPanelNote } from "./utils/foldable";
 import { classifyDeviceForTelemetry } from "./utils/telemetry-platform";
 import { shutdownDevice } from "./utils/device-shutdown";
@@ -21,6 +21,7 @@ import {
 } from "./utils/variant-proposals";
 import type { DescribeTreeData } from "./tools/describe/contract";
 import { describeIos } from "./tools/describe/platforms/ios";
+import { describeIosDevice } from "./tools/describe/platforms/ios-device";
 import { describeAndroid } from "./tools/describe/platforms/android";
 
 function findUiFile(name: string): string | null {
@@ -632,8 +633,10 @@ export function createPreviewRouter(registry: Registry): Router {
           .json({ error: `Unknown device "${udid}". Use a udid/serial from /preview/simulators.` });
         return;
       }
-      const data: DescribeTreeData =
-        device.platform === "ios"
+      // A physical iPhone goes to the upstream runner, as the describe tool does.
+      const data: DescribeTreeData = isIosPhysicalDevice(device)
+        ? await describeIosDevice(registry, device)
+        : device.platform === "ios"
           ? await describeIos(registry, device, {})
           : await describeAndroid(registry, udid);
       res.set("Cache-Control", "no-store");

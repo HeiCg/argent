@@ -2,8 +2,9 @@
 
 Argent's open-source **XCUITest on-device automation server for iOS**, on the
 same contract as `@argent/android-device-server`: NDJSON **JSON-RPC 2.0** over a
-loopback TCP socket. Simulator first (iOS-1); the physical-iPhone path is
-compiled but exercised manually, not in hosted CI.
+loopback TCP socket. Simulators only: the host builds and launches it for a
+simulator UDID, and physical iPhones use the upstream runner
+(`packages/ios-device-runner`).
 
 - `ArgentRunner/` — the Xcode project. The server lives in the
   `ArgentRunnerUITests` bundle; `ArgentRunner` is a minimal host app XCUITest
@@ -27,8 +28,7 @@ xcodebuild test-without-building -xctestrun <…>.xctestrun \
 ```
 
 The runner parks in a 24h `XCTWaiter` and serves commands until `shutdown`.
-Simulator needs no signing; the physical path keeps upstream's
-`ARGENT_IOS_TEAM_ID` auto-signing and the `iphoneos` xctestrun.
+Simulator needs no signing.
 
 ## Device-free unit tests
 
