@@ -62,6 +62,28 @@ row("emulator arch", ci.emulatorArch);
 row("runner", ci.runner);
 L.push("");
 
+// Re-baseline (0.27): which proprietary release each OFF block ran (npm version +
+// sha256 of every binary/APK used), so a "vs proprietary" number names its baseline.
+const pp = merged.proprietaryProvenance || null;
+const provLabel = (p) =>
+  !p || typeof p !== "object" ? "unknown" : `${p.package || "?"}@${p.version || "?"}`;
+const offBlockNames = (merged.blocks || [])
+  .map((b) => b.block)
+  .filter((n) => typeof n === "string" && n.startsWith("OFF"));
+if (offBlockNames.length) {
+  L.push("### Proprietary provenance");
+  L.push("");
+  L.push("| block | release | file | sha256 |");
+  L.push("| --- | --- | --- | --- |");
+  for (const n of offBlockNames) {
+    const p = pp && pp.byBlock ? pp.byBlock[n] : null;
+    const entries = p && typeof p === "object" ? Object.entries(p.files || {}) : [];
+    if (!entries.length) L.push(`| ${n} | ${provLabel(p)} | - | - |`);
+    for (const [f, h] of entries) L.push(`| ${n} | ${provLabel(p)} | \`${f}\` | \`${h}\` |`);
+  }
+  L.push("");
+}
+
 // Per-block verb latency (p50/p95 ms)
 const blocks = merged.blocks || [];
 const verbNames = [];
@@ -194,6 +216,71 @@ if (off1 && off2) {
   L.push("");
 }
 
+// Δ reading at the measured floor from the bootstrap CI (shared by the P-gate table
+// and the proprietary-baseline section below).
+const ciVerdict = (delta, ci, floor) => {
+  if (floor == null) return "N/A (no OFF comparator)";
+  if (!ci)
+    return delta < -floor ? "win (no CI)" : delta > floor ? "loss (no CI)" : "parity (no CI)";
+  if (ci[1] < -floor) return `win (CI [${ci[0]},${ci[1]}] < −floor)`;
+  if (ci[0] > floor) return `loss (CI [${ci[0]},${ci[1]}] > +floor)`;
+  return `parity (CI [${ci[0]},${ci[1]}] overlaps ±${floor})`;
+};
+
+// Re-baseline (0.27): OFF-legacy (an older proprietary release, same job + emulator)
+// vs the CURRENT proprietary arm. Same method as the P-gate table: Δ = legacy p50 −
+// pooled current p50 (mean of OFF-1/OFF-2), 95% CI = the seeded 10 000-draw bootstrap
+// on the p50 difference against the pooled OFF-1+OFF-2 samples, read at the measured
+// OFF-1↔OFF-2 floor. The merge guarantees OFF-1/OFF-2 share one provenance, so the
+// floor is same-provenance; OFF-legacy never enters it. Δ < 0 = the old release was
+// faster than the current one.
+const legacyBlk = blocks.find((b) => b.block === "OFF-legacy");
+const la = merged.legacyArm || null;
+if (legacyBlk && la) {
+  const legLabel = la.version || la.label || "unknown";
+  const curLabel = la.currentVersion || la.currentLabel || "unknown";
+  L.push(`### Proprietary baseline: ${legLabel} vs ${curLabel}`);
+  L.push("");
+  L.push(
+    `OFF-legacy (${la.label}) vs the current OFF arm (${la.currentLabel}; OFF-1/OFF-2 pooled), ` +
+      "same job and emulator. Δ = legacy p50 − pooled current p50; 95% CI = seeded 10 000-draw " +
+      "bootstrap on the p50 difference; reading at the measured OFF-1↔OFF-2 floor " +
+      "(win = the legacy release is faster, loss = slower)."
+  );
+  L.push("");
+  L.push(
+    "| verb | OFF-legacy p50/p95 | OFF-1 p50/p95 | OFF-2 p50/p95 | floor | Δ(legacy−pooledOFF) | 95% CI | reading |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  const pp95 = (b, vn) => {
+    const v = verbOf(b, vn);
+    return v ? `${v.latency.p50}/${v.latency.p95}` : "-";
+  };
+  for (const d of la.deltaVsCurrent || []) {
+    const vn = d.verb;
+    const floor = measuredFloor(vn);
+    const a = samplesOf(off1Blk, vn),
+      b = samplesOf(off2Blk, vn);
+    const pooled = off1Blk && off2Blk ? (a && b ? a.concat(b) : null) : a || b;
+    const ci = bootstrapDiffCI(samplesOf(legacyBlk, vn), pooled);
+    L.push(
+      "| " +
+        [
+          vn,
+          pp95(legacyBlk, vn),
+          pp95(off1Blk, vn),
+          pp95(off2Blk, vn),
+          floor == null ? "**N/A**" : `±${floor}`,
+          d.delta == null ? "-" : d.delta,
+          ci ? `[${ci[0]}, ${ci[1]}]` : "no samples",
+          d.delta == null ? "-" : ciVerdict(d.delta, ci, floor),
+        ].join(" | ") +
+        " |"
+    );
+  }
+  L.push("");
+}
+
 // Phase 3n.1 promotion gates P2–P6 — `ON-input-manager` graded against the PROPRIETARY
 // OFF blocks at the MEASURED drift floor (P1: |OFF-1 − OFF-2| per verb, never a
 // constant), each Δ carrying a 10 000-draw bootstrap 95% CI on the p50 difference
@@ -214,15 +301,6 @@ if (onIm && off1Blk && off2Blk) {
       b = samplesOf(off2Blk, offVerb(vn));
     return a && b ? a.concat(b) : null;
   };
-  const ciVerdict = (delta, ci, floor) => {
-    if (floor == null) return "N/A (no OFF comparator)";
-    if (!ci)
-      return delta < -floor ? "win (no CI)" : delta > floor ? "loss (no CI)" : "parity (no CI)";
-    if (ci[1] < -floor) return `win (CI [${ci[0]},${ci[1]}] < −floor)`;
-    if (ci[0] > floor) return `loss (CI [${ci[0]},${ci[1]}] > +floor)`;
-    return `parity (CI [${ci[0]},${ci[1]}] overlaps ±${floor})`;
-  };
-
   L.push(
     "### phase 3n.1 — promotion gates P2–P6 (ON-input-manager vs PROPRIETARY, measured floor + bootstrap CI)"
   );

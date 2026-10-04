@@ -309,8 +309,23 @@ for (const n of present) {
   if (b.describeStages) g3[n] = { n: b.describeStages.n, maxDelta: b.describeStages.maxDelta };
 }
 
+// Re-baseline (0.27): which simulator-server the OFF arm ran. The workflow's
+// download step writes $BENCH_OUT/proprietary-provenance.json (requested tag, the
+// release it resolved to, asset id/digest, sha256 of the downloaded binary) with
+// proprietary-provenance.js gh-release; pre-0.27 artifacts carry none → "unknown".
+let proprietaryProvenance = "unknown";
+const provPath = path.join(OUT, "proprietary-provenance.json");
+if (fs.existsSync(provPath)) {
+  try {
+    proprietaryProvenance = JSON.parse(fs.readFileSync(provPath, "utf8"));
+  } catch (e) {
+    console.error(`proprietary-provenance.json unreadable: ${e.message}`);
+  }
+}
+
 const merged = {
   env: files[present[0]] ? files[present[0]].env : {},
+  proprietaryProvenance,
   envPerBlock: Object.fromEntries(present.map((n) => [n, files[n].env])),
   blocksRan: present,
   gates: {

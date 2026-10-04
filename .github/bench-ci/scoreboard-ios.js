@@ -67,6 +67,37 @@ L.push(
 );
 L.push(`| blocks ran | ${present.join(", ") || "—"} |\n`);
 
+// Re-baseline (0.27): the simulator-server the OFF arm ran — requested tag, the
+// release it resolved to, and the sha256 of the binary actually downloaded.
+{
+  const pv = merged ? merged.proprietaryProvenance : null;
+  L.push("### Proprietary provenance (OFF arm)\n");
+  if (!pv || typeof pv !== "object") {
+    L.push(
+      "_Not recorded (pre-0.27 artifact): the OFF arm's simulator-server release is unknown._\n"
+    );
+  } else {
+    const rel = pv.release || {};
+    const a = pv.asset || null;
+    L.push("| field | value |");
+    L.push("|---|---|");
+    L.push(`| repo | ${pv.repo || "—"} |`);
+    L.push(
+      `| requested tag | ${pv.requestedTag || `(script default: ${pv.scriptDefaultTag || "?"})`} |`
+    );
+    L.push(
+      `| resolved release | ${rel.tagName ? `${rel.tagName}${rel.name && rel.name !== rel.tagName ? ` "${rel.name}"` : ""} (published ${rel.publishedAt || "?"})` : `unresolved (${pv.resolvedTag || "?"})`} |`
+    );
+    L.push(
+      `| asset | ${a ? `${a.name} id ${a.databaseId ?? a.id ?? "?"} (updated ${a.updatedAt || "?"}, ${a.digest || "no digest"})` : "—"} |`
+    );
+    for (const [f, h] of Object.entries(pv.files || {})) L.push(`| sha256 \`${f}\` | \`${h}\` |`);
+    L.push(
+      `| digest matches | ${pv.assetDigestMatches == null ? "—" : pv.assetDigestMatches ? "yes" : "NO"} |\n`
+    );
+  }
+}
+
 // Verb table per block.
 L.push("### Verb latency per block (p50 / p95 ms, N per verb; describe scored per TREE backend)\n");
 L.push("| verb | " + present.map((n) => `${n} (${bl[n].block.treeBackend})`).join(" | ") + " |");
