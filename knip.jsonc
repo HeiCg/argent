@@ -154,24 +154,31 @@
     // file here passes too — so the list holds only packages this workspace
     // genuinely cannot declare.
     "packages/tool-server": {
-      // The scripts/ bench harnesses are all reached only in ways knip cannot
-      // trace, so each is declared here or it reads as an unused file:
-      //   - bench-open-vs-proprietary.ts — run-bench.js path-loads it via ts-node.
-      //   - bench-ios-open-vs-proprietary.ts — run-bench-ios.js path-loads it via
-      //     ts-node (iOS simulator latency bench, ticket ios-2). The .js loader and
-      //     merge-blocks-ios.js / scoreboard-ios.js are each `node`-invoked from a
-      //     run: step the github-actions plugin parses, so only the .ts is untraceable.
-      //   - bench-preflight.ts / bench-screen-graph.ts — the bench workflow's inline
-      //     `node -e "require('ts-node')…require('…bench-screen-graph.ts')"` loaders
-      //     (and the run-preflight.cjs / run-bench-sg.cjs local runners) load them
-      //     by resolved path.
-      //   - bench-fling-fidelity.ts — run-fling.js path-loads it (ticket 3o).
-      //   - bench-describe-host.ts — a standalone CLI (`npx tsx …`); its pure
-      //     harness lives in bench-describe-host-lib.ts, which IS reached (imported
-      //     by the CLI and by test/bench-describe-host.test.ts) and so is not listed.
-      //   - run-bench-sg.cjs / run-preflight.cjs — local dev runners; CI inlines the
-      //     same loader, so nothing imports these files.
+      // Reached only dynamically, so knip cannot see them: the executor puts
+      // the runner in front of the script as an `--import` preload by path, and
+      // the runner starts each watchdog with `new Worker(url)`.
       "entry": [
+        "src/tools/flows/script/flow-script-runner.mjs",
+        "src/tools/flows/script/flow-script-watchdog-lifeline.mjs",
+        "src/tools/flows/script/flow-script-watchdog-deadline.mjs",
+
+        // The scripts/ bench harnesses are all reached only in ways knip cannot
+        // trace, so each is declared here or it reads as an unused file:
+        //   - bench-open-vs-proprietary.ts — run-bench.js path-loads it via ts-node.
+        //   - bench-ios-open-vs-proprietary.ts — run-bench-ios.js path-loads it via
+        //     ts-node (iOS simulator latency bench, ticket ios-2). The .js loader and
+        //     merge-blocks-ios.js / scoreboard-ios.js are each `node`-invoked from a
+        //     run: step the github-actions plugin parses, so only the .ts is untraceable.
+        //   - bench-preflight.ts / bench-screen-graph.ts — the bench workflow's inline
+        //     `node -e "require('ts-node')…require('…bench-screen-graph.ts')"` loaders
+        //     (and the run-preflight.cjs / run-bench-sg.cjs local runners) load them
+        //     by resolved path.
+        //   - bench-fling-fidelity.ts — run-fling.js path-loads it (ticket 3o).
+        //   - bench-describe-host.ts — a standalone CLI (`npx tsx …`); its pure
+        //     harness lives in bench-describe-host-lib.ts, which IS reached (imported
+        //     by the CLI and by test/bench-describe-host.test.ts) and so is not listed.
+        //   - run-bench-sg.cjs / run-preflight.cjs — local dev runners; CI inlines the
+        //     same loader, so nothing imports these files.
         "scripts/bench-open-vs-proprietary.ts",
         "scripts/bench-ios-open-vs-proprietary.ts",
         // iOS-4 sim-input discriminating test — run-siminput-discriminating.js

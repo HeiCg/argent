@@ -14,8 +14,8 @@ The runner is an XCUITest bundle. It targets **another app by bundle id**
 - Port: `TEST_RUNNER_ARGENT_RUNNER_PORT` (xcodebuild strips it to
   `ARGENT_RUNNER_PORT`). `0` = OS-assigned; the bound port is printed as
   `ARGENT_RUNNER_LISTENING port=<n>`.
-- Reach: simulator = host `127.0.0.1:<port>` (shared loopback); physical device =
-  usbmux forward onto the device loopback.
+- Reach: simulator = host `127.0.0.1:<port>` (shared loopback). Simulators only;
+  physical iPhones use the upstream runner.
 
 ## Coordinates and geometry
 

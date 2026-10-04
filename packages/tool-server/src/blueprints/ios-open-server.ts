@@ -13,15 +13,14 @@ import {
   type IosOpenServerState,
   type IosOpenServerScreenshot,
 } from "../utils/ios-open-server-client";
-import { spawnIosRunner, type IosRunnerTarget } from "../utils/ios-open-server-runner";
+import { spawnIosRunner } from "../utils/ios-open-server-runner";
 
 /**
  * Registry blueprint for the open iOS XCUITest server
  * (`@argent/ios-device-server`), the iOS counterpart of `androidOpenServerBlueprint`.
  * The factory builds (cached) and launches the runner, pings it ready, and
- * exposes the NDJSON JSON-RPC method surface. Simulator-first: the target is a
- * simulator UDID on loopback; the physical-device path is compiled but not
- * exercised in hosted CI.
+ * exposes the NDJSON JSON-RPC method surface. Simulators only: the target is a
+ * simulator UDID on loopback. Physical iPhones use the upstream runner.
  */
 
 const IOS_OPEN_SERVER_NAMESPACE = "IosOpenDeviceServer";
@@ -85,15 +84,6 @@ export interface IosOpenDeviceServerApi {
   flushInput(): Promise<{ success: boolean }>;
 }
 
-/** Whether this iOS device is a simulator (loopback) or a physical device (usbmux). */
-function targetForDevice(device: DeviceInfo): IosRunnerTarget {
-  // iOS-1 is simulator-first. A physical device is opted into with
-  // ARGENT_IOS_TEAM_ID (base B's signing gate); absent it, treat as a simulator.
-  const kind: IosRunnerTarget["kind"] =
-    process.env.ARGENT_IOS_OPEN_SERVER_PHYSICAL === "1" ? "device" : "simulator";
-  return { udid: device.id, kind };
-}
-
 export const iosOpenServerBlueprint: ServiceBlueprint<IosOpenDeviceServerApi, DeviceInfo> = {
   namespace: IOS_OPEN_SERVER_NAMESPACE,
 
@@ -129,7 +119,7 @@ export const iosOpenServerBlueprint: ServiceBlueprint<IosOpenDeviceServerApi, De
     }
 
     const events = new TypedEventEmitter<ServiceEvents>();
-    const { spawned, client } = await spawnIosRunner(targetForDevice(device));
+    const { spawned, client } = await spawnIosRunner({ udid: device.id });
     let ready = true;
     let disposed = false;
 

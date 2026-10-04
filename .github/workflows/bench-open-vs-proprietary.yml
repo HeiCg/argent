@@ -208,7 +208,7 @@ jobs:
         run: |
           npm ci
           npm install @rollup/rollup-linux-x64-gnu --no-save
-          npx tsc --build
+          npm run build
 
       - name: Build open device-server APK (Kotlin, Java 17)
         # ON path installs packages/android-device-server/bin/argent-device-control-<ver>.apk
@@ -424,7 +424,7 @@ jobs:
           # by default, which dropped the latency bench JSON + scoreboard. Keep it.
           include-hidden-files: true
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
       # ---- ENFORCE the device-test result LAST (after diagnostics uploaded) ----
       - name: Enforce device-test result
@@ -533,7 +533,7 @@ jobs:
         run: |
           npm ci
           npm install @rollup/rollup-linux-x64-gnu --no-save
-          npx tsc --build
+          npm run build
           npm run build:android-device-server
           ls -la packages/android-device-server/bin/
 
@@ -628,4 +628,4 @@ jobs:
           # paths by default, which silently dropped the bench JSON + report. Keep it.
           include-hidden-files: true
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90

@@ -4,7 +4,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // fire-and-forget WebSocket send so no real socket is opened during the test.
 vi.mock("../src/utils/simulator-client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/simulator-client")>()),
-  sendCommand: vi.fn(),
+  sendCommand: vi.fn(async () => ({})),
 }));
 
 import { Registry, zodObjectToJsonSchema } from "@argent/registry";
@@ -36,7 +36,7 @@ function touches(): TouchCmd[] {
 
 beforeEach(() => {
   // Reset (not just clear) so the abort test's mockImplementation can't leak.
-  vi.mocked(sendCommand).mockReset();
+  vi.mocked(sendCommand).mockReset().mockResolvedValue({});
 });
 
 describe("gesture-rotate radiusX/radiusY", () => {
@@ -145,7 +145,7 @@ describe("gesture-rotate abort", () => {
     let sent = 0;
     vi.mocked(sendCommand).mockImplementation(() => {
       if (++sent === 3) controller.abort();
-      return Promise.resolve();
+      return Promise.resolve({});
     });
 
     await expect(

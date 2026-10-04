@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { isFlagEnabled } from "@argent/configuration-core";
 import type { DeviceInfo, Registry } from "@argent/registry";
+import { isIosPhysicalDevice } from "./device-info";
 import { iosOpenServerRef, type IosOpenDeviceServerApi } from "../blueprints/ios-open-server";
 import { openDeviceServerMutex } from "./device-mutex";
 import { openServerIosNestedToDescribeNode } from "../tools/describe/platforms/ios/open-server-tree";
@@ -18,9 +19,17 @@ import type { DescribeTreeData } from "../tools/describe/contract";
  * so the open backend is strictly additive.
  */
 
-/** Whether the open iOS backend applies to this device. */
+/**
+ * Whether the open iOS backend applies to this device. Simulators only: a
+ * physical iPhone belongs to the upstream XCUITest runner, and both runners sign
+ * as `com.argent.runner.t<team>`, so ours must never install over it.
+ */
 export function shouldUseIosOpenServer(device: DeviceInfo): boolean {
-  return device.platform === "ios" && isFlagEnabled("open-ios-device-server");
+  return (
+    device.platform === "ios" &&
+    !isIosPhysicalDevice(device) &&
+    isFlagEnabled("open-ios-device-server")
+  );
 }
 
 function withServer<T>(

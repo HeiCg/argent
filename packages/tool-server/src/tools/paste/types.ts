@@ -4,6 +4,13 @@ import type { OpenServerActionOutcome } from "../../blueprints/android-open-serv
 
 export type PasteParams = z.infer<typeof pasteZodSchema>;
 
+/**
+ * What a platform handler gets: `text` resolved, and `hasSecrets` set when it
+ * held a `{{secret:…}}` placeholder. The schema has no such key and zod drops
+ * unknown ones, so only `execute` can set it.
+ */
+export type PasteDispatchParams = PasteParams & { hasSecrets?: boolean };
+
 export interface PasteResult {
   pasted: true;
   /**
@@ -11,6 +18,11 @@ export interface PasteResult {
    * The before/after fingerprint delta of the paste (typed text).
    */
   outcome?: OpenServerActionOutcome;
+  /**
+   * Set when the text was typed instead of pasted: a secret, on a simulator
+   * Device Hub has opened.
+   */
+  via?: "keyboard";
 }
 
 /**

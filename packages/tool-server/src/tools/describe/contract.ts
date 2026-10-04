@@ -73,6 +73,8 @@ export type DescribeSource =
   | "uiautomator"
   | "android-devtools"
   | "open-device-server"
+  // Physical iOS, and the iOS open-device-server path: the XCUITest runner
+  // accessibility snapshot.
   | "xcuitest-runner"
   | "cdp-dom"
   | "vega-automation"
@@ -84,6 +86,8 @@ export interface DescribeTreeData {
   tree: DescribeNode;
   source: DescribeSource;
   should_restart?: boolean;
+  // "degraded" means boot-state on the simulator path and a truncated snapshot on the device path.
+  // Each path writes this hint once.
   hint?: string;
   // Size the frames were normalized against, in the source's native units
   // (Android px, iOS pt), so only the aspect ratio compares across sources —
@@ -92,14 +96,17 @@ export interface DescribeTreeData {
   screen?: { width: number; height: number };
   // Server-measured split of the open-device-server describe capture:
   // `waitedMs` is the idle gate, `captureMs` the post-idle serialization
-  // (screenshot skipped). Metadata only — never rendered into `description`.
+  // (screenshot skipped). When a cold WebView forced re-reads, `waitedMs` also
+  // holds that wait (the discarded reads and the sleeps between them), so it
+  // exceeds `timings.idleMs`. Metadata only — never rendered into `description`.
   // Set solely by the Android open path; lets a bench separate the idle wait
   // from the tree serialization cost.
   waitedMs?: number;
   captureMs?: number;
   // Finer per-stage split of the open-device-server capture (phase 3g): the
   // sub-costs of `captureMs` (rootInActiveWindow, windows enumeration, each
-  // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs).
+  // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs
+  // unless a cold-WebView wait was added). All from the returned read.
   // Metadata only — never rendered; a bench reads it to locate the residual.
   timings?: DescribeStageTimings;
   // Host/transport split of the open-device-server describe (phase 3i), the piece
@@ -125,6 +132,14 @@ export interface DescribeTreeData {
   // Android open path; `withDescription` prepends it to the text. Absent when no
   // incident is active.
   incidentLine?: string;
+  // How the UI lies on the space the frames are in, when the two differ: the
+  // iOS simulator adapter frames in the screen's fixed (portrait-native)
+  // space, the space touches are taken in, and a landscape UI — a rotated
+  // device, an unfolded foldable — is rotated on it. The flow directions
+  // (`swipe: down`, `scroll-to` `direction`) are the UI's, and are mapped
+  // into the frame space with this. Absent when the source does not report
+  // it, which is when its frames are in the UI's own space.
+  uiOrientation?: UiOrientation;
 }
 
 export interface DescribeStageTimings {
@@ -156,6 +171,22 @@ export interface DescribeStageTimings {
   prevServerHandleMs?: number;
   prevServerWriteMs?: number;
   prevServerTotalMs?: number;
+}
+
+/** Interface orientation as UIKit names it, relative to the portrait-native screen. */
+export type UiOrientation = "portrait" | "landscapeLeft" | "landscapeRight" | "portraitUpsideDown";
+
+const UI_ORIENTATIONS: readonly UiOrientation[] = [
+  "portrait",
+  "portraitUpsideDown",
+  "landscapeLeft",
+  "landscapeRight",
+];
+
+export function asUiOrientation(v: unknown): UiOrientation | undefined {
+  return typeof v === "string" && (UI_ORIENTATIONS as readonly string[]).includes(v)
+    ? (v as UiOrientation)
+    : undefined;
 }
 
 export interface DescribeResult {

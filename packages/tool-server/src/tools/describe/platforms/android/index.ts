@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { Registry, ToolDependency } from "@argent/registry";
-import type { DescribeTreeData } from "../../contract";
+import type { DescribeNode, DescribeTreeData } from "../../contract";
 import { adbExecOutBinary, isAndroidTv } from "../../../../utils/adb";
 import { resolveDevice } from "../../../../utils/device-info";
 import {
@@ -88,78 +88,95 @@ export async function describeAndroid(
     try {
       const device = resolveDevice(serial);
       const ref = openDeviceServerRef(device);
-      const result = await openDeviceServerMutex.withDeviceLock(serial, async () => {
-        const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-        // ONE round-trip: waitForIdle + the full nested multi-window tree + info,
-        // the same call the await-* poll loops use (`utils/open-server-describe.ts`).
-        // The previous `Promise.all([getNestedAccessibilityTree, getInfo])` never
-        // overlapped — the RPC client serialises every request on one connection
-        // (see `android-open-server-client.ts`) — so it was two sequential
-        // round-trips AND a second implicit idle gate inside `getInfo`. `getInfo`
-        // is also gone from the hot path, so its rotation/package reads no longer
-        // trigger `waitForIdle`.
-        //
-        // Idle policy (phase 3d): default `waitTimeoutMs: 0` = an immediate read,
-        // matching the proprietary `android-devtools` `getHierarchy`, which reads
-        // the tree with no quiescence wait — so the two backends are like-for-like
-        // in *policy*, not just speed. Under `settle` the describe waits out the
-        // in-flight navigation's `waitForIdle` (a 500 ms idle-quiescence window, or
-        // a custom one) for a fresh post-navigation tree — the superior product
-        // feature, available explicitly. `uiDevice.waitForIdle(0)` returns
-        // immediately (a 0 window short-circuits the idle loop — measured
-        // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
-        // keep their own (default) timeout — this is describe-only.
-        const waitTimeoutMs = settleToWaitTimeoutMs(settle);
-        // Phase 3j: compact:true would drop the trim-discarded nodes ON THE DEVICE for
-        // a smaller wire payload — BUT the on-device compaction hoists scaffold
-        // wrappers, which is NOT output-preserving (it defeats a scrollable parent's
-        // child-clip, lets a system-chrome subtree escape, and can drop a borrowed
-        // `[password]` label — reviewed counterexamples). Until the device compaction
-        // is made output-preserving (hollow nodes + goldens), the describe path ships
-        // the FULL tree and runs the proven host v2 trim, which is byte-identical to
-        // the dump path. compact stays available for the bench A/B via explicit opt-in.
-        const state = await server.getNestedState({ waitTimeoutMs, compact: false });
-        if (state.tree.length === 0) {
-          throw new FailureError("open-device-server returned an empty accessibility tree", {
-            error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
-            failure_stage: "android_open_device_server_tree",
-            failure_area: "tool_server",
-            error_kind: "subprocess",
-          });
-        }
-        // Run the SAME v2 interactables-only trim the android-devtools XML path
-        // runs, so the compact describe (dropped layout containers, concatenated
-        // row labels, package-qualified ids) matches the proprietary token count
-        // and label set. `tree` is one nested root per window (active + IME +
-        // dialogs), the multi-window shape the dump path also captures. The
-        // server's info geometry is rotation-aware (read straight from the
-        // Display) and matches getBoundsInScreen's pixel space, so no rotation
-        // correction.
-        // Time the host tree-lowering + v2 trim (phase 3i): the JSON.parse cost is
-        // already captured on the wire as `hostParseMs`; this is the CPU spent
-        // turning the parsed nested tree into the rendered DescribeNode.
-        const renderT0 = performance.now();
-        const node = openServerNestedToDescribeNode(
-          state.tree,
-          state.info.screenWidth,
-          state.info.screenHeight
-        );
-        const hostRenderMs = performance.now() - renderT0;
-        return {
-          node,
-          truncated: nestedTreeTruncated(state.tree),
-          waitedMs: state.waitedMs,
-          captureMs: state.captureMs,
-          timings: state.timings,
-          wireBytes: state.wireBytes,
-          hostParseMs: state.hostParseMs,
-          hostRenderMs,
-          hostSentToFirstByteMs: state.hostSentToFirstByteMs,
-          hostFirstToLastByteMs: state.hostFirstToLastByteMs,
-          hostRoundTripMs: state.hostRoundTripMs,
-          transport: state.transport,
-        };
+      const readOnce = () =>
+        openDeviceServerMutex.withDeviceLock(serial, async () => {
+          const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+          // ONE round-trip: waitForIdle + the full nested multi-window tree + info,
+          // the same call the await-* poll loops use (`utils/open-server-describe.ts`).
+          // The previous `Promise.all([getNestedAccessibilityTree, getInfo])` never
+          // overlapped — the RPC client serialises every request on one connection
+          // (see `android-open-server-client.ts`) — so it was two sequential
+          // round-trips AND a second implicit idle gate inside `getInfo`. `getInfo`
+          // is also gone from the hot path, so its rotation/package reads no longer
+          // trigger `waitForIdle`.
+          //
+          // Idle policy (phase 3d): default `waitTimeoutMs: 0` = an immediate read,
+          // matching the proprietary `android-devtools` `getHierarchy`, which reads
+          // the tree with no quiescence wait — so the two backends are like-for-like
+          // in *policy*, not just speed. Under `settle` the describe waits out the
+          // in-flight navigation's `waitForIdle` (a 500 ms idle-quiescence window, or
+          // a custom one) for a fresh post-navigation tree — the superior product
+          // feature, available explicitly. `uiDevice.waitForIdle(0)` returns
+          // immediately (a 0 window short-circuits the idle loop — measured
+          // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
+          // keep their own (default) timeout — this is describe-only.
+          const waitTimeoutMs = settleToWaitTimeoutMs(settle);
+          // Phase 3j: compact:true would drop the trim-discarded nodes ON THE DEVICE for
+          // a smaller wire payload — BUT the on-device compaction hoists scaffold
+          // wrappers, which is NOT output-preserving (it defeats a scrollable parent's
+          // child-clip, lets a system-chrome subtree escape, and can drop a borrowed
+          // `[password]` label — reviewed counterexamples). Until the device compaction
+          // is made output-preserving (hollow nodes + goldens), the describe path ships
+          // the FULL tree and runs the proven host v2 trim, which is byte-identical to
+          // the dump path. compact stays available for the bench A/B via explicit opt-in.
+          const state = await server.getNestedState({ waitTimeoutMs, compact: false });
+          if (state.tree.length === 0) {
+            throw new FailureError("open-device-server returned an empty accessibility tree", {
+              error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
+              failure_stage: "android_open_device_server_tree",
+              failure_area: "tool_server",
+              error_kind: "subprocess",
+            });
+          }
+          // Run the SAME v2 interactables-only trim the android-devtools XML path
+          // runs, so the compact describe (dropped layout containers, concatenated
+          // row labels, package-qualified ids) matches the proprietary token count
+          // and label set. `tree` is one nested root per window (active + IME +
+          // dialogs), the multi-window shape the dump path also captures. The
+          // server's info geometry is rotation-aware (read straight from the
+          // Display) and matches getBoundsInScreen's pixel space, so no rotation
+          // correction.
+          // Time the host tree-lowering + v2 trim (phase 3i): the JSON.parse cost is
+          // already captured on the wire as `hostParseMs`; this is the CPU spent
+          // turning the parsed nested tree into the rendered DescribeNode.
+          const renderT0 = performance.now();
+          const node = openServerNestedToDescribeNode(
+            state.tree,
+            state.info.screenWidth,
+            state.info.screenHeight
+          );
+          const hostRenderMs = performance.now() - renderT0;
+          return {
+            node,
+            truncated: nestedTreeTruncated(state.tree),
+            waitedMs: state.waitedMs,
+            captureMs: state.captureMs,
+            timings: state.timings,
+            wireBytes: state.wireBytes,
+            hostParseMs: state.hostParseMs,
+            hostRenderMs,
+            hostSentToFirstByteMs: state.hostSentToFirstByteMs,
+            hostFirstToLastByteMs: state.hostFirstToLastByteMs,
+            hostRoundTripMs: state.hostRoundTripMs,
+            transport: state.transport,
+          };
+        });
+      // Same cold-WebView wait as the android-devtools and uiautomator paths
+      // below (upstream #1052): without it a describe right after a WebView opens
+      // returns the empty WebView node. The device lock is released between reads.
+      // A tree without a WebView returns after the first read, with no delay.
+      const firstReadAt = Date.now();
+      let result = await readOnce();
+      let lastReadAt = firstReadAt;
+      await awaitWebViewPublished(result.node, async () => {
+        lastReadAt = Date.now();
+        result = await readOnce();
+        return result.node;
       });
+      // Count the wait: the discarded reads and the sleeps between them land in
+      // `waitedMs`, so waitedMs + captureMs still accounts for the device time.
+      // The other stage timings are the returned (last) read's own.
+      const webViewWaitMs = lastReadAt - firstReadAt;
       // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
       const openHint = result.truncated ? [hint, TRUNCATION_HINT].filter(Boolean).join(" ") : hint;
       // Ticket A1 (part B): prepend the execution-incident line while one is
@@ -175,7 +192,7 @@ export async function describeAndroid(
         source: "open-device-server",
         hint: openHint,
         ...(incidentLine !== undefined ? { incidentLine } : {}),
-        waitedMs: result.waitedMs,
+        waitedMs: result.waitedMs + webViewWaitMs,
         captureMs: result.captureMs,
         ...(result.timings ? { timings: result.timings } : {}),
         ...(result.wireBytes !== undefined ? { wireBytes: result.wireBytes } : {}),
@@ -210,7 +227,11 @@ export async function describeAndroid(
         devtools.getHierarchy(),
         devtools.getScreenSize(),
       ]);
-      const tree = parseUiAutomatorDump(xml, size.width, size.height);
+      const tree = await awaitWebViewPublished(
+        parseUiAutomatorDump(xml, size.width, size.height),
+        async () =>
+          parseUiAutomatorDump((await devtools.getHierarchy()).xml, size.width, size.height)
+      );
       return { tree, source: "android-devtools", hint };
     } catch (serviceErr) {
       // Debug level: the legacy path below is expected to recover, so this
@@ -224,6 +245,38 @@ export async function describeAndroid(
     }
   }
 
+  const [size, raw] = await Promise.all([getAndroidScreenSize(serial), uiautomatorDump(serial)]);
+  const tree = await awaitWebViewPublished(parseDump(raw, size), async () =>
+    parseDump(await uiautomatorDump(serial), size)
+  );
+  return { tree, source: "uiautomator", hint };
+}
+
+/**
+ * Chromium builds a WebView's accessibility tree on the first request for it,
+ * so the read that asks sees the WebView with nothing under it. Re-read until
+ * the page is there, within a bound: a small page is complete on the next read
+ * (measured 10–400 ms on API 35 / WebView 124), a Chrome tab over a long
+ * article needs ~600 ms. A screen without a WebView returns at once; a WebView
+ * that never publishes costs at most the bound.
+ */
+const WEBVIEW_PUBLISH_STEP_MS = 250;
+const WEBVIEW_PUBLISH_BUDGET_MS = 1_500;
+
+async function awaitWebViewPublished(
+  first: DescribeNode,
+  read: () => Promise<DescribeNode>
+): Promise<DescribeNode> {
+  let tree = first;
+  for (let waited = 0; waited < WEBVIEW_PUBLISH_BUDGET_MS && hasUnreadWebView(tree); ) {
+    await new Promise((r) => setTimeout(r, WEBVIEW_PUBLISH_STEP_MS));
+    waited += WEBVIEW_PUBLISH_STEP_MS;
+    tree = await read();
+  }
+  return tree;
+}
+
+async function uiautomatorDump(serial: string): Promise<string> {
   // Per-call dump path so concurrent describes on the same serial don't cat each
   // other's half-written dump.
   const randomSuffix = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
@@ -232,14 +285,11 @@ export async function describeAndroid(
   // wrappers, RN SVG sub-paths, bounds-less Compose containers) while keeping the
   // text, content-desc, clickable and resource-id the agent contract uses.
   // `;` rather than `&&` before `rm -f` so cleanup fires even when dump/cat fails.
-  const [size, rawBuf] = await Promise.all([
-    getAndroidScreenSize(serial),
-    adbExecOutBinary(
-      serial,
-      `uiautomator dump --compressed ${dumpPath} >/dev/null && cat ${dumpPath}; rm -f ${dumpPath}`,
-      { timeoutMs: 20_000 }
-    ),
-  ]);
+  const rawBuf = await adbExecOutBinary(
+    serial,
+    `uiautomator dump --compressed ${dumpPath} >/dev/null && cat ${dumpPath}; rm -f ${dumpPath}`,
+    { timeoutMs: 20_000 }
+  );
   const raw = rawBuf.toString("utf-8");
   const trimmed = raw.trim();
   if (/^ERROR:/i.test(trimmed) || (!trimmed.includes("<hierarchy") && /error/i.test(trimmed))) {
@@ -257,12 +307,32 @@ export async function describeAndroid(
       }
     );
   }
+  return raw;
+}
+
+function parseDump(raw: string, size: { width: number; height: number }): DescribeNode {
   // `wm size` is not rotation-aware, but the dump says which rotation it was
   // taken at. Orienting the divisor here is what keeps a rotated device's frames
   // in the same upright space the android-devtools path already produces — and
   // stops the right-hand half of a landscape screen being pruned away as
   // off-screen (#609).
   const oriented = orientScreenSize(size, parseDumpRotation(raw));
-  const tree = parseUiAutomatorDump(raw, oriented.width, oriented.height);
-  return { tree, source: "uiautomator", hint };
+  return parseUiAutomatorDump(raw, oriented.width, oriented.height);
+}
+
+/**
+ * The shape a WebView has before Chromium publishes its page: the WebView
+ * node with nothing under it (a read 6 s after load, with no earlier read, is
+ * still this shape — the tree is built on request, not on load).
+ *
+ * A browser tab has no `android.webkit.WebView` view of its own: before the
+ * page is published, Chrome's content view is a childless FrameLayout whose
+ * content-desc is "Web View" (English UI only — other locales miss the
+ * re-read and see the tab the way they do today).
+ */
+export function hasUnreadWebView(node: DescribeNode): boolean {
+  if (node.children.length === 0 && (node.role === "WebView" || node.label === "Web View")) {
+    return true;
+  }
+  return node.children.some(hasUnreadWebView);
 }

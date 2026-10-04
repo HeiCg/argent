@@ -167,7 +167,7 @@ jobs:
         run: |
           npm ci
           npm install @rollup/rollup-linux-x64-gnu --no-save
-          npx tsc --build
+          npm run build
 
       - name: Build open device-server APK (Kotlin, Java 17)
         run: |
@@ -222,7 +222,7 @@ jobs:
           path: ${{ runner.temp }}/probe-artifacts
           include-hidden-files: true
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
   # ── Step 3: harness run (needs ANTHROPIC_API_KEY) ─────────────────────────
   harness:
@@ -327,7 +327,7 @@ jobs:
         run: |
           npm ci
           npm install @rollup/rollup-linux-x64-gnu --no-save
-          npx tsc --build
+          npm run build
 
       - name: Build open device-server APK
         run: |
@@ -398,4 +398,4 @@ jobs:
           path: ${{ runner.temp }}/aw-artifacts
           include-hidden-files: true
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90

@@ -1,8 +1,9 @@
 import type { Registry } from "@argent/registry";
 import type { DescribeNode } from "../tools/describe/contract";
 import { describeIos } from "../tools/describe/platforms/ios";
+import { describeIosDevice } from "../tools/describe/platforms/ios-device";
 import { describeAndroid } from "../tools/describe/platforms/android";
-import { resolveDevice } from "./device-info";
+import { isIosPhysicalDevice, resolveDevice } from "./device-info";
 import { isTvOsSimulator } from "./ios-devices";
 import type { VariantMatch } from "./variant-proposals";
 
@@ -142,13 +143,17 @@ export async function captureElementFrame(
     // Chromium (CDP) has no adb/sim-server describe path; skipping beats shelling
     // adb against a serial that does not exist.
     if (device.platform === "chromium") return null;
+    // A physical iPhone goes to the upstream runner, as the describe tool does.
+    const isPhysicalIos = isIosPhysicalDevice(device);
     // Resolved once so describeIos doesn't re-shell `xcrun` per attempt.
-    const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
+    const isTvOs =
+      device.platform === "ios" && !isPhysicalIos && (await isTvOsSimulator(device.id));
     let bestPartial: NormalizedFrame | null = null;
     const startedAt = Date.now();
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const data =
-        device.platform === "ios"
+      const data = isPhysicalIos
+        ? await describeIosDevice(registry, device)
+        : device.platform === "ios"
           ? await describeIos(registry, device, {}, { isTvOs })
           : await describeAndroid(registry, udid);
       const tree = data?.tree ?? null;

@@ -1,5 +1,7 @@
 # Spec — open iOS driver (planner, 2026-09-14; from ticket iOS-0 findings)
 
+> 2026-10-04: the open iOS server is now simulators only; physical iPhones use upstream's runner and `ARGENT_IOS_OPEN_SERVER_PHYSICAL` is gone.
+
 ## Decision: base = upstream runner core on OUR contract, `sim-input` as the fast arm
 
 - **Device-side server**: take `origin/feat/ios-physical-devices`'s `ArgentRunner`

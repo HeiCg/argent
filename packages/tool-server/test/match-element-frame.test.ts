@@ -13,7 +13,8 @@ import type { Registry } from "@argent/registry";
 
 vi.mock("../src/tools/describe/platforms/ios", () => ({ describeIos: vi.fn() }));
 vi.mock("../src/tools/describe/platforms/android", () => ({ describeAndroid: vi.fn() }));
-vi.mock("../src/utils/device-info", () => ({
+vi.mock("../src/utils/device-info", async () => ({
+  ...(await vi.importActual<typeof import("../src/utils/device-info")>("../src/utils/device-info")),
   resolveDevice: (udid: string) => ({ id: udid, platform: "ios", kind: "simulator" }),
 }));
 // captureElementFrame probes isTvOsSimulator() — a real `xcrun simctl list`

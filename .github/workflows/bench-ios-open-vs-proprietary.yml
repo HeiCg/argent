@@ -66,7 +66,7 @@ jobs:
 
       - name: Build the workspace TypeScript
         shell: bash
-        run: npx tsc --build
+        run: npm run build
 
       - name: Download the closed simulator-server + ax-service (OFF arm; run-time only)
         # Reuses the e2e-device-smoke.yml recipe. Their LICENSE forbids
@@ -251,7 +251,7 @@ jobs:
             build-sim-input.log
           include-hidden-files: true
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
       - name: Stop the runner and simulator
         if: always()

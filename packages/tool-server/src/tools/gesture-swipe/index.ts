@@ -7,7 +7,10 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
-import { resolveDevice } from "../../utils/device-info";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
+import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
+import { dragBetween, getViewport, toPoints } from "../../utils/ios-device/runner-commands";
+import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
 import {
   shouldUseOpenServer,
@@ -153,6 +156,17 @@ interface Result {
   candidates?: VerifyCandidate[];
   requestedPx?: { x: number; y: number };
   mismatchLabel?: string;
+  /**
+   * Physical iOS only: the target app was backgrounded and the runner
+   * re-fronted it to run this swipe, so the foreground screen changed as a
+   * side effect. Set only when true.
+   */
+  reactivated?: true;
+  /**
+   * Foldable iOS simulators only: the panel the device renders to could not
+   * be resolved, so the swipe went to the cover panel. Says why and what to check.
+   */
+  warning?: string;
 }
 
 const pctPair = (a: number | undefined, b: number | undefined): string =>
@@ -191,17 +205,21 @@ export function createGestureSwipeTool(registry: Registry): ToolDefinition<Param
     },
     // The bounds are spelled out rather than interpolated: extract-tools scans this
     // description statically, so a `${}` in it drops the tool out of the scan.
-    description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
+    description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator or physical device, or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
 Generates interpolated Move events for a natural feel (~60fps).
 Swipe up (fromY > toY) to scroll content down.
 Use when you need to scroll a list, dismiss a modal, drag an element, or navigate between pages. Not supported on Chromium — use gesture-scroll there instead.
-Pass momentum:false for a momentum-free swipe that lands where the finger lifts (little to no fling at the 300 default), when you need a deterministic scroll distance; it needs durationMs >= 150 and is rejected below that, a shorter ease-out leaving the OS too little wall clock to read the deceleration as a stop. At 150 it lands short of the lift point instead, and 2 of 47 runs still flung backwards. A plain swipe takes any duration up to 10000ms and is delivered as close to the speed it was authored as a 16ms frame allows: below ~32ms the whole travel lands in one or two frames, which the OS flings as hard as it flings anything. Returns { swiped: true, timestampMs }. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
+Physical iOS: an edge gesture (back-swipe) needs fromX 0 exactly; durationMs sets drag speed, not time; momentum:false only rests 300ms at the end and does not damp.
+Pass momentum:false for a momentum-free swipe that lands where the finger lifts (little to no fling at the 300 default), when you need a deterministic scroll distance; it needs durationMs >= 150 and is rejected below that, a shorter ease-out leaving the OS too little wall clock to read the deceleration as a stop. At 150 it lands short of the lift point instead, and 2 of 47 runs still flung backwards. A plain swipe takes any duration up to 10000ms and is delivered as close to the speed it was authored as a 16ms frame allows: below ~32ms the whole travel lands in one or two frames, which the OS flings as hard as it flings anything. Returns { swiped: true, timestampMs }. On physical iOS, reactivated: true = app was re-fronted; re-describe. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
     alwaysLoad: true,
     searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
     zodSchema,
     capability,
     services: (params): Record<string, ServiceRef> => {
       const device = resolveDevice(params.udid);
+      if (isIosPhysicalDevice(device)) {
+        return { iosDeviceRunner: iosDeviceRunnerRef(device) };
+      }
       // See gesture-tap: skip resolving the proprietary server when the open path
       // is active; it is resolved lazily in execute only as a fallback.
       if (shouldUseOpenServer(device) || shouldUseIosOpenServer(device)) return {};
@@ -222,6 +240,31 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       // every non-verify path below is reached with them present.
       const fromX = params.fromX ?? 0;
       const fromY = params.fromY ?? 0;
+
+      if (isIosPhysicalDevice(device)) {
+        // XCTest is one planned drag. momentum: false holds at the destination,
+        // so the release velocity is then zero.
+        const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
+        const bundleId = requireCurrentIosDeviceApp(device.id);
+        const viewport = await getViewport(runner, bundleId);
+
+        const drag = await dragBetween(
+          runner,
+          bundleId,
+          toPoints(viewport, fromX, fromY),
+          toPoints(viewport, params.toX, params.toY),
+          { durationMs: duration, settle: momentumFree }
+        );
+        // Either leg can be the one that re-fronted a backgrounded target: the
+        // viewport read fronts it first, so the drag then finds it foreground.
+        const reactivated = viewport.reactivated === true || drag.reactivated;
+
+        return {
+          swiped: true,
+          timestampMs,
+          ...(reactivated ? { reactivated: true as const } : {}),
+        };
+      }
 
       if (shouldUseIosOpenServer(device)) {
         try {
@@ -374,6 +417,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       // here. Flooring the count would only turn durationMs into a lie.
       const steps = Math.max(1, Math.round(duration / 16));
       // Last dispatched sample, so an abort can lift from where the finger is.
+      let warning: string | undefined;
       let lastX = 0;
       let lastY = 0;
       // Neither touch backend delivers the Up's coordinates: on both, the finger
@@ -432,7 +476,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             second_y: null,
           });
         }
-        await sendCommand(api, {
+        const sent = await sendCommand(api, {
           cmd: "touch",
           type,
           x,
@@ -440,12 +484,14 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           second_x: null,
           second_y: null,
         });
+        // Only the Down resolves the panel; the rest of the sequence keeps it.
+        if (type === "Down") warning = sent.warning;
         lastX = x;
         lastY = y;
         if (i < steps) await sleep(16);
       }
 
-      return { swiped: true, timestampMs };
+      return { swiped: true, timestampMs, ...(warning !== undefined ? { warning } : {}) };
     },
   };
 }

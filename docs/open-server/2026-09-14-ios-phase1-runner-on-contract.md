@@ -1,5 +1,7 @@
 # Ticket: iOS-1 — the open iOS server on our contract, simulator first (owner approved 2026-09-14)
 
+> 2026-10-04: the open iOS server is now simulators only; physical iPhones use upstream's runner and `ARGENT_IOS_OPEN_SERVER_PHYSICAL` is gone.
+
 Spec: `2026-09-14-ios-open-driver-spec.md` (read in full). Research with file:line evidence:
 `2026-09-14-ios-open-driver-research.md` (both `## Findings` sections — the B section
 tells you exactly where things are on the upstream branch). Android reference contract:

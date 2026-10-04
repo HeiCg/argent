@@ -76,10 +76,15 @@ type Params = z.infer<typeof zodSchema>;
 interface Result {
   rotated: boolean;
   timestampMs: number;
+  /**
+   * Foldable iOS simulators only: the panel the device renders to could not
+   * be resolved, so the gesture went to the cover panel. Says why and what to check.
+   */
+  warning?: string;
 }
 
 const capability: ToolCapability = {
-  apple: { simulator: true, device: true },
+  apple: { simulator: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
 };
@@ -172,6 +177,7 @@ Size the orbit with radius, or with radiusX and radiusY together (the pair overr
         : (services.simulatorServer as SimulatorServerApi);
 
       let timestampMs = 0;
+      let warning: string | undefined;
       // Last dispatched positions, so an abort lifts from where the fingers are.
       let lastX1 = 0;
       let lastY1 = 0;
@@ -209,7 +215,9 @@ Size the orbit with radius, or with radiusX and radiusY together (the pair overr
         const type = i === 0 ? "Down" : i === steps ? "Up" : "Move";
         if (i === 0) timestampMs = Date.now();
 
-        await sendTouchEvent(api, type, x1, y1, x2, y2);
+        const sent = await sendTouchEvent(api, type, x1, y1, x2, y2);
+        // Only the Down resolves the panel; the rest of the sequence keeps it.
+        if (type === "Down") warning = sent.warning;
         lastX1 = x1;
         lastY1 = y1;
         lastX2 = x2;
@@ -217,7 +225,7 @@ Size the orbit with radius, or with radiusX and radiusY together (the pair overr
         if (i < steps) await sleep(16);
       }
 
-      return { rotated: true, timestampMs };
+      return { rotated: true, timestampMs, ...(warning !== undefined ? { warning } : {}) };
     },
   };
 }

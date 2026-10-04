@@ -60,7 +60,10 @@ function formatFlags(n: DescribeNode): string {
   if (n.clickable) flags.push("clickable");
   if (n.longClickable) flags.push("long-clickable");
   if (n.scrollable) flags.push("scrollable");
-  if (n.checkable) flags.push(n.checked ? "checked" : "checkable");
+  // The Chromium walker reports `checked` without `checkable`, so the state
+  // flag cannot be gated on the pair.
+  if (n.checked) flags.push("checked");
+  else if (n.checkable) flags.push("checkable");
   if (n.focused) flags.push("focused");
   if (n.selected) flags.push("selected");
   if (n.disabled) flags.push("disabled");
@@ -80,6 +83,7 @@ function hasContent(n: DescribeNode): boolean {
     n.longClickable ||
     n.scrollable ||
     n.checkable ||
+    n.checked ||
     (typeof n.scrollHidden === "number" && n.scrollHidden > 0)
   );
 }
@@ -136,9 +140,15 @@ function renderNested(root: DescribeNode, contentRoles: ReadonlySet<string>): st
 
 interface FormatDescribeOptions {
   source: DescribeSource;
+  // Set when the tree was read from a simulator. The iOS open-device-server
+  // path reports `xcuitest-runner` too, but from a simulator, where the
+  // physical-iOS rendering below (nested mode, no two-finger gestures) does
+  // not apply; it keeps the flat rendering and the gesture-pinch hint.
+  simulator?: boolean;
 }
 
 export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptions): string {
+  const physicalIosRunner = opts.source === "xcuitest-runner" && opts.simulator !== true;
   // The iOS providers emit a flat list of leaves under a synthetic root; the
   // sources below return a real parent/child tree, whose descendants beyond
   // depth 1 are only visible in nested mode.
@@ -150,7 +160,9 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     // nested like its sibling Android sources rather than as a flat leaf list.
     opts.source === "open-device-server" ||
     opts.source === "cdp-dom" ||
-    opts.source === "vega-automation"
+    opts.source === "vega-automation" ||
+    // Physical iOS: the runner reports a parent/child tree. Nested mode keeps that structure.
+    physicalIosRunner
       ? "nested"
       : "flat";
   const isVega = opts.source === "vega-automation";
@@ -169,8 +181,12 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
         'and count rows/columns to build the path (e.g. one row down and two columns right → ["down","right","right","select"]).'
     );
   } else {
+    // Physical iOS has no two-finger gestures. Do not recommend gesture-pinch for this source.
     header.push(
-      "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
+      physicalIosRunner
+        ? "Pass them straight to gesture-tap / gesture-swipe, which expect this same space. " +
+            "No two-finger gestures on physical iOS."
+        : "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
     );
     header.push(
       "To tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2."

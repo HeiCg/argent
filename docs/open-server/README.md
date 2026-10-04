@@ -96,6 +96,7 @@ host blueprint behind flag `open-ios-device-server` (off), workflow
 `ios-open-server-device-test.yml` (run 34904275293 green, 9/9 cases, Xcode 26.6 / iOS 26.5).
 Next: iOS-2 bench (`2026-09-14-ios-phase2-bench.md`), iOS-3 screen graph on iOS, iOS-4
 sim-input depth + physical CI. Android fling: `2026-09-14-open-server-phase3o-fling-metric.md`.
+2026-10-04: the open iOS server is simulators only; physical iPhones use upstream's runner.
 
 ## Rules that paid for themselves
 

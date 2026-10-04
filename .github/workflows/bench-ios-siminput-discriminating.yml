@@ -52,7 +52,7 @@ jobs:
 
       - name: Build the workspace TypeScript
         shell: bash
-        run: npx tsc --build
+        run: npm run build
 
       - name: Build sim-input
         shell: bash
@@ -167,7 +167,7 @@ jobs:
             build-sim-input.log
           include-hidden-files: true
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
       - name: Stop the runner and simulator
         if: always()
