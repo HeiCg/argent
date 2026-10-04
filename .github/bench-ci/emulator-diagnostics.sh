@@ -3,17 +3,20 @@
 # (bench-open-vs-proprietary.yml, bench-androidworld.yml). One script, subcommands:
 #
 #   install-emulator <build>   empty -> no-op (sdkmanager's "emulator" stays, today's
-#                              behaviour). Else install emulator-linux_x64-<build>.zip
-#                              from dl.google.com into $ANDROID_SDK_ROOT/emulator,
-#                              fail early on a 404, verify `emulator -version` reports
-#                              build_id <build>.
+#                              behaviour). Else (needs the stock sdkmanager "emulator"
+#                              package) install emulator-linux_x64-<build>.zip from
+#                              dl.google.com into $ANDROID_SDK_ROOT/emulator, fail early
+#                              on a 404, write back the stock package.xml with the zip's
+#                              Pkg.Revision, verify `emulator -version` reports build_id
+#                              <build> and `sdkmanager --list_installed` that revision.
 #   env <sysimg-pkg> <out.json>  write ci-emulator-env.json (emulator-diagnostics.js env)
 #                              and print it. Never fails.
 #   start <serial> <kill-regex>  background host sampler + liveness watchdog (pid files
 #                              under $EMU_DIAG_DIR). The watchdog SIGTERMs processes
 #                              whose command line matches <kill-regex> when the
-#                              emulator is lost. Run it INSIDE the bench step so the
-#                              2-minute heartbeat lands in that step's log.
+#                              emulator is lost, or when the memory guard trips
+#                              ($EMULATOR_MEMORY_MB = guest RAM). Run it INSIDE the
+#                              bench step so the 60 s heartbeat lands in that step's log.
 #   stop                       kill sampler + watchdog. Never fails.
 #   lost                       exit 0 (and print the marker) iff the emulator was lost.
 #   postmortem <serial> <dir>  dmesg tail (+ OOM/kvm highlights), adb devices, emulator
@@ -60,6 +63,13 @@ case "$cmd" in
       exit 1
     fi
     [ -n "$SDK" ] || { echo "::error::ANDROID_SDK_ROOT unset"; exit 1; }
+    # The zip is only the emulator/ payload: the SDK package metadata (package.xml,
+    # what sdkmanager/avdmanager read to consider "emulator" installed) comes from the
+    # stock `sdkmanager "emulator"` install, saved here and written back below.
+    if [ ! -f "$SDK/emulator/package.xml" ]; then
+      echo "::error::$SDK/emulator/package.xml missing: install-emulator needs the stock sdkmanager \"emulator\" package first"
+      exit 1
+    fi
     url="https://dl.google.com/android/repository/emulator-linux_x64-${build}.zip"
     code="$(curl -sS -o /dev/null -w '%{http_code}' -I "$url" || echo 000)"
     if [ "$code" != "200" ]; then
@@ -67,20 +77,39 @@ case "$cmd" in
       exit 1
     fi
     tmp="$(mktemp -d)"
+    cp "$SDK/emulator/package.xml" "$tmp/package.xml.stock"
     curl -fsSL --retry 3 -o "$tmp/emulator.zip" "$url" || {
       echo "::error::download of $url failed"; exit 1; }
     rm -rf "$SDK/emulator"
     unzip -q "$tmp/emulator.zip" -d "$SDK" || { echo "::error::unzip of $url failed"; exit 1; }
-    rm -rf "$tmp"
     [ -x "$SDK/emulator/emulator" ] || {
       echo "::error::$SDK/emulator/emulator missing after unzip"; exit 1; }
+    rev="$(sed -n 's/^Pkg\.Revision=//p' "$SDK/emulator/source.properties" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$rev" ] || {
+      echo "::error::no Pkg.Revision in $SDK/emulator/source.properties of build $build"; exit 1; }
+    if [ -f "$SDK/emulator/package.xml" ]; then
+      echo "emulator-linux_x64-${build}.zip ships its own package.xml: keeping it"
+    else
+      node "$HERE/emulator-diagnostics.js" package-xml --in "$tmp/package.xml.stock" \
+        --revision "$rev" --out "$SDK/emulator/package.xml" || exit 1
+    fi
+    rm -rf "$tmp"
     ver="$("$SDK/emulator/emulator" -version 2>&1 | head -5)"
     echo "$ver"
     if ! grep -q "build_id $build" <<<"$ver"; then
       echo "::error::installed emulator does not report build_id $build"
       exit 1
     fi
-    echo "pinned emulator build $build installed in $SDK/emulator"
+    # The SDK's own view must agree, or `avdmanager create avd` refuses the AVD.
+    sdkm="$SDK/cmdline-tools/latest/bin/sdkmanager"
+    [ -x "$sdkm" ] || sdkm="sdkmanager"
+    list="$(mktemp)"
+    "$sdkm" --list_installed >"$list" 2>&1 || {
+      cat "$list"; echo "::error::sdkmanager --list_installed failed"; exit 1; }
+    node "$HERE/emulator-diagnostics.js" installed-revision --list "$list" \
+      --path emulator --revision "$rev" || { cat "$list"; exit 1; }
+    rm -f "$list"
+    echo "pinned emulator build $build (Pkg.Revision $rev) installed in $SDK/emulator"
     ;;
 
   env)
@@ -101,9 +130,9 @@ case "$cmd" in
     node "$HERE/emulator-diagnostics.js" sampler --log "$DIAG/host-sampler.log" &
     echo $! >"$DIAG/sampler.pid"
     node "$HERE/emulator-diagnostics.js" watchdog --serial "$serial" --marker "$MARKER" \
-      --context "$CONTEXT" --kill-pattern "$pattern" &
+      --context "$CONTEXT" --kill-pattern "$pattern" --guest-mb "${EMULATOR_MEMORY_MB:-}" &
     echo $! >"$DIAG/watchdog.pid"
-    echo "[emulator-diagnostics] sampler pid $(cat "$DIAG/sampler.pid"), watchdog pid $(cat "$DIAG/watchdog.pid") (serial $serial, kill /$pattern/)"
+    echo "[emulator-diagnostics] sampler pid $(cat "$DIAG/sampler.pid"), watchdog pid $(cat "$DIAG/watchdog.pid") (serial $serial, kill /$pattern/, guest ${EMULATOR_MEMORY_MB:-?} MB)"
     exit 0
     ;;
 

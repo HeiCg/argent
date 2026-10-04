@@ -160,7 +160,9 @@ jobs:
 
       - name: Pin emulator build (optional) + record emulator environment
         # emulator_build empty = keep sdkmanager's "emulator" (no change). Set = install
-        # that exact build from dl.google.com, fail early on a 404, verify -version.
+        # that exact build from dl.google.com, fail early on a 404, write back the stock
+        # package.xml at the zip's Pkg.Revision (else avdmanager refuses the AVD),
+        # verify -version and `sdkmanager --list_installed`.
         # Then ci-emulator-env.json (emulator version/build, system-image revision, adb,
         # $ImageVersion, kernel, nproc, free -m): uploaded and embedded in the results.
         run: |
@@ -405,11 +407,12 @@ jobs:
           BENCH_LOGCAT_PID=$!
           stop_logcat () { kill "$BENCH_LOGCAT_PID" 2>/dev/null || true; }
           # Fail-closed on a lost emulator: the watchdog (emulator-diagnostics.sh)
-          # SIGTERMs the running block when the qemu process dies or `adb get-state`
-          # fails 3x (10 s apart), and writes the marker below. Remaining blocks are
-          # skipped (never on a restarted emulator), the merge still runs over the
-          # completed blocks (marked partial) and the step fails. The host sampler's
-          # 2-minute heartbeat lands in this step's log.
+          # SIGTERMs the running block when the qemu process dies, `adb get-state`
+          # fails 3x (10 s apart) or the memory guard trips (host avail < 700 MB with
+          # qemu RSS > 2.5x guest RAM, 2 checks), and writes the marker below. Remaining
+          # blocks are skipped (never on a restarted emulator), the merge still runs over
+          # the completed blocks (marked partial) and the step fails. The host sampler's
+          # 60 s heartbeat lands in this step's log.
           export BENCH_EMULATOR_LOST_FILE="$EMU_DIAG_DIR/emulator-lost.json"
           export BENCH_CONTEXT_FILE="$EMU_DIAG_DIR/context"
           emu_lost () { [ -f "$BENCH_EMULATOR_LOST_FILE" ]; }
@@ -681,7 +684,9 @@ jobs:
 
       - name: Pin emulator build (optional) + record emulator environment
         # emulator_build empty = keep sdkmanager's "emulator" (no change). Set = install
-        # that exact build from dl.google.com, fail early on a 404, verify -version.
+        # that exact build from dl.google.com, fail early on a 404, write back the stock
+        # package.xml at the zip's Pkg.Revision (else avdmanager refuses the AVD),
+        # verify -version and `sdkmanager --list_installed`.
         # Then ci-emulator-env.json (emulator version/build, system-image revision, adb,
         # $ImageVersion, kernel, nproc, free -m): uploaded and embedded in the results.
         run: |
@@ -807,7 +812,7 @@ jobs:
           BENCH_EMULATOR_LOST_FILE: ${{ env.EMU_DIAG_DIR }}/emulator-lost.json
         run: |
           set -euo pipefail
-          # Host sampler (heartbeat every 2 min in this log) + liveness watchdog.
+          # Host sampler (heartbeat every 60 s in this log) + liveness watchdog.
           bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'bench-screen-graph\.ts'
           trap 'bash .github/bench-ci/emulator-diagnostics.sh stop' EXIT
           # `github.run_started_at` is not a valid context for workflow_dispatch (it

@@ -8,7 +8,9 @@
 //             mid-run, the last good runs' emulator version was never logged).
 //   sampler   every 30 s append one line to host-sampler.log (mem available, swap
 //             used, load, RSS/%CPU of qemu-system-*, simulator-server count, top-3
-//             RSS) and print a compact heartbeat to the step log every 2 min.
+//             RSS) and print a compact heartbeat (plus the top non-qemu RSS process)
+//             to the step log every 60 s: when the runner itself is shut down the
+//             artifact uploads never run and the step log is all that survives.
 //             Never fails: every probe error degrades to "?".
 //   watchdog  every 10 s check the qemu-system-* process and `adb -s <serial>
 //             get-state`. A vanished qemu process (once seen) or 3 consecutive
@@ -17,11 +19,19 @@
 //             the bench steps/harnesses read, and terminate the bench process tree
 //             (SIGTERM, then SIGKILL after a grace period). It never restarts the
 //             emulator: a rebooted device's results are not comparable.
+//             Memory guard (when the guest RAM is known): host MemAvailable below
+//             MEM_GUARD_AVAIL_MB with qemu RSS above MEM_GUARD_QEMU_FACTOR x guest RAM
+//             for MEM_GUARD_SAMPLES consecutive checks is handled as a loss, so the
+//             job fails before the runner runs out of memory and still uploads.
+//   package-xml / installed-revision
+//             install-emulator helpers: write the SDK package.xml for a pinned
+//             emulator build (revision taken from the zip's Pkg.Revision), and check
+//             that `sdkmanager --list_installed` lists it at that revision.
 //
-// The pure parts (parsers, formatters, the 3-strikes reducer, kill-target selection,
-// the env builder) take an injected command runner `run(cmd, args, opts) ->
-// { code, stdout, stderr }` so emulator-diagnostics.test.js exercises them with no
-// adb, ps or emulator.
+// The pure parts (parsers, formatters, the 3-strikes reducer, the memory guard,
+// kill-target selection, the env builder, the package.xml rewrite) take an injected
+// command runner `run(cmd, args, opts) -> { code, stdout, stderr }` (or plain text)
+// so emulator-diagnostics.test.js exercises them with no adb, ps or emulator.
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -116,6 +126,11 @@ function collectSample(run, now = new Date()) {
       .map((r) => ({ pid: r.pid, rssMb: r.rssMb, cpuSec: r.cpuSec, pcpu: r.pcpu })),
     simServerCount: rows.filter((r) => r.args.includes("simulator-server")).length,
     top3: rows.slice(0, 3).map((r) => ({ name: r.name, rssMb: r.rssMb })),
+    topNonQemu:
+      rows
+        .filter((r) => !isQemu(r))
+        .slice(0, 1)
+        .map((r) => ({ name: r.name, rssMb: r.rssMb }))[0] || null,
   };
 }
 
@@ -143,22 +158,29 @@ function formatSamplerLine(sample, prev) {
   );
 }
 
-/** The compact step-log heartbeat. */
+/** The compact step-log heartbeat (+ the largest non-qemu process). */
 function formatHeartbeat(sample, prev) {
   const q = sample.qemu[0];
   const qemu = q ? `${q.rssMb}MB/${qemuCpu(q, sample, prev)}%` : "none";
+  const other = sample.topNonQemu
+    ? `${sample.topNonQemu.name}:${sample.topNonQemu.rssMb}MB`
+    : "none";
   return (
     `[host ${sample.time.slice(11)}] avail ${orQ(sample.memAvailMb)}MB swap ${orQ(sample.swapUsedMb)}MB ` +
-    `load ${sample.load[0]} qemu ${qemu.replace(/avg%$/, "%avg")} sim-server ${sample.simServerCount}`
+    `load ${sample.load[0]} qemu ${qemu.replace(/avg%$/, "%avg")} sim-server ${sample.simServerCount} ` +
+    `top-non-qemu ${other}`
   );
 }
+
+/** Heartbeat every 2 samples of 30 s = 60 s. */
+const HEARTBEAT_EVERY = 2;
 
 /** Sampler loop. Append one line per interval; heartbeat every `heartbeatEvery` samples. */
 function runSampler({
   run,
   logPath,
   intervalMs = 30000,
-  heartbeatEvery = 4,
+  heartbeatEvery = HEARTBEAT_EVERY,
   maxSamples = Infinity,
   sleep,
   now = () => new Date(),
@@ -230,6 +252,68 @@ function observe(run, serial) {
   };
 }
 
+/* ----------------------------------------------------------------------------- */
+/* memory guard                                                                   */
+/* ----------------------------------------------------------------------------- */
+
+// Run 37221226501 (4096 MB guest): qemu RSS 5.9 -> 14.2 GB in 14 min, host avail 645 MB
+// and swap 2.2 GB at the last heartbeat, then the runner was shut down and no artifact
+// was uploaded. Tripping here fails the bench step while the runner can still upload.
+/** Host MemAvailable (MB) below which the guard counts a sample. */
+const MEM_GUARD_AVAIL_MB = 700;
+/** qemu RSS above this multiple of the configured guest RAM counts as emulator growth. */
+const MEM_GUARD_QEMU_FACTOR = 2.5;
+/** Consecutive watchdog checks (10 s apart) needed to trip. */
+const MEM_GUARD_SAMPLES = 2;
+
+function initialMemoryGuardState() {
+  return { count: 0, tripped: false, reason: null };
+}
+
+const isMb = (v) => typeof v === "number" && Number.isFinite(v);
+
+/**
+ * The memory-guard reducer. `obs = { memAvailMb, qemuRssMb }`, `guestMb` = configured
+ * guest RAM. A sample counts when host MemAvailable < MEM_GUARD_AVAIL_MB AND qemu RSS
+ * > MEM_GUARD_QEMU_FACTOR x guestMb; MEM_GUARD_SAMPLES consecutive counted samples trip.
+ * Unknown guest RAM or a failed probe never counts (and resets the run).
+ */
+function nextMemoryGuardState(state, obs, guestMb) {
+  if (state.tripped) return state;
+  const known = isMb(guestMb) && guestMb > 0 && isMb(obs.memAvailMb) && isMb(obs.qemuRssMb);
+  const counts =
+    known && obs.memAvailMb < MEM_GUARD_AVAIL_MB && obs.qemuRssMb > MEM_GUARD_QEMU_FACTOR * guestMb;
+  if (!counts) return initialMemoryGuardState();
+  const count = state.count + 1;
+  return {
+    count,
+    tripped: count >= MEM_GUARD_SAMPLES,
+    reason: `host memory exhausted by emulator (qemu RSS ${obs.qemuRssMb} MB, avail ${obs.memAvailMb} MB)`,
+  };
+}
+
+/** Host MemAvailable (`free -m` "available") + the largest qemu-system-* RSS, in MB. */
+function observeMemory(run) {
+  const safe = (cmd, args) => {
+    try {
+      const r = run(cmd, args, { timeoutMs: 5000 });
+      return r && r.code === 0 ? String(r.stdout || "") : "";
+    } catch {
+      return "";
+    }
+  };
+  const { memAvailMb } = parseFreeM(safe("free", ["-m"]));
+  let qemuRssMb = null;
+  for (const line of safe("ps", ["-eo", "rss=,comm="]).split("\n")) {
+    // comm is truncated to 15 chars on Linux ("qemu-system-x86").
+    const m = line.match(/^\s*(\d+)\s+(\S.*)$/);
+    if (m && m[2].trim().startsWith("qemu-system-")) {
+      qemuRssMb = Math.max(qemuRssMb ?? 0, Math.round(Number(m[1]) / 1024));
+    }
+  }
+  return { memAvailMb, qemuRssMb };
+}
+
 /**
  * The processes to terminate: every row whose args match `pattern` (minus this
  * watchdog and the diagnostics scripts themselves) as roots, plus all descendants,
@@ -273,7 +357,10 @@ const readContext = (p) => {
   }
 };
 
-/** Watchdog loop. Returns `{ lost, lostAt, reason }` (lost false when maxChecks ran out). */
+/**
+ * Watchdog loop. Returns `{ lost, lostAt, reason }` (lost false when maxChecks ran out).
+ * `guestMb` (configured guest RAM) enables the memory guard; null/0 leaves it off.
+ */
 function runWatchdog({
   serial,
   intervalMs = 10000,
@@ -282,6 +369,7 @@ function runWatchdog({
   markerPath,
   contextPath,
   killPattern,
+  guestMb = null,
   run,
   sleep,
   now = () => new Date(),
@@ -305,6 +393,8 @@ function runWatchdog({
   maxChecks = Infinity,
 }) {
   let st = initialWatchdogState();
+  let mg = initialMemoryGuardState();
+  const guardOn = isMb(guestMb) && guestMb > 0;
   for (let i = 0; i < maxChecks; i++) {
     if (i > 0) sleep(intervalMs);
     const obs = observe(run, serial);
@@ -312,6 +402,18 @@ function runWatchdog({
     st = nextWatchdogState(st, obs, strikes);
     if (!st.lost && st.strikes > prevStrikes) {
       log(`[watchdog ${isoSec(now()).slice(11)}] strike ${st.strikes}/${strikes}: ${st.reason}`);
+    }
+    if (!st.lost && guardOn) {
+      const mem = observeMemory(run);
+      mg = nextMemoryGuardState(mg, mem, guestMb);
+      if (mg.tripped) {
+        st = { ...st, lost: true, reason: mg.reason };
+      } else if (mg.count > 0) {
+        log(
+          `[watchdog ${isoSec(now()).slice(11)}] memory guard ${mg.count}/${MEM_GUARD_SAMPLES}: ` +
+            `avail ${mem.memAvailMb} MB, qemu RSS ${mem.qemuRssMb} MB`
+        );
+      }
     }
     if (!st.lost) continue;
     const lostAt = isoSec(now());
@@ -400,6 +502,86 @@ function buildEmulatorEnv({ run, sdkRoot, sysimgPackage, env = process.env, now 
 }
 
 /* ----------------------------------------------------------------------------- */
+/* pinned emulator: SDK package metadata                                          */
+/* ----------------------------------------------------------------------------- */
+
+// emulator-linux_x64-<build>.zip ships only the emulator/ payload (source.properties,
+// no package.xml). Replacing $ANDROID_SDK_ROOT/emulator with it drops the package.xml
+// sdkmanager/avdmanager read to consider "emulator" installed (run 37221221517:
+// `avdmanager create avd` -> `Error: "emulator" package must be installed!`).
+// install-emulator saves the stock package.xml and writes it back with the pinned
+// revision.
+
+/**
+ * A `Pkg.Revision` (`36.4.10`, or `36.4.10.0`) -> { major, minor, micro }. A non-zero
+ * 4th component (a preview) is refused: the stock package is the stable channel.
+ */
+function parsePkgRevision(text) {
+  const t = String(text ?? "").trim();
+  const m = t.match(/^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$/);
+  if (!m) throw new Error(`Pkg.Revision '${t}' is not a major.minor.micro revision`);
+  if (m[4] !== undefined && Number(m[4]) !== 0) {
+    throw new Error(`Pkg.Revision '${t}' has a non-zero 4th (preview component); not supported`);
+  }
+  return { major: Number(m[1]), minor: Number(m[2]), micro: Number(m[3]) };
+}
+
+/**
+ * The stock emulator package.xml with its package `<revision>` set to `pkgRevision`.
+ * Only the major/minor/micro values change (plus the version in `<display-name>` if it
+ * embeds the old one); every other byte (license, namespaces, dependency
+ * min-revisions, whitespace) is kept. Throws on anything that is not one
+ * `<localPackage path="emulator">` with one `<revision>` holding major/minor/micro.
+ */
+function rewritePackageXmlRevision(xml, pkgRevision) {
+  const rev = parsePkgRevision(pkgRevision);
+  const text = String(xml ?? "");
+  const open = text.match(/<localPackage\b[^>]*\bpath="emulator"[^>]*>/);
+  if (!open) throw new Error('package.xml: no <localPackage path="emulator"> element');
+  const start = open.index + open[0].length;
+  const end = text.indexOf("</localPackage>", start);
+  if (end < 0) throw new Error('package.xml: <localPackage path="emulator"> is not closed');
+  let body = text.slice(start, end);
+  // `<revision>` never matches `<min-revision>` (dependency constraints).
+  const revs = [...body.matchAll(/<revision>([\s\S]*?)<\/revision>/g)];
+  if (revs.length !== 1) {
+    throw new Error(
+      `package.xml: expected exactly one <revision> in <localPackage path="emulator">, found ${revs.length}`
+    );
+  }
+  let inner = revs[0][1];
+  if (/<preview>/.test(inner))
+    throw new Error("package.xml: <revision> has a <preview>; not supported");
+  const old = {};
+  for (const k of ["major", "minor", "micro"]) {
+    const rx = new RegExp(`<${k}>\\s*(\\d+)\\s*</${k}>`);
+    const m = inner.match(rx);
+    if (!m) throw new Error(`package.xml: <revision> has no <${k}>`);
+    old[k] = m[1];
+    inner = inner.replace(rx, (whole) => whole.replace(m[1], String(rev[k])));
+  }
+  const at = revs[0].index;
+  body = `${body.slice(0, at)}<revision>${inner}</revision>${body.slice(at + revs[0][0].length)}`;
+  const oldVer = `${old.major}.${old.minor}.${old.micro}`;
+  const newVer = `${rev.major}.${rev.minor}.${rev.micro}`;
+  body = body.replace(/<display-name>([^<]*)<\/display-name>/, (whole, name) =>
+    name.includes(oldVer)
+      ? `<display-name>${name.split(oldVer).join(newVer)}</display-name>`
+      : whole
+  );
+  return text.slice(0, start) + body + text.slice(end);
+}
+
+/** The Version column of `sdkmanager --list_installed` for `pkgPath`; null if not listed. */
+function installedRevision(listText, pkgPath) {
+  for (const line of String(listText || "").split("\n")) {
+    const f = line.split("|").map((s) => s.trim());
+    if (f.length >= 2 && f[0] === pkgPath) return f[1];
+  }
+  return null;
+}
+
+/* ----------------------------------------------------------------------------- */
 /* CLI                                                                            */
 /* ----------------------------------------------------------------------------- */
 
@@ -444,7 +626,7 @@ function main(argv) {
       run: realRun,
       logPath: f.log,
       intervalMs,
-      heartbeatEvery: Number(f["heartbeat-every"] || 4),
+      heartbeatEvery: Number(f["heartbeat-every"] || HEARTBEAT_EVERY),
       maxSamples: Math.ceil((hours * 3600 * 1000) / intervalMs),
       sleep: realSleep,
     });
@@ -460,28 +642,80 @@ function main(argv) {
       markerPath: f.marker,
       contextPath: f.context,
       killPattern: f["kill-pattern"],
+      guestMb: num(f["guest-mb"] || process.env.EMULATOR_MEMORY_MB || "x"),
       run: realRun,
       sleep: realSleep,
     });
     return 0;
   }
-  process.stderr.write("usage: emulator-diagnostics.js env|sampler|watchdog [--flags]\n");
+  // install-emulator helpers: unlike the diagnostics above these must fail the step.
+  if (cmd === "package-xml") {
+    try {
+      const xml = rewritePackageXmlRevision(fs.readFileSync(f.in, "utf8"), f.revision);
+      fs.writeFileSync(f.out, xml);
+      process.stdout.write(`wrote ${f.out} (revision ${f.revision})\n`);
+      return 0;
+    } catch (e) {
+      process.stdout.write(`::error::package.xml for emulator ${f.revision}: ${e.message}\n`);
+      return 1;
+    }
+  }
+  if (cmd === "installed-revision") {
+    try {
+      const want = parsePkgRevision(f.revision);
+      const got = installedRevision(fs.readFileSync(f.list, "utf8"), f.path);
+      if (got === null) {
+        process.stdout.write(`::error::sdkmanager --list_installed: "${f.path}" not listed\n`);
+        return 1;
+      }
+      let g = null;
+      try {
+        g = parsePkgRevision(got);
+      } catch {
+        /* reported as a mismatch below */
+      }
+      if (!g || g.major !== want.major || g.minor !== want.minor || g.micro !== want.micro) {
+        process.stdout.write(
+          `::error::sdkmanager --list_installed lists ${f.path} at ${got}, expected ${f.revision}\n`
+        );
+        return 1;
+      }
+      process.stdout.write(`sdkmanager --list_installed: ${f.path} ${got}\n`);
+      return 0;
+    } catch (e) {
+      process.stdout.write(`::error::installed-revision: ${e.message}\n`);
+      return 1;
+    }
+  }
+  process.stderr.write(
+    "usage: emulator-diagnostics.js env|sampler|watchdog|package-xml|installed-revision [--flags]\n"
+  );
   return 2;
 }
 
 module.exports = {
+  MEM_GUARD_AVAIL_MB,
+  MEM_GUARD_QEMU_FACTOR,
+  MEM_GUARD_SAMPLES,
   parseFreeM,
   parsePs,
   parsePsTree,
   collectSample,
   formatSamplerLine,
   formatHeartbeat,
+  runSampler,
   initialWatchdogState,
   nextWatchdogState,
   observe,
+  initialMemoryGuardState,
+  nextMemoryGuardState,
+  observeMemory,
   selectKillTargets,
   runWatchdog,
   buildEmulatorEnv,
+  parsePkgRevision,
+  rewritePackageXmlRevision,
+  installedRevision,
 };
 
 if (require.main === module) {

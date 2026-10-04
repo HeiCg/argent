@@ -140,7 +140,9 @@ jobs:
 
       - name: Pin emulator build (optional) + record emulator environment
         # emulator_build empty = keep sdkmanager's "emulator" (no change). Set = install
-        # that exact build from dl.google.com, fail early on a 404, verify -version.
+        # that exact build from dl.google.com, fail early on a 404, write back the stock
+        # package.xml at the zip's Pkg.Revision (else avdmanager refuses the AVD),
+        # verify -version and `sdkmanager --list_installed`.
         run: |
           set -e
           [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
@@ -229,7 +231,7 @@ jobs:
           PROBE_OUT: ${{ github.workspace }}/.bench-results/androidworld/probe.json
         run: |
           set -uo pipefail
-          # Host sampler (heartbeat every 2 min in this log) + liveness watchdog.
+          # Host sampler (heartbeat every 60 s in this log) + liveness watchdog.
           bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'probe_a11y\.py'
           trap 'bash .github/bench-ci/emulator-diagnostics.sh stop' EXIT
           mkdir -p "$(dirname "$PROBE_OUT")"
@@ -348,7 +350,9 @@ jobs:
 
       - name: Pin emulator build (optional) + record emulator environment
         # emulator_build empty = keep sdkmanager's "emulator" (no change). Set = install
-        # that exact build from dl.google.com, fail early on a 404, verify -version.
+        # that exact build from dl.google.com, fail early on a 404, write back the stock
+        # package.xml at the zip's Pkg.Revision (else avdmanager refuses the AVD),
+        # verify -version and `sdkmanager --list_installed`.
         run: |
           set -e
           [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
@@ -431,7 +435,7 @@ jobs:
           AW_OUT: ${{ github.workspace }}/.bench-results/androidworld
         run: |
           set -uo pipefail
-          # Host sampler (heartbeat every 2 min in this log) + liveness watchdog: a lost
+          # Host sampler (heartbeat every 60 s in this log) + liveness watchdog: a lost
           # emulator terminates run_aw.py (no restart) and fails this step.
           bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'run_aw\.py'
           trap 'bash .github/bench-ci/emulator-diagnostics.sh stop' EXIT
