@@ -2750,10 +2750,17 @@ async function main(): Promise<void> {
   // every gate is graded against (P1). Tuple: [name, config, injectStrategy?] where
   // injectStrategy is the `ARGENT_OPEN_INJECT_STRATEGY` value ("default" = the
   // sentinel for the old Kotlin DEFAULT). The scrcpy fast-inject arm was removed.
+  //
+  // Re-baseline (0.27): `OFF-legacy` is the same proprietary OFF config run against an
+  // OLDER release's binaries. The harness has one binary set per process (the
+  // ARGENT_SIMULATOR_SERVER_DIR / ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR env), so the
+  // workflow runs it as its own BENCH_ONLY invocation with the legacy dirs; the
+  // single-process full run skips it (it would just repeat OFF on the same binaries).
   const ALL_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
     ["OFF-1", "OFF"],
     ["ON-uiautomation", "ON", "default"],
     ["ON-input-manager", "ON", "input-manager"],
+    ["OFF-legacy", "OFF"],
     ["OFF-2", "OFF"],
   ];
   const only = process.env.BENCH_ONLY;
@@ -2761,7 +2768,9 @@ async function main(): Promise<void> {
   // fast-inject backend no longer exist.
   if (only && /scrcpy/i.test(only))
     throw new Error(`BENCH_ONLY="${only}" names a removed scrcpy arm (removed in phase 3n.2)`);
-  const toRun = only ? ALL_BLOCKS.filter(([b]) => b === only) : ALL_BLOCKS;
+  const toRun = only
+    ? ALL_BLOCKS.filter(([b]) => b === only)
+    : ALL_BLOCKS.filter(([b]) => b !== "OFF-legacy");
   if (only && toRun.length === 0)
     throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.map(([b]) => b).join("|")}`);
 

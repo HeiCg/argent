@@ -11,7 +11,10 @@
  * `src/screen-graph/bench/policy.ts` — no LLM in this phase.
  *
  * Configurations:
- *   B1 argent proprietary   flag off; vendored 0.22.1 binaries (env below)
+ *   B1 argent proprietary   flag off; vendored @swmansion/argent binaries of the
+ *                           workflow's `proprietary_version` (default 0.27.0; 0.22.1
+ *                           up to the 0.27 re-baseline), provenance recorded via
+ *                           BENCH_PROPRIETARY_PROVENANCE (env below)
  *   B2 open server, no graph flag on;  screen-graph off
  *   O1 + query/diff          query instead of describe
  *   O2 + outcomes            skip the read when the outcome says unchanged
@@ -37,7 +40,9 @@
  *
  * Env knobs: BENCH_SERIAL (default emulator-5554), BENCH_REPS (3),
  * BENCH_CONFIGS (comma list; default all), BENCH_OUT
- * (default <cwd>/.bench-results/screen-graph).
+ * (default <cwd>/.bench-results/screen-graph), BENCH_PROPRIETARY_PROVENANCE (JSON
+ * from `node .github/bench-ci/proprietary-provenance.js npm --bin-dir <pkg>/bin
+ * --out <file>`; recorded in bench-sg-*.json and the report).
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -393,6 +398,34 @@ function applyFlags(config: BenchConfigId): void {
 function clearFlags(): void {
   unsetFlag("open-device-server", "project");
   unsetFlag("screen-graph", "project");
+}
+
+/**
+ * Re-baseline (0.27): provenance of the proprietary binaries B1 ran — npm version
+ * (read from the tarball's own package.json) and the sha256 of every binary/APK B1
+ * uses — written by the workflow with `.github/bench-ci/proprietary-provenance.js
+ * npm` and passed as `BENCH_PROPRIETARY_PROVENANCE=<file>`. Recorded in
+ * bench-sg-*.json and the results doc so a B1 number names its baseline.
+ */
+interface ProprietaryProvenance {
+  source?: string;
+  package?: string;
+  version?: string | null;
+  binDir?: string;
+  files?: Record<string, string>;
+}
+function loadProprietaryProvenance(): ProprietaryProvenance | null {
+  const p = process.env.BENCH_PROPRIETARY_PROVENANCE;
+  if (!p) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as ProprietaryProvenance;
+  } catch (e) {
+    realDebug(`[bench-sg] proprietary provenance unreadable at ${p}: ${String(e)}`);
+    return null;
+  }
+}
+function provenanceLabel(p: ProprietaryProvenance | null | undefined): string {
+  return p ? `${p.package ?? "?"}@${p.version ?? "?"}` : "unknown";
 }
 
 /** Vendored proprietary binaries required for B1; false (with reason) if absent. */
@@ -2031,7 +2064,8 @@ function buildReport(
   aggs: ConfigAgg[],
   env: Record<string, unknown>,
   skipped: Record<string, string>,
-  records: TaskRecord[]
+  records: TaskRecord[],
+  provenance: ProprietaryProvenance | null = null
 ): string {
   const by = (c: BenchConfigId): ConfigAgg | undefined => aggs.find((a) => a.config === c);
   // Per-rep per-config median observation tokens, for the across-reps range.
@@ -2077,6 +2111,25 @@ function buildReport(
   L.push("|---|---|");
   for (const [k, v] of Object.entries(env)) L.push(`| ${k} | ${String(v)} |`);
   L.push("");
+  if (CONFIGS.includes("B1") || by("B1")) {
+    L.push("## Proprietary provenance (B1)");
+    L.push("");
+    if (!provenance) {
+      L.push(
+        "Not recorded (`BENCH_PROPRIETARY_PROVENANCE` unset): B1's baseline release is unknown."
+      );
+    } else {
+      L.push(
+        `Release: \`${provenanceLabel(provenance)}\` · bin dir: \`${provenance.binDir ?? "?"}\``
+      );
+      L.push("");
+      L.push("| File | sha256 |");
+      L.push("|---|---|");
+      for (const [f, h] of Object.entries(provenance.files ?? {}))
+        L.push(`| \`${f}\` | \`${h}\` |`);
+    }
+    L.push("");
+  }
   if (Object.keys(skipped).length) {
     L.push("## Skipped configurations");
     L.push("");
@@ -2552,6 +2605,7 @@ function regenerateFromJson(regenPath: string): void {
     records: TaskRecord[];
     skipped?: Record<string, string>;
     aggregates?: Array<{ config: BenchConfigId; fallbacks?: number }>;
+    proprietaryProvenance?: ProprietaryProvenance | null;
   };
   const records = raw.records;
   const skipped = raw.skipped ?? {};
@@ -2568,7 +2622,7 @@ function regenerateFromJson(regenPath: string): void {
     regeneratedFrom: regenPath.split("/").pop(),
     regeneratedAt: new Date().toISOString(),
   };
-  const report = buildReport(aggs, env, skipped, records);
+  const report = buildReport(aggs, env, skipped, records, raw.proprietaryProvenance ?? null);
   const outPath = process.env.BENCH_REPORT ?? join(OUT_DIR, "results-ci.md");
   mkdirSync(OUT_DIR, { recursive: true });
   writeFileSync(outPath, report);
@@ -2614,6 +2668,10 @@ async function main(): Promise<void> {
     // in the run env block so it is never an unstated assumption.
     injectStrategy: process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "(default)",
   };
+  // Re-baseline (0.27): the proprietary release B1 ran, named in the env table and
+  // recorded in full (per-file sha256) in the JSON + the report's provenance section.
+  const proprietaryProvenance = CONFIGS.includes("B1") ? loadProprietaryProvenance() : null;
+  if (CONFIGS.includes("B1")) env.proprietaryRelease = provenanceLabel(proprietaryProvenance);
 
   const allRecords: TaskRecord[] = [];
   const aggs: ConfigAgg[] = [];
@@ -2659,6 +2717,13 @@ async function main(): Promise<void> {
         skipped["B1"] = `proprietary binaries unavailable: ${p.reason}`;
         realDebug(`[bench-sg] B1 skipped: ${p.reason}`);
         continue;
+      }
+      // The recorded provenance must describe the dir B1 actually runs from.
+      const simDir = process.env.ARGENT_SIMULATOR_SERVER_DIR;
+      if (proprietaryProvenance?.binDir && proprietaryProvenance.binDir !== simDir) {
+        skipped["B1-provenance"] =
+          `provenance was recorded for ${proprietaryProvenance.binDir} but B1 runs ` +
+          `ARGENT_SIMULATOR_SERVER_DIR=${simDir ?? "(unset)"} — the recorded release may not be B1's`;
       }
     }
 
@@ -2775,6 +2840,7 @@ async function main(): Promise<void> {
     records: allRecords,
     aggregates: aggs,
     skipped,
+    proprietaryProvenance,
     finishedAt: new Date().toISOString(),
   };
   const jsonPath = join(OUT_DIR, `bench-sg-${started.replace(/[:.]/g, "-")}.json`);
@@ -2851,7 +2917,7 @@ async function main(): Promise<void> {
     realDebug(`[bench-sg] merged prior pass for ${reused.join(",")} from ${priorPath}`);
   }
 
-  const report = buildReport(aggs, env, skipped, allRecords);
+  const report = buildReport(aggs, env, skipped, allRecords, proprietaryProvenance);
   const reportPath =
     process.env.BENCH_REPORT ??
     "/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md";

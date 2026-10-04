@@ -20,7 +20,15 @@ on:
       blocks:
         description: "Latency blocks to run (comma list)"
         required: false
-        default: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2"
+        default: "OFF-1,ON-uiautomation,ON-input-manager,OFF-legacy,OFF-2"
+      proprietary_version:
+        description: "@swmansion/argent release whose binaries the proprietary (OFF) blocks use"
+        required: false
+        default: "0.27.0"
+      legacy_proprietary_version:
+        description: "Older @swmansion/argent release for the OFF-legacy block (empty = skip OFF-legacy)"
+        required: false
+        default: "0.22.1"
       n:
         description: "Iterations per verb (BENCH_N)"
         required: false
@@ -67,6 +75,11 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
       BENCH_N: ${{ github.event.inputs.n }}
       BENCH_BLOCKS: ${{ github.event.inputs.blocks }}
+      # Re-baseline (0.27): the proprietary release(s) the OFF arms run. Read by the
+      # fetch step, the provenance stamp and the merge (which refuses a block stamped
+      # with another release).
+      BENCH_PROPRIETARY_VERSION: ${{ github.event.inputs.proprietary_version || '0.27.0' }}
+      BENCH_LEGACY_PROPRIETARY_VERSION: ${{ github.event.inputs.legacy_proprietary_version }}
 
     steps:
       - name: Checkout
@@ -217,32 +230,56 @@ jobs:
           npm run build:android-device-server
           ls -la packages/android-device-server/bin/
 
-      - name: Fetch proprietary binaries (npm pack @swmansion/argent@0.22.1)
+      - name: Fetch proprietary binaries (npm pack @swmansion/argent@<proprietary_version> [+ legacy])
         # OFF path. Their LICENSE forbids redistribution, not use — download at run
         # time, never commit. bin/linux/ is the x86_64 build for this runner.
+        # Re-baseline (0.27): the current release (OFF-1/OFF-2) and, when
+        # legacy_proprietary_version is set, an older release for OFF-legacy, each
+        # extracted to its own dir. The version comes from the dispatch input; the
+        # provenance stamp later re-reads it from each tarball's package.json.
         run: |
           set -e
-          PKGTMP="$RUNNER_TEMP/argent-pkg"
-          mkdir -p "$PKGTMP"
-          ( cd "$PKGTMP" && npm pack @swmansion/argent@0.22.1 )
-          TARBALL=$(ls "$PKGTMP"/*.tgz | head -n1)
-          mkdir -p "$PKGTMP/extracted"
-          tar -xzf "$TARBALL" -C "$PKGTMP/extracted"
-          PKG="$PKGTMP/extracted/package"
-          chmod +x "$PKG/bin/linux/simulator-server" 2>/dev/null || true
-          echo "PROP_PKG=$PKG" >> "$GITHUB_ENV"
-          echo "=== proprietary bin/linux ==="; ls -la "$PKG/bin/linux" || true
-          echo "=== file(1) on the linux binary ==="; file "$PKG/bin/linux/simulator-server" || true
-          # Best-effort probe: does the x86_64 binary even exec on this runner?
-          if "$PKG/bin/linux/simulator-server" --version >/tmp/prop-probe.txt 2>&1 \
-             || "$PKG/bin/linux/simulator-server" --help >>/tmp/prop-probe.txt 2>&1; then
-            echo "PROP_EXECUTABLE=1" >> "$GITHUB_ENV"
-            echo "proprietary binary executes on this runner"
+          SEMVER='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+          fetch_pkg () {
+            local ver="$1" label="$2"
+            if ! [[ "$ver" =~ $SEMVER ]]; then
+              echo "::error::${label} proprietary version '${ver}' is not a semver"; exit 1
+            fi
+            local PKGTMP="$RUNNER_TEMP/argent-pkg-$ver"
+            mkdir -p "$PKGTMP"
+            ( cd "$PKGTMP" && npm pack "@swmansion/argent@$ver" )
+            local TARBALL
+            TARBALL=$(ls "$PKGTMP"/*.tgz | head -n1)
+            mkdir -p "$PKGTMP/extracted"
+            tar -xzf "$TARBALL" -C "$PKGTMP/extracted"
+            FETCHED_PKG="$PKGTMP/extracted/package"
+            chmod +x "$FETCHED_PKG/bin/linux/simulator-server" 2>/dev/null || true
+            echo "=== ${label} @swmansion/argent@$ver bin/linux ==="; ls -la "$FETCHED_PKG/bin/linux" || true
+            echo "=== file(1) on the ${label} linux binary ==="; file "$FETCHED_PKG/bin/linux/simulator-server" || true
+            sha256sum "$FETCHED_PKG/bin/linux/simulator-server" "$FETCHED_PKG"/bin/argent-android-devtools-*.apk || true
+            # Best-effort probe: does the x86_64 binary even exec on this runner?
+            if "$FETCHED_PKG/bin/linux/simulator-server" --version >"/tmp/prop-probe-$label.txt" 2>&1 \
+               || "$FETCHED_PKG/bin/linux/simulator-server" --help >>"/tmp/prop-probe-$label.txt" 2>&1; then
+              FETCHED_EXEC=1
+              echo "${label} proprietary binary executes on this runner"
+            else
+              FETCHED_EXEC=0
+              echo "::warning::${label} proprietary simulator-server did not exec cleanly — its OFF arm is best-effort"
+            fi
+            cat "/tmp/prop-probe-$label.txt" || true
+          }
+          fetch_pkg "$BENCH_PROPRIETARY_VERSION" current
+          echo "PROP_PKG=$FETCHED_PKG" >> "$GITHUB_ENV"
+          echo "PROP_EXECUTABLE=$FETCHED_EXEC" >> "$GITHUB_ENV"
+          cp /tmp/prop-probe-current.txt /tmp/prop-probe.txt 2>/dev/null || true
+          if [ -n "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
+            fetch_pkg "$BENCH_LEGACY_PROPRIETARY_VERSION" legacy
+            echo "PROP_PKG_LEGACY=$FETCHED_PKG" >> "$GITHUB_ENV"
+            echo "PROP_LEGACY_EXECUTABLE=$FETCHED_EXEC" >> "$GITHUB_ENV"
           else
-            echo "PROP_EXECUTABLE=0" >> "$GITHUB_ENV"
-            echo "::warning::proprietary simulator-server did not exec cleanly — OFF arm is best-effort"
+            echo "legacy_proprietary_version empty — OFF-legacy will be skipped"
+            echo "PROP_LEGACY_EXECUTABLE=0" >> "$GITHUB_ENV"
           fi
-          cat /tmp/prop-probe.txt || true
 
       - name: Record CI runner env facts
         run: |
@@ -252,7 +289,7 @@ jobs:
           MEM_AVAIL=$(free -m | awk '/^Mem:/{print $7}')
           SWAP_TOTAL=$(free -m | awk '/^Swap:/{print $2}')
           KVM=$([ -e /dev/kvm ] && echo true || echo false)
-          node -e "const fs=require('fs');fs.writeFileSync('.bench-results/ci-runner-env.json',JSON.stringify({runner:'ubuntu-latest',nproc:${NPROC},memTotalMb:${MEM_TOTAL},memAvailMb:${MEM_AVAIL},swapTotalMb:${SWAP_TOTAL},kvm:${KVM},emulatorImage:'system-images;android-34;google_apis;x86_64',emulatorArch:'x86_64',propExecutable:process.env.PROP_EXECUTABLE==='1',note:'x86_64/KVM hosted runner — NOT comparable to local arm64/HVF'},null,2))"
+          node -e "const fs=require('fs');fs.writeFileSync('.bench-results/ci-runner-env.json',JSON.stringify({runner:'ubuntu-latest',nproc:${NPROC},memTotalMb:${MEM_TOTAL},memAvailMb:${MEM_AVAIL},swapTotalMb:${SWAP_TOTAL},kvm:${KVM},emulatorImage:'system-images;android-34;google_apis;x86_64',emulatorArch:'x86_64',propExecutable:process.env.PROP_EXECUTABLE==='1',proprietaryVersion:process.env.BENCH_PROPRIETARY_VERSION,legacyProprietaryVersion:process.env.BENCH_LEGACY_PROPRIETARY_VERSION||null,propLegacyExecutable:process.env.PROP_LEGACY_EXECUTABLE==='1',note:'x86_64/KVM hosted runner — NOT comparable to local arm64/HVF'},null,2))"
           cat .bench-results/ci-runner-env.json
 
       # ---- (1) device test ----
@@ -294,8 +331,8 @@ jobs:
           echo "device-test vitest exit=$RC"
           exit "$RC"
 
-      # ---- (2) latency bench: 4 blocks via BENCH_ONLY, then merge ----
-      - name: Latency bench — 4 blocks + merge
+      # ---- (2) latency bench: blocks via BENCH_ONLY, then merge ----
+      - name: Latency bench — blocks + merge
         # Phase 3n.2 (3N1-M8): runs even after a device-test failure (which now fails
         # its own step) so the bench diagnostics survive and upload.
         if: ${{ !cancelled() }}
@@ -330,15 +367,41 @@ jobs:
           BENCH_LOGCAT_PID=$!
           stop_logcat () { kill "$BENCH_LOGCAT_PID" 2>/dev/null || true; }
           trap stop_logcat EXIT
+          # Re-baseline (0.27): an OFF block takes its proprietary package dir + the
+          # release it must be (args 2/3); its block JSON is then stamped with the
+          # provenance (npm version + sha256 of each binary/APK) of the dirs the
+          # block itself recorded. The helper APK is versionCode 1 in every release,
+          # so the tool-server's install probe would keep whichever release's APK is
+          # already on the emulator: when the OFF binary set changes (OFF-1 ->
+          # OFF-legacy -> OFF-2) uninstall it so the block installs the APK from its
+          # own bin/, the one the stamp hashes. Without OFF-legacy nothing changes.
+          LAST_OFF_PKG=""
           run_block () {
-            local b="$1"
+            local b="$1" pkg="${2:-}" ver="${3:-}" rc=0
             echo "########## BLOCK $b ##########"
             # F12: BLOCKING per-block readiness gate (strict, 4th arg = 1). A screen
             # that never settles poisons the effect check, so a timeout FAILS the
             # block (a tap on an ANR dialog is not a landed tap) instead of `|| true`.
             bash .github/bench-ci/ready-gate.sh emulator-5554 3 60 1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
+            if [ -z "$pkg" ]; then
+              BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
+                2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
+              return
+            fi
+            if [ -n "$LAST_OFF_PKG" ] && [ "$LAST_OFF_PKG" != "$pkg" ]; then
+              echo "OFF binary set changed ($LAST_OFF_PKG -> $pkg): uninstalling com.argent.androiddevtools so $b installs its own helper APK" \
+                | tee -a "$BENCH_OUT/bench-log-$b.txt"
+              adb -s emulator-5554 uninstall com.argent.androiddevtools 2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || true
+            fi
+            LAST_OFF_PKG="$pkg"
+            ARGENT_SIMULATOR_SERVER_DIR="$pkg/bin" \
+            ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR="$pkg/bin" \
+            ARGENT_NATIVE_DEVTOOLS_DIR="$pkg/dylibs" \
             BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
-              2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
+              2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || rc=$?
+            [ "$rc" = "0" ] || return "$rc"
+            node .github/bench-ci/proprietary-provenance.js stamp "$BENCH_OUT/bench-block-$b.json" \
+              --expect-version "$ver" 2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
           }
           # F13: the OFF proprietary baseline. If the binary is executable on this
           # runner (PROP_EXECUTABLE=1) a requested OFF block that FAILS is a real
@@ -355,7 +418,7 @@ jobs:
           fi
           OFF_FAILED=0
           if [ "$RUN_OFF" = "1" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
-            if run_block "OFF-1"; then :; else
+            if run_block "OFF-1" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
               OFF_FAILED=1
               echo "::error::OFF-1 proprietary baseline FAILED though the binary is executable — a missing baseline fails the run (F13)"
             fi
@@ -366,8 +429,27 @@ jobs:
           # Phase 3n.2: ON-scrcpy removed. ON-input-manager is self-orchestrated by
           # run-bench.js (STRATEGY_ARMS) on the first run_block invocation above, so it
           # needs no explicit run_block call here.
+          # Re-baseline (0.27): OFF-legacy — the proprietary arm on the OLDER release's
+          # binaries (legacy_proprietary_version), its own BENCH_ONLY invocation in this
+          # same job + emulator, so one run yields a same-device legacy-vs-current
+          # proprietary comparison. Skipped when the input is empty or that binary
+          # cannot exec here; an executable legacy block that FAILS fails the run at
+          # the end (like F13), without blocking OFF-2.
+          LEGACY_FAILED=0
+          if echo "$BENCH_BLOCKS" | grep -q "OFF-legacy"; then
+            if [ -z "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
+              echo "::notice::OFF-legacy requested but legacy_proprietary_version is empty — skipped"
+            elif [ "${PROP_LEGACY_EXECUTABLE:-0}" != "1" ]; then
+              echo "::warning::legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner — OFF-legacy skipped"
+            elif run_block "OFF-legacy" "$PROP_PKG_LEGACY" "$BENCH_LEGACY_PROPRIETARY_VERSION"; then
+              sleep 3
+            else
+              LEGACY_FAILED=1
+              echo "::error::OFF-legacy ($BENCH_LEGACY_PROPRIETARY_VERSION) FAILED though its binary is executable"
+            fi
+          fi
           if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
-            if run_block "OFF-2"; then :; else
+            if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
               OFF_FAILED=1
               echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
             fi
@@ -380,6 +462,10 @@ jobs:
           # failed (diagnostics + merge above are preserved for the artifacts first).
           if [ "$OFF_FAILED" = "1" ]; then
             echo "::error::proprietary OFF baseline failed on an executable runner — failing the run (missing baseline, F13)"
+            exit 1
+          fi
+          if [ "$LEGACY_FAILED" = "1" ]; then
+            echo "::error::OFF-legacy failed on an executable runner — failing the run (missing legacy baseline)"
             exit 1
           fi
 
@@ -409,6 +495,7 @@ jobs:
           mkdir -p "$STAGE/logs"
           cp -r .bench-results "$STAGE/" 2>/dev/null || true
           cp /tmp/emulator.log /tmp/avdmanager.log /tmp/prop-probe.txt "$STAGE/logs/" 2>/dev/null || true
+          cp /tmp/prop-probe-*.txt "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/device-test.log" "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/logcat-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/ready-gate-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
@@ -454,6 +541,8 @@ jobs:
       ANDROID_USER_HOME: /home/runner/.android
       QT_QPA_PLATFORM: offscreen
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
+      # Re-baseline (0.27): B1 (the proprietary config) runs this release's binaries.
+      BENCH_PROPRIETARY_VERSION: ${{ github.event.inputs.proprietary_version || '0.27.0' }}
 
     steps:
       # feat/screen-graph-d is merged into open/main, so the screen-graph bench
@@ -537,15 +626,27 @@ jobs:
           npm run build:android-device-server
           ls -la packages/android-device-server/bin/
 
-      - name: Fetch proprietary binaries (B1 config)
+      - name: Fetch proprietary binaries (B1 config, @swmansion/argent@<proprietary_version>)
+        # Re-baseline (0.27): the release comes from the dispatch input. Its
+        # provenance (version from the tarball's package.json + sha256 of every
+        # binary/APK B1 uses) is written OUTSIDE BENCH_OUT (the matrix step empties
+        # that dir) and recorded by the harness in bench-sg-*.json + results-ci.md.
         run: |
           set -e
+          if ! [[ "$BENCH_PROPRIETARY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::proprietary_version '$BENCH_PROPRIETARY_VERSION' is not a semver"; exit 1
+          fi
           PKGTMP="$RUNNER_TEMP/argent-pkg"; mkdir -p "$PKGTMP"
-          ( cd "$PKGTMP" && npm pack @swmansion/argent@0.22.1 )
+          ( cd "$PKGTMP" && npm pack "@swmansion/argent@$BENCH_PROPRIETARY_VERSION" )
           TARBALL=$(ls "$PKGTMP"/*.tgz | head -n1)
           mkdir -p "$PKGTMP/extracted"; tar -xzf "$TARBALL" -C "$PKGTMP/extracted"
           echo "PROP_PKG=$PKGTMP/extracted/package" >> "$GITHUB_ENV"
           chmod +x "$PKGTMP/extracted/package/bin/linux/simulator-server" 2>/dev/null || true
+          node .github/bench-ci/proprietary-provenance.js npm \
+            --bin-dir "$PKGTMP/extracted/package/bin" \
+            --expect-version "$BENCH_PROPRIETARY_VERSION" \
+            --out "$RUNNER_TEMP/proprietary-provenance.json"
+          echo "BENCH_PROPRIETARY_PROVENANCE=$RUNNER_TEMP/proprietary-provenance.json" >> "$GITHUB_ENV"
 
       - name: Pre-flight (needle gate + optional capture)
         env:
@@ -613,6 +714,7 @@ jobs:
           rm -rf "$STAGE"; mkdir -p "$STAGE/logs"
           cp -r .bench-results "$STAGE/" 2>/dev/null || true
           cp "$RUNNER_TEMP/sg-preflight.log" "$RUNNER_TEMP/sg-matrix.log" /tmp/emulator.log "$STAGE/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/proprietary-provenance.json" "$STAGE/" 2>/dev/null || true
           # Phase D C-M3: stage the device-captured pre-flight fixture so it can be
           # committed to the bench tree (the two BLOCKER-1 tests skip until it is).
           cp packages/tool-server/test/fixtures/preflight-launch-screens.json "$STAGE/" 2>/dev/null || true
