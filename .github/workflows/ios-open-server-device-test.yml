@@ -61,7 +61,7 @@ jobs:
           # compiled first. Use the ROOT build (like the repo's start-tool-server
           # action): tool-server imports packages (e.g. @argent/telemetry) that its
           # own tsconfig does not reference, so a scoped build misses them.
-          npx tsc --build
+          npm run build
 
       - name: Create and boot an iPhone simulator
         shell: bash
