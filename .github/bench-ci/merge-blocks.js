@@ -30,7 +30,8 @@ const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // these actually ran is driven by BENCH_BLOCKS (workflow) / present files; a
 // requested ON block that produced no file still fails loudly below.
 // Re-baseline (0.27): OFF-legacy is the proprietary arm on an OLDER release's
-// binaries (legacy_proprietary_version), run in the same job + emulator. It is
+// binaries (legacy_proprietary_version), run in the same job + emulator, LAST
+// (after OFF-2, so it never sits inside the OFF-1↔OFF-2 drift interval). It is
 // its own arm — never pooled with OFF-1/OFF-2, never part of the drift floor.
 const ALL = [
   "OFF-1",
@@ -38,8 +39,8 @@ const ALL = [
   "ON-uia-sync",
   "ON-uia-async",
   "ON-input-manager",
-  "OFF-legacy",
   "OFF-2",
+  "OFF-legacy",
 ];
 // The CURRENT proprietary arm: the blocks the gates, fidelity and drift floor use.
 const CURRENT_OFF = ["OFF-1", "OFF-2"];

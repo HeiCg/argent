@@ -2754,14 +2754,15 @@ async function main(): Promise<void> {
   // Re-baseline (0.27): `OFF-legacy` is the same proprietary OFF config run against an
   // OLDER release's binaries. The harness has one binary set per process (the
   // ARGENT_SIMULATOR_SERVER_DIR / ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR env), so the
-  // workflow runs it as its own BENCH_ONLY invocation with the legacy dirs; the
+  // workflow runs it as its own BENCH_ONLY invocation with the legacy dirs, as the
+  // LAST block (after OFF-2, outside the OFF-1↔OFF-2 drift interval); the
   // single-process full run skips it (it would just repeat OFF on the same binaries).
   const ALL_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
     ["OFF-1", "OFF"],
     ["ON-uiautomation", "ON", "default"],
     ["ON-input-manager", "ON", "input-manager"],
-    ["OFF-legacy", "OFF"],
     ["OFF-2", "OFF"],
+    ["OFF-legacy", "OFF"],
   ];
   const only = process.env.BENCH_ONLY;
   // Phase 3n.2 (Q7): refuse a scrcpy arm name outright — the ON-scrcpy block and its
