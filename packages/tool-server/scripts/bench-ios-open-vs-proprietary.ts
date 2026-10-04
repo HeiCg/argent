@@ -39,6 +39,26 @@
  * Memory-frugal per-block mode: BENCH_ONLY=<block> runs ONE block in a
  * short-lived process and writes `bench-block-<name>.json` ({env, block});
  * merge-blocks-ios.js assembles the four.
+ *
+ * Harness repair (2026-10-04, run 37213144359, see
+ * docs/open-server/2026-10-04-ios-bench-harness-repair.md):
+ *   - ONE XCUITest runner per simulator. The workflow starts no resident runner;
+ *     the oracle reads the tree through the tool layer's own runner, resolved from
+ *     the block's registry (bench-ios-harness.ts `toolLayerRunner`). With the flag
+ *     off the measured tools stay on simulator-server + ax-service and the runner
+ *     serves only the oracle, so the oracle is the same instrument in all blocks.
+ *   - Target app: every block invokes the product `launch-app` tool, then
+ *     `launchApp(Settings)` on the runner, before any tree read; oracle reads pass
+ *     `bundleId` so a simctl relaunch never leaves them without a target.
+ *   - Every measured describe / gesture sample records the path that served it
+ *     (`servedBy`); the merge marks a block INVALID when any sample crossed to the
+ *     other arm's path. `connectionErrors` (formerly `runnerCrashes`) counts
+ *     connection-class runner failures, quoting the first.
+ *   - The swipe "before" frame waits for two identical consecutive frames
+ *     (bounded, untimed, recorded) instead of a fixed 900 ms.
+ *   - OFF blocks check that simulator-server comes up (`proprietaryReady`).
+ *   - BENCH_WARM_RUNNER=1 builds + launches + reads the tool-layer runner once and
+ *     shuts it down (the workflow's pre-block check); no block runs.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -47,10 +67,22 @@ import { join } from "node:path";
 import * as os from "node:os";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
-import { IosOpenServerClient, type IosOpenServerNode } from "../src/utils/ios-open-server-client";
-import { openServerIosNestedToDescribeNode } from "../src/tools/describe/platforms/ios/open-server-tree";
-import { formatDescribeTree } from "../src/tools/describe/format-tree";
+import { resolveDevice } from "../src/utils/device-info";
+import { simulatorServerRef } from "../src/blueprints/simulator-server";
 import { IosSimInputService } from "../src/utils/ios-sim-input-service";
+import {
+  FallbackNotes,
+  RunnerOracle,
+  SETTINGS_BUNDLE_ID,
+  gesturePath,
+  isConnectionError,
+  sameFileBytes,
+  toolLayerRunner,
+  waitForStableFrame,
+  watchRunnerLifecycle,
+  type NPoint,
+  type StageSample,
+} from "./bench-ios-harness";
 import { estimateScrollPx } from "./optical-scroll";
 import { framebufferPxToPoints, framebufferScale, pngDimensions } from "./bench-ios-optical";
 import { getEncoding, type Tiktoken } from "js-tiktoken";
@@ -62,13 +94,12 @@ const execFileAsync = promisify(execFile);
 /* -------------------------------------------------------------------------- */
 
 const UDID = process.env.BENCH_UDID ?? process.env.IOS_OPEN_SERVER_UDID ?? "";
-const RUNNER_PORT = Number(process.env.IOS_OPEN_SERVER_PORT ?? "0");
 const N = Number(process.env.BENCH_N ?? 20);
 const WARMUP = Number(process.env.BENCH_WARMUP ?? 1);
 const OUT_DIR = process.env.BENCH_OUT ?? join(process.cwd(), ".bench-results");
 // G4: the equal element cap for the per-tree-backend token comparison.
 const DESCRIBE_CAP = Number(process.env.BENCH_DESCRIBE_CAP ?? 400);
-const SETTINGS = "com.apple.Preferences";
+const SETTINGS = SETTINGS_BUNDLE_ID;
 const TARGET_LABEL = process.env.BENCH_TAP_TARGET ?? "General";
 // IOS2-H4: G0 requires a real navigation. The three healthy iOS-2 blocks measured
 // 0.176–0.238; a touch highlight is ≈ 0.055. 0.10 rejects the highlight, admits
@@ -78,6 +109,10 @@ const LANDING_FRACTION_OF_NAV = 0.5;
 // How many before/after screenshot pairs to KEEP per block in the artifact
 // (IOS2-H4/H5 item 4). The rest are still deleted by rmShot.
 const KEEP_SHOTS_PER_BLOCK = 3;
+// D: the swipe "before" frame waits for two identical consecutive simctl frames,
+// polled every SETTLE_INTERVAL_MS, at most SETTLE_TIMEOUT_MS (untimed, recorded).
+const SETTLE_INTERVAL_MS = 250;
+const SETTLE_TIMEOUT_MS = 5000;
 
 if (!UDID)
   throw new Error("BENCH_UDID / IOS_OPEN_SERVER_UDID must be set (the booted simulator udid)");
@@ -97,13 +132,9 @@ const GESTURE_PARAMS = {
 } as const;
 export type BenchGestureParams = typeof GESTURE_PARAMS;
 
-/** A connection-class RPC failure = the runner process/socket died (IOS2-M9). */
-function isConnectionError(err: unknown): boolean {
-  const m = err instanceof Error ? err.message : String(err);
-  return /ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|socket closed|not connected|write after end|read ECONN/i.test(
-    m
-  );
-}
+// The tool layer logs a note when the open iOS path fails and it falls back; each
+// measured call reads the notes logged during it (C.1). Installed in main().
+const NOTES = new FallbackNotes();
 
 /* -------------------------------------------------------------------------- */
 /* stats                                                                      */
@@ -334,29 +365,31 @@ function opticalScrollPoints(
 /* -------------------------------------------------------------------------- */
 
 interface DescribeSample {
-  backend: "ax-service" | "xcuitest";
+  /** The tree backend that actually served this describe (from `source`). */
+  backend: string;
   source: string;
   text: string;
   elements: number;
   bytes: number;
 }
-interface StageSample {
-  snapshotMs: number;
-  serializeMs: number;
-  encodeMs: number;
-  captureMs: number;
-  sum: number;
-  delta: number;
+
+/** The tree backend a describe `source` names. */
+function treeOf(source: string): string {
+  return source === "xcuitest-runner" ? "xcuitest" : source;
 }
-/** Normalized 0..1 point on screen. */
-interface NPoint {
-  x: number;
-  y: number;
+
+/** `proprietaryReady` (E): whether simulator-server came up for an OFF block. */
+interface ProprietaryReady {
+  checked: boolean;
+  ready: boolean;
+  error?: string;
 }
 
 interface Arm {
   readonly name: string;
   readonly config: "OFF" | "ON";
+  /** The tree backend the arm INTENDS to measure. The block's reported backend is
+   * derived from the sources its samples observed (C.2). */
   readonly treeBackend: "ax-service" | "xcuitest";
   /** True only when the arm's await-* verbs have a real product tool (OFF). The
    * open iOS path has no await-screen-idle / await-ui-element product (IOS2-M7),
@@ -365,17 +398,20 @@ interface Arm {
   /** Whether the tap/swipe input path is a product tool (true) or bench-local
    * sim-input HID (false, ON-siminput) — the row label depends on it (IOS2-H1). */
   readonly inputIsProductTool: boolean;
+  /** Block start, untimed: start the tool-layer runner, check simulator-server
+   * (OFF), restore the root, `launch-app` tool, runner `launchApp`. */
+  prepare(): Promise<void>;
   /** Describe the current screen via `invokeTool` → formatted text (IOS2-H1). */
   describe(): Promise<DescribeSample>;
   /** Open-tree stage timings (G3), or null for the ax-service backend. */
   describeStages(): Promise<StageSample | null>;
-  /** Tap a normalized point (host-timed by the caller). */
-  tap(p: NPoint): Promise<void>;
-  /** Swipe between normalized points over ~250 ms. */
-  swipe(from: NPoint, to: NPoint): Promise<void>;
+  /** Tap a normalized point (host-timed by the caller); resolves to the path
+   * that served it (C.1). */
+  tap(p: NPoint): Promise<string>;
+  /** Swipe between normalized points over ~250 ms; resolves to the serving path. */
+  swipe(from: NPoint, to: NPoint): Promise<string>;
   /** Locate a label's center as a normalized point on the CURRENT screen — the
-   * ONE shared implementation for every arm (IOS2-H3), from the open XCUITest
-   * tree, backend-independent and untimed. */
+   * ONE shared oracle for every arm (IOS2-H3), untimed. */
   locate(label: string): Promise<NPoint | null>;
   /** The scroll container's normalized vertical span (for the optical region). */
   scrollRegion(): Promise<{ y1: number; y2: number }>;
@@ -391,139 +427,22 @@ interface Arm {
   awaitUiElement(label: string): Promise<void>;
   /** Sim-input ack-timeout count (ON-siminput only; 0 elsewhere). */
   ackTimeouts(): number;
-  /** Runner exit/crash count observed (ON arms; 0 on OFF). */
-  crashes(): number;
+  /** Connection-class runner failures (C.3), with the first message. */
+  connectionErrors(): { count: number; first: string | null };
+  /** The tool layer's fallback notes seen in this block (first few). */
+  fallbackNotes(): string[];
+  /** simulator-server readiness (OFF), null on ON blocks. */
+  proprietaryReady(): ProprietaryReady | null;
+  /** The tool-layer runner as the block saw it. */
+  runnerRecord(): {
+    source: string;
+    starts: number;
+    terminations: string[];
+    readyMs: number | null;
+  };
+  /** simctl relaunches the oracle saw (each one followed by a bundleId-scoped read). */
+  oracleRelaunches(): number;
   dispose(): Promise<void>;
-}
-
-/* ---- ON tree helpers (shared by every arm's locate) ------------------------ */
-
-function walk(
-  nodes: IosOpenServerNode[],
-  fn: (n: IosOpenServerNode, dfsIndex: number) => void
-): void {
-  let i = 0;
-  const rec = (ns: IosOpenServerNode[]): void => {
-    for (const n of ns) {
-      fn(n, i++);
-      rec(n.children);
-    }
-  };
-  rec(nodes);
-}
-/**
- * The best HITTABLE match for `label`, computed HOST-SIDE (IOS2-H2/H3). Since the
- * runner's own `hittable` is only a heuristic (`isEnabled && hasArea`, a real
- * XCUITest hit-test would be an iOS-4 runner field), the predicate here is the
- * documented best effort:
- *   - on-screen  : the node's CENTER frame sits inside the window with a small
- *                  margin (not above the status bar, not below the home strip);
- *   - enabled    : the runner's `hittable` flag (isEnabled && hasArea);
- *   - not occluded: among the on-screen enabled matches, the one painted LAST in
- *                  DFS/paint order (a later-painted sibling covers an earlier one),
- *                  a best-effort z-order top pick.
- * Falls back to on-screen matches, then any match, so a missing flag never
- * returns null.
- */
-function findTappableByLabel(
-  nodes: IosOpenServerNode[],
-  label: string,
-  screenW: number,
-  screenH: number
-): IosOpenServerNode | undefined {
-  const matches: Array<{ node: IosOpenServerNode; dfs: number }> = [];
-  walk(nodes, (n, dfs) => {
-    if (n.label === label) matches.push({ node: n, dfs });
-  });
-  if (matches.length === 0) return undefined;
-  const onScreen = (n: IosOpenServerNode): boolean => {
-    const cy = (n.bounds.y1 + n.bounds.y2) / 2 / (screenH || 1);
-    const cx = (n.bounds.x1 + n.bounds.x2) / 2 / (screenW || 1);
-    return cy > 0.03 && cy < 0.93 && cx > 0 && cx < 1;
-  };
-  const enabledOnScreen = matches.filter((m) => m.node.hittable && onScreen(m.node));
-  const pool = enabledOnScreen.length ? enabledOnScreen : matches.filter((m) => onScreen(m.node));
-  const chosen = (pool.length ? pool : matches)
-    .slice()
-    // topmost by z-order: last painted (highest DFS index) among the candidates.
-    .sort((a, b) => b.dfs - a.dfs)[0];
-  return chosen?.node;
-}
-function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | undefined {
-  const types = ["Table", "CollectionView", "ScrollView"];
-  for (const t of types) {
-    let hit: IosOpenServerNode | undefined;
-    walk(nodes, (n) => {
-      if (!hit && n.type === t) hit = n;
-    });
-    if (hit) return hit;
-  }
-  return undefined;
-}
-
-/** Shared open-tree reader over the resident XCUITest runner. Every arm holds one
- * for the backend-independent `locate` / `scrollRegion` / `screenSize`; the ON
- * arms additionally use it for their describe tree and the G3 stage timings. */
-class OpenTree {
-  private cachedHeightPoints: number | null = null;
-  constructor(private readonly client: IosOpenServerClient) {}
-  async describe(): Promise<DescribeSample> {
-    const st = await this.client.getNestedState();
-    const node = openServerIosNestedToDescribeNode(
-      st.tree,
-      st.info.screenWidth,
-      st.info.screenHeight
-    );
-    const text = formatDescribeTree(node, { source: "open-device-server" });
-    return {
-      backend: "xcuitest",
-      source: "xcuitest-runner",
-      text,
-      elements: describeBody(text).length,
-      bytes: Buffer.byteLength(text, "utf8"),
-    };
-  }
-  async stages(): Promise<StageSample> {
-    const st = await this.client.getNestedState();
-    const t = st.timings;
-    const sum = t.snapshotMs + t.serializeMs + t.encodeMs;
-    return {
-      snapshotMs: t.snapshotMs,
-      serializeMs: t.serializeMs,
-      encodeMs: t.encodeMs,
-      captureMs: t.captureMs,
-      sum: Number(sum.toFixed(3)),
-      delta: Number(Math.abs(sum - t.captureMs).toFixed(3)),
-    };
-  }
-  async locate(label: string): Promise<NPoint | null> {
-    const st = await this.client.getNestedState();
-    const hit = findTappableByLabel(st.tree, label, st.info.screenWidth, st.info.screenHeight);
-    if (!hit) return null;
-    const cxPt = (hit.bounds.x1 + hit.bounds.x2) / 2;
-    const cyPt = (hit.bounds.y1 + hit.bounds.y2) / 2;
-    return { x: cxPt / st.info.screenWidth, y: cyPt / st.info.screenHeight };
-  }
-  async scrollRegion(): Promise<{ y1: number; y2: number }> {
-    const st = await this.client.getNestedState();
-    const c = findScrollContainer(st.tree);
-    if (!c) return { y1: 0.2, y2: 0.85 };
-    // Clamp to [0,1]: a Table can report a content-sized frame taller than the
-    // window (IOS2-H5 item 5), which would put a swipe endpoint off-screen.
-    const y1 = Math.max(0, Math.min(1, c.bounds.y1 / st.info.screenHeight));
-    const y2 = Math.max(0, Math.min(1, c.bounds.y2 / st.info.screenHeight));
-    return y1 < y2 ? { y1, y2 } : { y1: 0.2, y2: 0.85 };
-  }
-  async screenHeightPoints(): Promise<number> {
-    if (this.cachedHeightPoints !== null) return this.cachedHeightPoints;
-    const s = await this.client.getScreenSize();
-    this.cachedHeightPoints = s.screenHeight;
-    return s.screenHeight;
-  }
-  async screenSize(): Promise<{ w: number; h: number }> {
-    const s = await this.client.getScreenSize();
-    return { w: s.screenWidth, h: s.screenHeight };
-  }
 }
 
 /* ---- shared registry driving (all arms pay the tool layer, IOS2-H1) -------- */
@@ -550,55 +469,185 @@ async function invokeSwipe(reg: Reg, from: NPoint, to: NPoint): Promise<void> {
   });
 }
 
+const MAX_NOTES_KEPT = 8;
+
+/**
+ * What every arm shares: the block's registry (the flag set before it is created),
+ * the oracle over the tool layer's runner, the serving-path record of each tool
+ * call, and the connection-error count. The arms differ only in their input path
+ * and their await-* / stage verbs.
+ */
+abstract class ArmBase {
+  abstract readonly config: "OFF" | "ON";
+  protected readonly reg: Reg;
+  protected readonly oracle: RunnerOracle;
+  private readonly lifecycle: ReturnType<typeof watchRunnerLifecycle>;
+  private connErrors = 0;
+  private firstConnError: string | null = null;
+  private notesKept: string[] = [];
+  private ready: ProprietaryReady | null = null;
+  private runnerReadyMs: number | null = null;
+
+  constructor(
+    readonly name: string,
+    private readonly flagOn: boolean
+  ) {
+    if (flagOn) setFlag("open-ios-device-server", true, "project");
+    else unsetFlag("open-ios-device-server", "project");
+    this.reg = createRegistry();
+    this.lifecycle = watchRunnerLifecycle(this.reg, UDID);
+    this.oracle = new RunnerOracle({
+      runner: () => toolLayerRunner(this.reg, UDID),
+      onConnectionError: (m) => this.recordConnectionError(`oracle: ${m}`),
+    });
+  }
+
+  protected recordConnectionError(message: string): void {
+    this.connErrors++;
+    if (this.firstConnError === null) this.firstConnError = message;
+  }
+
+  /** Fold the fallback notes of one tool call into the block record. */
+  private absorb(notes: string[]): void {
+    for (const n of notes) {
+      if (this.notesKept.length < MAX_NOTES_KEPT) this.notesKept.push(n);
+      if (isConnectionError(n)) this.recordConnectionError(`tool layer: ${n}`);
+    }
+  }
+
+  /** Run one tool call, recording its fallback notes and connection errors. */
+  protected async viaTool<T>(op: () => Promise<T>): Promise<{ value: T; notes: string[] }> {
+    NOTES.take();
+    try {
+      const value = await op();
+      const notes = NOTES.take();
+      this.absorb(notes);
+      return { value, notes };
+    } catch (e) {
+      this.absorb(NOTES.take());
+      if (isConnectionError(e)) this.recordConnectionError(`tool: ${(e as Error).message}`);
+      throw e;
+    }
+  }
+
+  async prepare(): Promise<void> {
+    // 1. The tool layer's runner: the one runner on this simulator for the block.
+    const t0 = Date.now();
+    await toolLayerRunner(this.reg, UDID);
+    this.runnerReadyMs = Date.now() - t0;
+    // 2. E: simulator-server must come up on an OFF block.
+    if (this.config === "OFF") {
+      const ref = simulatorServerRef(resolveDevice(UDID));
+      try {
+        await this.reg.resolveService(ref.urn, ref.options);
+        this.ready = { checked: true, ready: true };
+      } catch (e) {
+        this.ready = { checked: true, ready: false, error: (e as Error).message };
+      }
+    }
+    // 3. Root, then the product launch-app tool (as a user would; every block, so
+    //    its native-devtools env setup is the same in all four), then the runner
+    //    target (B) before the first tree read.
+    await this.ensureRoot();
+    await this.viaTool(() => this.reg.invokeTool("launch-app", { udid: UDID, bundleId: SETTINGS }));
+    await this.oracle.ensureTarget();
+  }
+
+  async describe(): Promise<DescribeSample> {
+    const { value } = await this.viaTool(() => invokeDescribe(this.reg));
+    return {
+      backend: treeOf(value.source),
+      source: value.source,
+      text: value.text,
+      elements: describeBody(value.text).length,
+      bytes: Buffer.byteLength(value.text, "utf8"),
+    };
+  }
+
+  protected async toolTap(p: NPoint): Promise<string> {
+    const { notes } = await this.viaTool(() => invokeTap(this.reg, p));
+    return gesturePath(this.flagOn, notes);
+  }
+
+  protected async toolSwipe(from: NPoint, to: NPoint): Promise<string> {
+    const { notes } = await this.viaTool(() => invokeSwipe(this.reg, from, to));
+    return gesturePath(this.flagOn, notes);
+  }
+
+  locate(label: string): Promise<NPoint | null> {
+    return this.oracle.locate(label);
+  }
+  scrollRegion(): Promise<{ y1: number; y2: number }> {
+    return this.oracle.scrollRegion();
+  }
+  screenHeightPoints(): Promise<number> {
+    return this.oracle.screenHeightPoints();
+  }
+  async ensureRoot(): Promise<void> {
+    await relaunchViaSimctl();
+    this.oracle.noteRelaunch();
+  }
+  goBack(): Promise<void> {
+    return this.ensureRoot();
+  }
+  connectionErrors(): { count: number; first: string | null } {
+    return { count: this.connErrors, first: this.firstConnError };
+  }
+  fallbackNotes(): string[] {
+    return this.notesKept.slice();
+  }
+  proprietaryReady(): ProprietaryReady | null {
+    return this.ready;
+  }
+  oracleRelaunches(): number {
+    return this.oracle.relaunchesSeen();
+  }
+  runnerRecord(): {
+    source: string;
+    starts: number;
+    terminations: string[];
+    readyMs: number | null;
+  } {
+    return {
+      source: "tool-layer registry (one runner per simulator)",
+      starts: this.lifecycle.starts(),
+      terminations: this.lifecycle.terminations(),
+      readyMs: this.runnerReadyMs,
+    };
+  }
+  async dispose(): Promise<void> {
+    // A runner that restarted or terminated before the block's own dispose is a
+    // connection failure of the measured instrument.
+    const starts = this.lifecycle.starts();
+    const terms = this.lifecycle.terminations();
+    if (starts > 1 || terms.length > 0) {
+      this.recordConnectionError(
+        `tool-layer runner restarted mid-block (starts=${starts}, terminations=${terms.join(",") || "none"})`
+      );
+    }
+    this.lifecycle.dispose();
+    await this.reg.dispose().catch(() => undefined);
+  }
+}
+
 /* ---- OFF arm: closed simulator-server + ax-service via the registry -------- */
 
-class OffArm implements Arm {
+class OffArm extends ArmBase implements Arm {
   readonly config = "OFF" as const;
   readonly treeBackend = "ax-service" as const;
   readonly hasAwaitProduct = true;
   readonly inputIsProductTool = true;
-  private reg: Reg;
-  private open: OpenTree;
-  constructor(readonly name: string) {
-    unsetFlag("open-ios-device-server", "project");
-    this.reg = createRegistry();
-    // Backend-independent locate reads the resident open XCUITest tree so all four
-    // blocks target the SAME frame (IOS2-H3). Untimed, never a measured verb here.
-    this.open = new OpenTree(new IosOpenServerClient({ port: RUNNER_PORT, timeoutMs: 90_000 }));
-  }
-  async describe(): Promise<DescribeSample> {
-    const { text, source } = await invokeDescribe(this.reg);
-    return {
-      backend: "ax-service",
-      source,
-      text,
-      elements: describeBody(text).length,
-      bytes: Buffer.byteLength(text, "utf8"),
-    };
+  constructor(name: string) {
+    super(name, false);
   }
   async describeStages(): Promise<StageSample | null> {
     return null; // ax-service does not surface snapshot/serialize/encode stages.
   }
-  tap(p: NPoint): Promise<void> {
-    return invokeTap(this.reg, p);
+  tap(p: NPoint): Promise<string> {
+    return this.toolTap(p);
   }
-  swipe(from: NPoint, to: NPoint): Promise<void> {
-    return invokeSwipe(this.reg, from, to);
-  }
-  locate(label: string): Promise<NPoint | null> {
-    return this.open.locate(label);
-  }
-  scrollRegion(): Promise<{ y1: number; y2: number }> {
-    return this.open.scrollRegion();
-  }
-  screenHeightPoints(): Promise<number> {
-    return this.open.screenHeightPoints();
-  }
-  ensureRoot(): Promise<void> {
-    return relaunchViaSimctl();
-  }
-  goBack(): Promise<void> {
-    return relaunchViaSimctl();
+  swipe(from: NPoint, to: NPoint): Promise<string> {
+    return this.toolSwipe(from, to);
   }
   async awaitScreenIdle(): Promise<void> {
     await this.reg.invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 4000 });
@@ -614,74 +663,28 @@ class OffArm implements Arm {
   ackTimeouts(): number {
     return 0;
   }
-  crashes(): number {
-    return 0;
-  }
-  async dispose(): Promise<void> {
-    await this.reg.dispose().catch(() => undefined);
-  }
 }
 
 /* ---- ON-xcuitest arm: open runner via the tool layer, input via XCUITest ---- */
 
-class XcuitestArm implements Arm {
+class XcuitestArm extends ArmBase implements Arm {
   readonly config = "ON" as const;
   readonly treeBackend = "xcuitest" as const;
   readonly hasAwaitProduct = false; // IOS2-M7: no open await product.
   readonly inputIsProductTool = true;
-  private reg: Reg;
-  private open: OpenTree;
-  private crashCount = 0;
-  constructor(readonly name: string) {
-    setFlag("open-ios-device-server", true, "project");
-    this.reg = createRegistry();
-    this.open = new OpenTree(new IosOpenServerClient({ port: RUNNER_PORT, timeoutMs: 90_000 }));
-  }
-  private async probe<T>(op: Promise<T>): Promise<T> {
-    try {
-      return await op;
-    } catch (e) {
-      if (isConnectionError(e)) this.crashCount++;
-      throw e;
-    }
-  }
-  async describe(): Promise<DescribeSample> {
-    // Flag ON → invokeTool("describe") routes to the open XCUITest runner and pays
-    // the host tool layer (IOS2-H1). The formatted text matches the open tree.
-    const { text, source } = await invokeDescribe(this.reg);
-    return {
-      backend: "xcuitest",
-      source,
-      text,
-      elements: describeBody(text).length,
-      bytes: Buffer.byteLength(text, "utf8"),
-    };
+  constructor(name: string) {
+    super(name, true);
   }
   describeStages(): Promise<StageSample | null> {
-    // G3 stages are only on the direct socket (the describe tool result omits
-    // `timings`); labelled bench-local, direct-socket in the scoreboard.
-    return this.probe(this.open.stages());
+    // G3 stages are only on the direct runner call (the describe tool result omits
+    // `timings`); labelled bench-local in the scoreboard. Same runner as the tool.
+    return this.oracle.stages();
   }
-  tap(p: NPoint): Promise<void> {
-    return invokeTap(this.reg, p);
+  tap(p: NPoint): Promise<string> {
+    return this.toolTap(p);
   }
-  swipe(from: NPoint, to: NPoint): Promise<void> {
-    return invokeSwipe(this.reg, from, to);
-  }
-  locate(label: string): Promise<NPoint | null> {
-    return this.probe(this.open.locate(label));
-  }
-  scrollRegion(): Promise<{ y1: number; y2: number }> {
-    return this.probe(this.open.scrollRegion());
-  }
-  screenHeightPoints(): Promise<number> {
-    return this.probe(this.open.screenHeightPoints());
-  }
-  ensureRoot(): Promise<void> {
-    return relaunchViaSimctl();
-  }
-  goBack(): Promise<void> {
-    return relaunchViaSimctl();
+  swipe(from: NPoint, to: NPoint): Promise<string> {
+    return this.toolSwipe(from, to);
   }
   awaitScreenIdle(): Promise<void> {
     throw new Error("await-screen-idle has no open iOS product (N/A)");
@@ -692,59 +695,28 @@ class XcuitestArm implements Arm {
   ackTimeouts(): number {
     return 0;
   }
-  crashes(): number {
-    return this.crashCount;
-  }
-  async dispose(): Promise<void> {
-    await this.reg.dispose().catch(() => undefined);
-  }
 }
 
 /* ---- ON-siminput arm: open tree via the tool layer, input via sim-input HID - */
 
-class SimInputArm implements Arm {
+class SimInputArm extends ArmBase implements Arm {
   readonly config = "ON" as const;
   readonly treeBackend = "xcuitest" as const;
   readonly hasAwaitProduct = false; // IOS2-M7.
   readonly inputIsProductTool = false; // sim-input HID: bench-local, no product path.
-  private reg: Reg;
-  private open: OpenTree;
-  private sim: IosSimInputService;
+  private sim = new IosSimInputService();
   private ackTimeoutCount = 0;
-  private crashCount = 0;
   private cachedSize: { w: number; h: number } | null = null;
-  constructor(readonly name: string) {
-    setFlag("open-ios-device-server", true, "project");
-    this.reg = createRegistry();
-    this.open = new OpenTree(new IosOpenServerClient({ port: RUNNER_PORT, timeoutMs: 90_000 }));
-    this.sim = new IosSimInputService();
-  }
-  private async probe<T>(op: Promise<T>): Promise<T> {
-    try {
-      return await op;
-    } catch (e) {
-      if (isConnectionError(e)) this.crashCount++;
-      throw e;
-    }
+  constructor(name: string) {
+    super(name, true);
   }
   private async size(): Promise<{ w: number; h: number }> {
     // Fetched OUT of the timed window (IOS2-M2) and cached per block.
-    if (!this.cachedSize) this.cachedSize = await this.probe(this.open.screenSize());
+    if (!this.cachedSize) this.cachedSize = await this.oracle.screenSize();
     return this.cachedSize;
   }
-  async describe(): Promise<DescribeSample> {
-    // Describe still goes through the tool layer (flag ON → XCUITest tree).
-    const { text, source } = await invokeDescribe(this.reg);
-    return {
-      backend: "xcuitest",
-      source,
-      text,
-      elements: describeBody(text).length,
-      bytes: Buffer.byteLength(text, "utf8"),
-    };
-  }
   describeStages(): Promise<StageSample | null> {
-    return this.probe(this.open.stages());
+    return this.oracle.stages();
   }
   private async withAckTimeout<T>(op: Promise<T>, ms = 5000): Promise<T> {
     let timer: NodeJS.Timeout;
@@ -760,11 +732,12 @@ class SimInputArm implements Arm {
       clearTimeout(timer!);
     }
   }
-  async tap(p: NPoint): Promise<void> {
+  async tap(p: NPoint): Promise<string> {
     const { w, h } = await this.size(); // cached, untimed
     await this.withAckTimeout(this.sim.tap(UDID, { x: p.x * w, y: p.y * h, width: w, height: h }));
+    return "sim-input";
   }
-  async swipe(from: NPoint, to: NPoint): Promise<void> {
+  async swipe(from: NPoint, to: NPoint): Promise<string> {
     const { w, h } = await this.size();
     await this.withAckTimeout(
       this.sim.swipe(UDID, {
@@ -777,21 +750,7 @@ class SimInputArm implements Arm {
         height: h,
       })
     );
-  }
-  locate(label: string): Promise<NPoint | null> {
-    return this.probe(this.open.locate(label));
-  }
-  scrollRegion(): Promise<{ y1: number; y2: number }> {
-    return this.probe(this.open.scrollRegion());
-  }
-  screenHeightPoints(): Promise<number> {
-    return this.probe(this.open.screenHeightPoints());
-  }
-  ensureRoot(): Promise<void> {
-    return relaunchViaSimctl();
-  }
-  goBack(): Promise<void> {
-    return relaunchViaSimctl();
+    return "sim-input";
   }
   awaitScreenIdle(): Promise<void> {
     throw new Error("await-screen-idle has no open iOS product (N/A)");
@@ -802,12 +761,9 @@ class SimInputArm implements Arm {
   ackTimeouts(): number {
     return this.ackTimeoutCount;
   }
-  crashes(): number {
-    return this.crashCount;
-  }
   async dispose(): Promise<void> {
     await this.sim.stopAll().catch(() => undefined);
-    await this.reg.dispose().catch(() => undefined);
+    await super.dispose();
   }
 }
 
@@ -817,7 +773,8 @@ class SimInputArm implements Arm {
 
 /** Identical relaunch for every arm (IOS2-M6): terminate + launch via simctl (a
  * backend-independent root restore) + one fixed settle. No per-arm launchApp/idle
- * asymmetry, so no arm can start a gesture on a less-settled screen than another. */
+ * asymmetry, so no arm can start a gesture on a less-settled screen than another.
+ * The runner keeps its target across it; oracle reads name the app explicitly. */
 async function relaunchViaSimctl(): Promise<void> {
   try {
     execFileSync("xcrun", ["simctl", "terminate", UDID, SETTINGS], {
@@ -852,14 +809,17 @@ interface VerbResult {
   locateFailed?: number;
   effectChecked?: number;
   effectZero?: number;
+  /** C.1: the path that served each measured attempt ("error" when it threw). */
+  servedBy?: string[];
   extra?: Record<string, unknown>;
 }
 
 /** Generic timed verb loop with an optional untimed per-iteration setup. Counts a
- * setup that returns `false` as a locate failure (excluded, never a blind tap). */
+ * setup that returns `false` as a locate failure (excluded, never a blind tap).
+ * When `fn` resolves to a string it is the serving path of that attempt (C.1). */
 async function timeCalls(
   label: string,
-  fn: (i: number) => Promise<void>,
+  fn: (i: number) => Promise<string | void>,
   setup?: (i: number) => Promise<boolean>,
   extra?: () => Record<string, unknown>
 ): Promise<VerbResult> {
@@ -871,6 +831,8 @@ async function timeCalls(
   let errors = 0;
   let locateFailed = 0;
   const errorSamples: string[] = [];
+  const servedBy: string[] = [];
+  let pathReported = false;
   for (let i = 0; i < N; i++) {
     if (setup) {
       const ok = await setup(i).catch(() => false);
@@ -881,10 +843,15 @@ async function timeCalls(
     }
     const t0 = Date.now();
     try {
-      await fn(i);
+      const path = await fn(i);
       lat.push(Date.now() - t0);
+      if (typeof path === "string") {
+        pathReported = true;
+        servedBy.push(path);
+      }
     } catch (e) {
       errors++;
+      servedBy.push("error");
       if (errorSamples.length < 5)
         errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -896,6 +863,7 @@ async function timeCalls(
     errors,
     locateFailed,
     errorSamples,
+    ...(pathReported ? { servedBy } : {}),
     extra: extra?.(),
   };
 }
@@ -919,6 +887,7 @@ interface TapRecord {
   latencyMs: number | null; // null when the tap RPC errored
   landed: boolean;
   errored: boolean;
+  servedBy: string; // C.1: the injector that served the tap ("error" when it threw)
 }
 interface TapEffectResult extends VerbResult {
   effectChecked: number;
@@ -966,8 +935,9 @@ async function timeTapEffect(
     const before = await simctlScreenshot("tap-before");
     const t0 = Date.now();
     let tapErr: unknown;
+    let servedBy = "error";
     try {
-      await arm.tap(coord);
+      servedBy = await arm.tap(coord);
     } catch (e) {
       tapErr = e;
     }
@@ -1007,6 +977,7 @@ async function timeTapEffect(
         latencyMs: tapErr ? null : dt,
         landed,
         errored: Boolean(tapErr),
+        servedBy,
       });
       if (tapErr) {
         errors++;
@@ -1058,6 +1029,11 @@ interface SwipeRecord {
   dyPx: number;
   confidence: number;
   refused: boolean;
+  servedBy: string; // C.1
+  /** D: the untimed wait for a stable "before" frame. */
+  settleMs: number;
+  settleStable: boolean;
+  settleFrames: number;
 }
 interface ScrollResult {
   arm: string;
@@ -1071,11 +1047,26 @@ interface ScrollResult {
   refusals: number;
   n: number;
   records: SwipeRecord[];
+  /** D: stable-frame settle before each "before" capture (outside the timed window). */
+  settle: {
+    intervalMs: number;
+    timeoutMs: number;
+    stable: number;
+    unstable: number;
+    waitMsP50: number;
+    waitMsMax: number;
+  };
 }
 
 /** OPTICAL swipe (IOS2-H5): timed swipe + full-resolution NCC offset OUTSIDE the
  * timed window, reported in screen POINTS. Returns the swipe latency verb AND the
- * per-arm optical offset distribution + per-swipe records. */
+ * per-arm optical offset distribution + per-swipe records.
+ *
+ * D: the "before" frame is taken once the screen is stable — the oracle tree shows
+ * the root target, then two consecutive simctl frames are byte-identical (bounded
+ * by SETTLE_TIMEOUT_MS) — instead of right after a fixed 900 ms relaunch settle,
+ * which left run 37213144359's "before" frames blank. The wait is untimed and
+ * recorded per swipe. */
 async function timeSwipeOptical(
   arm: Arm,
   block: string
@@ -1085,6 +1076,10 @@ async function timeSwipeOptical(
   const errorSamples: string[] = [];
   const offsets: number[] = [];
   const records: SwipeRecord[] = [];
+  const servedBy: string[] = [];
+  const settleWaits: number[] = [];
+  let settleStable = 0;
+  let settleUnstable = 0;
   let refusals = 0;
   let rasterScale: number | null = null;
   let keptShots = 0;
@@ -1099,11 +1094,24 @@ async function timeSwipeOptical(
 
   const runOne = async (record: boolean): Promise<void> => {
     await arm.ensureRoot();
-    const before = await simctlScreenshot("swipe-before");
+    // D: settle OUTSIDE the timed window. The tree read waits for the app to
+    // answer with the root target; then two identical consecutive frames.
+    const s0 = Date.now();
+    await arm.locate(TARGET_LABEL).catch(() => null);
+    const settle = await waitForStableFrame({
+      capture: () => simctlScreenshot("swipe-before"),
+      same: sameFileBytes,
+      discard: (f) => rmShot(f),
+      intervalMs: SETTLE_INTERVAL_MS,
+      timeoutMs: SETTLE_TIMEOUT_MS,
+    });
+    const settleMs = Date.now() - s0;
+    const before = settle.frame;
     const t0 = Date.now();
     let err: unknown;
+    let path = "error";
     try {
-      await arm.swipe(from, to);
+      path = await arm.swipe(from, to);
     } catch (e) {
       err = e;
     }
@@ -1138,7 +1146,15 @@ async function timeSwipeOptical(
         dyPx: off.dyPx,
         confidence: off.confidence,
         refused: off.refused,
+        servedBy: path,
+        settleMs,
+        settleStable: settle.stable,
+        settleFrames: settle.frames,
       });
+      servedBy.push(path);
+      settleWaits.push(settleMs);
+      if (settle.stable) settleStable++;
+      else settleUnstable++;
       if (err) {
         errors++;
         if (errorSamples.length < 5)
@@ -1162,6 +1178,7 @@ async function timeSwipeOptical(
       latencySamples: lat.slice(),
       errors,
       errorSamples,
+      servedBy,
     },
     scroll: {
       arm: arm.name,
@@ -1175,6 +1192,14 @@ async function timeSwipeOptical(
       refusals,
       n: offsets.length,
       records,
+      settle: {
+        intervalMs: SETTLE_INTERVAL_MS,
+        timeoutMs: SETTLE_TIMEOUT_MS,
+        stable: settleStable,
+        unstable: settleUnstable,
+        waitMsP50: summarize(settleWaits).p50,
+        waitMsMax: summarize(settleWaits).max,
+      },
     },
   };
 }
@@ -1186,7 +1211,11 @@ async function timeSwipeOptical(
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
-  treeBackend: "ax-service" | "xcuitest";
+  /** The arm's intended tree backend. */
+  intendedBackend: "ax-service" | "xcuitest";
+  /** C.2: the tree backend the describe samples were OBSERVED on (`mixed(…)` when
+   * more than one). The merge re-derives it from `servedBy`. */
+  treeBackend: string;
   inputIsProductTool: boolean;
   hasAwaitProduct: boolean;
   verbs: VerbResult[];
@@ -1211,6 +1240,8 @@ interface BlockResult {
     navMin: number;
     landingThreshold: number;
     note: string;
+    targetApp: string;
+    relaunches: number;
   };
   effectCheckedTotal: number;
   firstTapNoEffectTotal: number;
@@ -1221,7 +1252,14 @@ interface BlockResult {
   tapRecords: TapRecord[];
   noEffectSamples: string[];
   simInputAckTimeouts: number;
-  runnerCrashes: number;
+  /** C.3: connection-class runner failures (formerly `runnerCrashes`). */
+  connectionErrors: number;
+  firstConnectionError: string | null;
+  /** The tool layer's fallback notes seen in the block (first few). */
+  fallbackNotes: string[];
+  /** E: simulator-server readiness (OFF blocks). */
+  proprietaryReady: ProprietaryReady | null;
+  runner: { source: string; starts: number; terminations: string[]; readyMs: number | null };
   degradedReasons: string[];
   fidelitySet: string[];
   gestureParams: BenchGestureParams;
@@ -1303,7 +1341,13 @@ async function runBlock(block: string): Promise<BlockResult> {
   const notes: string[] = [];
   const degradedReasons: string[] = [];
 
-  await arm.ensureRoot();
+  // Runner up (the tool layer's, the only one), simulator-server checked (OFF),
+  // root restored, `launch-app` tool, runner target set — all before any tree read.
+  // A failure here leaves the oracle without a runner: the block still runs and
+  // writes its JSON, and G0 / validity mark it INVALID.
+  await arm.prepare().catch((e: unknown) => {
+    notes.push(`block setup failed: ${e instanceof Error ? e.message : String(e)}`);
+  });
 
   // ---- describe sample (idle root) → bytes/tokens/elements/fidelity (G4) -----
   let desc = await arm.describe();
@@ -1314,10 +1358,8 @@ async function runBlock(block: string): Promise<BlockResult> {
   }
   if (desc.elements === 0)
     notes.push("describe tree was still empty after warmup (backend not injectable?)");
-  // Masked-fallback guard (IOS2-H1): the ON path must report the open source.
-  const expectSource = arm.config === "ON" ? "xcuitest-runner" : "ax-service";
-  if (arm.config === "ON" && desc.source !== "xcuitest-runner")
-    notes.push(`describe.source="${desc.source}" (expected ${expectSource}) — masked fallback`);
+  // A describe served by the other arm's path is caught by the merge's validity
+  // gate from `describe.source` + every verb's `servedBy` (C.1/C.2).
   const capped = capDescribe(desc.text, DESCRIBE_CAP);
   const describeSample = {
     backend: desc.backend,
@@ -1346,17 +1388,15 @@ async function runBlock(block: string): Promise<BlockResult> {
     navMin: G0_NAV_MIN,
     landingThreshold: Number(landingThreshold.toFixed(4)),
     ...selfTest,
+    targetApp: SETTINGS,
+    relaunches: 0, // filled at the end of the block
   };
 
   const verbs: VerbResult[] = [];
 
   // ---- verb: describe (idle) -------------------------------------------------
   await arm.ensureRoot();
-  verbs.push(
-    await timeCalls("describe", async () => {
-      await arm.describe();
-    })
-  );
+  verbs.push(await timeCalls("describe", async () => (await arm.describe()).source));
 
   // ---- G3 describe stages (ON only, direct socket) --------------------------
   let describeStages: BlockResult["describeStages"] = null;
@@ -1386,6 +1426,7 @@ async function runBlock(block: string): Promise<BlockResult> {
     locateFailed: tapVerb.locateFailed,
     effectChecked: tapVerb.effectChecked,
     effectZero: tapVerb.effectZero,
+    servedBy: tapVerb.records.map((r) => r.servedBy),
     extra: {
       inputPath: arm.inputIsProductTool
         ? "gesture-tap tool (invokeTool)"
@@ -1405,11 +1446,12 @@ async function runBlock(block: string): Promise<BlockResult> {
       async () => {
         const c = tapCoordForTd!;
         const a0 = Date.now();
-        await arm.tap(c);
+        const tapPath = await arm.tap(c);
         const a1 = Date.now();
-        await arm.describe();
+        const d = await arm.describe();
         const a2 = Date.now();
         tdSub.push({ tapMs: a1 - a0, describeMs: a2 - a1 });
+        return `${tapPath}+${d.source}`;
       },
       async () => {
         await arm.ensureRoot();
@@ -1496,10 +1538,31 @@ async function runBlock(block: string): Promise<BlockResult> {
       ? Number(((effectCheckedTotal - firstTapNoEffectTotal) / effectCheckedTotal).toFixed(4))
       : null;
 
+  // C.2: the reported tree backend is what the describe samples observed.
+  const observedTrees = [
+    ...new Set(
+      [desc.source, ...(verbs.find((v) => v.verb === "describe")?.servedBy ?? [])]
+        .filter((p) => p !== "error")
+        .map(treeOf)
+    ),
+  ].sort();
+  const treeBackend =
+    observedTrees.length === 1
+      ? observedTrees[0]!
+      : observedTrees.length === 0
+        ? "unknown"
+        : `mixed(${observedTrees.join(",")})`;
+
+  // Dispose first: a runner that terminated mid-block is counted on dispose.
+  await arm.dispose().catch(() => undefined);
+  oracle.relaunches = arm.oracleRelaunches();
+  const conn = arm.connectionErrors();
+
   const result: BlockResult = {
     block,
     config: arm.config,
-    treeBackend: arm.treeBackend,
+    intendedBackend: arm.treeBackend,
+    treeBackend,
     inputIsProductTool: arm.inputIsProductTool,
     hasAwaitProduct: arm.hasAwaitProduct,
     verbs,
@@ -1516,14 +1579,16 @@ async function runBlock(block: string): Promise<BlockResult> {
     tapRecords: tapVerb.records,
     noEffectSamples: tapVerb.noEffectSamples,
     simInputAckTimeouts: arm.ackTimeouts(),
-    runnerCrashes: arm.crashes(),
+    connectionErrors: conn.count,
+    firstConnectionError: conn.first,
+    fallbackNotes: arm.fallbackNotes(),
+    proprietaryReady: arm.proprietaryReady(),
+    runner: arm.runnerRecord(),
     degradedReasons,
     fidelitySet,
     gestureParams: GESTURE_PARAMS,
     notes,
   };
-
-  await arm.dispose().catch(() => undefined);
   return result;
 }
 
@@ -1557,15 +1622,52 @@ async function simctlRuntime(): Promise<{ runtime: string; deviceType: string }>
   return { runtime: "unknown", deviceType: "unknown" };
 }
 
+/**
+ * BENCH_WARM_RUNNER=1: build (cached) + launch the tool layer's runner once, set
+ * the target, read one tree, shut it down. The workflow runs it before the blocks
+ * so a runner that cannot build or start fails the job in minutes, and every block
+ * then finds the build cache warm. Exactly the code path the blocks use.
+ */
+async function warmRunner(): Promise<void> {
+  const reg = createRegistry();
+  try {
+    const t0 = Date.now();
+    const runner = await toolLayerRunner(reg, UDID);
+    const t1 = Date.now();
+    await runner.launchApp(SETTINGS);
+    const st = await runner.getNestedState({ bundleId: SETTINGS });
+    let nodes = 0;
+    const count = (ns: typeof st.tree): void => {
+      for (const n of ns) {
+        nodes++;
+        count(n.children);
+      }
+    };
+    count(st.tree);
+    console.log(
+      `[bench-ios] warm runner: ready in ${t1 - t0} ms (build cached or built + launch), ` +
+        `${SETTINGS} tree ${nodes} nodes in ${Date.now() - t1} ms`
+    );
+    if (nodes === 0) throw new Error(`the runner read an empty ${SETTINGS} tree`);
+  } finally {
+    await reg.dispose().catch(() => undefined);
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.env.BENCH_WARM_RUNNER === "1") {
+    await warmRunner();
+    return;
+  }
   mkdirSync(OUT_DIR, { recursive: true });
   const started = new Date().toISOString();
+  NOTES.install(console);
 
   const { runtime, deviceType } = await simctlRuntime();
   const env = {
     startedAt: started,
     udid: UDID,
-    runnerPort: RUNNER_PORT,
+    runner: "tool-layer registry (one per simulator; no resident runner)",
     N,
     WARMUP,
     tokenizer: TOKENIZER,
@@ -1592,13 +1694,18 @@ async function main(): Promise<void> {
     const r = await runBlock(block);
     blocks.push(r);
     console.log(
-      `[bench-ios][${block}] backend=${r.treeBackend} oracleSelfTest=${r.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
+      `[bench-ios][${block}] intended=${r.intendedBackend} observedTree=${r.treeBackend} ` +
+        `oracleSelfTest=${r.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
         `navDiff=${r.oracle.navDiff} landThresh=${r.oracle.landingThreshold} ` +
         `landing=${r.effectCheckedTotal - r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
-        `ackTimeouts=${r.simInputAckTimeouts} crashes=${r.runnerCrashes} ` +
+        `ackTimeouts=${r.simInputAckTimeouts} connectionErrors=${r.connectionErrors}` +
+        `${r.firstConnectionError ? ` (first: ${JSON.stringify(r.firstConnectionError)})` : ""} ` +
+        `fallbackNotes=${r.fallbackNotes.length} runnerStarts=${r.runner.starts} ` +
+        `simulatorServerReady=${r.proprietaryReady ? r.proprietaryReady.ready : "n/a"} ` +
         `describeTokens=${r.describe.tokens}@${r.describe.elements}el ` +
         `stageMaxDelta=${r.describeStages ? r.describeStages.maxDelta : "n/a"} ` +
-        `scrollMedianPts=${r.scroll ? r.scroll.median : "n/a"}(refusals=${r.scroll ? r.scroll.refusals : "n/a"})`
+        `scrollMedianPts=${r.scroll ? r.scroll.median : "n/a"}(refusals=${r.scroll ? r.scroll.refusals : "n/a"}) ` +
+        `swipeSettle=${r.scroll ? `${r.scroll.settle.stable} stable/${r.scroll.settle.unstable} unstable p50=${r.scroll.settle.waitMsP50}ms` : "n/a"}`
     );
   }
 
