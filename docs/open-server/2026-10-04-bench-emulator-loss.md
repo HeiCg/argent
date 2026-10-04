@@ -65,20 +65,26 @@ both jobs of `bench-open-vs-proprietary.yml` and both jobs of `bench-androidworl
   Absent in old JSONs: merges and regen still work.
 - Host sampler during the bench step: one line per 30 s to `logs/host-sampler.log` (UTC,
   mem available, swap used, load, RSS and %CPU of `qemu-system-*`, `simulator-server`
-  count, top-3 RSS); a heartbeat line in the step log every 2 min. Never fails the job;
-  killed in an `if: always()` step.
+  count, top-3 RSS); a heartbeat line in the step log every 60 s (was 2 min), with the
+  largest non-qemu process. Never fails the job; killed in an `if: always()` step.
 - Post-mortem (`if: always()`, `logs/postmortem/`): `dmesg -T | tail -300` with
   oom / `Out of memory` / `Killed process` / `kvm` highlights, `adb devices -l`, emulator
   pid liveness, `emulator.log` tail, `/tmp/android-*/emu-crash-*.db` and dumps (50 MB
   cap), last 400 logcat lines if adb still answers.
 - Dispatch inputs: `emulator_build` (empty = `sdkmanager "emulator"`, as before; a build
   id installs `emulator-linux_x64-<build>.zip` from dl.google.com, 404 fails the job
-  early, `emulator -version` must report the build), `emulator_gpu` (default
+  early, `emulator -version` must report the build; the zip carries no SDK
+  `package.xml`, so the stock one is written back with the zip's `Pkg.Revision` and
+  `sdkmanager --list_installed` must list `emulator` at that revision), `emulator_gpu` (default
   `swiftshader_indirect`), `emulator_memory_mb` (default 4096). Defaults change nothing.
 - Liveness watchdog during the bench step: every 10 s, qemu process + `adb -s <serial>
 get-state`. qemu gone (once seen) or 3 consecutive non-`device` reads →
   `::error::emulator lost at <UTC> (block|config <name>)`, `emulator-lost.json`, SIGTERM
-  to the bench process tree, SIGKILL after 30 s. No emulator restart.
+  to the bench process tree, SIGKILL after 30 s. No emulator restart. Memory guard: host
+  `MemAvailable` < 700 MB and qemu RSS > 2.5 x `emulator_memory_mb` on 2 consecutive
+  checks is handled the same way, with reason
+  `host memory exhausted by emulator (qemu RSS <n> MB, avail <m> MB)`, so the job fails
+  while the runner can still upload artifacts.
 - Fail-closed:
   - Latency: remaining blocks are skipped, `merge-blocks.js` writes a merged JSON for
     the completed blocks with `partial: true`, `emulatorLost`, `missingBlocks`; the
@@ -109,5 +115,44 @@ gh workflow run bench-open-vs-proprietary.yml --repo HeiCg/argent --ref ci/bench
 
 ## Result
 
-- Default emulator (37.2.12 expected): TODO(run-id)
-- Pinned 36.4.10 (15004761): TODO(run-id)
+- Default emulator 37.2.12: run 37221226501, emulator lost in block `ON-uiautomation`
+  (latency job), see below.
+- Pinned 36.4.10 (15004761): run 37221221517. The binary installed
+  (`Android emulator version 36.4.10.0 (build_id 15004761)`), then
+  `avdmanager create avd` failed with `Error: "emulator" package must be installed!`
+  and no `config.ini`: replacing `$ANDROID_SDK_ROOT/emulator` with the zip removed the
+  SDK `package.xml`. Fixed in `install-emulator` (see above); not re-run yet.
+
+## Host sampler evidence (run 37221226501, default emulator 37.2.12, ref ci/bench-emulator-diagnostics)
+
+Control: run 37218578578 on pre-merge `open/main` (0e8e50fc) also lost the emulator in
+block `ON-uiautomation` (`spawnSync adb ETIMEDOUT` at 17:27:39Z). The loss is not caused
+by the upstream merge.
+
+Latency job 111491809959, guest RAM configured 4096 MB. Step-log heartbeat lines (UTC):
+
+| Time     | Host mem available | Swap used | Load | qemu RSS |
+| -------- | -----------------: | --------: | ---: | -------: |
+| 17:46:14 |            8868 MB |         0 | 4.35 |  5947 MB |
+| 17:48:14 |            7372 MB |         0 | 4.99 |  7392 MB |
+| 17:50:14 |            4946 MB |         0 | 3.73 |  9821 MB |
+| 17:52:14 |            3359 MB |         0 | 4.84 | 11227 MB |
+| 17:54:14 |            2433 MB |         0 | 4.98 | 12268 MB |
+| 17:56:14 |             800 MB |     72 MB | 3.60 | 13964 MB |
+| 17:58:14 |             866 MB |    600 MB | 6.02 | 14147 MB |
+| 18:00:14 |             645 MB |   2172 MB | 7.06 | 14180 MB |
+
+At 18:02:16 the qemu process was gone. The runner received a shutdown signal at
+18:02:21Z; the watchdog reported `emulator lost ... (block ON-uiautomation)`. The
+artifact upload steps were skipped because the runner was shut down.
+
+Reading: the qemu process resident size grew from 5.9 GB to 14.2 GB in 14 minutes with a
+4 GB guest, exhausting host memory and swap. This is measured host-side memory growth of
+the emulator process. Whether it is specific to emulator 37.2.12 is not established: the
+pinned 36.4.10 run (37221221517) failed at AVD creation for the packaging reason fixed
+here.
+
+When the runner itself is shut down, the post-mortem and upload steps do not run, so the
+step-log heartbeat is the only evidence that survives. This change prints it every 60 s
+instead of every 2 min, adds the largest non-qemu process to it, and adds the memory
+guard above so the job fails before the runner dies.
