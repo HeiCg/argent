@@ -96,14 +96,17 @@ export interface DescribeTreeData {
   screen?: { width: number; height: number };
   // Server-measured split of the open-device-server describe capture:
   // `waitedMs` is the idle gate, `captureMs` the post-idle serialization
-  // (screenshot skipped). Metadata only — never rendered into `description`.
+  // (screenshot skipped). When a cold WebView forced re-reads, `waitedMs` also
+  // holds that wait (the discarded reads and the sleeps between them), so it
+  // exceeds `timings.idleMs`. Metadata only — never rendered into `description`.
   // Set solely by the Android open path; lets a bench separate the idle wait
   // from the tree serialization cost.
   waitedMs?: number;
   captureMs?: number;
   // Finer per-stage split of the open-device-server capture (phase 3g): the
   // sub-costs of `captureMs` (rootInActiveWindow, windows enumeration, each
-  // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs).
+  // window's root, node serialize, JSON encode) plus `idleMs` (== waitedMs
+  // unless a cold-WebView wait was added). All from the returned read.
   // Metadata only — never rendered; a bench reads it to locate the residual.
   timings?: DescribeStageTimings;
   // Host/transport split of the open-device-server describe (phase 3i), the piece
