@@ -12,11 +12,12 @@ vi.mock("@argent/configuration-core", async () => {
 // paths don't open a real socket.
 vi.mock("../src/utils/gesture-utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/utils/gesture-utils")>();
-  return { ...actual, sendTouchEvent: vi.fn(async () => {}) };
+  // Resolves to the delivered-command outcome (`{ warning? }`) like the real one.
+  return { ...actual, sendTouchEvent: vi.fn(async () => ({})) };
 });
 vi.mock("../src/utils/simulator-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/utils/simulator-client")>();
-  return { ...actual, sendCommand: vi.fn(async () => {}) };
+  return { ...actual, sendCommand: vi.fn(async () => ({})) };
 });
 
 import { createGesturePinchTool } from "../src/tools/gesture-pinch";
