@@ -257,6 +257,46 @@ export function getAndroidSdkRoot(options: ConfigPathOptions = {}): string | nul
   return path.resolve(value);
 }
 
+const IOS_SIMSLIM_PROFILE_KEY = "ios.simslim.profile";
+const IOS_SIMSLIM_BINARY_KEY = "ios.simslim.binary";
+
+/** `~`/`~/…` expands to home; anything else resolves against `baseDir`. */
+function resolveScopedPath(value: string, baseDir: string, home: string): string {
+  if (value === "~") return path.resolve(home);
+  if (value.startsWith("~/")) return path.resolve(home, value.slice(2));
+  return path.resolve(baseDir, value);
+}
+
+/**
+ * The configured simslim profile as an absolute path, or null when unset (the
+ * feature is off). Project wins; a relative value resolves against its own
+ * scope's base — project root for project, home for global — as
+ * `ios.additionalDeviceSets` entries do.
+ */
+export function getIosSimslimProfile(options: ConfigPathOptions = {}): string | null {
+  const def = requireDefinition(IOS_SIMSLIM_PROFILE_KEY) as ConfigDefinition<string>;
+  const home = resolveHomeDir(options);
+  const project = readScopeValue(def, "project", options);
+  if (project !== undefined) {
+    return resolveScopedPath(project, resolveProjectRoot(options.cwd ?? process.cwd()), home);
+  }
+  const global = readScopeValue(def, "global", options);
+  return global === undefined ? null : resolveScopedPath(global, home, home);
+}
+
+/**
+ * The configured simslim executable, or null when unset (the caller runs
+ * `simslim` from PATH). A bare name stays a PATH lookup; a path resolves
+ * against home, the base of the only scope this key may be set in.
+ */
+export function getIosSimslimBinary(options: ConfigPathOptions = {}): string | null {
+  const value = getConfigValueByKey(IOS_SIMSLIM_BINARY_KEY, options);
+  if (typeof value !== "string") return null;
+  if (value !== "~" && !value.includes("/")) return value;
+  const home = resolveHomeDir(options);
+  return resolveScopedPath(value, home, home);
+}
+
 const IOS_ADDITIONAL_DEVICE_SETS_KEY = "ios.additionalDeviceSets";
 
 /**

@@ -13,6 +13,8 @@ import {
   coerceCliValue,
   getAdditionalIosDeviceSets,
   getAndroidSdkRoot,
+  getIosSimslimProfile,
+  getIosSimslimBinary,
   UnknownConfigKeyError,
   ConfigScopeError,
   ConfigValidationError,
@@ -269,6 +271,54 @@ describe("android.sdkRoot — project wins, ~ expands", () => {
     expect(getAndroidSdkRoot(opts())).toBe(path.resolve("/opt/global-sdk"));
     setConfigValue("android.sdkRoot", "~/Android/Sdk", "project", opts());
     expect(getAndroidSdkRoot(opts())).toBe(path.join(homeDir, "Android/Sdk"));
+  });
+});
+
+describe("ios.simslim.profile — project wins, relative paths resolve per scope", () => {
+  it("reads as null when unset (the feature is off)", () => {
+    expect(getIosSimslimProfile(opts())).toBeNull();
+    expect(getConfigValueByKey("ios.simslim.profile", opts())).toBeUndefined();
+  });
+
+  it("resolves a relative global value against home, a relative project value against the project root", () => {
+    setConfigValue("ios.simslim.profile", "simslim/dev.json", "global", opts());
+    expect(getIosSimslimProfile(opts())).toBe(path.join(homeDir, "simslim/dev.json"));
+    setConfigValue("ios.simslim.profile", ".github/simslim/ci.json", "project", opts());
+    expect(getIosSimslimProfile(opts())).toBe(path.join(projectDir, ".github/simslim/ci.json"));
+  });
+
+  it("expands ~ and keeps an absolute path", () => {
+    setConfigValue("ios.simslim.profile", "~/ci.json", "project", opts());
+    expect(getIosSimslimProfile(opts())).toBe(path.join(homeDir, "ci.json"));
+    setConfigValue("ios.simslim.profile", "/opt/simslim/ci.json", "project", opts());
+    expect(getIosSimslimProfile(opts())).toBe(path.resolve("/opt/simslim/ci.json"));
+  });
+
+  it("rejects a non-string value", () => {
+    expect(() => setConfigValue("ios.simslim.profile", 42, "project", opts())).toThrow(
+      ConfigValidationError
+    );
+  });
+});
+
+describe("ios.simslim.binary — global only, PATH lookup when unset", () => {
+  it("reads as null when unset, so the caller resolves `simslim` on PATH", () => {
+    expect(getIosSimslimBinary(opts())).toBeNull();
+  });
+
+  it("refuses the project scope: a checked-in config must not pick the binary argent runs", () => {
+    expect(() => setConfigValue("ios.simslim.binary", "/tmp/evil", "project", opts())).toThrow(
+      ConfigScopeError
+    );
+  });
+
+  it("keeps a bare command name for PATH lookup and expands a ~ path", () => {
+    setConfigValue("ios.simslim.binary", "simslim-dev", "global", opts());
+    expect(getIosSimslimBinary(opts())).toBe("simslim-dev");
+    setConfigValue("ios.simslim.binary", "~/bin/simslim", "global", opts());
+    expect(getIosSimslimBinary(opts())).toBe(path.join(homeDir, "bin/simslim"));
+    setConfigValue("ios.simslim.binary", "/opt/homebrew/bin/simslim", "global", opts());
+    expect(getIosSimslimBinary(opts())).toBe(path.resolve("/opt/homebrew/bin/simslim"));
   });
 });
 

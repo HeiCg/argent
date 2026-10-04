@@ -173,6 +173,31 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     example: "~/Library/Android/sdk",
   },
   {
+    key: "ios.simslim.profile",
+    description:
+      "simslim profile file (JSON) applied before `boot-device` boots a local iOS simulator, " +
+      "to disable launchd daemons the simulator does not need. Unset ⇒ off. Needs the external " +
+      "`simslim` binary and iOS 18.5+; on any simslim failure the simulator boots stock with a " +
+      "warning. Absolute, `~`-prefixed, or relative to the project root (home dir for global scope).",
+    scopes: ["project", "global"],
+    parse: asString,
+    merge: "prioritize-local",
+    example: ".github/simslim/ci.json",
+  },
+  // Global-scope only: a checked-in `.argent/config.json` must not choose the
+  // executable `boot-device` runs. The profile above is data simslim validates;
+  // this is a program. `merge` is nominal, as for the scripts.* keys below.
+  {
+    key: "ios.simslim.binary",
+    description:
+      "simslim executable used for `ios.simslim.profile`. A bare name is looked up on PATH, " +
+      "a path is absolute, `~`-prefixed or relative to home. Unset ⇒ `simslim` on PATH.",
+    scopes: ["global"],
+    parse: asString,
+    merge: "prioritize-global",
+    example: "/opt/homebrew/bin/simslim",
+  },
+  {
     key: "recordings.directory",
     description:
       "Directory where finished screen recordings (mp4) are saved on the client host. " +
