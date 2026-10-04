@@ -36,6 +36,13 @@ import { ensureDep } from "../../utils/check-deps";
 import { linuxBootDiagnostics } from "../../utils/linux-preflight";
 import { listIosSimulators } from "../../utils/ios-devices";
 import { deviceSetForUdid, simctlPrefix } from "../../utils/ios-device-sets";
+import {
+  applySimslimBeforeBoot,
+  readSimslimSettings,
+  verifySimslimAfterBoot,
+  type SimslimSlim,
+  type SimslimTarget,
+} from "../../utils/ios-simslim";
 import { androidHeadlessFromEnv, iosHeadlessFromEnv } from "../../utils/no-window-env";
 import { classifyDevice, stripRemotePrefix } from "../../utils/device-info";
 import { externalClaimForNativeId, isExternalId } from "../../utils/external-devices";
@@ -124,8 +131,17 @@ const zodSchema = z.object({
 
 type BootDeviceParams = z.infer<typeof zodSchema>;
 
+// `slim` / `warning` appear only when `ios.simslim.profile` is configured.
+type IosBootResult = {
+  platform: "ios";
+  udid: string;
+  booted: true;
+  slim?: SimslimSlim;
+  warning?: string;
+};
+
 type BootDeviceResult =
-  | { platform: "ios"; udid: string; booted: true }
+  | IosBootResult
   | { platform: "ios-remote"; udid: string; booted: true }
   | { platform: "android"; serial: string; avdName: string; booted: true }
   | VegaBootResult
@@ -411,7 +427,7 @@ async function bootIos(
   registry: Registry,
   force?: boolean,
   headless?: boolean
-): Promise<{ platform: "ios"; udid: string; booted: true } | NativeDevtoolsInitFailedResult> {
+): Promise<IosBootResult | NativeDevtoolsInitFailedResult> {
   // Catch the non-darwin case before `ensureDep("xcrun")` so a Linux user
   // gets "iOS requires macOS" rather than a misleading "install xcode-select".
   if (process.platform !== "darwin") {
@@ -453,6 +469,20 @@ async function bootIos(
       );
     });
   }
+
+  // Opt-in `ios.simslim.profile`. `simslim on` boots and reboots the simulator
+  // itself, so it runs here, before `simctl boot` (which then tolerates
+  // "Booted"). Unset = no spawn and the stock sequence below, unchanged.
+  const simslim = readSimslimSettings();
+  const slimTarget: SimslimTarget = {
+    udid,
+    runtime: simMatch?.runtime,
+    runtimeKind: simMatch?.runtimeKind,
+    state: simState,
+    shutDownByForce: Boolean(force && simState === "Booted"),
+    deviceSet,
+  };
+  const slimPlan = simslim ? await applySimslimBeforeBoot(simslim, slimTarget) : null;
 
   await execFileAsync("xcrun", [...prefix, "boot", udid]).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
@@ -507,6 +537,8 @@ async function bootIos(
   // skip re-applying and the next launch would be uninjected. Failures surface
   // via getInitFailure below.
   await ndApi.reverifyEnv().catch(() => {});
+  const slimOutcome =
+    simslim && slimPlan ? await verifySimslimAfterBoot(simslim, slimTarget, slimPlan) : {};
   const initFailure = ndApi.getInitFailure();
   if (initFailure?.givenUp) {
     return buildInitFailedResult(udid, initFailure);
@@ -531,7 +563,7 @@ async function bootIos(
     // Best-effort: a missing GUI app never fails a boot whose core is already up.
     await openSimulatorWindow(udid).catch(() => {});
   }
-  return { platform: "ios", udid, booted: true };
+  return { platform: "ios", udid, booted: true, ...slimOutcome };
 }
 
 /**
