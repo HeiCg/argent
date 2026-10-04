@@ -4,7 +4,16 @@
 // ships bin/linux/ but discovery/exec can fail), in which case only the ON blocks
 // are present and the run is scored ON-only. Also folds the CI runner facts
 // (nproc / RAM / KVM / emulator image+arch) written by the workflow to
-// $BENCH_OUT/ci-runner-env.json into the merged `env` block.
+// $BENCH_OUT/ci-runner-env.json into the merged `env` block, and the emulator/host
+// record ($BENCH_OUT/ci-emulator-env.json, emulator-diagnostics.sh env) as `emulator`
+// (null when absent, e.g. old fixtures).
+//
+// Emulator lost (2026-10-04): when the CI watchdog's marker exists
+// ($BENCH_EMULATOR_LOST_FILE), the run is PARTIAL — the completeness gates (a requested
+// ON block without a file, P0 VOID) record the gap in `missingBlocks` instead of
+// throwing, so the merged JSON + scoreboard still describe the blocks that completed.
+// The quality gates below still apply to every completed block. The workflow fails
+// the job on the marker regardless (emulator-diagnostics.sh enforce).
 const fs = require("fs");
 const path = require("path");
 const {
@@ -36,13 +45,50 @@ const ALL = [
 const CURRENT_OFF = ["OFF-1", "OFF-2"];
 const LEGACY_OFF = "OFF-legacy";
 
+const readJson = (p) => {
+  if (!p || !fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
+};
+const emulatorLost = readJson(process.env.BENCH_EMULATOR_LOST_FILE);
+const partial = Boolean(emulatorLost);
+const emulator = readJson(path.join(OUT, "ci-emulator-env.json"));
+const lostLabel = emulatorLost
+  ? `${emulatorLost.lostAt}${emulatorLost.context ? ` (${emulatorLost.context})` : ""}`
+  : "";
+
 const files = {};
 for (const n of ALL) {
   const p = path.join(OUT, `bench-block-${n}.json`);
   if (fs.existsSync(p)) files[n] = JSON.parse(fs.readFileSync(p, "utf8"));
 }
 const present = ALL.filter((n) => files[n]);
-if (present.length === 0) throw new Error(`no bench-block-*.json found under ${OUT}`);
+const requestedBlocks = (process.env.BENCH_BLOCKS || ALL.join(","))
+  .split(",")
+  .map((s) => s.trim())
+  .filter((n) => ALL.includes(n));
+const missingBlocks = requestedBlocks.filter((n) => !files[n]);
+if (present.length === 0) {
+  if (!partial) throw new Error(`no bench-block-*.json found under ${OUT}`);
+  const emptyPath = path.join(OUT, `bench-merged-${Date.now()}.json`);
+  const empty = {
+    partial: true,
+    emulatorLost,
+    missingBlocks,
+    emulator,
+    env: { ci: readJson(path.join(OUT, "ci-runner-env.json")) || {} },
+    blocksRan: [],
+    blocks: [],
+    finishedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(emptyPath, JSON.stringify(empty, null, 2));
+  console.log(`PARTIAL: emulator lost at ${lostLabel} before any block completed`);
+  console.log("MERGED_JSON=" + emptyPath);
+  process.exit(0);
+}
 
 // ON blocks are the hard requirement: a requested ON-* block that produced no
 // file must fail loudly (a silent drop would score an incomplete run as healthy).
@@ -53,7 +99,7 @@ const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
   .map((s) => s.trim())
   .filter(Boolean);
 const missingOn = requested.filter((n) => n.startsWith("ON") && ALL.includes(n) && !files[n]);
-if (missingOn.length) {
+if (missingOn.length && !partial) {
   throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
 }
 
@@ -61,7 +107,7 @@ if (missingOn.length) {
 // input-manager candidate ran — without the current default as a same-run control,
 // no "no regression of the default" (P6) or default-path claim is possible. A 3n.1
 // run with ON-input-manager but no ON-uiautomation is VOID.
-if (files["ON-input-manager"] && !files["ON-uiautomation"]) {
+if (files["ON-input-manager"] && !files["ON-uiautomation"] && !partial) {
   throw new Error(
     "P0 VOID: ON-input-manager ran but the ON-uiautomation control block is absent — " +
       "the run cannot grade the promotion candidate against the current default (P6)."
@@ -353,6 +399,12 @@ if (fs.existsSync(ciEnvPath)) {
 }
 
 const result = {
+  // Emulator lost mid-run: only `blocksRan` completed; `missingBlocks` never produced
+  // a file. A partial merge is never a complete result.
+  partial,
+  emulatorLost,
+  missingBlocks: partial ? missingBlocks : [],
+  emulator,
   env: { ...baseEnv, ci: ciEnv },
   envPerBlock: Object.fromEntries(present.map((n) => [n, files[n].env])),
   blocksRan: present,
@@ -425,6 +477,12 @@ if (tls.length) {
       tls
         .map(({ block, tl }) => `${block}:${tl.frameCount}f${tl.hasMoveFrame ? "+move" : ""}`)
         .join(", ")
+  );
+}
+if (partial) {
+  console.log(
+    `PARTIAL: emulator lost at ${lostLabel}; completed ${present.join(", ")}; ` +
+      `missing ${missingBlocks.join(", ") || "(none)"}`
   );
 }
 console.log("MERGED_JSON=" + outPath);

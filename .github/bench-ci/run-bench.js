@@ -46,7 +46,18 @@
   console.log(
     `[run-bench] self-orchestrating ${[...arms, ...(wantFling ? ["FLING"] : [])].join(", ") || "(nothing)"} (workflow-scope workaround)`
   );
+  // Tell the CI emulator watchdog which block is running (emulator-diagnostics.sh):
+  // a self-orchestrated arm runs inside the workflow's first run_block call.
+  const setContext = (text) => {
+    if (!process.env.BENCH_CONTEXT_FILE) return;
+    try {
+      fs.writeFileSync(process.env.BENCH_CONTEXT_FILE, `${text}\n`);
+    } catch {
+      /* diagnostics only */
+    }
+  };
   for (const arm of arms) {
+    setContext(`block ${arm} (self-orchestrated)`);
     console.log(`########## BLOCK ${arm} (self-orchestrated) ##########`);
     // Readiness gate before each arm (best-effort, mirrors the workflow's per-block
     // ready-gate; a bad screen still trips the child's own effect gate).
@@ -77,6 +88,7 @@
     );
   }
   if (wantFling) {
+    setContext("block FLING (self-orchestrated)");
     console.log(
       "########## FLING (self-orchestrated, ticket 3o — optical, report-only) ##########"
     );
@@ -130,6 +142,7 @@
     // look like a clean instrument result).
     if (flingFailure) throw flingFailure;
   }
+  setContext(`block ${process.env.BENCH_ONLY}`);
 })();
 
 require("ts-node").register({

@@ -712,3 +712,128 @@ test("merge-fling: input-manager under-scroll vs proprietary is detected (ratio<
   );
   assert.match(r.stdout, /ON-input-manager VERDICT: FAIL/); // 0.6 ratio is outside ±0.15
 });
+
+/* ------------------- emulator lost: partial merge + emulator record ------------------- */
+// 2026-10-04 (runs 37213141861 / 37215518035): the emulator died mid-run. The latency
+// merge must still produce a merged JSON + scoreboard for the blocks that completed,
+// marked partial, instead of dying on "missing required ON block" / "P0 VOID". The
+// emulator/host record (ci-emulator-env.json) is embedded as `emulator`; old fixtures
+// without it still merge.
+
+const LOST = {
+  lostAt: "2026-10-04T16:38:40Z",
+  reason: "adb get-state failed 3 consecutive checks (last: error: closed)",
+  context: "block ON-uiautomation",
+  serial: "emulator-5554",
+};
+const EMU_ENV = {
+  emulator: {
+    version: "37.2.12.0",
+    buildId: "16428233",
+    pinnedBuild: null,
+    gpu: "swiftshader_indirect",
+  },
+  systemImage: { package: "system-images;android-34;google_apis;x86_64", revision: "14" },
+  adb: { version: "1.0.41", platformTools: "36.0.0-13206524" },
+  runnerImage: { os: "ubuntu24", version: "20260927.320.1" },
+  kernel: "6.11.0-1018-azure",
+  nproc: 4,
+};
+function writeLost(out) {
+  const p = path.join(out, "emulator-lost.json");
+  fs.writeFileSync(p, JSON.stringify(LOST));
+  return p;
+}
+
+test("merge-blocks: emulator lost -> merged JSON for the completed blocks, marked partial", () => {
+  const out = freshOut();
+  // Run 37215518035's shape: OFF-1 and the self-orchestrated ON-input-manager done,
+  // the emulator died inside ON-uiautomation (no file), OFF-legacy/OFF-2 never ran.
+  writeBlocks(out, [block("OFF-1"), block("ON-input-manager")]);
+  const r = run(MERGE_BLOCKS, out, { ...ALLENV, BENCH_EMULATOR_LOST_FILE: writeLost(out) });
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.partial, true);
+  assert.deepStrictEqual(m.blocksRan, ["OFF-1", "ON-input-manager"]);
+  assert.deepStrictEqual(m.missingBlocks, ["ON-uiautomation", "OFF-2"]);
+  assert.strictEqual(m.emulatorLost.lostAt, "2026-10-04T16:38:40Z");
+  assert.match(r.stdout, /PARTIAL/);
+});
+
+test("merge-blocks: emulator lost before any block completed -> minimal partial JSON", () => {
+  const out = freshOut();
+  const r = run(MERGE_BLOCKS, out, { ...ALLENV, BENCH_EMULATOR_LOST_FILE: writeLost(out) });
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.partial, true);
+  assert.deepStrictEqual(m.blocksRan, []);
+});
+
+test("merge-blocks: without the emulator-lost marker the completeness gates still FIRE", () => {
+  const out = freshOut();
+  writeBlocks(out, [block("OFF-1"), block("ON-input-manager")]);
+  const r = run(MERGE_BLOCKS, out, {
+    ...ALLENV,
+    BENCH_EMULATOR_LOST_FILE: path.join(out, "absent.json"),
+  });
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /missing required ON block/);
+});
+
+test("merge-blocks: ci-emulator-env.json is embedded as `emulator`; absent -> null", () => {
+  const out = freshOut();
+  writeBlocks(out, FOUR());
+  fs.writeFileSync(path.join(out, "ci-emulator-env.json"), JSON.stringify(EMU_ENV));
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.emulator.emulator.version, "37.2.12.0");
+  assert.strictEqual(m.partial, false);
+  const old = freshOut();
+  writeBlocks(old, FOUR());
+  const m2 = mergedOf(run(MERGE_BLOCKS, old, ALLENV));
+  assert.strictEqual(m2.emulator, null);
+});
+
+test("scoreboard: PARTIAL banner + emulator rows; old merged JSON without them still renders", () => {
+  const out = freshOut();
+  writeBlocks(out, [block("OFF-1"), block("ON-input-manager")]);
+  fs.writeFileSync(path.join(out, "ci-emulator-env.json"), JSON.stringify(EMU_ENV));
+  const r = run(MERGE_BLOCKS, out, { ...ALLENV, BENCH_EMULATOR_LOST_FILE: writeLost(out) });
+  assert.strictEqual(r.code, 0, r.stderr);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(
+    sb.stdout,
+    /PARTIAL — emulator lost at 2026-10-04T16:38:40Z \(block ON-uiautomation\)/
+  );
+  assert.match(sb.stdout, /missing: ON-uiautomation, OFF-2/);
+  assert.match(sb.stdout, /\| emulator \| 37\.2\.12\.0 \(build 16428233\) \|/);
+  assert.match(sb.stdout, /\| runner image \| 20260927\.320\.1 \|/);
+  // An old merged JSON (no partial / emulator keys) still renders, with no banner.
+  const old = freshOut();
+  writeBlocks(old, FOUR());
+  const m = mergedOf(run(MERGE_BLOCKS, old, ALLENV));
+  const raw = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        old,
+        fs.readdirSync(old).find((f) => f.startsWith("bench-merged-"))
+      ),
+      "utf8"
+    )
+  );
+  delete raw.partial;
+  delete raw.emulator;
+  delete raw.emulatorLost;
+  delete raw.missingBlocks;
+  fs.writeFileSync(
+    path.join(
+      old,
+      fs.readdirSync(old).find((f) => f.startsWith("bench-merged-"))
+    ),
+    JSON.stringify(raw)
+  );
+  assert.ok(m);
+  const sb2 = run(SCOREBOARD, old);
+  assert.strictEqual(sb2.code, 0, sb2.stderr);
+  assert.doesNotMatch(sb2.stdout, /PARTIAL/);
+});
