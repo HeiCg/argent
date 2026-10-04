@@ -57,6 +57,12 @@ jobs:
         # synthetic iOS block JSONs.
         run: node --test .github/bench-ci/gates-ios.test.js
 
+      - name: Test bench emulator diagnostics
+        # Sampler line/heartbeat formatters, the liveness watchdog's 3-strikes logic
+        # and kill-target selection, the ci-emulator-env.json builder — injected
+        # command runners, no adb or emulator.
+        run: node --test .github/bench-ci/emulator-diagnostics.test.js
+
   # Typechecking needs the same install and build as the tests but none of their
   # output, so running it alongside them takes its ~60s off the critical path
   # rather than adding to it.
