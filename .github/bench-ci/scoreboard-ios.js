@@ -98,6 +98,37 @@ L.push(`| blocks ran | ${present.join(", ") || "—"} |\n`);
   }
 }
 
+// simslim: whether the simulator was slimmed, and simslim's memory measure after
+// boot and after each block. The measure is descriptive (G4 of the simslim doc).
+{
+  const sim = merged ? merged.simulator : null;
+  L.push("### Simulator (simslim)\n");
+  if (!sim || typeof sim !== "object") {
+    L.push("_Not recorded (pre-simslim artifact): the simulator's slim state is unknown._\n");
+  } else {
+    const mib = (b) => (Number.isFinite(b) ? `${(b / 1048576).toFixed(1)} MiB` : "—");
+    L.push("| field | value |");
+    L.push("|---|---|");
+    L.push(`| slim | ${sim.slim ? "yes" : "no"} |`);
+    L.push(`| simslim | ${sim.simslimVersion || "not installed"} |`);
+    L.push(`| profile sha256 | ${sim.profileSha256 ? `\`${sim.profileSha256}\`` : "—"} |`);
+    L.push(
+      `| managed labels disabled | ${sim.managedDisabled ?? "—"} / ${sim.managedTotal ?? "—"} |\n`
+    );
+    L.push("| measured at | processes | phys_footprint |");
+    L.push("|---|---|---|");
+    const row = (at, r) => {
+      const m = r && r.measure;
+      L.push(`| ${at} | ${m && m.processes != null ? m.processes : "—"} | ${mib(m && m.bytes)} |`);
+    };
+    row("boot", sim);
+    for (const [n, r] of Object.entries(merged.simulatorByBlock || {})) row(n, r);
+    L.push(
+      "\n_`simslim measure`: process count and summed phys_footprint of the simulator's process tree. boot = after `bootstatus`; a block row = after that block._\n"
+    );
+  }
+}
+
 // Verb table per block.
 L.push("### Verb latency per block (p50 / p95 ms, N per verb; describe scored per TREE backend)\n");
 L.push("| verb | " + present.map((n) => `${n} (${bl[n].block.treeBackend})`).join(" | ") + " |");

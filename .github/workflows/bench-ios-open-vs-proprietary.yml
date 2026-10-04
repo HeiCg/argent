@@ -27,6 +27,11 @@ on:
         description: "simulator-server release tag for the OFF arm (empty = the download script's default tag)"
         required: false
         default: ""
+      slim:
+        description: "Slim the simulator with simslim (.github/simslim/ci.json) before the blocks"
+        type: boolean
+        required: false
+        default: false
   # (The temporary branch-scoped `push` trigger used during bring-up has been
   # REMOVED in this final commit, per the ticket. To dispatch again, place the
   # workflow on the default branch — workflow_dispatch cannot fire from a feature
@@ -42,6 +47,8 @@ jobs:
     env:
       BENCH_N: ${{ github.event.inputs.n || '20' }}
       BENCH_BLOCKS: ${{ github.event.inputs.blocks || 'OFF-1,ON-xcuitest,ON-siminput,OFF-2' }}
+      # simslim: false unless a dispatch asked for it (any other event reads false).
+      SIM_SLIM: ${{ inputs.slim && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -128,6 +135,16 @@ jobs:
           ls -la packages/ios-sim-input/bin/
           echo "IOS_SIM_INPUT_BINARY=$PWD/packages/ios-sim-input/bin/sim-input" >> "$GITHUB_ENV"
 
+      - name: Install simslim (both modes; slim=false only measures, never slims)
+        # Pinned v0.11.0 + sha256 in the script. Stock runs install it too, so the
+        # bench records a `simslim measure` baseline on the same runner image.
+        shell: bash
+        run: |
+          if ! bash .github/bench-ci/install-simslim.sh; then
+            if [ "$SIM_SLIM" = "true" ]; then echo "::error::simslim install failed"; exit 1; fi
+            echo "::warning::simslim install failed — stock run without a simulator measure"
+          fi
+
       - name: Create and boot an iPhone simulator
         shell: bash
         run: |
@@ -147,8 +164,22 @@ jobs:
             UDID=""
           done
           if [ -z "$UDID" ]; then echo "::error::no iPhone device type is compatible with $RUNTIME"; exit 1; fi
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
+          # slim=true: `simslim on` + bootstatus + verify (drift fails the job);
+          # slim=false: the plain `simctl boot` + bootstatus.
+          bash .github/bench-ci/simslim-ci.sh boot "$UDID"
+          # The simulator record after boot (status + measure; record-only). This
+          # is the ONLY boot: every block below runs on it, so all blocks share
+          # the slim state; each block is stamped with it again and the merge
+          # refuses blocks whose slim state differs.
+          mkdir -p .bench-results/simslim
+          bash .github/bench-ci/simslim-ci.sh snapshot "$UDID" .bench-results/simslim boot
+          node .github/bench-ci/proprietary-provenance.js simulator --slim "$SIM_SLIM" \
+            --simslim-version "$(cat .bench-results/simslim/simslim-version.txt 2>/dev/null)" \
+            --profile .github/simslim/ci.json \
+            --status-json .bench-results/simslim/simslim-status-boot.json \
+            --measure-json .bench-results/simslim/simslim-measure-boot.json \
+            --out .bench-results/simulator.json \
+            || echo "::warning::simulator record failed"
           # Launch Settings once so the first block starts from a warm root.
           xcrun simctl launch "$UDID" com.apple.Preferences || true
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
@@ -227,11 +258,27 @@ jobs:
             return "${PIPESTATUS[0]}"
           }
 
+          # Stamp the block with the simulator record (simslim status + measure,
+          # never `on`), so the merge can refuse mixed slim state.
+          record_block () {
+            local b="$1"
+            bash .github/bench-ci/simslim-ci.sh snapshot "$SIM_UDID" "$BENCH_OUT/simslim" "$b"
+            [ -f "$BENCH_OUT/bench-block-$b.json" ] || return 0
+            node .github/bench-ci/proprietary-provenance.js simulator --slim "$SIM_SLIM" \
+              --simslim-version "$(cat "$BENCH_OUT/simslim/simslim-version.txt" 2>/dev/null)" \
+              --profile .github/simslim/ci.json \
+              --status-json "$BENCH_OUT/simslim/simslim-status-$b.json" \
+              --measure-json "$BENCH_OUT/simslim/simslim-measure-$b.json" \
+              --block "$BENCH_OUT/bench-block-$b.json" \
+              || echo "::warning::simulator record failed for $b"
+          }
+
           set +e
           STATUS=0
           IFS=',' read -ra BLKS <<< "$BENCH_BLOCKS"
           for b in "${BLKS[@]}"; do
             run_block "$b" || { echo "::warning::block $b exited non-zero"; STATUS=1; }
+            record_block "$b"
           done
           echo "########## MERGE ##########"
           node .github/bench-ci/merge-blocks-ios.js 2>&1 | tee "$BENCH_OUT/merge.log"

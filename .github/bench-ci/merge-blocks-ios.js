@@ -107,6 +107,46 @@ for (const n of present) {
   );
 }
 
+// simslim: the simulator's slim state. Every block runs on the one simulator boot
+// the workflow made, so they share it by construction; the workflow stamps each
+// block (block.simulator) and writes the post-boot record ($BENCH_OUT/simulator.json).
+// Blocks whose slim state differs are not comparable: refuse to merge at all,
+// before any merged JSON exists. No record anywhere (pre-simslim artifacts) → unknown.
+const { simulatorStateDiff } = require("./proprietary-provenance");
+let bootSimulator = null;
+const simPath = path.join(OUT, "simulator.json");
+if (fs.existsSync(simPath)) {
+  try {
+    bootSimulator = JSON.parse(fs.readFileSync(simPath, "utf8"));
+  } catch (e) {
+    console.error(`simulator.json unreadable: ${e.message}`);
+  }
+}
+const simulatorByBlock = Object.fromEntries(
+  present.map((n) => [n, files[n].block.simulator || null])
+);
+{
+  const recs = [
+    ...(bootSimulator ? [["boot", bootSimulator]] : []),
+    ...present.map((n) => [n, simulatorByBlock[n]]),
+  ];
+  if (recs.some(([, r]) => r)) {
+    const [refName, ref] = recs[0];
+    const diffs = recs
+      .slice(1)
+      .map(([n, r]) => [n, simulatorStateDiff(ref, r)])
+      .filter(([, d]) => d);
+    if (diffs.length) {
+      for (const [n, d] of diffs) console.error(`slim state differs: ${refName} vs ${n}: ${d}`);
+      throw new Error(
+        `iOS bench merge refused: blocks ran with different simulator slim state (see above)`
+      );
+    }
+  }
+}
+const simulator =
+  bootSimulator || present.map((n) => simulatorByBlock[n]).find(Boolean) || "unknown";
+
 const failures = [];
 
 // G0 control: both OFF blocks and both ON arms present + oracle self-test passed.
@@ -326,6 +366,8 @@ if (fs.existsSync(provPath)) {
 const merged = {
   env: files[present[0]] ? files[present[0]].env : {},
   proprietaryProvenance,
+  simulator,
+  simulatorByBlock,
   envPerBlock: Object.fromEntries(present.map((n) => [n, files[n].env])),
   blocksRan: present,
   gates: {

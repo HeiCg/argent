@@ -1,0 +1,1 @@
+{ "name": "ci", "description": "Agent-driven UI tests", "keep": ["com.apple.swcd"] }
