@@ -1,0 +1,50 @@
+---
+sidebar_position: 12
+sidebar_label: Slim iOS simulators
+title: Slim iOS simulators
+sidebar_custom_props:
+  icon: gauge
+---
+
+Argent can boot an iOS simulator in a slim state. A slim simulator does not start the system daemons that an agent-driven UI test does not need. Argent uses [simslim](https://github.com/MobAI-App/simslim) for this. simslim is an external open-source tool from MobAI. Argent does not include it.
+
+The simslim README reports one measurement: a simulator that uses 4.0 GB of memory stock uses 0.9 GB slim, on an M1 Pro Mac with 16 GB. Argent did not make this measurement.
+
+## Turn it on
+
+The feature is off by default.
+
+1. Install simslim:
+
+   ```bash
+   brew install mobai-app/tap/simslim
+   ```
+
+2. Write a simslim profile file, or use the profile of this repository at `.github/simslim/ci.json`.
+3. Set the profile in the Argent configuration:
+
+   ```bash
+   argent config set ios.simslim.profile .github/simslim/ci.json --scope project
+   ```
+
+When the agent boots a local iOS simulator, Argent runs simslim with the profile before the simulator boots. Then Argent boots the simulator as usual and checks the result with simslim. The boot result tells the agent if the simulator is slim.
+
+## Requirements
+
+- A local iOS simulator that is shut down. Argent does not slim a simulator that is already booted. Boot it again with the force option.
+- iOS 18.5 or later. On an older runtime the slim state does not stay after a reboot.
+- macOS with the `simslim` binary on `PATH`, or at the path in the configuration.
+
+Argent does not slim tvOS simulators, remote simulators or physical devices.
+
+## Fallback to a stock simulator
+
+simslim never stops a boot. If simslim is not installed, the runtime is too old, simslim fails or the check finds a difference from the profile, Argent boots the simulator and returns one warning. The warning tells the agent what happened.
+
+## The CI profile
+
+This repository keeps one profile at `.github/simslim/ci.json`. It keeps `com.apple.swcd` running. That daemon handles universal links, and the agent can open universal links with the `open-url` tool. The daemons that Argent needs for the accessibility tree, text input and XCUITest are not in the simslim disable list.
+
+The iOS CI workflows of this repository have a `slim` input. When the input is on, the workflow slims the simulator with this profile and fails when the check finds a difference from the profile.
+
+The [configuration reference](/docs/reference/configuration#configuration-keys) lists the two simslim keys. The [tools reference](/docs/reference/tools) lists `boot-device`.
