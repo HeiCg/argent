@@ -54,14 +54,29 @@ function naVerb(name) {
   return { verb: name, latency: { n: 0 }, latencySamples: [], errors: 0, extra: { na: "N/A" } };
 }
 
+/** The serving path every sample of a healthy block records (C.1): the tree
+ * source for describe, the injector for gestures, both for tap+describe. */
+function healthyPaths(name) {
+  const isOff = name.startsWith("OFF");
+  const tree = isOff ? "ax-service" : "xcuitest-runner";
+  const input = isOff
+    ? "simulator-server"
+    : name === "ON-siminput"
+      ? "sim-input"
+      : "open-device-server";
+  return { tree, input, both: `${input}+${tree}` };
+}
+
 /** A healthy per-block file. Override any field of `.block`. */
 function block(name, over = {}) {
   const isOff = name.startsWith("OFF");
+  const p = healthyPaths(name);
+  const served = (path) => ({ servedBy: samples(path) });
   const measured = [
-    verb("describe"),
-    verb("gesture-tap", { effectChecked: N, effectZero: 0 }),
-    verb("tap+describe"),
-    verb("gesture-swipe"),
+    verb("describe", served(p.tree)),
+    verb("gesture-tap", { effectChecked: N, effectZero: 0, ...served(p.input) }),
+    verb("tap+describe", served(p.both)),
+    verb("gesture-swipe", served(p.input)),
   ];
   const awaits = isOff
     ? [verb("await-screen-idle"), verb("await-ui-element")]
@@ -71,6 +86,7 @@ function block(name, over = {}) {
     block: {
       block: name,
       config: isOff ? "OFF" : "ON",
+      intendedBackend: isOff ? "ax-service" : "xcuitest",
       treeBackend: isOff ? "ax-service" : "xcuitest",
       inputIsProductTool: name !== "ON-siminput",
       hasAwaitProduct: isOff,
@@ -126,7 +142,8 @@ function block(name, over = {}) {
       tapRecords: [],
       noEffectSamples: [],
       simInputAckTimeouts: 0,
-      runnerCrashes: 0,
+      connectionErrors: 0,
+      firstConnectionError: null,
       degradedReasons: [],
       fidelitySet: ["id:General", "text:General"],
       notes: [],
@@ -147,7 +164,7 @@ test("healthy four blocks: all gates green, exit 0", () => {
   writeBlocks(out, ALL());
   const r = run(out);
   assert.equal(r.code, 0, r.stderr || r.stdout);
-  assert.match(r.stdout, /G0\/G1\/G3 \+ gesture-drift gates: OK/);
+  assert.match(r.stdout, /G0\/G1\/G3 \+ gesture-drift \+ validity gates: OK/);
 });
 
 test("M4: a verb that errors fails the merge", () => {
@@ -194,14 +211,18 @@ test("M4: a block note fails the merge (masked fallback)", () => {
   assert.match(r.stderr, /M4: ON-xcuitest carries notes/);
 });
 
-test("M9: a runner crash fails the merge (crashCount now real)", () => {
+test("C.3: connectionErrors > 0 fails the merge and quotes the first error", () => {
   const out = freshOut();
   const blocks = ALL();
-  blocks[1].block.runnerCrashes = 2;
+  blocks[1].block.connectionErrors = 2;
+  blocks[1].block.firstConnectionError = "connect ECONNREFUSED 127.0.0.1:64039";
   writeBlocks(out, blocks);
   const r = run(out);
   assert.notEqual(r.code, 0);
-  assert.match(r.stderr, /G1: ON-xcuitest runnerCrashes=2/);
+  assert.match(
+    r.stderr,
+    /G1: ON-xcuitest connectionErrors=2 \(must be 0\); first: "connect ECONNREFUSED 127\.0\.0\.1:64039"/
+  );
 });
 
 test("H3: tap-coordinate drift across arms fails the merge", () => {
@@ -492,4 +513,203 @@ test("simulator CLI: stamps block.simulator; hashes the profile only for a slim 
   assert.equal(stock.slim, false);
   assert.equal(stock.profileSha256, null);
   assert.deepEqual(stock.measure, { processes: 61, bytes: 1 });
+});
+
+// ── Fail-closed validity (2026-10-04 harness repair) ──────────────────────────
+// Run 37213144359 reported ON-xcuitest `describeTokens=1126@30el backend=xcuitest`
+// while describe.source was `ax-service`, and recorded n=20 gesture-swipe latencies
+// that the tool layer served from simulator-server. A block is INVALID when any
+// measured sample was served by the other arm's path, when its oracle self-test
+// failed, when the runner connection errored, or when simulator-server was not
+// ready. INVALID numbers are not rendered; the merge exits non-zero after writing.
+const R1 = path.join(HERE, "fixtures", "ios-run-37213144359");
+
+function copyR1(out, names = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"]) {
+  for (const n of names) {
+    fs.copyFileSync(
+      path.join(R1, `bench-block-${n}.json`),
+      path.join(out, `bench-block-${n}.json`)
+    );
+  }
+}
+function scoreboard(out) {
+  return execFileSync("node", [SCOREBOARD], {
+    env: { ...process.env, BENCH_OUT: out },
+    encoding: "utf8",
+  });
+}
+function mergedOf(r) {
+  return JSON.parse(fs.readFileSync(r.stdout.match(/MERGED_JSON=(.+)/)[1].trim(), "utf8"));
+}
+/** A scoreboard table row for `block` (the first cell is the block name). */
+function rowOf(sb, heading, block) {
+  const section = sb.split(heading)[1] || "";
+  return (section.split("\n").find((l) => l.startsWith(`| ${block} |`)) || "").trim();
+}
+
+test("C.1 (run 37213144359): ON-xcuitest served by ax-service is INVALID; merge exits non-zero after writing", () => {
+  const out = freshOut();
+  copyR1(out);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /VALIDITY: ON-xcuitest INVALID \(fell back to proprietary: 1\/1 samples/);
+  assert.match(r.stderr, /VALIDITY: ON-siminput INVALID \(fell back to proprietary: 1\/1 samples/);
+  // Artifacts are written before the non-zero exit.
+  assert.equal(mergedFiles(out).length, 1);
+  const m = mergedOf(r);
+  assert.equal(m.validity["ON-xcuitest"].valid, false);
+  assert.equal(m.validity["ON-xcuitest"].intendedBackend, "xcuitest");
+  // C.2: the label is the OBSERVED backend, not the arm's fixed one.
+  assert.equal(m.validity["ON-xcuitest"].observedTreeBackend, "ax-service");
+  assert.equal(m.gates.VALIDITY.passed, false);
+  // G4 must not carry a fallback's tokens under the xcuitest label.
+  assert.equal(m.g4.backends.xcuitest, undefined);
+  const sb = scoreboard(out);
+  assert.match(
+    rowOf(sb, "### Block validity", "ON-xcuitest"),
+    /INVALID \(fell back to proprietary: 1\/1 samples/
+  );
+  // INVALID blocks render no latency numbers (the r1 describe p50 was 238 ms).
+  const describeRow = sb.split("\n").find((l) => l.startsWith("| describe |"));
+  assert.ok(describeRow, sb);
+  assert.doesNotMatch(describeRow, /238/);
+  assert.match(describeRow, /INVALID/);
+});
+
+test("C.3 (old key): run 37213144359 `runnerCrashes` still parses as connectionErrors", () => {
+  const out = freshOut();
+  copyR1(out);
+  const r = run(out);
+  assert.match(
+    r.stderr,
+    /G1: ON-xcuitest connectionErrors=66 \(must be 0\); first: "\(no message recorded\)"/
+  );
+  assert.match(r.stderr, /G1: ON-siminput connectionErrors=88/);
+  assert.doesNotMatch(r.stderr + r.stdout, /runnerCrashes|crashes=/);
+  const sb = scoreboard(out);
+  assert.match(sb, /connection errors/);
+  assert.doesNotMatch(sb, /runner crashes/);
+});
+
+test("C.4 (run 37213144359): an oracle self-test failure marks the block INVALID, no landing/latency rendered", () => {
+  const out = freshOut();
+  copyR1(out);
+  const r = run(out);
+  assert.match(
+    r.stderr,
+    /VALIDITY: OFF-1 INVALID \(.*oracle self-test failed: self-test threw: no target app set/
+  );
+  const sb = scoreboard(out);
+  const landing = rowOf(sb, "### G1", "OFF-1");
+  assert.match(landing, /INVALID/);
+  assert.doesNotMatch(landing, /0 \/ 0/);
+  // OFF-1 gesture-swipe p50 in the r1 fixture must not appear in the swipe row.
+  const off1Swipe = JSON.parse(
+    fs.readFileSync(path.join(R1, "bench-block-OFF-1.json"), "utf8")
+  ).block.verbs.find((v) => v.verb === "gesture-swipe").latency.p50;
+  const swipeRow = sb.split("\n").find((l) => l.startsWith("| gesture-swipe |"));
+  assert.doesNotMatch(swipeRow, new RegExp(`\\b${off1Swipe}\\.0/`));
+});
+
+test("C.1: a clean synthetic ON block (every sample on the open path) is valid", () => {
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const m = mergedOf(r);
+  for (const n of ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"]) {
+    assert.equal(m.validity[n].valid, true, `${n}: ${m.validity[n].reasons.join("; ")}`);
+  }
+  assert.equal(m.validity["ON-xcuitest"].observedTreeBackend, "xcuitest");
+  assert.equal(m.validity["ON-xcuitest"].observedInput, "xcuitest");
+  assert.equal(m.validity["ON-siminput"].observedInput, "sim-input");
+  assert.equal(m.gates.VALIDITY.passed, true);
+  const sb = scoreboard(out);
+  assert.match(rowOf(sb, "### Block validity", "ON-xcuitest"), /\| valid \|/);
+});
+
+test("C.1: gesture-swipe samples served by simulator-server make an ON block INVALID with N/M", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  const swipe = blocks[1].block.verbs.find((v) => v.verb === "gesture-swipe");
+  swipe.servedBy = samples("simulator-server");
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  // 1 describe sample + 4 verbs × 20 = 81 samples, 20 of them on simulator-server.
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-xcuitest INVALID \(fell back to proprietary: 20\/81 samples\)/
+  );
+  const m = mergedOf(r);
+  assert.equal(m.validity["ON-xcuitest"].observedInput, "mixed(simulator-server,xcuitest)");
+  // The invalid arm is excluded from G2; the valid one is kept.
+  assert.equal(m.g2.verbs["gesture-swipe"].arms["ON-xcuitest"], undefined);
+  assert.ok(m.g2.verbs["gesture-swipe"].arms["ON-siminput"]);
+  assert.match(m.g2.excluded["ON-xcuitest"], /fell back to proprietary/);
+  const sb = scoreboard(out);
+  assert.match(
+    rowOf(sb, "### Block validity", "ON-xcuitest"),
+    /INVALID \(fell back to proprietary: 20\/81 samples\)/
+  );
+});
+
+test("C.2: one describe sample on ax-service flips the observed tree label to mixed", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  const d = blocks[2].block.verbs.find((v) => v.verb === "describe");
+  d.servedBy[7] = "ax-service";
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-siminput INVALID \(fell back to proprietary: 1\/81 samples\)/
+  );
+  assert.equal(
+    mergedOf(r).validity["ON-siminput"].observedTreeBackend,
+    "mixed(ax-service,xcuitest)"
+  );
+});
+
+test("C.2: an OFF block served by the open path is INVALID too", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  blocks[3].block.verbs.find((v) => v.verb === "describe").servedBy = samples("xcuitest-runner");
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /VALIDITY: OFF-2 INVALID \(served by the open path: 20\/81 samples\)/);
+  // An invalid OFF block withholds G2 entirely (no valid OFF pool).
+  assert.equal(mergedOf(r).g2, null);
+});
+
+test("C.1: measured samples without a recorded serving path are INVALID (fail closed)", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  delete blocks[1].block.verbs.find((v) => v.verb === "tap+describe").servedBy;
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-xcuitest INVALID \(serving path not recorded for 20 measured sample\(s\)\)/
+  );
+});
+
+test("E: simulator-server not ready marks an OFF block INVALID", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  blocks[0].block.proprietaryReady = {
+    checked: true,
+    ready: false,
+    error: "Timed out waiting for simulator-server to become ready",
+  };
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: OFF-1 INVALID \(simulator-server not ready: Timed out waiting for simulator-server to become ready\)/
+  );
 });

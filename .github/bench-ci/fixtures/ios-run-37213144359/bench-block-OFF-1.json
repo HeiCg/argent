@@ -1,0 +1,623 @@
+{
+  "env": {
+    "startedAt": "2026-10-04T15:39:09.307Z",
+    "udid": "DE624B9E-8175-406B-93D4-FC65B7FC39F3",
+    "runnerPort": 50727,
+    "N": 20,
+    "WARMUP": 1,
+    "tokenizer": "js-tiktoken o200k_base (primary), chars/4 (secondary)",
+    "describeCap": 400,
+    "g0NavMin": 0.1,
+    "runId": "37213144359",
+    "sha": "2eb893cfa8ddc9483042aa9afb142ad66a2a4963",
+    "xcodebuild": "Xcode 26.6\nBuild version 17F113",
+    "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+    "macosVersion": "25.6.0"
+  },
+  "block": {
+    "block": "OFF-1",
+    "config": "OFF",
+    "treeBackend": "ax-service",
+    "inputIsProductTool": true,
+    "hasAwaitProduct": true,
+    "verbs": [
+      {
+        "verb": "describe",
+        "latency": {
+          "n": 20,
+          "p50": 308,
+          "p95": 593,
+          "max": 1275,
+          "min": 249,
+          "mean": 382.3
+        },
+        "latencySamples": [
+          593, 1275, 586, 453, 274, 308, 317, 318, 249, 313, 305, 284, 310, 303, 288, 277, 272, 290,
+          313, 317
+        ],
+        "errors": 0,
+        "locateFailed": 0,
+        "errorSamples": []
+      },
+      {
+        "verb": "gesture-tap",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "locateFailed": 0,
+        "effectChecked": 0,
+        "effectZero": 0,
+        "extra": {
+          "inputPath": "gesture-tap tool (invokeTool)"
+        }
+      },
+      {
+        "verb": "tap+describe",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "locateFailed": 20,
+        "errorSamples": [],
+        "extra": {
+          "subTimings": {
+            "tapMsP50": null,
+            "describeMsP50": null,
+            "n": 0
+          },
+          "inputPath": "gesture-tap tool (invokeTool)"
+        }
+      },
+      {
+        "verb": "gesture-swipe",
+        "latency": {
+          "n": 20,
+          "p50": 690,
+          "p95": 1859,
+          "max": 1900,
+          "min": 313,
+          "mean": 839.3
+        },
+        "latencySamples": [
+          1106, 504, 1145, 1008, 670, 340, 906, 1900, 1450, 1168, 936, 509, 346, 354, 766, 366,
+          1859, 450, 690, 313
+        ],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "inputPath": "gesture-swipe tool (invokeTool)"
+        }
+      },
+      {
+        "verb": "await-screen-idle",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "locateFailed": 20,
+        "errorSamples": []
+      },
+      {
+        "verb": "await-ui-element",
+        "latency": {
+          "n": 20,
+          "p50": 3902,
+          "p95": 4223,
+          "max": 4564,
+          "min": 3191,
+          "mean": 3835.3
+        },
+        "latencySamples": [
+          4044, 4136, 3543, 3346, 3269, 4032, 4564, 4065, 3774, 4052, 3191, 4223, 3783, 3924, 3489,
+          3651, 3626, 3902, 4022, 4070
+        ],
+        "errors": 0,
+        "locateFailed": 0,
+        "errorSamples": []
+      },
+      {
+        "verb": "paste",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (iOS-4)"
+        }
+      },
+      {
+        "verb": "gesture-pinch",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (iOS-4)"
+        }
+      }
+    ],
+    "describe": {
+      "backend": "ax-service",
+      "source": "ax-service",
+      "elements": 30,
+      "bytes": 2744,
+      "tokens": 1126,
+      "tokensCharsDiv4": 686,
+      "cap": 400,
+      "capElements": 30,
+      "capTokens": 1126
+    },
+    "describeStages": null,
+    "scroll": {
+      "arm": "OFF-1",
+      "unit": "screen-points",
+      "rasterScale": 5.463,
+      "offsetsPoints": [112.4, 112.4, 112.4, 112.4, 112.4, 112.4, 0],
+      "median": 112.4,
+      "q1": 112.4,
+      "q3": 112.4,
+      "iqr": 0,
+      "refusals": 13,
+      "n": 7,
+      "records": [
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 112.4,
+          "dyPx": 614,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 112.4,
+          "dyPx": 614,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 112.4,
+          "dyPx": 614,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 112.4,
+          "dyPx": 614,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 112.4,
+          "dyPx": 614,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 112.4,
+          "dyPx": 614,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": 0,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        }
+      ]
+    },
+    "oracle": {
+      "target": "General",
+      "navMin": 0.1,
+      "landingThreshold": 0.05,
+      "selfTestPassed": false,
+      "navDiff": 0,
+      "rootDiff": 0,
+      "note": "self-test threw: no target app set; call launchApp first (e.g. com.apple.Preferences)"
+    },
+    "effectCheckedTotal": 0,
+    "firstTapNoEffectTotal": 0,
+    "effectZeroTotal": 0,
+    "locateFailedTotal": 0,
+    "landingRate": null,
+    "medianTapCoord": null,
+    "tapRecords": [],
+    "noEffectSamples": [],
+    "simInputAckTimeouts": 0,
+    "runnerCrashes": 0,
+    "degradedReasons": [],
+    "fidelitySet": [
+      "text:Vertical scroll bar, 2 pages",
+      "text:Settings",
+      "id:com.apple.settings.primaryAppleAccount",
+      "text:Apple Account, Sign in to access your iCloud data, the App Store, Apple services, and more.",
+      "id:apple.id",
+      "text:apple.id",
+      "text:Apple Account",
+      "text:Sign in to access your iCloud data, the App Store, Apple services, and more.",
+      "id:com.apple.settings.followUpItem.com.apple.icloud.gm",
+      "text:Ready for Apple Intelligence",
+      "id:com.apple.settings.general",
+      "text:General",
+      "id:com.apple.settings.accessibility",
+      "text:Accessibility",
+      "id:com.apple.settings.actionButton",
+      "text:Action Button",
+      "id:com.apple.settings.siri",
+      "text:Apple Intelligence & Siri",
+      "id:com.apple.settings.camera",
+      "text:Camera",
+      "id:com.apple.settings.homeScreen",
+      "text:Home Screen & App Library",
+      "id:com.apple.settings.search",
+      "text:Search",
+      "id:com.apple.settings.standBy",
+      "text:StandBy",
+      "id:Toolbar",
+      "text:Toolbar",
+      "id:Dictate",
+      "text:Dictate",
+      "id:magnifyingglass",
+      "id:com.apple.settings.screenTime",
+      "text:Screen Time"
+    ],
+    "gestureParams": {
+      "tapHoldMs": 0,
+      "swipeDurationMs": 250,
+      "swipeSteps": 12,
+      "swipeMomentumFree": true
+    },
+    "notes": []
+  }
+}

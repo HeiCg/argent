@@ -1,0 +1,225 @@
+{
+  "env": {
+    "startedAt": "2026-10-04T16:21:31.689Z",
+    "udid": "DE624B9E-8175-406B-93D4-FC65B7FC39F3",
+    "runnerPort": 50727,
+    "N": 20,
+    "WARMUP": 1,
+    "tokenizer": "js-tiktoken o200k_base (primary), chars/4 (secondary)",
+    "describeCap": 400,
+    "g0NavMin": 0.1,
+    "runId": "37213144359",
+    "sha": "2eb893cfa8ddc9483042aa9afb142ad66a2a4963",
+    "xcodebuild": "Xcode 26.6\nBuild version 17F113",
+    "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+    "macosVersion": "25.6.0"
+  },
+  "block": {
+    "block": "OFF-2",
+    "config": "OFF",
+    "treeBackend": "ax-service",
+    "inputIsProductTool": true,
+    "hasAwaitProduct": true,
+    "verbs": [
+      {
+        "verb": "describe",
+        "latency": {
+          "n": 20,
+          "p50": 329,
+          "p95": 401,
+          "max": 539,
+          "min": 273,
+          "mean": 343.1
+        },
+        "latencySamples": [
+          343, 343, 290, 396, 324, 307, 307, 361, 367, 401, 317, 539, 322, 381, 273, 279, 329, 356,
+          345, 283
+        ],
+        "errors": 0,
+        "locateFailed": 0,
+        "errorSamples": []
+      },
+      {
+        "verb": "gesture-tap",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "locateFailed": 0,
+        "effectChecked": 0,
+        "effectZero": 0,
+        "extra": {
+          "inputPath": "gesture-tap tool (invokeTool)"
+        }
+      },
+      {
+        "verb": "tap+describe",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "locateFailed": 20,
+        "errorSamples": [],
+        "extra": {
+          "subTimings": {
+            "tapMsP50": null,
+            "describeMsP50": null,
+            "n": 0
+          },
+          "inputPath": "gesture-tap tool (invokeTool)"
+        }
+      },
+      {
+        "verb": "gesture-swipe",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "inputPath": "gesture-swipe tool (invokeTool)"
+        }
+      },
+      {
+        "verb": "await-screen-idle",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "locateFailed": 20,
+        "errorSamples": []
+      },
+      {
+        "verb": "await-ui-element",
+        "latency": {
+          "n": 20,
+          "p50": 4007,
+          "p95": 4023,
+          "max": 4034,
+          "min": 4002,
+          "mean": 4009.3
+        },
+        "latencySamples": [
+          4010, 4017, 4008, 4034, 4007, 4003, 4003, 4005, 4007, 4006, 4012, 4007, 4003, 4008, 4023,
+          4005, 4002, 4014, 4004, 4009
+        ],
+        "errors": 0,
+        "locateFailed": 0,
+        "errorSamples": []
+      },
+      {
+        "verb": "paste",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (iOS-4)"
+        }
+      },
+      {
+        "verb": "gesture-pinch",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (iOS-4)"
+        }
+      }
+    ],
+    "describe": {
+      "backend": "ax-service",
+      "source": "ax-service",
+      "elements": 0,
+      "bytes": 369,
+      "tokens": 112,
+      "tokensCharsDiv4": 93,
+      "cap": 400,
+      "capElements": 0,
+      "capTokens": 112
+    },
+    "describeStages": null,
+    "scroll": {
+      "arm": "OFF-2",
+      "unit": "screen-points",
+      "rasterScale": null,
+      "offsetsPoints": [],
+      "median": null,
+      "q1": null,
+      "q3": null,
+      "iqr": null,
+      "refusals": 0,
+      "n": 0,
+      "records": []
+    },
+    "oracle": {
+      "target": "General",
+      "navMin": 0.1,
+      "landingThreshold": 0.05,
+      "selfTestPassed": false,
+      "navDiff": 0,
+      "rootDiff": 0,
+      "note": "self-test threw: connect ECONNREFUSED 127.0.0.1:50727"
+    },
+    "effectCheckedTotal": 0,
+    "firstTapNoEffectTotal": 0,
+    "effectZeroTotal": 0,
+    "locateFailedTotal": 0,
+    "landingRate": null,
+    "medianTapCoord": null,
+    "tapRecords": [],
+    "noEffectSamples": [],
+    "simInputAckTimeouts": 0,
+    "runnerCrashes": 0,
+    "degradedReasons": ["await-ui-element capped on every iteration (target never appeared)"],
+    "fidelitySet": [],
+    "gestureParams": {
+      "tapHoldMs": 0,
+      "swipeDurationMs": 250,
+      "swipeSteps": 12,
+      "swipeMomentumFree": true
+    },
+    "notes": ["describe tree was still empty after warmup (backend not injectable?)"]
+  }
+}

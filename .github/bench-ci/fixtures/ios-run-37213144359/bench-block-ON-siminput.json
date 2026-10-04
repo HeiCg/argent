@@ -1,0 +1,619 @@
+{
+  "env": {
+    "startedAt": "2026-10-04T16:09:16.920Z",
+    "udid": "DE624B9E-8175-406B-93D4-FC65B7FC39F3",
+    "runnerPort": 50727,
+    "N": 20,
+    "WARMUP": 1,
+    "tokenizer": "js-tiktoken o200k_base (primary), chars/4 (secondary)",
+    "describeCap": 400,
+    "g0NavMin": 0.1,
+    "runId": "37213144359",
+    "sha": "2eb893cfa8ddc9483042aa9afb142ad66a2a4963",
+    "xcodebuild": "Xcode 26.6\nBuild version 17F113",
+    "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    "deviceType": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+    "macosVersion": "25.6.0"
+  },
+  "block": {
+    "block": "ON-siminput",
+    "config": "ON",
+    "treeBackend": "xcuitest",
+    "inputIsProductTool": false,
+    "hasAwaitProduct": false,
+    "verbs": [
+      {
+        "verb": "describe",
+        "latency": {
+          "n": 20,
+          "p50": 216,
+          "p95": 464,
+          "max": 563,
+          "min": 164,
+          "mean": 267.4
+        },
+        "latencySamples": [
+          402, 464, 424, 208, 563, 391, 264, 251, 196, 205, 166, 164, 178, 173, 216, 218, 213, 221,
+          222, 208
+        ],
+        "errors": 0,
+        "locateFailed": 0,
+        "errorSamples": []
+      },
+      {
+        "verb": "gesture-tap",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "locateFailed": 0,
+        "effectChecked": 0,
+        "effectZero": 0,
+        "extra": {
+          "inputPath": "sim-input HID (bench-local, no product path)"
+        }
+      },
+      {
+        "verb": "tap+describe",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "locateFailed": 20,
+        "errorSamples": [],
+        "extra": {
+          "subTimings": {
+            "tapMsP50": null,
+            "describeMsP50": null,
+            "n": 0
+          },
+          "inputPath": "sim-input HID (bench-local, no product path)"
+        }
+      },
+      {
+        "verb": "gesture-swipe",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 20,
+        "errorSamples": [
+          "swipe: connect ECONNREFUSED 127.0.0.1:50727",
+          "swipe: connect ECONNREFUSED 127.0.0.1:50727",
+          "swipe: connect ECONNREFUSED 127.0.0.1:50727",
+          "swipe: connect ECONNREFUSED 127.0.0.1:50727",
+          "swipe: connect ECONNREFUSED 127.0.0.1:50727"
+        ],
+        "extra": {
+          "inputPath": "sim-input HID (bench-local, no product path)"
+        }
+      },
+      {
+        "verb": "await-screen-idle",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (no open iOS await product; iOS-4)"
+        }
+      },
+      {
+        "verb": "await-ui-element",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (no open iOS await product; iOS-4)"
+        }
+      },
+      {
+        "verb": "paste",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (iOS-4)"
+        }
+      },
+      {
+        "verb": "gesture-pinch",
+        "latency": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "max": null,
+          "min": null,
+          "mean": null
+        },
+        "latencySamples": [],
+        "errors": 0,
+        "errorSamples": [],
+        "extra": {
+          "na": "N/A (iOS-4)"
+        }
+      }
+    ],
+    "describe": {
+      "backend": "xcuitest",
+      "source": "ax-service",
+      "elements": 16,
+      "bytes": 1466,
+      "tokens": 640,
+      "tokensCharsDiv4": 366,
+      "cap": 400,
+      "capElements": 16,
+      "capTokens": 640
+    },
+    "describeStages": null,
+    "scroll": {
+      "arm": "ON-siminput",
+      "unit": "screen-points",
+      "rasterScale": null,
+      "offsetsPoints": [],
+      "median": null,
+      "q1": null,
+      "q3": null,
+      "iqr": null,
+      "refusals": 20,
+      "n": 0,
+      "records": [
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": -260.97,
+          "confidence": 0.7789,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": -260.97,
+          "confidence": 0.7789,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": 0,
+          "confidence": 1,
+          "refused": false
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        },
+        {
+          "from": {
+            "x": 0.5,
+            "y": 0.6875
+          },
+          "to": {
+            "x": 0.5,
+            "y": 0.3625
+          },
+          "region": {
+            "y1": 0.2,
+            "y2": 0.85
+          },
+          "dyPoints": null,
+          "dyPx": null,
+          "confidence": 0,
+          "refused": true
+        }
+      ]
+    },
+    "oracle": {
+      "target": "General",
+      "navMin": 0.1,
+      "landingThreshold": 0.05,
+      "selfTestPassed": false,
+      "navDiff": 0,
+      "rootDiff": 0,
+      "note": "self-test threw: connect ECONNREFUSED 127.0.0.1:50727"
+    },
+    "effectCheckedTotal": 0,
+    "firstTapNoEffectTotal": 0,
+    "effectZeroTotal": 0,
+    "locateFailedTotal": 0,
+    "landingRate": null,
+    "medianTapCoord": null,
+    "tapRecords": [],
+    "noEffectSamples": [],
+    "simInputAckTimeouts": 0,
+    "runnerCrashes": 88,
+    "degradedReasons": [],
+    "fidelitySet": [
+      "text:4:13 PM",
+      "text:100% battery power",
+      "text:Cellular",
+      "id:Fitness",
+      "text:Fitness",
+      "id:Watch",
+      "text:Watch",
+      "id:Contacts",
+      "text:Contacts",
+      "id:Files",
+      "text:Files",
+      "id:Preview",
+      "text:Preview",
+      "id:Utilities",
+      "text:Utilities folder",
+      "id:ArgentRunnerUITests-Runner",
+      "text:ArgentRunnerUITests-Runner",
+      "id:spotlight-pill",
+      "text:Search",
+      "id:magnifyingglass",
+      "text:Dock",
+      "id:Safari",
+      "text:Safari",
+      "id:Messages",
+      "text:Messages"
+    ],
+    "gestureParams": {
+      "tapHoldMs": 0,
+      "swipeDurationMs": 250,
+      "swipeSteps": 12,
+      "swipeMomentumFree": true
+    },
+    "notes": ["describe.source=\"ax-service\" (expected xcuitest-runner) — masked fallback"]
+  }
+}
