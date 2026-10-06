@@ -1,5 +1,21 @@
 # Scoreboard — open driver vs argent proprietary
 
+## Proprietary baseline (2026-10-04)
+
+All Android "vs proprietary" figures in this file up to run **34954772917** were measured against
+the `@swmansion/argent@0.22.1` binaries (`npm pack`, `bin/linux/simulator-server` +
+`argent-android-devtools-0.1.0.apk`). Upstream is at 0.27.0, so those figures compare against a
+binary five releases old. All iOS figures were measured against a `radon-main` simulator-server
+binary downloaded on 2026-09-15; its release and sha256 were not recorded.
+
+Re-baseline runs are pending: Android at `proprietary_version=0.27.0` with a same-run
+`OFF-legacy` arm on 0.22.1, iOS with the requested tag, resolved release and binary sha256
+recorded. Every OFF block now records its proprietary provenance; the merge refuses to pool OFF
+blocks of different provenance.
+
+- Android re-baseline (latency + screen-graph): TODO(run-id)
+- iOS re-baseline: TODO(run-id)
+
 ## Goal status
 
 Owner's goal — "our driver beats theirs" — on the consolidated base with **`input-manager`

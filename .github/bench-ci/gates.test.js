@@ -278,7 +278,237 @@ test("merge-blocks: a requested ON block that produced no file FIRES", () => {
   assert.match(r.stderr, /missing required ON block/);
 });
 
+/* ------------------------- proprietary provenance -------------------------- */
+// Re-baseline (0.27): every OFF block records which proprietary release it ran
+// (npm version + sha256 of each binary/APK used). The merge refuses to pool two OFF
+// blocks of different provenance as one arm; OFF-legacy is its own arm with a Δ row.
+
+const PROVENANCE = path.join(HERE, "proprietary-provenance.js");
+
+/** A synthetic npm provenance record for `version`; `tag` perturbs the hashes. */
+function prov(version, tag = version) {
+  const h = (s) => require("crypto").createHash("sha256").update(s).digest("hex");
+  return {
+    source: "npm",
+    package: "@swmansion/argent",
+    version,
+    files: {
+      "linux/simulator-server": h(`sim-${tag}`),
+      "argent-android-devtools-0.1.0.apk": h(`apk-${tag}`),
+    },
+  };
+}
+const withProv = (b, p) => {
+  b.block.proprietaryProvenance = p;
+  return b;
+};
+const FIVE = (cur = prov("0.27.0"), leg = prov("0.22.1")) => [
+  withProv(block31("OFF-1", { tap: 53, swipe: 307, pinch: 351, headline: 445 }), cur),
+  block31("ON-uiautomation", { tap: 86, swipe: 291, pinch: 340, headline: 422 }),
+  block31("ON-input-manager", { tap: 55, swipe: 268, pinch: 323, headline: 400 }),
+  withProv(block31("OFF-legacy", { tap: 60, swipe: 330, pinch: 351, headline: 470 }), leg),
+  withProv(block31("OFF-2", { tap: 53, swipe: 300, pinch: 356, headline: 548 }), cur),
+];
+const FIVEENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-input-manager,OFF-legacy,OFF-2" };
+const mergedOf = (r) => {
+  const m = r.stdout.match(/MERGED_JSON=(.+)/);
+  assert.ok(m, "merge printed no MERGED_JSON line: " + r.stdout);
+  return JSON.parse(fs.readFileSync(m[1].trim(), "utf8"));
+};
+
+test("provenance: sha256File hashes a temp file", () => {
+  const { sha256File } = require(PROVENANCE);
+  const dir = freshOut();
+  const f = path.join(dir, "bin");
+  fs.writeFileSync(f, "hello\n");
+  assert.strictEqual(
+    sha256File(f),
+    "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  );
+});
+
+/** A fake extracted `npm pack` tree: package/{package.json,bin/...}. */
+function fakePkg(version, layout = "0.27") {
+  const root = path.join(freshOut(), "package");
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(path.join(bin, "linux"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "@swmansion/argent", version })
+  );
+  fs.writeFileSync(path.join(bin, "linux", "simulator-server"), `sim ${version}`);
+  fs.writeFileSync(path.join(bin, "argent-android-devtools-0.1.0.apk"), `apk ${version}`);
+  // 0.22.x kept the screen-sharing agent per platform; 0.27 shares one copy at bin/.
+  const res =
+    layout === "0.27"
+      ? path.join(bin, "resources", "android")
+      : path.join(bin, "linux", "resources", "android");
+  fs.mkdirSync(res, { recursive: true });
+  fs.writeFileSync(path.join(res, "screen-sharing-agent.jar"), `jar ${version}`);
+  return { root, bin };
+}
+
+test("provenance: npmProvenance reads the version and hashes every binary/APK used", () => {
+  const { npmProvenance, sha256File } = require(PROVENANCE);
+  const { bin } = fakePkg("0.27.0");
+  const p = npmProvenance({ simDir: bin, platformKey: "linux", apkVersionName: "0.1.0" });
+  assert.strictEqual(p.source, "npm");
+  assert.strictEqual(p.package, "@swmansion/argent");
+  assert.strictEqual(p.version, "0.27.0");
+  assert.deepStrictEqual(Object.keys(p.files).sort(), [
+    "argent-android-devtools-0.1.0.apk",
+    "linux/simulator-server",
+    "resources/android/screen-sharing-agent.jar",
+  ]);
+  assert.strictEqual(
+    p.files["linux/simulator-server"],
+    sha256File(path.join(bin, "linux", "simulator-server"))
+  );
+  // 0.22.x layout: resources under bin/linux/ (simulatorServerRunDir's fallback).
+  const legacy = fakePkg("0.22.1", "0.22");
+  const lp = npmProvenance({ simDir: legacy.bin, platformKey: "linux", apkVersionName: "0.1.0" });
+  assert.ok(lp.files["linux/resources/android/screen-sharing-agent.jar"]);
+  assert.notStrictEqual(lp.files["linux/simulator-server"], p.files["linux/simulator-server"]);
+});
+
+test("provenance: npmProvenance refuses a package whose version is not the expected one", () => {
+  const { npmProvenance } = require(PROVENANCE);
+  const { bin } = fakePkg("0.22.1");
+  assert.throws(
+    () => npmProvenance({ simDir: bin, platformKey: "linux", expectVersion: "0.27.0" }),
+    /0\.22\.1.*expected 0\.27\.0/
+  );
+});
+
+test("provenance: `stamp` CLI writes the provenance into an OFF block JSON from its own env dirs", () => {
+  const { bin } = fakePkg("0.27.0");
+  const out = freshOut();
+  const b = block("OFF-1");
+  b.env = { ...b.env, simulatorServerDir: bin, devtoolsAndroidBinDir: bin };
+  const f = path.join(out, "bench-block-OFF-1.json");
+  fs.writeFileSync(f, JSON.stringify(b));
+  execFileSync(
+    "node",
+    [PROVENANCE, "stamp", f, "--expect-version", "0.27.0", "--platform-key", "linux"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  const stamped = JSON.parse(fs.readFileSync(f, "utf8"));
+  assert.strictEqual(stamped.block.proprietaryProvenance.version, "0.27.0");
+  assert.ok(stamped.block.proprietaryProvenance.files["linux/simulator-server"]);
+});
+
+test("merge-blocks: OFF blocks with different provenance are NOT pooled — fails naming both versions", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withProv(bs[0], prov("0.27.0"));
+  withProv(bs[3], prov("0.22.1"));
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /provenance/);
+  assert.match(r.stderr, /0\.27\.0/);
+  assert.match(r.stderr, /0\.22\.1/);
+});
+
+test("merge-blocks: same version but a different binary sha256 is a different arm too", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withProv(bs[0], prov("0.27.0"));
+  withProv(bs[3], prov("0.27.0", "rebuilt"));
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /sha256/);
+});
+
+test("merge-blocks: a known and an unknown OFF provenance are not pooled either", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withProv(bs[0], prov("0.27.0"));
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /unknown/);
+});
+
+test("merge-blocks: OFF-legacy is its own arm with a Δ row vs the current OFF", () => {
+  const out = freshOut();
+  writeBlocks(out, FIVE());
+  const r = run(MERGE_BLOCKS, out, FIVEENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.ok(m.blocksRan.includes("OFF-legacy"));
+  assert.strictEqual(m.legacyArm.block, "OFF-legacy");
+  assert.strictEqual(m.legacyArm.version, "0.22.1");
+  assert.strictEqual(m.legacyArm.currentVersion, "0.27.0");
+  const tap = m.legacyArm.deltaVsCurrent.find((d) => d.verb === "gesture-tap");
+  // legacy 60 vs pooled current (53+53)/2 = 53 → Δ +7.
+  assert.deepStrictEqual(
+    { legacy: tap.legacy.p50, current: tap.current.p50, delta: tap.delta },
+    { legacy: 60, current: 53, delta: 7 }
+  );
+});
+
+test("merge-blocks: provenance appears in the merged output (per block + current + legacy)", () => {
+  const out = freshOut();
+  writeBlocks(out, FIVE());
+  const r = run(MERGE_BLOCKS, out, FIVEENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.proprietaryProvenance.current.version, "0.27.0");
+  assert.strictEqual(m.proprietaryProvenance.legacy.version, "0.22.1");
+  assert.strictEqual(m.proprietaryProvenance.byBlock["OFF-1"].version, "0.27.0");
+  assert.strictEqual(m.proprietaryProvenance.byBlock["OFF-2"].version, "0.27.0");
+  assert.strictEqual(m.proprietaryProvenance.byBlock["OFF-legacy"].version, "0.22.1");
+  assert.ok(m.proprietaryProvenance.current.files["linux/simulator-server"]);
+});
+
+test("merge-blocks: old fixtures with NO provenance still merge (all OFF unknown)", () => {
+  const out = freshOut();
+  writeBlocks(out, FOUR());
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.proprietaryProvenance.current, "unknown");
+  assert.strictEqual(m.proprietaryProvenance.legacy, null);
+  assert.strictEqual(m.legacyArm, null);
+});
+
+test("merge-blocks: current OFF provenance must match BENCH_PROPRIETARY_VERSION when set", () => {
+  const out = freshOut();
+  writeBlocks(out, FIVE());
+  const r = run(MERGE_BLOCKS, out, { ...FIVEENV, BENCH_PROPRIETARY_VERSION: "0.26.0" });
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /expected 0\.26\.0/);
+});
+
 /* --------------------------------- scoreboard ----------------------------- */
+
+test("scoreboard: renders 'Proprietary baseline: <legacy> vs <current>' with p50/p95, Δ and CI", () => {
+  const out = freshOut();
+  writeBlocks(out, FIVE());
+  assert.strictEqual(run(MERGE_BLOCKS, out, FIVEENV).code, 0);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /### Proprietary baseline: 0\.22\.1 vs 0\.27\.0/);
+  // tap: legacy 60/68, OFF-1 53/61, OFF-2 53/61, floor 0, Δ +7, CI, reading.
+  assert.match(r.stdout, /\| gesture-tap \| 60\/68 \| 53\/61 \| 53\/61 \| ±0 \| 7 \| \[-?\d/);
+  // Provenance is rendered per OFF block.
+  assert.match(r.stdout, /### Proprietary provenance/);
+  assert.match(r.stdout, /OFF-legacy \| @swmansion\/argent@0\.22\.1/);
+  // The P-gates still grade against the CURRENT OFF blocks, never OFF-legacy.
+  assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
+});
+
+test("scoreboard: no legacy block → no baseline section, provenance reads unknown", () => {
+  const out = freshOut();
+  writeBlocks(out, RUN2());
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /Proprietary baseline:/);
+  assert.match(r.stdout, /OFF-1 \| unknown/);
+});
 
 test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap FAILs the inequality by 2, swipe/pinch win) vs proprietary", () => {
   const out = freshOut();

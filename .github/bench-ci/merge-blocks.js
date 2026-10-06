@@ -7,6 +7,12 @@
 // $BENCH_OUT/ci-runner-env.json into the merged `env` block.
 const fs = require("fs");
 const path = require("path");
+const {
+  UNKNOWN,
+  provenanceKey,
+  provenanceLabel,
+  provenanceDiff,
+} = require("./proprietary-provenance");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // Phase 3n: the block universe now includes the three Kotlin injection-strategy
@@ -14,14 +20,21 @@ const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // with older per-block JSONs / fixtures). Which of
 // these actually ran is driven by BENCH_BLOCKS (workflow) / present files; a
 // requested ON block that produced no file still fails loudly below.
+// Re-baseline (0.27): OFF-legacy is the proprietary arm on an OLDER release's
+// binaries (legacy_proprietary_version), run in the same job + emulator. It is
+// its own arm — never pooled with OFF-1/OFF-2, never part of the drift floor.
 const ALL = [
   "OFF-1",
   "ON-uiautomation",
   "ON-uia-sync",
   "ON-uia-async",
   "ON-input-manager",
+  "OFF-legacy",
   "OFF-2",
 ];
+// The CURRENT proprietary arm: the blocks the gates, fidelity and drift floor use.
+const CURRENT_OFF = ["OFF-1", "OFF-2"];
+const LEGACY_OFF = "OFF-legacy";
 
 const files = {};
 for (const n of ALL) {
@@ -54,6 +67,42 @@ if (files["ON-input-manager"] && !files["ON-uiautomation"]) {
       "the run cannot grade the promotion candidate against the current default (P6)."
   );
 }
+
+// Proprietary provenance gate (re-baseline 0.27). Every OFF block records which
+// release it ran (`block.proprietaryProvenance`: npm version + sha256 of each binary/
+// APK, stamped by proprietary-provenance.js). OFF-1 and OFF-2 are POOLED as one arm
+// and their |Δp50| is the drift floor, so they must be the same binaries: a
+// different version, a different sha256, or one known + one unknown is refused.
+// Missing provenance on EVERY current OFF block (pre-0.27 fixtures/artifacts) reads
+// "unknown" and still merges. OFF-legacy is a separate arm and is never pooled.
+const provOf = (n) => (files[n] && files[n].block.proprietaryProvenance) || UNKNOWN;
+const currentOffPresent = CURRENT_OFF.filter((n) => files[n]);
+for (let i = 1; i < currentOffPresent.length; i++) {
+  const a = currentOffPresent[0],
+    b = currentOffPresent[i];
+  if (provenanceKey(provOf(a)) !== provenanceKey(provOf(b))) {
+    throw new Error(
+      `proprietary provenance differs between ${a} (${provenanceLabel(provOf(a))}) and ${b} ` +
+        `(${provenanceLabel(provOf(b))}): ${provenanceDiff(provOf(a), provOf(b))} — refusing to ` +
+        `pool them as one OFF arm or use them as a drift floor. Run both on the same release.`
+    );
+  }
+}
+const currentProv = currentOffPresent.length ? provOf(currentOffPresent[0]) : null;
+const legacyProv = files[LEGACY_OFF] ? provOf(LEGACY_OFF) : null;
+// The workflow passes the requested releases; a stamped block on another release is
+// the wrong baseline (e.g. a stale PROP_PKG), not a result.
+const expectVersion = (label, prov, want) => {
+  if (!want || !prov || prov === UNKNOWN) return;
+  if (prov.version !== want) {
+    throw new Error(
+      `${label} proprietary arm ran ${provenanceLabel(prov)}, expected ${want} ` +
+        `(${label === "current" ? "BENCH_PROPRIETARY_VERSION" : "BENCH_LEGACY_PROPRIETARY_VERSION"})`
+    );
+  }
+};
+expectVersion("current", currentProv, process.env.BENCH_PROPRIETARY_VERSION);
+expectVersion("legacy", legacyProv, process.env.BENCH_LEGACY_PROPRIETARY_VERSION);
 
 const blocks = present.map((n) => files[n].block);
 
@@ -260,6 +309,37 @@ if (files["OFF-1"] && firstOnName) {
   };
 }
 
+// OFF-legacy as its own arm: per-verb p50/p95 vs the CURRENT OFF arm (OFF-1/OFF-2
+// pooled as the mean of their p50s/p95s, the same pooling the scoreboard grades the
+// open arms against). The bootstrap CI is computed by the scoreboard from the
+// per-sample arrays these blocks carry.
+let legacyArm = null;
+if (files[LEGACY_OFF]) {
+  const lb = files[LEGACY_OFF].block;
+  const cur = currentOffPresent.map((n) => files[n].block);
+  const mean = (xs) =>
+    xs.length ? Number((xs.reduce((s, x) => s + x, 0) / xs.length).toFixed(1)) : null;
+  const deltaVsCurrent = (lb.verbs || []).map((v) => {
+    const cv = cur.map((b) => (b.verbs || []).find((x) => x.verb === v.verb)).filter(Boolean);
+    const curP50 = cv.length === cur.length ? mean(cv.map((x) => x.latency.p50)) : null;
+    const curP95 = cv.length === cur.length ? mean(cv.map((x) => x.latency.p95)) : null;
+    return {
+      verb: v.verb,
+      legacy: { p50: v.latency.p50, p95: v.latency.p95 },
+      current: { p50: curP50, p95: curP95, blocks: currentOffPresent },
+      delta: curP50 == null ? null : Number((v.latency.p50 - curP50).toFixed(1)),
+    };
+  });
+  legacyArm = {
+    block: LEGACY_OFF,
+    label: provenanceLabel(legacyProv),
+    version: legacyProv && legacyProv !== UNKNOWN ? legacyProv.version : null,
+    currentLabel: provenanceLabel(currentProv),
+    currentVersion: currentProv && currentProv !== UNKNOWN ? currentProv.version : null,
+    deltaVsCurrent,
+  };
+}
+
 // Base env from any present block (they capture identical device/env facts).
 const baseEnv = files[present[0]].env;
 let ciEnv = {};
@@ -278,6 +358,17 @@ const result = {
   blocksRan: present,
   offArmPresent: !!(files["OFF-1"] || files["OFF-2"]),
   blocks,
+  // Re-baseline (0.27): which proprietary release each OFF block ran. `current` is
+  // the pooled OFF-1/OFF-2 arm (one provenance by the gate above), `legacy` the
+  // OFF-legacy arm; "unknown" for pre-0.27 blocks that carry none.
+  proprietaryProvenance: {
+    current: currentProv,
+    legacy: legacyProv,
+    byBlock: Object.fromEntries(
+      present.filter((n) => n.startsWith("OFF")).map((n) => [n, provOf(n)])
+    ),
+  },
+  legacyArm,
   // Phase 3n.3 (3N2-H1/M6): the on-device fallback signal + its denominators, carried
   // for the scoreboard so Q4 states real numbers (not the dead host counter).
   strategyUnavailable,
@@ -322,6 +413,10 @@ console.log(
         (measuredInjectRpcs != null ? `; measured gated-inject RPCs: ${measuredInjectRpcs}` : ""))
 );
 console.log("tap effect-check (ON fatal, OFF tolerated) — " + effectLine + " — ON gate OK");
+console.log(
+  `proprietary provenance: current ${currentProv ? provenanceLabel(currentProv) : "(no OFF-1/OFF-2)"}` +
+    (legacyArm ? `; legacy ${legacyArm.label} (OFF-legacy, own arm)` : "")
+);
 if (tls.length) {
   console.log(
     "tap-timeline parity OK: holdMs=" +

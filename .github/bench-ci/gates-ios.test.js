@@ -223,3 +223,111 @@ test("N/A await verbs on the ON arms do NOT trip the n < N gate", () => {
   const r = run(out);
   assert.equal(r.code, 0, r.stderr);
 });
+
+// ── Re-baseline (0.27): the OFF arm's simulator-server provenance ─────────────
+// The download step records the requested tag, the release that tag resolved to
+// (gh release view) and the sha256 of the downloaded binary; the merge folds it
+// into the merged JSON and the scoreboard renders it.
+const PROVENANCE = path.join(HERE, "proprietary-provenance.js");
+const SCOREBOARD = path.join(HERE, "scoreboard-ios.js");
+
+function releaseJson(binSha) {
+  return {
+    tagName: "radon-main",
+    name: "radon-main",
+    publishedAt: "2026-10-02T14:09:49Z",
+    createdAt: "2026-10-02T14:00:00Z",
+    url: "https://github.com/software-mansion-labs/simulator-server-releases/releases/tag/radon-main",
+    assets: [
+      {
+        name: "simulator-server-argent-macos",
+        id: "RA_kwDONufWMs4kGvpq",
+        apiUrl:
+          "https://api.github.com/repos/software-mansion-labs/simulator-server-releases/releases/assets/605747818",
+        digest: `sha256:${binSha}`,
+        size: 18217840,
+        updatedAt: "2026-10-02T14:09:49Z",
+      },
+    ],
+  };
+}
+
+test("provenance: gh-release records requested/resolved tag, asset id and binary sha256", () => {
+  const { githubReleaseProvenance, sha256File } = require(PROVENANCE);
+  const dir = freshOut();
+  const bin = path.join(dir, "simulator-server");
+  fs.writeFileSync(bin, "mach-o bytes");
+  const sha = sha256File(bin);
+  const p = githubReleaseProvenance({
+    repo: "software-mansion-labs/simulator-server-releases",
+    requestedTag: "",
+    scriptDefaultTag: "radon-main",
+    resolvedTag: "radon-main",
+    release: releaseJson(sha),
+    assetName: "simulator-server-argent-macos",
+    files: [bin],
+  });
+  assert.equal(p.source, "github-release");
+  assert.equal(p.requestedTag, null);
+  assert.equal(p.scriptDefaultTag, "radon-main");
+  assert.equal(p.release.tagName, "radon-main");
+  assert.equal(p.release.publishedAt, "2026-10-02T14:09:49Z");
+  assert.equal(p.asset.databaseId, 605747818);
+  assert.equal(p.files[bin], sha);
+  assert.equal(p.assetDigestMatches, true);
+});
+
+test("merge + scoreboard: the OFF arm's simulator-server provenance is recorded and rendered", () => {
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const bin = path.join(out, "simulator-server");
+  fs.writeFileSync(bin, "mach-o bytes");
+  fs.writeFileSync(path.join(out, "release.json"), JSON.stringify(releaseJson("0".repeat(64))));
+  execFileSync(
+    "node",
+    [
+      PROVENANCE,
+      "gh-release",
+      "--repo",
+      "software-mansion-labs/simulator-server-releases",
+      "--requested-tag",
+      "",
+      "--script-default-tag",
+      "radon-main",
+      "--resolved-tag",
+      "radon-main",
+      "--release-json",
+      path.join(out, "release.json"),
+      "--asset",
+      "simulator-server-argent-macos",
+      "--file",
+      bin,
+      "--out",
+      path.join(out, "proprietary-provenance.json"),
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const m = JSON.parse(fs.readFileSync(r.stdout.match(/MERGED_JSON=(.+)/)[1].trim(), "utf8"));
+  assert.equal(m.proprietaryProvenance.release.tagName, "radon-main");
+  assert.equal(m.proprietaryProvenance.assetDigestMatches, false);
+  const sb = execFileSync("node", [SCOREBOARD], {
+    env: { ...process.env, BENCH_OUT: out },
+    encoding: "utf8",
+  });
+  assert.match(sb, /### Proprietary provenance \(OFF arm\)/);
+  assert.match(sb, /requested tag \| \(script default: radon-main\)/);
+  assert.match(sb, /resolved release \| radon-main \(published 2026-10-02T14:09:49Z\)/);
+  assert.match(sb, /asset \| simulator-server-argent-macos id 605747818/);
+  assert.match(sb, /digest matches \| NO/);
+});
+
+test("merge: no provenance file (pre-0.27 artifacts) → provenance reads unknown, still merges", () => {
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const m = JSON.parse(fs.readFileSync(r.stdout.match(/MERGED_JSON=(.+)/)[1].trim(), "utf8"));
+  assert.equal(m.proprietaryProvenance, "unknown");
+});

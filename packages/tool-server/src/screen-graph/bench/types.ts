@@ -100,7 +100,8 @@ export interface BenchTask {
 
 /**
  * The seven configurations (design §4 / ticket):
- *  - B1 argent proprietary (flag off, vendored 0.22.1 binaries)
+ *  - B1 argent proprietary (flag off, vendored binaries of the bench workflow's
+ *    `proprietary_version`, default 0.27.0)
  *  - B2 open server, no graph
  *  - O1 open + query/diff observations (query instead of describe)
  *  - O2 O1 + outcomes (skip the read when the outcome says unchanged/known)

@@ -23,6 +23,10 @@ on:
         description: "Iterations per verb (BENCH_N)"
         required: false
         default: "20"
+      simulator_server_tag:
+        description: "simulator-server release tag for the OFF arm (empty = the download script's default tag)"
+        required: false
+        default: ""
   # (The temporary branch-scoped `push` trigger used during bring-up has been
   # REMOVED in this final commit, per the ticket. To dispatch again, place the
   # workflow on the default branch — workflow_dispatch cannot fire from a feature
@@ -71,15 +75,50 @@ jobs:
       - name: Download the closed simulator-server + ax-service (OFF arm; run-time only)
         # Reuses the e2e-device-smoke.yml recipe. Their LICENSE forbids
         # redistribution, so fetch at run time, never commit.
+        # Re-baseline (0.27): `simulator_server_tag` picks the release; empty keeps
+        # the script's own default (no argument passed — today's behaviour). The
+        # requested tag, the release it resolved to (gh release view: tag, name,
+        # publishedAt, asset id + digest) and the sha256 of the downloaded binary
+        # are recorded in .bench-results/proprietary-provenance.json, which the
+        # merge folds into the merged JSON and the scoreboard renders.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIM_SERVER_TAG: ${{ github.event.inputs.simulator_server_tag }}
         run: |
-          bash scripts/download-simulator-server.sh || echo "::warning::simulator-server download failed — OFF arm may be unavailable"
+          if [ -n "$SIM_SERVER_TAG" ]; then
+            if ! [[ "$SIM_SERVER_TAG" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::simulator_server_tag '$SIM_SERVER_TAG' has characters outside [A-Za-z0-9._/-]"; exit 1
+            fi
+            bash scripts/download-simulator-server.sh "$SIM_SERVER_TAG" || echo "::warning::simulator-server download failed — OFF arm may be unavailable"
+          else
+            bash scripts/download-simulator-server.sh || echo "::warning::simulator-server download failed — OFF arm may be unavailable"
+          fi
           bash scripts/download-native-binaries.sh || echo "::warning::native binaries (ax-service) download failed — OFF arm may be unavailable"
           echo "=== native-devtools-ios inventory ==="
           ls -la packages/native-devtools-ios/bin/darwin 2>/dev/null || true
           ls -la packages/native-devtools-ios/dylibs 2>/dev/null || true
+          # Provenance (record-only; never fails the step). The script's default tag
+          # and repo are read from the script itself so the record follows it.
+          SCRIPT=scripts/download-simulator-server.sh
+          SCRIPT_DEFAULT_TAG=$(sed -n 's/^TAG="\${1:-\([^}]*\)}"$/\1/p' "$SCRIPT")
+          SIM_REPO=$(sed -n 's/^REPO="\([^"]*\)"$/\1/p' "$SCRIPT")
+          RESOLVED_TAG="${SIM_SERVER_TAG:-$SCRIPT_DEFAULT_TAG}"
+          gh release view "$RESOLVED_TAG" --repo "$SIM_REPO" \
+            --json tagName,name,publishedAt,createdAt,url,assets > "$RUNNER_TEMP/sim-server-release.json" \
+            || { echo "::warning::gh release view $RESOLVED_TAG failed — release identity unresolved"; echo '{}' > "$RUNNER_TEMP/sim-server-release.json"; }
+          mkdir -p .bench-results
+          node .github/bench-ci/proprietary-provenance.js gh-release \
+            --repo "$SIM_REPO" \
+            --requested-tag "$SIM_SERVER_TAG" \
+            --script-default-tag "$SCRIPT_DEFAULT_TAG" \
+            --resolved-tag "$RESOLVED_TAG" \
+            --release-json "$RUNNER_TEMP/sim-server-release.json" \
+            --asset simulator-server-argent-macos \
+            --file packages/native-devtools-ios/bin/darwin/simulator-server \
+            --file packages/native-devtools-ios/bin/darwin/ax-service \
+            --out .bench-results/proprietary-provenance.json \
+            || echo "::warning::provenance record failed — OFF arm release will read unknown"
 
       - name: Build sim-input (ON-siminput arm)
         shell: bash
