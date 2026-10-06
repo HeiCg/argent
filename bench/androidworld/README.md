@@ -106,6 +106,12 @@ effort and task list (research §5).
 - `job=harness` — Step 3 run. Needs the `ANTHROPIC_API_KEY` repo secret; without
   it the job fails fast naming the secret.
 
+Inputs `model` (default `claude-opus-5`) and `effort` (`low` / `medium` / `high` /
+`xhigh` / `max`, default `medium`) go to `--model` / `--effort`. The optional
+`ANTHROPIC_BASE_URL` repo variable points the SDK at an Anthropic-compatible
+endpoint; unset means the Anthropic default. The fail-fast step logs base URL,
+model and effort (never the key), and the run manifest records model and effort.
+
 ## Step 0 pre-registration (a11y suppression)
 
 The probe decides whether `DeviceControlInstrumentation.getUiAutomation` needs

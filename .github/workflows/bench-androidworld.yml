@@ -51,6 +51,21 @@ on:
         description: "task_random_seed (harness; pinned per run)"
         required: false
         default: "30"
+      model:
+        description: "Model name passed to --model (Anthropic-compatible endpoint)"
+        required: false
+        default: "claude-opus-5"
+      effort:
+        description: "Effort passed to --effort (harness)"
+        required: false
+        default: "medium"
+        type: choice
+        options:
+          - low
+          - medium
+          - high
+          - xhigh
+          - max
       emulator_build:
         description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
         required: false
@@ -297,12 +312,19 @@ jobs:
       - name: Fail fast if the model key is missing
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+          AW_MODEL: ${{ github.event.inputs.model }}
+          AW_EFFORT: ${{ github.event.inputs.effort }}
         run: |
           if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
             echo "::error::ANTHROPIC_API_KEY repo secret is not set — the harness cannot run. Add the secret named exactly ANTHROPIC_API_KEY (Settings → Secrets and variables → Actions), then re-dispatch with job=harness."
             exit 1
           fi
           echo "ANTHROPIC_API_KEY present."
+          # Provenance (the key is never printed): empty base URL = Anthropic default.
+          echo "ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-<unset, Anthropic default>}"
+          echo "model: ${AW_MODEL}"
+          echo "effort: ${AW_EFFORT}"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -428,6 +450,7 @@ jobs:
       - name: Harness — 5 tasks x 2 tiers
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
           OPEN_SERVER_SERIAL: emulator-5554
           AW_CONSOLE_PORT: "5554"
           AW_GRPC_PORT: "8554"
@@ -446,7 +469,8 @@ jobs:
             --tiers "${{ github.event.inputs.tiers }}" \
             --task-random-seed "${{ github.event.inputs.seed }}" \
             --n-task-combinations 1 \
-            --model claude-opus-5 \
+            --model "${{ github.event.inputs.model }}" \
+            --effort "${{ github.event.inputs.effort }}" \
             --checkpoint-dir "$AW_OUT/checkpoint" \
             --out-dir "$AW_OUT" \
             --run-id "${{ github.run_id }}" \
