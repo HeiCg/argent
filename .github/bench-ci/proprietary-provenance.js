@@ -23,6 +23,10 @@
 //   node proprietary-provenance.js gh-release --requested-tag T --script-default-tag D
 //        --resolved-tag R --repo O/N --release-json <file> --asset <name>
 //        --file <binary> [--file <other>…] --out <file>
+//   node proprietary-provenance.js simulator --slim true|false [--simslim-version V]
+//        [--profile <file>] [--status-json <file>] [--measure-json <file>]
+//        [--block <bench-block-*.json>] [--out <file>]
+//     The simulator record (see simulatorRecord); --block stamps block.simulator.
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -216,6 +220,65 @@ function provenanceDiff(a, b) {
   return `same version ${provenanceLabel(a)} but sha256 differs for ${diff.join(", ")}`;
 }
 
+/* --------------------------- simulator (simslim) --------------------------- */
+// What the iOS simulator under the bench looked like: whether simslim slimmed it
+// (https://github.com/MobAI-App/simslim, an external binary installed by
+// install-simslim.sh), which profile, how many managed launchd labels are
+// disabled, and simslim's memory measure. Recorded in both modes: a stock run
+// with simslim installed still records `measure` (only `status`/`measure` run,
+// never `on`), so the two modes compare on the same runner image.
+
+function readJsonOrNull(p) {
+  if (!p) return null;
+  try {
+    const v = JSON.parse(fs.readFileSync(p, "utf8"));
+    return v && typeof v === "object" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+const numOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/**
+ * `{ slim, simslimVersion, profileSha256, managedDisabled, managedTotal, measure }`.
+ * `status` / `measure` are the parsed `simslim status|measure --json` outputs (or
+ * null); the profile is hashed only for a slim run — a stock run applied none.
+ */
+function simulatorRecord({ slim, simslimVersion, profilePath, status, measure }) {
+  const s = status && typeof status === "object" ? status : {};
+  const m = measure && typeof measure === "object" ? measure : null;
+  return {
+    slim: !!slim,
+    simslimVersion:
+      typeof simslimVersion === "string" && simslimVersion.trim()
+        ? simslimVersion.trim().replace(/^simslim\s+/, "")
+        : null,
+    profileSha256:
+      slim && profilePath && fs.existsSync(profilePath) ? sha256File(profilePath) : null,
+    managedDisabled: numOrNull(s.managedDisabled),
+    managedTotal: numOrNull(s.managedTotal),
+    measure: m ? { processes: numOrNull(m.processes), bytes: numOrNull(m.bytes) } : null,
+  };
+}
+
+/**
+ * Why two simulator records are NOT the same slim state, or null when they are.
+ * `measure` is descriptive and never compared; the managed counts only when both
+ * sides read them (a transient `status` failure is not a state change).
+ */
+function simulatorStateDiff(a, b) {
+  if (!a || !b) return a || b ? `record present on one side only` : null;
+  const out = [];
+  for (const k of ["slim", "profileSha256", "simslimVersion"]) {
+    if (a[k] !== b[k]) out.push(`${k} ${JSON.stringify(a[k])} vs ${JSON.stringify(b[k])}`);
+  }
+  for (const k of ["managedDisabled", "managedTotal"]) {
+    if (a[k] != null && b[k] != null && a[k] !== b[k]) out.push(`${k} ${a[k]} vs ${b[k]}`);
+  }
+  return out.length ? out.join(", ") : null;
+}
+
 /* ----------------------------------- CLI ----------------------------------- */
 
 function parseArgs(argv) {
@@ -292,7 +355,26 @@ function main(argv) {
     for (const [k, v] of Object.entries(p.files)) console.log(`  ${v}  ${k}`);
     return;
   }
-  throw new Error(`unknown command "${cmd}" (stamp | npm | gh-release)`);
+  if (cmd === "simulator") {
+    const rec = simulatorRecord({
+      slim: opt.slim === "true",
+      simslimVersion: opt["simslim-version"] || null,
+      profilePath: opt.profile || null,
+      status: readJsonOrNull(opt["status-json"]),
+      measure: readJsonOrNull(opt["measure-json"]),
+    });
+    if (opt.block) {
+      // Stamp one bench block, so the merge can refuse blocks whose slim state differs.
+      const json = JSON.parse(fs.readFileSync(opt.block, "utf8"));
+      json.block = json.block || {};
+      json.block.simulator = rec;
+      fs.writeFileSync(opt.block, JSON.stringify(json, null, 2));
+    }
+    if (opt.out) fs.writeFileSync(opt.out, JSON.stringify(rec, null, 2));
+    console.log(`[simulator] ${opt.block || opt.out}: ${JSON.stringify(rec)}`);
+    return;
+  }
+  throw new Error(`unknown command "${cmd}" (stamp | npm | gh-release | simulator)`);
 }
 
 if (require.main === module) main(process.argv.slice(2));
@@ -306,4 +388,6 @@ module.exports = {
   provenanceLabel,
   provenanceKey,
   provenanceDiff,
+  simulatorRecord,
+  simulatorStateDiff,
 };

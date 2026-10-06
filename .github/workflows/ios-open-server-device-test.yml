@@ -12,6 +12,12 @@ name: iOS open server device test
 
 on:
   workflow_dispatch:
+    inputs:
+      slim:
+        description: "Slim the simulator with simslim (.github/simslim/ci.json) before the run"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -20,6 +26,9 @@ jobs:
   ios-open-server-simulator:
     runs-on: macos-latest
     timeout-minutes: 60
+    env:
+      # simslim: false unless a dispatch asked for it (any other event reads false).
+      SIM_SLIM: ${{ inputs.slim && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -63,6 +72,11 @@ jobs:
           # own tsconfig does not reference, so a scoped build misses them.
           npm run build
 
+      - name: Install simslim (slim=true only)
+        if: env.SIM_SLIM == 'true'
+        shell: bash
+        run: bash .github/bench-ci/install-simslim.sh
+
       - name: Create and boot an iPhone simulator
         shell: bash
         run: |
@@ -89,8 +103,12 @@ jobs:
             echo "::error::no iPhone device type is compatible with $RUNTIME"
             exit 1
           fi
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
+          # slim=true: `simslim on` + bootstatus + verify (drift fails the job),
+          # then a record-only `simslim measure`; slim=false: plain simctl boot.
+          bash .github/bench-ci/simslim-ci.sh boot "$UDID"
+          if [ "$SIM_SLIM" = "true" ]; then
+            bash .github/bench-ci/simslim-ci.sh snapshot "$UDID" build/simslim boot
+          fi
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Build the runner for the simulator (build-for-testing)
@@ -194,4 +212,5 @@ jobs:
             build/runner.log
             build/runner.xcresult
             build/shots
+            build/simslim
           if-no-files-found: warn

@@ -331,3 +331,165 @@ test("merge: no provenance file (pre-0.27 artifacts) → provenance reads unknow
   const m = JSON.parse(fs.readFileSync(r.stdout.match(/MERGED_JSON=(.+)/)[1].trim(), "utf8"));
   assert.equal(m.proprietaryProvenance, "unknown");
 });
+
+// ── simslim: the simulator's slim state per block ─────────────────────────────
+// Every block runs on the same simulator boot, so the slim state is shared by
+// construction; the workflow stamps each block with block.simulator (simslim
+// status + measure) and the merge refuses blocks whose slim state differs.
+function simRecord(over = {}) {
+  return {
+    slim: true,
+    simslimVersion: "v0.11.0",
+    profileSha256: "a".repeat(64),
+    managedDisabled: 168,
+    managedTotal: 171,
+    measure: { processes: 61, bytes: 943718400 },
+    ...over,
+  };
+}
+function withSim(blocks, rec) {
+  for (const b of blocks) b.block.simulator = typeof rec === "function" ? rec(b) : rec;
+  return blocks;
+}
+const mergedFiles = (out) => fs.readdirSync(out).filter((f) => /^bench-ios-merged-/.test(f));
+
+test("simulator: the merge refuses blocks whose slim state differs, and writes no merged JSON", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    withSim(ALL(), (b) =>
+      b.block.block === "ON-siminput"
+        ? simRecord({ slim: false, profileSha256: null, managedDisabled: 0 })
+        : simRecord()
+    )
+  );
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /slim state differs: OFF-1 vs ON-siminput: slim true vs false/);
+  assert.deepEqual(mergedFiles(out), []);
+});
+
+test("simulator: a block without a record among recorded blocks is refused", () => {
+  const out = freshOut();
+  const blocks = withSim(ALL(), simRecord());
+  delete blocks[3].block.simulator;
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /slim state differs: OFF-1 vs OFF-2: record present on one side only/);
+});
+
+test("simulator: a different measure alone is not a state change", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    withSim(ALL(), (b) =>
+      simRecord({ measure: { processes: 60, bytes: 900000000 + b.block.block.length } })
+    )
+  );
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+});
+
+test("simulator: merge + scoreboard record and render the slim state and measure", () => {
+  const out = freshOut();
+  writeBlocks(out, withSim(ALL(), simRecord()));
+  fs.writeFileSync(
+    path.join(out, "simulator.json"),
+    JSON.stringify(simRecord({ measure: { processes: 58, bytes: 912261120 } }))
+  );
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const m = JSON.parse(fs.readFileSync(r.stdout.match(/MERGED_JSON=(.+)/)[1].trim(), "utf8"));
+  assert.equal(m.simulator.slim, true);
+  assert.equal(m.simulator.measure.bytes, 912261120);
+  assert.equal(m.simulatorByBlock["OFF-2"].measure.bytes, 943718400);
+  const sb = execFileSync("node", [SCOREBOARD], {
+    env: { ...process.env, BENCH_OUT: out },
+    encoding: "utf8",
+  });
+  assert.match(sb, /### Simulator \(simslim\)/);
+  assert.match(sb, /\| slim \| yes \|/);
+  assert.match(sb, /\| simslim \| v0\.11\.0 \|/);
+  assert.match(sb, /\| managed labels disabled \| 168 \/ 171 \|/);
+  assert.match(sb, /\| boot \| 58 \| 870\.0 MiB \|/);
+  assert.match(sb, /\| OFF-2 \| 61 \| 900\.0 MiB \|/);
+});
+
+test("simulator: the run-level record must match the blocks too", () => {
+  const out = freshOut();
+  writeBlocks(out, withSim(ALL(), simRecord()));
+  fs.writeFileSync(
+    path.join(out, "simulator.json"),
+    JSON.stringify(simRecord({ slim: false, profileSha256: null }))
+  );
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /slim state differs: boot vs OFF-1: slim false vs true/);
+});
+
+test("simulator: no records (pre-simslim artifacts) → unknown, still merges, scoreboard says so", () => {
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const m = JSON.parse(fs.readFileSync(r.stdout.match(/MERGED_JSON=(.+)/)[1].trim(), "utf8"));
+  assert.equal(m.simulator, "unknown");
+  const sb = execFileSync("node", [SCOREBOARD], {
+    env: { ...process.env, BENCH_OUT: out },
+    encoding: "utf8",
+  });
+  assert.match(sb, /### Simulator \(simslim\)\n\n_Not recorded/);
+});
+
+test("simulator CLI: stamps block.simulator; hashes the profile only for a slim run", () => {
+  const { sha256File } = require(PROVENANCE);
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const profile = path.join(out, "ci.json");
+  fs.writeFileSync(profile, '{"name":"ci","keep":["com.apple.swcd"]}');
+  fs.writeFileSync(
+    path.join(out, "status.json"),
+    JSON.stringify({ managedDisabled: 168, managedTotal: 171, verdict: "slim" })
+  );
+  fs.writeFileSync(
+    path.join(out, "measure.json"),
+    JSON.stringify({ processes: 61, bytes: 1, cpu: 3.5 })
+  );
+  const blockFile = path.join(out, "bench-block-OFF-1.json");
+  const cli = (slim, extra) =>
+    execFileSync(
+      "node",
+      [
+        PROVENANCE,
+        "simulator",
+        "--slim",
+        slim,
+        "--simslim-version",
+        "simslim v0.11.0",
+        "--profile",
+        profile,
+        "--status-json",
+        path.join(out, "status.json"),
+        "--measure-json",
+        path.join(out, "measure.json"),
+        ...extra,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+  cli("true", ["--block", blockFile]);
+  const stamped = JSON.parse(fs.readFileSync(blockFile, "utf8")).block.simulator;
+  assert.deepEqual(stamped, {
+    slim: true,
+    simslimVersion: "v0.11.0",
+    profileSha256: sha256File(profile),
+    managedDisabled: 168,
+    managedTotal: 171,
+    measure: { processes: 61, bytes: 1 },
+  });
+  cli("false", ["--out", path.join(out, "stock.json")]);
+  const stock = JSON.parse(fs.readFileSync(path.join(out, "stock.json"), "utf8"));
+  assert.equal(stock.slim, false);
+  assert.equal(stock.profileSha256, null);
+  assert.deepEqual(stock.measure, { processes: 61, bytes: 1 });
+});

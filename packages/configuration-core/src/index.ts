@@ -73,6 +73,8 @@ export {
   clearRememberedAgent,
   getAdditionalIosDeviceSets,
   getAndroidSdkRoot,
+  getIosSimslimProfile,
+  getIosSimslimBinary,
   UnknownConfigKeyError,
   ConfigScopeError,
   ConfigValidationError,

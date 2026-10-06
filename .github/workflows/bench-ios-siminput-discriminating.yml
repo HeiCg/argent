@@ -18,6 +18,11 @@ on:
         description: "Taps per cell (DISC_TAPS)"
         required: false
         default: "20"
+      slim:
+        description: "Slim the simulator with simslim (.github/simslim/ci.json) before the run"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -28,6 +33,8 @@ jobs:
     timeout-minutes: 45
     env:
       DISC_TAPS: ${{ github.event.inputs.taps || '20' }}
+      # simslim: false unless a dispatch asked for it (any other event reads false).
+      SIM_SLIM: ${{ inputs.slim && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -61,6 +68,11 @@ jobs:
           bash packages/ios-sim-input/scripts/build-sim-input.sh 2>&1 | tee build-sim-input.log
           echo "IOS_SIM_INPUT_BINARY=$PWD/packages/ios-sim-input/bin/sim-input" >> "$GITHUB_ENV"
 
+      - name: Install simslim (slim=true only)
+        if: env.SIM_SLIM == 'true'
+        shell: bash
+        run: bash .github/bench-ci/install-simslim.sh
+
       - name: Create and boot an iPhone simulator
         shell: bash
         run: |
@@ -77,8 +89,12 @@ jobs:
             UDID=""
           done
           if [ -z "$UDID" ]; then echo "::error::no compatible iPhone device type"; exit 1; fi
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
+          # slim=true: `simslim on` + bootstatus + verify (drift fails the job),
+          # then a record-only `simslim measure`; slim=false: plain simctl boot.
+          bash .github/bench-ci/simslim-ci.sh boot "$UDID"
+          if [ "$SIM_SLIM" = "true" ]; then
+            bash .github/bench-ci/simslim-ci.sh snapshot "$UDID" .bench-results/simslim boot
+          fi
           xcrun simctl launch "$UDID" com.apple.Preferences || true
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
 
