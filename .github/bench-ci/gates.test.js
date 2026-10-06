@@ -306,10 +306,10 @@ const FIVE = (cur = prov("0.27.0"), leg = prov("0.22.1")) => [
   withProv(block31("OFF-1", { tap: 53, swipe: 307, pinch: 351, headline: 445 }), cur),
   block31("ON-uiautomation", { tap: 86, swipe: 291, pinch: 340, headline: 422 }),
   block31("ON-input-manager", { tap: 55, swipe: 268, pinch: 323, headline: 400 }),
-  withProv(block31("OFF-legacy", { tap: 60, swipe: 330, pinch: 351, headline: 470 }), leg),
   withProv(block31("OFF-2", { tap: 53, swipe: 300, pinch: 356, headline: 548 }), cur),
+  withProv(block31("OFF-legacy", { tap: 60, swipe: 330, pinch: 351, headline: 470 }), leg),
 ];
-const FIVEENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-input-manager,OFF-legacy,OFF-2" };
+const FIVEENV = { BENCH_BLOCKS: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2,OFF-legacy" };
 const mergedOf = (r) => {
   const m = r.stdout.match(/MERGED_JSON=(.+)/);
   assert.ok(m, "merge printed no MERGED_JSON line: " + r.stdout);
@@ -748,7 +748,7 @@ function writeLost(out) {
 test("merge-blocks: emulator lost -> merged JSON for the completed blocks, marked partial", () => {
   const out = freshOut();
   // Run 37215518035's shape: OFF-1 and the self-orchestrated ON-input-manager done,
-  // the emulator died inside ON-uiautomation (no file), OFF-legacy/OFF-2 never ran.
+  // the emulator died inside ON-uiautomation (no file), OFF-2/OFF-legacy never ran.
   writeBlocks(out, [block("OFF-1"), block("ON-input-manager")]);
   const r = run(MERGE_BLOCKS, out, { ...ALLENV, BENCH_EMULATOR_LOST_FILE: writeLost(out) });
   assert.strictEqual(r.code, 0, r.stderr);

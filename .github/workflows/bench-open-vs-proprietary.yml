@@ -28,7 +28,7 @@ on:
       blocks:
         description: "Latency blocks to run (comma list)"
         required: false
-        default: "OFF-1,ON-uiautomation,ON-input-manager,OFF-legacy,OFF-2"
+        default: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2,OFF-legacy"
       proprietary_version:
         description: "@swmansion/argent release whose binaries the proprietary (OFF) blocks use"
         required: false
@@ -439,9 +439,17 @@ jobs:
           # provenance (npm version + sha256 of each binary/APK) of the dirs the
           # block itself recorded. The helper APK is versionCode 1 in every release,
           # so the tool-server's install probe would keep whichever release's APK is
-          # already on the emulator: when the OFF binary set changes (OFF-1 ->
-          # OFF-legacy -> OFF-2) uninstall it so the block installs the APK from its
-          # own bin/, the one the stamp hashes. Without OFF-legacy nothing changes.
+          # already on the emulator: when the OFF binary set changes (OFF-2 ->
+          # OFF-legacy, the last block) uninstall it so the block installs the APK
+          # from its own bin/, the one the stamp hashes. OFF-1 and OFF-2 share one
+          # binary set, so nothing is uninstalled between them; without OFF-legacy
+          # nothing changes.
+          #
+          # Measured 2026-10-04 (npm pack 0.22.1 vs 0.27.0): the two helper APKs
+          # differ as zip files but every entry inside is identical (classes.dex,
+          # AndroidManifest.xml, the signature), and the screen-sharing agent jar is
+          # byte-identical (sha256 037dc09b…). The legacy arm therefore differs from
+          # the current one only in the simulator-server binary.
           LAST_OFF_PKG=""
           run_block () {
             local b="$1" pkg="${2:-}" ver="${3:-}" rc=0
@@ -501,12 +509,21 @@ jobs:
           # Phase 3n.2: ON-scrcpy removed. ON-input-manager is self-orchestrated by
           # run-bench.js (STRATEGY_ARMS) on the first run_block invocation above, so it
           # needs no explicit run_block call here.
+          if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
+            if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
+              OFF_FAILED=1
+              echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
+            fi
+            sleep 3
+          fi
           # Re-baseline (0.27): OFF-legacy — the proprietary arm on the OLDER release's
           # binaries (legacy_proprietary_version), its own BENCH_ONLY invocation in this
           # same job + emulator, so one run yields a same-device legacy-vs-current
-          # proprietary comparison. Skipped when the input is empty or that binary
-          # cannot exec here; an executable legacy block that FAILS fails the run at
-          # the end (like F13), without blocking OFF-2.
+          # proprietary comparison. It runs LAST, after OFF-2: the OFF-1 -> OFF-2 interval
+          # is the drift floor every ON-vs-OFF delta is read against, so no extra block
+          # (and no helper-APK reinstall) may sit inside it. Skipped when the input is
+          # empty or that binary cannot exec here; an executable legacy block that FAILS
+          # fails the run at the end (like F13).
           LEGACY_FAILED=0
           if echo "$BENCH_BLOCKS" | grep -q "OFF-legacy"; then
             if [ -z "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
@@ -519,13 +536,6 @@ jobs:
               LEGACY_FAILED=1
               echo "::error::OFF-legacy ($BENCH_LEGACY_PROPRIETARY_VERSION) FAILED though its binary is executable"
             fi
-          fi
-          if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
-            if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
-              OFF_FAILED=1
-              echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
-            fi
-            sleep 3
           fi
           echo "########## MERGE ##########"
           stop_logcat
