@@ -32,6 +32,16 @@ L.push("> **x86_64 / KVM on a GitHub-hosted runner.** These numbers are NOT comp
 L.push("> to the local arm64 / HVF results (v4–v6). Only OFF vs ON *within this run* is");
 L.push("> like-for-like.");
 L.push("");
+// Emulator lost mid-run (merge-blocks.js partial mode): say so before any number.
+if (merged.partial) {
+  const lost = merged.emulatorLost || {};
+  L.push(
+    `> **PARTIAL — emulator lost at ${lost.lostAt || "?"}${lost.context ? ` (${lost.context})` : ""}.** ` +
+      `Only the completed blocks below are reported; missing: ${(merged.missingBlocks || []).join(", ") || "(none)"}. ` +
+      "Not a complete run: do not compare it against a full one. The job fails."
+  );
+  L.push("");
+}
 L.push(
   `Blocks run: **${(merged.blocksRan || []).join(", ") || "?"}**` +
     (merged.offArmPresent ? "" : "  — **ON-only** (proprietary OFF arm absent/refused)")
@@ -60,6 +70,25 @@ row("KVM present", ci.kvm);
 row("emulator image", ci.emulatorImage);
 row("emulator arch", ci.emulatorArch);
 row("runner", ci.runner);
+// Emulator/host provenance (ci-emulator-env.json); absent on pre-diagnostics runs.
+const emu = merged.emulator || null;
+if (emu) {
+  const e = emu.emulator || {};
+  row(
+    "emulator",
+    e.version
+      ? `${e.version} (build ${e.buildId || "?"})${e.pinnedBuild ? " — pinned via emulator_build" : ""}`
+      : undefined
+  );
+  row("emulator -gpu / RAM", e.gpu ? `${e.gpu} / ${e.memoryMb ?? "?"} MB` : undefined);
+  row("system image revision", emu.systemImage ? emu.systemImage.revision : undefined);
+  row(
+    "adb",
+    emu.adb && emu.adb.version ? `${emu.adb.version} (${emu.adb.platformTools || "?"})` : undefined
+  );
+  row("runner image", emu.runnerImage ? emu.runnerImage.version : undefined);
+  row("kernel", emu.kernel);
+}
 L.push("");
 
 // Re-baseline (0.27): which proprietary release each OFF block ran (npm version +

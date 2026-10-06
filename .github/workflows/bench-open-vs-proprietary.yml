@@ -13,6 +13,14 @@ name: bench-open-vs-proprietary
 # vs ON within a single run is like-for-like. The proprietary simulator-server
 # ships bin/linux/ (x86_64); if it refuses to run on the hosted runner the OFF
 # arm is skipped and the run is scored ON-only (acceptance allows this).
+#
+# Emulator diagnostics (2026-10-04, docs/open-server/2026-10-04-bench-emulator-loss.md):
+# .github/bench-ci/emulator-diagnostics.sh records the emulator/host environment
+# (ci-emulator-env.json), samples the host every 30 s during the bench step, runs a
+# liveness watchdog that terminates the bench when the emulator is lost (never
+# restarts it), and collects a post-mortem. emulator_build / emulator_gpu /
+# emulator_memory_mb are the levers to test an emulator-version regression; their
+# defaults keep today's behaviour.
 
 on:
   workflow_dispatch:
@@ -50,6 +58,18 @@ on:
         options:
           - matrix
           - capture
+      emulator_build:
+        description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
+        required: false
+        default: ""
+      emulator_gpu:
+        description: "Emulator -gpu mode"
+        required: false
+        default: "swiftshader_indirect"
+      emulator_memory_mb:
+        description: "AVD hw.ramSize (MB)"
+        required: false
+        default: "4096"
 
 jobs:
   # ── Latency bench (4 blocks) + device smoke ───────────────────────────────
@@ -80,6 +100,11 @@ jobs:
       # with another release).
       BENCH_PROPRIETARY_VERSION: ${{ github.event.inputs.proprietary_version || '0.27.0' }}
       BENCH_LEGACY_PROPRIETARY_VERSION: ${{ github.event.inputs.legacy_proprietary_version }}
+      # Emulator diagnostics + levers (emulator-diagnostics.sh). Defaults = today.
+      EMU_DIAG_DIR: /tmp/emu-diag
+      EMULATOR_BUILD: ${{ github.event.inputs.emulator_build }}
+      EMULATOR_GPU: ${{ github.event.inputs.emulator_gpu || 'swiftshader_indirect' }}
+      EMULATOR_MEMORY_MB: ${{ github.event.inputs.emulator_memory_mb || '4096' }}
 
     steps:
       - name: Checkout
@@ -133,7 +158,21 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
           echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
 
-      - name: Create AVD (4 GB / 2 vCPUs)
+      - name: Pin emulator build (optional) + record emulator environment
+        # emulator_build empty = keep sdkmanager's "emulator" (no change). Set = install
+        # that exact build from dl.google.com, fail early on a 404, write back the stock
+        # package.xml at the zip's Pkg.Revision (else avdmanager refuses the AVD),
+        # verify -version and `sdkmanager --list_installed`.
+        # Then ci-emulator-env.json (emulator version/build, system-image revision, adb,
+        # $ImageVersion, kernel, nproc, free -m): uploaded and embedded in the results.
+        run: |
+          set -e
+          [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
+          [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
+          bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
+          bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-34;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+
+      - name: Create AVD (emulator_memory_mb, default 4 GB / 2 vCPUs)
         run: |
           set -e
           mkdir -p "$HOME/.android"
@@ -148,7 +187,7 @@ jobs:
             cat /tmp/avdmanager.log
             exit 1
           fi
-          sed -i 's/^hw.ramSize.*$/hw.ramSize = 4096/' "$CFG" || echo "hw.ramSize = 4096" >> "$CFG"
+          sed -i "s/^hw.ramSize.*\$/hw.ramSize = $EMULATOR_MEMORY_MB/" "$CFG" || echo "hw.ramSize = $EMULATOR_MEMORY_MB" >> "$CFG"
           sed -i 's/^hw.cpu.ncore.*$/hw.cpu.ncore = 2/' "$CFG" || echo "hw.cpu.ncore = 2" >> "$CFG"
           grep -E "^(hw\.ramSize|hw\.cpu\.ncore|hw\.gpu)" "$CFG"
 
@@ -161,9 +200,10 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
           nohup $ANDROID_HOME/emulator/emulator @argent-test \
             -no-window -no-audio -no-boot-anim -no-snapshot -read-only \
-            -gpu swiftshader_indirect -grpc 8554 -grpc-use-token \
+            -gpu "$EMULATOR_GPU" -grpc 8554 -grpc-use-token \
             -no-metrics -camera-back none -camera-front none \
             > /tmp/emulator.log 2>&1 &
+          echo $! > /tmp/emulator.pid
           echo "emulator pid=$!"
           adb start-server
           # Wait for the device node.
@@ -366,7 +406,34 @@ jobs:
           adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-bench.txt" 2>&1 &
           BENCH_LOGCAT_PID=$!
           stop_logcat () { kill "$BENCH_LOGCAT_PID" 2>/dev/null || true; }
-          trap stop_logcat EXIT
+          # Fail-closed on a lost emulator: the watchdog (emulator-diagnostics.sh)
+          # SIGTERMs the running block when the qemu process dies, `adb get-state`
+          # fails 3x (10 s apart) or the memory guard trips (host avail < 700 MB with
+          # qemu RSS > 2.5x guest RAM, 2 checks), and writes the marker below. Remaining
+          # blocks are skipped (never on a restarted emulator), the merge still runs over
+          # the completed blocks (marked partial) and the step fails. The host sampler's
+          # 60 s heartbeat lands in this step's log.
+          export BENCH_EMULATOR_LOST_FILE="$EMU_DIAG_DIR/emulator-lost.json"
+          export BENCH_CONTEXT_FILE="$EMU_DIAG_DIR/context"
+          emu_lost () { [ -f "$BENCH_EMULATOR_LOST_FILE" ]; }
+          MERGED=0
+          finish () {
+            local rc=$?
+            stop_logcat
+            bash .github/bench-ci/emulator-diagnostics.sh stop
+            if emu_lost; then
+              if [ "$MERGED" != "1" ]; then
+                echo "########## MERGE (partial: emulator lost) ##########"
+                node .github/bench-ci/merge-blocks.js || echo "::warning::partial merge failed"
+              fi
+              echo "::error::emulator lost during the latency bench — completed blocks merged as PARTIAL, job fails"
+              rc=1
+            fi
+            exit "$rc"
+          }
+          trap finish EXIT
+          bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'run-bench\.js'
+
           # Re-baseline (0.27): an OFF block takes its proprietary package dir + the
           # release it must be (args 2/3); its block JSON is then stamped with the
           # provenance (npm version + sha256 of each binary/APK) of the dirs the
@@ -378,6 +445,11 @@ jobs:
           LAST_OFF_PKG=""
           run_block () {
             local b="$1" pkg="${2:-}" ver="${3:-}" rc=0
+            if emu_lost; then
+              echo "::warning::block $b skipped: emulator lost (no restart — results would not be comparable)"
+              return 1
+            fi
+            echo "block $b" > "$BENCH_CONTEXT_FILE"
             echo "########## BLOCK $b ##########"
             # F12: BLOCKING per-block readiness gate (strict, 4th arg = 1). A screen
             # that never settles poisons the effect check, so a timeout FAILS the
@@ -458,6 +530,7 @@ jobs:
           echo "########## MERGE ##########"
           stop_logcat
           node .github/bench-ci/merge-blocks.js
+          MERGED=1
           # F13 enforcement: fail the run if an executable proprietary baseline block
           # failed (diagnostics + merge above are preserved for the artifacts first).
           if [ "$OFF_FAILED" = "1" ]; then
@@ -486,6 +559,15 @@ jobs:
             cat /tmp/scoreboard.err || true
           fi
 
+      - name: Stop host sampler + emulator post-mortem
+        # Always: kill the sampler/watchdog, then dmesg tail (OOM/kvm highlights),
+        # adb devices, emulator pid liveness, emulator.log tail, crash db + crashpad
+        # dumps (50 MB cap), logcat tail if adb still answers. Never fails.
+        if: always()
+        run: |
+          bash .github/bench-ci/emulator-diagnostics.sh stop
+          bash .github/bench-ci/emulator-diagnostics.sh postmortem emulator-5554 "$EMU_DIAG_DIR/postmortem"
+
       - name: Stage artifacts
         # upload-artifact@v4 drops relative globs when mixed with absolute (/tmp)
         # paths (they share no common root); stage everything under one dir first.
@@ -499,6 +581,8 @@ jobs:
           cp "$RUNNER_TEMP/device-test.log" "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/logcat-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/ready-gate-device-test.txt" "$STAGE/logs/" 2>/dev/null || true
+          # Emulator diagnostics: host-sampler.log, postmortem/, emulator-lost.json, env.
+          cp -r "$EMU_DIAG_DIR/." "$STAGE/logs/" 2>/dev/null || true
           echo "=== staged ==="; find "$STAGE" -type f | sed "s|$STAGE/||" | sort
 
       - name: Upload artifacts
@@ -528,6 +612,12 @@ jobs:
           fi
           echo "device tests passed."
 
+      - name: Enforce emulator liveness
+        # Fail-closed: a lost emulator fails the job even if every step above
+        # somehow reported success (artifacts are already uploaded).
+        if: always()
+        run: bash .github/bench-ci/emulator-diagnostics.sh enforce
+
   # ── Screen-graph matrix (optional, own emulator, runs in parallel) ─────────
   screen-graph:
     name: Screen-graph matrix (x86_64 KVM)
@@ -543,6 +633,11 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
       # Re-baseline (0.27): B1 (the proprietary config) runs this release's binaries.
       BENCH_PROPRIETARY_VERSION: ${{ github.event.inputs.proprietary_version || '0.27.0' }}
+      # Emulator diagnostics + levers (emulator-diagnostics.sh). Defaults = today.
+      EMU_DIAG_DIR: /tmp/emu-diag
+      EMULATOR_BUILD: ${{ github.event.inputs.emulator_build }}
+      EMULATOR_GPU: ${{ github.event.inputs.emulator_gpu || 'swiftshader_indirect' }}
+      EMULATOR_MEMORY_MB: ${{ github.event.inputs.emulator_memory_mb || '4096' }}
 
     steps:
       # feat/screen-graph-d is merged into open/main, so the screen-graph bench
@@ -587,6 +682,20 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
           echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
 
+      - name: Pin emulator build (optional) + record emulator environment
+        # emulator_build empty = keep sdkmanager's "emulator" (no change). Set = install
+        # that exact build from dl.google.com, fail early on a 404, write back the stock
+        # package.xml at the zip's Pkg.Revision (else avdmanager refuses the AVD),
+        # verify -version and `sdkmanager --list_installed`.
+        # Then ci-emulator-env.json (emulator version/build, system-image revision, adb,
+        # $ImageVersion, kernel, nproc, free -m): uploaded and embedded in the results.
+        run: |
+          set -e
+          [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
+          [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
+          bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
+          bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-34;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+
       - name: Create AVD
         run: |
           set -e
@@ -594,7 +703,7 @@ jobs:
           echo no | avdmanager -v create avd -n argent-test \
             -k "system-images;android-34;google_apis;x86_64" -d "pixel_6" 2>&1 | tee /tmp/avdmanager.log
           CFG=$HOME/.android/avd/argent-test.avd/config.ini
-          sed -i 's/^hw.ramSize.*$/hw.ramSize = 4096/' "$CFG" || echo "hw.ramSize = 4096" >> "$CFG"
+          sed -i "s/^hw.ramSize.*\$/hw.ramSize = $EMULATOR_MEMORY_MB/" "$CFG" || echo "hw.ramSize = $EMULATOR_MEMORY_MB" >> "$CFG"
           sed -i 's/^hw.cpu.ncore.*$/hw.cpu.ncore = 2/' "$CFG" || echo "hw.cpu.ncore = 2" >> "$CFG"
 
       - name: Boot emulator with gRPC + token
@@ -603,8 +712,9 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
           nohup $ANDROID_HOME/emulator/emulator @argent-test \
             -no-window -no-audio -no-boot-anim -no-snapshot -read-only \
-            -gpu swiftshader_indirect -grpc 8554 -grpc-use-token -no-metrics \
+            -gpu "$EMULATOR_GPU" -grpc 8554 -grpc-use-token -no-metrics \
             > /tmp/emulator.log 2>&1 &
+          echo $! > /tmp/emulator.pid
           adb start-server
           timeout 300 adb wait-for-device
           for i in $(seq 1 180); do
@@ -669,6 +779,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/sg-preflight.log"
 
       - name: Screen-graph matrix
+        id: matrix
         if: ${{ github.event.inputs.sg_mode != 'capture' }}
         env:
           BENCH_SERIAL: emulator-5554
@@ -693,8 +804,17 @@ jobs:
           BENCH_FRESH_STORE: "1"
           BENCH_RUN_ID: ${{ github.run_id }}
           BENCH_JOB_STARTED: ${{ github.run_started_at }}
+          # Emulator diagnostics: the harness embeds ci-emulator-env.json as `emulator`,
+          # writes `config <id>` for the watchdog, and on the watchdog's SIGTERM writes a
+          # partial JSON + report (interrupted/not-run configs INVALID) and exits 1.
+          BENCH_EMULATOR_ENV: ${{ github.workspace }}/.bench-results/ci-emulator-env.json
+          BENCH_CONTEXT_FILE: ${{ env.EMU_DIAG_DIR }}/context
+          BENCH_EMULATOR_LOST_FILE: ${{ env.EMU_DIAG_DIR }}/emulator-lost.json
         run: |
           set -euo pipefail
+          # Host sampler (heartbeat every 60 s in this log) + liveness watchdog.
+          bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'bench-screen-graph\.ts'
+          trap 'bash .github/bench-ci/emulator-diagnostics.sh stop' EXIT
           # `github.run_started_at` is not a valid context for workflow_dispatch (it
           # resolved empty on run 34904658366), so fall back to the step's wall clock.
           export BENCH_JOB_STARTED="${BENCH_JOB_STARTED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
@@ -704,6 +824,15 @@ jobs:
           echo "[bench-sg] run_id=${{ github.run_id }} job_started=$BENCH_JOB_STARTED — fresh $BENCH_OUT" | tee "$RUNNER_TEMP/sg-matrix.log"
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
             2>&1 | tee -a "$RUNNER_TEMP/sg-matrix.log"
+
+      - name: Stop host sampler + emulator post-mortem
+        # Always: kill the sampler/watchdog, then dmesg tail (OOM/kvm highlights),
+        # adb devices, emulator pid liveness, emulator.log tail, crash db + crashpad
+        # dumps (50 MB cap), logcat tail if adb still answers. Never fails.
+        if: always()
+        run: |
+          bash .github/bench-ci/emulator-diagnostics.sh stop
+          bash .github/bench-ci/emulator-diagnostics.sh postmortem emulator-5554 "$EMU_DIAG_DIR/postmortem"
 
       - name: Stage screen-graph artifacts
         if: always()
@@ -715,6 +844,8 @@ jobs:
           cp -r .bench-results "$STAGE/" 2>/dev/null || true
           cp "$RUNNER_TEMP/sg-preflight.log" "$RUNNER_TEMP/sg-matrix.log" /tmp/emulator.log "$STAGE/logs/" 2>/dev/null || true
           cp "$RUNNER_TEMP/proprietary-provenance.json" "$STAGE/" 2>/dev/null || true
+          # Emulator diagnostics: host-sampler.log, postmortem/, emulator-lost.json, env.
+          cp -r "$EMU_DIAG_DIR/." "$STAGE/logs/" 2>/dev/null || true
           # Phase D C-M3: stage the device-captured pre-flight fixture so it can be
           # committed to the bench tree (the two BLOCKER-1 tests skip until it is).
           cp packages/tool-server/test/fixtures/preflight-launch-screens.json "$STAGE/" 2>/dev/null || true
@@ -731,3 +862,20 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 90
+
+      # ---- ENFORCE validity LAST (after the artifacts are uploaded) ----
+      - name: Enforce screen-graph validity + emulator liveness
+        # The harness exits non-zero when a config is INVALID (aborted / infra-excluded
+        # / cut short / interrupted: results-ci.md "## Validity") or a store invariant
+        # fails; a lost emulator fails the job on its own. Run 37215518035 went green
+        # with O2..O5 at 0/3 — this step makes that a failure.
+        if: always()
+        run: |
+          echo "matrix outcome: ${{ steps.matrix.outcome }}"
+          rc=0
+          bash .github/bench-ci/emulator-diagnostics.sh enforce || rc=1
+          if [ "${{ steps.matrix.outcome }}" = "failure" ]; then
+            echo "::error::screen-graph matrix failed (validity gate, store invariants or harness error) — see results-ci.md ## Validity"
+            rc=1
+          fi
+          exit "$rc"

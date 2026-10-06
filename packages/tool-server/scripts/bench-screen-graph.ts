@@ -42,7 +42,18 @@
  * BENCH_CONFIGS (comma list; default all), BENCH_OUT
  * (default <cwd>/.bench-results/screen-graph), BENCH_PROPRIETARY_PROVENANCE (JSON
  * from `node .github/bench-ci/proprietary-provenance.js npm --bin-dir <pkg>/bin
- * --out <file>`; recorded in bench-sg-*.json and the report).
+ * --out <file>`; recorded in bench-sg-*.json and the report), BENCH_EMULATOR_ENV
+ * (ci-emulator-env.json from `.github/bench-ci/emulator-diagnostics.sh env`; recorded
+ * as `emulator` in bench-sg-*.json), BENCH_CONTEXT_FILE (the harness writes
+ * `config <id>` there so the CI watchdog can name the config it was running when the
+ * emulator was lost), BENCH_EMULATOR_LOST_FILE (the watchdog's marker; on SIGTERM the
+ * harness writes a partial JSON + report with the interrupted/not-run configs INVALID).
+ *
+ * Validity gate (fail-closed): a config aborted after consecutive task errors, with
+ * any pre-action infra exclusion, with fewer task-runs than planned, or interrupted
+ * by the watchdog is reported `INVALID (emulator lost)` with no success rate, and the
+ * process exits non-zero after the JSON + report are written (src/screen-graph/bench/
+ * validity.ts). Locate/action/oracle failures keep their meaning (failures).
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -97,6 +108,16 @@ import {
   type AssertionMatch,
   type OracleNode,
 } from "../src/screen-graph/bench/oracle";
+import {
+  INVALID_LABEL,
+  interruptedSkip,
+  invalidConfigs,
+  notRunSkip,
+  plannedTaskRuns,
+  validityExitCode,
+  type ConfigValidity,
+  type EmulatorLostMarker,
+} from "../src/screen-graph/bench/validity";
 import {
   BENCH_GESTURE_PARAMS,
   assertIdenticalGestureParams,
@@ -429,6 +450,75 @@ function provenanceLabel(p: ProprietaryProvenance | null | undefined): string {
 }
 
 /** Vendored proprietary binaries required for B1; false (with reason) if absent. */
+/** CI emulator/host record (ci-emulator-env.json) named by BENCH_EMULATOR_ENV, or null. */
+function loadEmulatorEnv(): Record<string, unknown> | null {
+  const p = process.env.BENCH_EMULATOR_ENV;
+  if (!p || !existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    realDebug(`[bench-sg] emulator env unreadable at ${p}: ${String(e)}`);
+    return null;
+  }
+}
+
+/** One-line summary of the emulator record for the report's env table. */
+function emulatorLabel(e: Record<string, unknown> | null | undefined): string {
+  if (!e) return "(not recorded)";
+  const emu = (e.emulator ?? {}) as Record<string, unknown>;
+  const sys = (e.systemImage ?? {}) as Record<string, unknown>;
+  const img = (e.runnerImage ?? {}) as Record<string, unknown>;
+  const s = (v: unknown): string =>
+    typeof v === "string" || typeof v === "number" ? String(v) : "?";
+  return (
+    `emulator ${s(emu.version)} (build ${s(emu.buildId)}${emu.pinnedBuild ? ", pinned" : ""}), ` +
+    `sysimg r${s(sys.revision)}, gpu ${s(emu.gpu)}, runner image ${s(img.version)}`
+  );
+}
+
+/** The CI watchdog's emulator-lost marker (BENCH_EMULATOR_LOST_FILE), or null. */
+function readEmulatorLost(): EmulatorLostMarker | null {
+  const p = process.env.BENCH_EMULATOR_LOST_FILE;
+  if (!p || !existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as EmulatorLostMarker;
+  } catch {
+    return { lostAt: new Date().toISOString(), reason: "marker unreadable" };
+  }
+}
+
+/** Tell the CI watchdog which config is running (BENCH_CONTEXT_FILE). Best-effort. */
+function writeBenchContext(text: string): void {
+  const p = process.env.BENCH_CONTEXT_FILE;
+  if (!p) return;
+  try {
+    writeFileSync(p, `${text}\n`);
+  } catch {
+    /* diagnostics only */
+  }
+}
+
+/**
+ * The validity gate's verdict for this run's aggregates. Prints one `::error::` line
+ * (GitHub annotation) and sets a non-zero exit code when any config is INVALID.
+ */
+function enforceValidity(
+  aggs: ConfigAgg[],
+  skipped: Record<string, string>,
+  env: Record<string, unknown>
+): ConfigValidity[] {
+  const invalid = invalidConfigs({ aggregates: aggs, skipped, planned: plannedTaskRuns(env) });
+  if (validityExitCode(invalid) !== 0) {
+    process.stderr.write(
+      `::error::screen-graph: ${invalid.length} config(s) INVALID (emulator lost / infrastructure abort) — ` +
+        invalid.map((v) => `${v.config}: ${v.reason}`).join(" | ") +
+        "\n"
+    );
+    process.exitCode = 1;
+  }
+  return invalid;
+}
+
 function proprietaryReady(): { ok: boolean; reason?: string } {
   const dir = process.env.ARGENT_SIMULATOR_SERVER_DIR;
   if (!dir) return { ok: false, reason: "ARGENT_SIMULATOR_SERVER_DIR unset" };
@@ -2068,6 +2158,9 @@ function buildReport(
   provenance: ProprietaryProvenance | null = null
 ): string {
   const by = (c: BenchConfigId): ConfigAgg | undefined => aggs.find((a) => a.config === c);
+  // Validity gate: an infra-invalidated config gets no success rate anywhere below.
+  const invalid = invalidConfigs({ aggregates: aggs, skipped, planned: plannedTaskRuns(env) });
+  const isInvalid = (c: BenchConfigId): boolean => invalid.some((v) => v.config === c);
   // Per-rep per-config median observation tokens, for the across-reps range.
   const perRepTokenMedian = (c: BenchConfigId): number[] => {
     const out: number[] = [];
@@ -2136,6 +2229,27 @@ function buildReport(
     for (const [c, why] of Object.entries(skipped)) L.push(`- **${c}**: ${why}`);
     L.push("");
   }
+  L.push("## Validity");
+  L.push("");
+  if (typeof env.emulatorLost === "string") {
+    L.push(
+      `Emulator lost (CI watchdog): ${env.emulatorLost}. The run was terminated, not restarted.`
+    );
+    L.push("");
+  }
+  if (invalid.length) {
+    L.push(
+      `**${invalid.length} config(s) ${INVALID_LABEL}**: infrastructure (device not found, ` +
+        "open-server init failure, the emulator dying) aborted, excluded or cut their task-runs, " +
+        "so they carry NO success rate and the job fails. Locate/action/oracle failures are " +
+        "not invalidations."
+    );
+    L.push("");
+    for (const v of invalid) L.push(`- **${v.config}**: ${v.reason}`);
+  } else {
+    L.push("Every config ran its planned task-runs with no infrastructure exclusion or abort.");
+  }
+  L.push("");
   L.push("## Per-step observation tokens (o200k_base) — p50 / p95");
   L.push("");
   L.push(
@@ -2160,6 +2274,12 @@ function buildReport(
   for (const c of REPORT_ORDER) {
     const a = by(c);
     if (!a) continue;
+    if (isInvalid(c)) {
+      L.push(
+        `| ${c} | ${a.perStepTokensTiktoken.n} | — | — | — | — | — | **${INVALID_LABEL}** (ran ${a.total}) | — | — | — | — | ${a.fallbacks} | ${a.plumbingMs} |`
+      );
+      continue;
+    }
     const failCount = a.total - a.ok - a.excluded;
     const failCell = `${failCount} (${a.locateFailed}/${a.actionFailed}/${a.oracleError}/${a.taskError})`;
     const fbCell = c === "B1" && a.fallbacks > 0 ? `**${a.fallbacks}** ⚠` : String(a.fallbacks);
@@ -2287,12 +2407,20 @@ function buildReport(
   // run-to-run noise cannot otherwise be told apart. Wilson stays as a footnote.
   const b1Invalid = Boolean(b1 && b1.fallbacks > 0);
   const INFERIOR_MARGIN_PP = 5;
-  const h4Row = (base: ConfigAgg | undefined, invalid: boolean): string => {
+  const h4Row = (base: ConfigAgg | undefined, fallbackInvalid: boolean): string => {
     if (!base) return "baseline absent";
-    if (invalid) return "INVALID BASELINE (describe fallback → proprietary path not exercised)";
+    if (isInvalid(base.config)) return `INVALID BASELINE — ${INVALID_LABEL}`;
+    if (fallbackInvalid)
+      return "INVALID BASELINE (describe fallback → proprietary path not exercised)";
     const parts: string[] = [];
     let anyInferior = false;
+    let anyInvalid = false;
     for (const a of aggs.filter((x) => x.config.startsWith("O"))) {
+      if (isInvalid(a.config)) {
+        anyInvalid = true;
+        parts.push(`${a.config} ${INVALID_LABEL}`);
+        continue;
+      }
       const d = pairedClusterBootstrap95(records, a.config, base.config);
       const inferior = d.p <= -INFERIOR_MARGIN_PP;
       if (inferior) anyInferior = true;
@@ -2301,10 +2429,16 @@ function buildReport(
         `${a.config} Δ ${d.p >= 0 ? "+" : ""}${d.p.toFixed(0)} pp [${d.lo.toFixed(0)}, ${d.hi.toFixed(0)}] — ${tag}`
       );
     }
-    return `${anyInferior ? "FAIL (an O-config is inferior)" : "PASS (none inferior)"} — ${parts.join("; ")}`;
+    const verdict = anyInferior
+      ? "FAIL (an O-config is inferior)"
+      : anyInvalid
+        ? "INCOMPLETE (INVALID O-config(s), no verdict for them)"
+        : "PASS (none inferior)";
+    return `${verdict} — ${parts.join("; ")}`;
   };
   const baseCell = (a?: ConfigAgg): string => {
     if (!a) return "—";
+    if (isInvalid(a.config)) return INVALID_LABEL;
     const cb = clusterBootstrap95(records, a.config);
     const w = wilson95(a.ok, a.scored);
     return `${(a.successRate * 100).toFixed(0)}% (${a.ok}/${a.total}) cluster [${cb.lo.toFixed(0)}, ${cb.hi.toFixed(0)}] · Wilson [${w.lo.toFixed(0)}, ${w.hi.toFixed(0)}]`;
@@ -2375,10 +2509,8 @@ function buildReport(
   for (const c of REPORT_ORDER) {
     if (!by(c)) continue;
     const toks = perRepTokenMedian(c);
-    const succ = perRepSuccess(c);
-    L.push(
-      `| ${c} | ${toks.join(" / ") || "—"} (range ${range(toks)}) | ${succ.join(" / ") || "—"} |`
-    );
+    const succ = isInvalid(c) ? INVALID_LABEL : perRepSuccess(c).join(" / ") || "—";
+    L.push(`| ${c} | ${toks.join(" / ") || "—"} (range ${range(toks)}) | ${succ} |`);
   }
   L.push("");
   L.push("## Per-config wall time / task (ms) — p50 / p95 / range");
@@ -2627,6 +2759,8 @@ function regenerateFromJson(regenPath: string): void {
   mkdirSync(OUT_DIR, { recursive: true });
   writeFileSync(outPath, report);
   process.stdout.write(`REGEN_FROM=${regenPath}\nREPORT_MD=${outPath}\n`);
+  // Same validity gate as a live run (a pre-gate JSON regenerates with the verdict).
+  enforceValidity(aggs, skipped, env);
 }
 
 async function main(): Promise<void> {
@@ -2672,6 +2806,10 @@ async function main(): Promise<void> {
   // recorded in full (per-file sha256) in the JSON + the report's provenance section.
   const proprietaryProvenance = CONFIGS.includes("B1") ? loadProprietaryProvenance() : null;
   if (CONFIGS.includes("B1")) env.proprietaryRelease = provenanceLabel(proprietaryProvenance);
+  // CI emulator/host provenance (ci-emulator-env.json): the full record goes into the
+  // JSON as `emulator`, a one-line summary into the report's env table.
+  const emulator = loadEmulatorEnv();
+  env.emulator = emulatorLabel(emulator);
 
   const allRecords: TaskRecord[] = [];
   const aggs: ConfigAgg[] = [];
@@ -2708,9 +2846,43 @@ async function main(): Promise<void> {
   resetSkippedNoIdHash();
   process.env.ARGENT_SG_RECORD = "1";
 
+  // Fail-closed on a lost emulator: the CI watchdog SIGTERMs this process when the
+  // emulator dies (emulator-diagnostics.js). Write what was measured — the interrupted
+  // config and every config not yet run marked INVALID — then exit non-zero. The
+  // emulator is never restarted: a rebooted device's results are not comparable.
+  let current: { config: BenchConfigId; records: TaskRecord[]; mark: number } | null = null;
+  let finalized = false;
+  process.once("SIGTERM", () => {
+    if (finalized) process.exit(1);
+    finalized = true;
+    const lost = readEmulatorLost();
+    const nowIso = new Date().toISOString();
+    realDebug(`[bench-sg] SIGTERM at ${nowIso} — writing a partial result (run ${runId})`);
+    try {
+      if (lost) {
+        env.emulatorLost = `${lost.lostAt}${lost.context ? ` (${lost.context})` : ""}: ${lost.reason ?? "?"}`;
+      }
+      if (current) {
+        skipped[current.config] = interruptedSkip(lost, nowIso);
+        aggs.push(
+          aggregate(current.config, current.records, fallbacksSince(current.mark).count, 0)
+        );
+      }
+      for (const c of CONFIGS) {
+        if (!aggs.some((a) => a.config === c) && !(c in skipped))
+          skipped[c] = notRunSkip(lost, nowIso);
+      }
+      finalize();
+    } catch (e) {
+      realDebug(`[bench-sg] partial finalize failed: ${String(e)}`);
+    }
+    process.exit(1);
+  });
+
   // O3 must run before O4/O5 so the warm store is populated; iterate CONFIGS as
   // given (default order already B1,B2,O1..O5).
   for (const config of CONFIGS) {
+    writeBenchContext(`config ${config}`);
     if (config === "B1") {
       const p = proprietaryReady();
       if (!p.ok) {
@@ -2752,6 +2924,7 @@ async function main(): Promise<void> {
     const knownBefore =
       usesGraph(config) && config !== "O3" ? loadKnownHashes() : new Set<string>();
     const records: TaskRecord[] = [];
+    current = { config, records, mark };
 
     // HIGH-4: abort a config after N CONSECUTIVE task throws (backend down /
     // UiAutomation contended), not just on the first task. Errored runs are
@@ -2804,6 +2977,7 @@ async function main(): Promise<void> {
     }
     const agg = aggregate(config, records, fb.count, precomputeMs);
     aggs.push(agg);
+    current = null;
     blockParams.push({ block: config, gestureParams: BENCH_GESTURE_PARAMS });
     realDebug(
       `[bench-sg] ${config} done: ${records.length} task-runs, success ${agg.successRate} ` +
@@ -2813,121 +2987,134 @@ async function main(): Promise<void> {
     );
   }
 
-  clearFlags();
+  finalized = true;
+  finalize();
 
-  // Parity gate: every config drove the identical gesture timeline (holdMs /
-  // durationMs), so cross-config comparisons are like-for-like — throws otherwise.
-  assertIdenticalGestureParams(blockParams);
+  // Everything after the matrix — JSON, graph-store copy, invariants, report, validity
+  // gate. Also run from the SIGTERM handler above on a partial matrix (synchronous, so
+  // it completes before the handler exits).
+  function finalize(): void {
+    clearFlags();
 
-  // Phase D.1 Fix B: persist the count of records dropped for a missing H_id so
-  // the doc regenerated from JSON can quote it (the live counter is 0 on regen).
-  env.skippedNoIdHash = getSkippedNoIdHash();
-  // Phase D.2 M1: persist the bootstrap resample count so the doc reads it from
-  // the JSON instead of hand-typing it.
-  env.bootstrapB = BOOTSTRAP_B;
-  // Phase D.4.1 (D4-M6): persist the fixed bootstrap RNG seed so the report can
-  // publish it and the cluster intervals are reproducible to the digit. Written
-  // as an unsigned 32-bit int and its hex form.
-  env.bootstrapSeed = BOOTSTRAP_SEED >>> 0;
-  env.bootstrapSeedHex = `0x${(BOOTSTRAP_SEED >>> 0).toString(16)}`;
-  // Phase D.2 M2: persist the settings graph shape (out-degree) so H3 can be read
-  // alongside it — the warm summary lists ≤6 outgoing edges, so the token ratio
-  // tracks graph density.
-  env.settingsGraph = settingsGraphShape();
+    // Parity gate: every config drove the identical gesture timeline (holdMs /
+    // durationMs), so cross-config comparisons are like-for-like — throws otherwise.
+    assertIdenticalGestureParams(blockParams);
 
-  const raw = {
-    env,
-    records: allRecords,
-    aggregates: aggs,
-    skipped,
-    proprietaryProvenance,
-    finishedAt: new Date().toISOString(),
-  };
-  const jsonPath = join(OUT_DIR, `bench-sg-${started.replace(/[:.]/g, "-")}.json`);
-  writeFileSync(jsonPath, JSON.stringify(raw, null, 2));
-  realDebug(`[bench-sg] wrote ${jsonPath}`);
+    // Phase D.1 Fix B: persist the count of records dropped for a missing H_id so
+    // the doc regenerated from JSON can quote it (the live counter is 0 on regen).
+    env.skippedNoIdHash = getSkippedNoIdHash();
+    // Phase D.2 M1: persist the bootstrap resample count so the doc reads it from
+    // the JSON instead of hand-typing it.
+    env.bootstrapB = BOOTSTRAP_B;
+    // Phase D.4.1 (D4-M6): persist the fixed bootstrap RNG seed so the report can
+    // publish it and the cluster intervals are reproducible to the digit. Written
+    // as an unsigned 32-bit int and its hex form.
+    env.bootstrapSeed = BOOTSTRAP_SEED >>> 0;
+    env.bootstrapSeedHex = `0x${(BOOTSTRAP_SEED >>> 0).toString(16)}`;
+    // Phase D.2 M2: persist the settings graph shape (out-degree) so H3 can be read
+    // alongside it — the warm summary lists ≤6 outgoing edges, so the token ratio
+    // tracks graph density.
+    env.settingsGraph = settingsGraphShape();
 
-  // C.4 work item C: copy the persisted screen graph into OUT_DIR so the run
-  // UPLOADS it as an artifact — the C.3 runs shipped no graph store, so the
-  // root-hash instability could not be shown from the artifacts. Each node now
-  // carries its resource-id multiset + hash, giving two real roots for analysis.
-  try {
-    const src = graphDir();
-    if (existsSync(src)) {
-      const dst = join(OUT_DIR, "graph-store");
-      cpSync(src, dst, { recursive: true });
-      // Phase 3n.3 (3N2-H4): stamp the copied store with this run's id + timings, so an
-      // audit can tell whose store `graph-store/<pkg>/<vc>.json` belongs to.
-      writeFileSync(
-        join(dst, "_run-meta.json"),
-        JSON.stringify(
-          { runId, jobStartedAt, benchStartedAt: started, generatedAt: new Date().toISOString() },
-          null,
-          2
-        )
-      );
-      realDebug(`[bench-sg] copied graph store ${src} -> ${dst} (run ${runId})`);
-    }
-  } catch (e) {
-    realDebug(`[bench-sg] graph-store copy skipped: ${String(e)}`);
-  }
-
-  // Phase D.3 (M2/M3): enforce the store invariants on the PRODUCED store and
-  // FAIL the job on a violation — no duplicate screens (same compact+resourceIds+
-  // stateHash under two H_id) and no (from H_id, action) with >1 destination. A
-  // future run that mints a duplicate node or a competing edge goes red instead
-  // of silently green.
-  const storeViolations = checkStoreInvariants();
-  if (storeViolations.length > 0) {
-    process.stderr.write(
-      `\n[bench-sg] STORE INVARIANT FAILURE (phase D.3) — run ${runId}:\n  ${storeViolations.join("\n  ")}\n`
-    );
-    process.exitCode = 1;
-  } else {
-    // Phase 3n.3 (3N2-H4): print the run id on the invariants line so the planner can
-    // confirm THIS run's "store invariants OK" from the job log, not a foreign one.
-    process.stdout.write(
-      `[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges (run ${runId}, job started ${jobStartedAt})\n`
-    );
-  }
-
-  // Partial-run reuse: splice a prior full pass's aggregates + records for every
-  // config NOT re-run in this invocation (ticket: "run ONLY the missing configs
-  // ... reusing pass1 for the rest"). The raw JSON above stays this run's own
-  // data; only the merged report below reuses the prior pass.
-  if (process.env.BENCH_MERGE_PASS1) {
-    const priorPath = process.env.BENCH_MERGE_PASS1;
-    const prior = JSON.parse(readFileSync(priorPath, "utf8")) as {
-      aggregates: ConfigAgg[];
-      records: TaskRecord[];
+    const raw = {
+      env,
+      records: allRecords,
+      aggregates: aggs,
+      skipped,
+      proprietaryProvenance,
+      emulator,
+      finishedAt: new Date().toISOString(),
     };
-    const reran = new Set(aggs.map((a) => a.config));
-    const reused: string[] = [];
-    for (const a of prior.aggregates) {
-      if (!reran.has(a.config)) {
-        aggs.push(a);
-        reused.push(a.config);
-      }
-    }
-    for (const r of prior.records) {
-      if (!reran.has(r.config)) allRecords.push(r);
-    }
-    env.reran = [...reran].join(",") + " (this run, cold-store fix)";
-    env.reused = reused.join(",") + ` (from ${priorPath.split("/").pop()})`;
-    realDebug(`[bench-sg] merged prior pass for ${reused.join(",")} from ${priorPath}`);
-  }
+    const jsonPath = join(OUT_DIR, `bench-sg-${started.replace(/[:.]/g, "-")}.json`);
+    writeFileSync(jsonPath, JSON.stringify(raw, null, 2));
+    realDebug(`[bench-sg] wrote ${jsonPath}`);
 
-  const report = buildReport(aggs, env, skipped, allRecords, proprietaryProvenance);
-  const reportPath =
-    process.env.BENCH_REPORT ??
-    "/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md";
-  writeFileSync(reportPath, report);
-  realDebug(`[bench-sg] wrote report ${reportPath}`);
-  process.stdout.write(`RESULT_JSON=${jsonPath}\nREPORT_MD=${reportPath}\n`);
+    // C.4 work item C: copy the persisted screen graph into OUT_DIR so the run
+    // UPLOADS it as an artifact — the C.3 runs shipped no graph store, so the
+    // root-hash instability could not be shown from the artifacts. Each node now
+    // carries its resource-id multiset + hash, giving two real roots for analysis.
+    try {
+      const src = graphDir();
+      if (existsSync(src)) {
+        const dst = join(OUT_DIR, "graph-store");
+        cpSync(src, dst, { recursive: true });
+        // Phase 3n.3 (3N2-H4): stamp the copied store with this run's id + timings, so an
+        // audit can tell whose store `graph-store/<pkg>/<vc>.json` belongs to.
+        writeFileSync(
+          join(dst, "_run-meta.json"),
+          JSON.stringify(
+            { runId, jobStartedAt, benchStartedAt: started, generatedAt: new Date().toISOString() },
+            null,
+            2
+          )
+        );
+        realDebug(`[bench-sg] copied graph store ${src} -> ${dst} (run ${runId})`);
+      }
+    } catch (e) {
+      realDebug(`[bench-sg] graph-store copy skipped: ${String(e)}`);
+    }
+
+    // Phase D.3 (M2/M3): enforce the store invariants on the PRODUCED store and
+    // FAIL the job on a violation — no duplicate screens (same compact+resourceIds+
+    // stateHash under two H_id) and no (from H_id, action) with >1 destination. A
+    // future run that mints a duplicate node or a competing edge goes red instead
+    // of silently green.
+    const storeViolations = checkStoreInvariants();
+    if (storeViolations.length > 0) {
+      process.stderr.write(
+        `\n[bench-sg] STORE INVARIANT FAILURE (phase D.3) — run ${runId}:\n  ${storeViolations.join("\n  ")}\n`
+      );
+      process.exitCode = 1;
+    } else {
+      // Phase 3n.3 (3N2-H4): print the run id on the invariants line so the planner can
+      // confirm THIS run's "store invariants OK" from the job log, not a foreign one.
+      process.stdout.write(
+        `[bench-sg] store invariants OK: 0 duplicate screens, 0 multi-destination edges (run ${runId}, job started ${jobStartedAt})\n`
+      );
+    }
+
+    // Partial-run reuse: splice a prior full pass's aggregates + records for every
+    // config NOT re-run in this invocation (ticket: "run ONLY the missing configs
+    // ... reusing pass1 for the rest"). The raw JSON above stays this run's own
+    // data; only the merged report below reuses the prior pass.
+    if (process.env.BENCH_MERGE_PASS1) {
+      const priorPath = process.env.BENCH_MERGE_PASS1;
+      const prior = JSON.parse(readFileSync(priorPath, "utf8")) as {
+        aggregates: ConfigAgg[];
+        records: TaskRecord[];
+      };
+      const reran = new Set(aggs.map((a) => a.config));
+      const reused: string[] = [];
+      for (const a of prior.aggregates) {
+        if (!reran.has(a.config)) {
+          aggs.push(a);
+          reused.push(a.config);
+        }
+      }
+      for (const r of prior.records) {
+        if (!reran.has(r.config)) allRecords.push(r);
+      }
+      env.reran = [...reran].join(",") + " (this run, cold-store fix)";
+      env.reused = reused.join(",") + ` (from ${priorPath.split("/").pop()})`;
+      realDebug(`[bench-sg] merged prior pass for ${reused.join(",")} from ${priorPath}`);
+    }
+
+    const report = buildReport(aggs, env, skipped, allRecords, proprietaryProvenance);
+    const reportPath =
+      process.env.BENCH_REPORT ??
+      "/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md";
+    writeFileSync(reportPath, report);
+    realDebug(`[bench-sg] wrote report ${reportPath}`);
+    process.stdout.write(`RESULT_JSON=${jsonPath}\nREPORT_MD=${reportPath}\n`);
+    // Fail-closed AFTER the JSON + report exist (the workflow stages and uploads them).
+    enforceValidity(aggs, skipped, env);
+  }
 }
 
+// Honour process.exitCode (store-invariant failure, validity gate): an explicit
+// exit(0) here used to mask both.
 main()
-  .then(() => process.exit(0))
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((e) => {
     realDebug("[bench-sg] FATAL", e);
     process.exit(1);
