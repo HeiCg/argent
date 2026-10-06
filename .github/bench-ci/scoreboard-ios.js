@@ -10,8 +10,11 @@
 //   - optical scroll offsets per arm (median, IQR, refusals);
 //   - G4 tokens per tree backend at the stated cap (+ denominators);
 //   - G3 stage sums; gate verdicts.
+// A block the validity check (ios-validity.js) marks INVALID renders as
+// `INVALID (<reasons>)` and none of its latency / landing / scroll numbers.
 const fs = require("fs");
 const path = require("path");
+const { blockValidity, validityLabel } = require("./ios-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -45,6 +48,14 @@ const fx = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : "—");
 const merged = latestMerged();
 const bl = blocks();
 const present = ALL.filter((n) => bl[n]);
+// The merge's verdict when there is one; otherwise the same check on the block file.
+const validity = Object.fromEntries(
+  present.map((n) => [
+    n,
+    (merged && merged.validity && merged.validity[n]) || blockValidity(bl[n].block),
+  ])
+);
+const invalid = (n) => !validity[n].valid;
 const L = [];
 L.push(
   "## iOS-2 open-driver bench — scoreboard (NOT the shared scoreboard; planner adds the iOS section after review)\n"
@@ -129,12 +140,33 @@ L.push(`| blocks ran | ${present.join(", ") || "—"} |\n`);
   }
 }
 
+// Block validity (fail closed): the serving path every sample recorded decides
+// the backend label, not the arm.
+L.push("### Block validity\n");
+L.push(
+  "| block | intended backend | observed tree | observed input | samples on the other arm's path | connection errors | verdict |"
+);
+L.push("|---|---|---|---|---|---|---|");
+for (const n of present) {
+  const v = validity[n];
+  const sb = v.servedBy || {};
+  L.push(
+    `| ${n} | ${v.intendedBackend} | ${v.observedTreeBackend} | ${v.observedInput} | ${sb.crossed ?? "—"} / ${sb.total ?? "—"} | ${v.connectionErrors} | ${validityLabel(v)} |`
+  );
+}
+L.push(
+  "\n_INVALID blocks render no numbers below and are excluded from G2/G4/fidelity. ON blocks must be served only by the open runner (xcuitest-runner tree, open-device-server or sim-input input); OFF blocks only by ax-service + simulator-server._\n"
+);
+
 // Verb table per block.
 L.push("### Verb latency per block (p50 / p95 ms, N per verb; describe scored per TREE backend)\n");
-L.push("| verb | " + present.map((n) => `${n} (${bl[n].block.treeBackend})`).join(" | ") + " |");
+L.push(
+  "| verb | " + present.map((n) => `${n} (${validity[n].observedTreeBackend})`).join(" | ") + " |"
+);
 L.push("|---|" + present.map(() => "---").join("|") + "|");
 for (const verb of VERBS) {
   const cells = present.map((n) => {
+    if (invalid(n)) return "INVALID";
     const v = (bl[n].block.verbs || []).find((x) => x.verb === verb);
     if (!v) return "—";
     const na = v.extra && v.extra.na;
@@ -172,6 +204,9 @@ if (merged && merged.g2) {
       );
     });
   }
+  for (const [n, why] of Object.entries(merged.g2.excluded || {})) {
+    L.push(`\n_${n} excluded from G2: ${why}_`);
+  }
   L.push(
     "\n_Verdict at the floor: win = CI entirely below −floor (ON faster than OFF by more than same-run drift); loss = CI entirely above +floor; else parity. Report-only this phase — no promotion._\n"
   );
@@ -180,11 +215,17 @@ if (merged && merged.g2) {
 // Landing rates (IOS2-H4: calibrated per-block threshold from the G0 navDiff).
 L.push("### G1 — first-attempt landing per block (with denominators)\n");
 L.push(
-  "| block | input path | landed / checked | rate | G0 navDiff | land threshold | runner crashes | sim-input ack timeouts |"
+  "| block | input path | landed / checked | rate | G0 navDiff | land threshold | connection errors | sim-input ack timeouts |"
 );
 L.push("|---|---|---|---|---|---|---|---|");
 for (const n of present) {
   const b = bl[n].block;
+  if (invalid(n)) {
+    L.push(
+      `| ${n} | INVALID | INVALID | INVALID | INVALID | INVALID | ${validity[n].connectionErrors} | ${b.simInputAckTimeouts || 0} |`
+    );
+    continue;
+  }
   const c = b.effectCheckedTotal || 0;
   const landed = c - (b.firstTapNoEffectTotal || 0);
   const inputPath = b.inputIsProductTool ? "gesture-tap tool" : "sim-input HID (bench-local)";
@@ -192,7 +233,7 @@ for (const n of present) {
   const thr =
     b.oracle && Number.isFinite(b.oracle.landingThreshold) ? b.oracle.landingThreshold : "—";
   L.push(
-    `| ${n} | ${inputPath} | ${landed} / ${c} | ${c > 0 ? ((landed / c) * 100).toFixed(1) + "%" : "—"} | ${nav} | ${thr} | ${b.runnerCrashes || 0} | ${b.simInputAckTimeouts || 0} |`
+    `| ${n} | ${inputPath} | ${landed} / ${c} | ${c > 0 ? ((landed / c) * 100).toFixed(1) + "%" : "—"} | ${nav} | ${thr} | ${validity[n].connectionErrors} | ${b.simInputAckTimeouts || 0} |`
   );
 }
 L.push(
@@ -207,6 +248,10 @@ L.push(
 L.push("|---|---|---|---|---|---|");
 for (const n of present) {
   const s = bl[n].block.scroll;
+  if (invalid(n)) {
+    L.push(`| ${n} | INVALID | INVALID | INVALID | INVALID | INVALID |`);
+    continue;
+  }
   if (!s) {
     L.push(`| ${n} | — | — | — | — | — |`);
     continue;
@@ -271,8 +316,13 @@ if (merged && merged.gates) {
     `- G0 control: ${status(g.G0)}${g.G0.notes && g.G0.notes.length ? " — " + g.G0.notes.join("; ") : ""}`
   );
   L.push(
-    `- G1 landing/crashes/ack: ${status(g.G1)}${g.G1.notes && g.G1.notes.length ? " — " + g.G1.notes.join("; ") : ""}`
+    `- G1 landing/connection errors/ack: ${status(g.G1)}${g.G1.notes && g.G1.notes.length ? " — " + g.G1.notes.join("; ") : ""}`
   );
+  if (g.VALIDITY) {
+    L.push(
+      `- validity (fail closed): ${status(g.VALIDITY)}${g.VALIDITY.notes && g.VALIDITY.notes.length ? " — " + g.VALIDITY.notes.join("; ") : ""}`
+    );
+  }
   L.push(`- G2 report-only: reported above (no pass/fail)`);
   L.push(
     `- G3 stage sums: ${status(g.G3)}${g.G3.notes && g.G3.notes.length ? " — " + g.G3.notes.join("; ") : ""}`

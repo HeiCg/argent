@@ -9,12 +9,18 @@
 //     bootstrap 95% CI on the p50 difference, graded against the OFF-1↔OFF-2 drift
 //     floor: win / parity / loss) and G4 (tokens per tree backend at the cap);
 //   - folds the optical scroll offsets per arm and the G3 stage sums;
-//   - writes a merged JSON the iOS scoreboard renders.
+//   - marks blocks INVALID fail-closed (ios-validity.js: a sample served by the
+//     other arm's path, an unrecorded path, a failed oracle self-test, runner
+//     connection errors, simulator-server not ready) and keeps INVALID blocks out
+//     of G2/G4/fidelity/scroll;
+//   - writes a merged JSON the iOS scoreboard renders, THEN exits non-zero on any
+//     violation, so the artifacts of a failed run are always written.
 //
 // The block universe is the four iOS blocks; there are NO Android concepts here
 // (no redir transport, no input-manager strategy arms).
 const fs = require("fs");
 const path = require("path");
+const { blockValidity, connectionErrorsOf, validityLabel } = require("./ios-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -92,17 +98,23 @@ function verbSamples(block, verb) {
 // ---- load + presence (G0) --------------------------------------------------
 const files = readBlocks();
 const present = ALL.filter((n) => files[n]);
+// Fail-closed validity per block (C.1–C.4, E). Computed from the recorded serving
+// paths, never from the arm's fixed label.
+const validity = Object.fromEntries(present.map((n) => [n, blockValidity(files[n].block)]));
+const isValid = (n) => Boolean(validity[n] && validity[n].valid);
 console.log(`iOS blocks present: ${present.join(", ") || "(none)"}`);
 for (const n of present) {
   const b = files[n].block;
+  const v = validity[n];
   const land =
     b.effectCheckedTotal > 0
       ? ((b.effectCheckedTotal - b.firstTapNoEffectTotal) / b.effectCheckedTotal) * 100
       : null;
   console.log(
-    `  ${n}: backend=${b.treeBackend} oracleSelfTest=${b.oracle && b.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
+    `  ${n}: ${validityLabel(v)} intended=${v.intendedBackend} observedTree=${v.observedTreeBackend} ` +
+      `observedInput=${v.observedInput} oracleSelfTest=${b.oracle && b.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
       `landing=${b.effectCheckedTotal - b.firstTapNoEffectTotal}/${b.effectCheckedTotal}` +
-      `${land == null ? "" : ` (${land.toFixed(1)}%)`} ackTimeouts=${b.simInputAckTimeouts} crashes=${b.runnerCrashes} ` +
+      `${land == null ? "" : ` (${land.toFixed(1)}%)`} ackTimeouts=${b.simInputAckTimeouts} connectionErrors=${v.connectionErrors} ` +
       `stageMaxDelta=${b.describeStages ? b.describeStages.maxDelta : "n/a"}`
   );
 }
@@ -161,7 +173,8 @@ if (oracleFailed.length)
     `G0: oracle self-test FAILED on block(s): ${oracleFailed.map((n) => `${n} (${files[n].block.oracle && files[n].block.oracle.note})`).join("; ")}`
   );
 
-// G1 landing >= 95% first-attempt on every block; 0 runner crashes; 0 sim-input ack timeouts.
+// G1 landing >= 95% first-attempt on every block; 0 runner connection errors (C.3,
+// formerly `runnerCrashes`); 0 sim-input ack timeouts.
 for (const n of present) {
   const b = files[n].block;
   const c = b.effectCheckedTotal || 0;
@@ -175,8 +188,11 @@ for (const n of present) {
       `G1: ${n} armed 0 effect-checked taps (denominator 0 — the tap oracle never ran)`
     );
   }
-  if ((b.runnerCrashes || 0) > 0)
-    failures.push(`G1: ${n} runnerCrashes=${b.runnerCrashes} (must be 0)`);
+  const ce = connectionErrorsOf(b);
+  if (ce.count > 0)
+    failures.push(
+      `G1: ${n} connectionErrors=${ce.count} (must be 0); first: ${JSON.stringify(ce.first || "(no message recorded)")}`
+    );
   if ((b.simInputAckTimeouts || 0) > 0)
     failures.push(`G1: ${n} sim-input ackTimeouts=${b.simInputAckTimeouts} (must be 0)`);
 }
@@ -231,6 +247,11 @@ for (const n of present) {
   if (dr.length) failures.push(`degraded arm on ${n}: ${dr.join("; ")}`);
 }
 
+// Fail-closed validity: every INVALID block is a violation, with its reasons.
+for (const n of present) {
+  if (!isValid(n)) failures.push(`VALIDITY: ${n} ${validityLabel(validity[n])}`);
+}
+
 // Gesture-param drift gate.
 const gp = present.map((n) => JSON.stringify(files[n].block.gestureParams));
 if (new Set(gp).size > 1) failures.push(`gesture params drifted across blocks: ${gp.join(" | ")}`);
@@ -252,12 +273,19 @@ for (const n of present) {
 }
 
 // ---- G2 report (Δ vs pooled OFF per verb, CI, floor, verdict) --------------
+// Only VALID blocks: an INVALID OFF block withholds G2 (no valid OFF pool); an
+// INVALID ON arm is listed under `excluded` with its reasons.
 let g2 = null;
-if (files["OFF-1"] && files["OFF-2"]) {
+if (files["OFF-1"] && files["OFF-2"] && isValid("OFF-1") && isValid("OFF-2")) {
   const off1 = files["OFF-1"].block;
   const off2 = files["OFF-2"].block;
-  const onBlocks = present.filter((n) => n.startsWith("ON"));
-  g2 = { verbs: {} };
+  const onBlocks = present.filter((n) => n.startsWith("ON") && isValid(n));
+  const excluded = Object.fromEntries(
+    present
+      .filter((n) => n.startsWith("ON") && !isValid(n))
+      .map((n) => [n, validityLabel(validity[n])])
+  );
+  g2 = { verbs: {}, excluded };
   for (const verb of VERBS) {
     const off1s = verbSamples(off1, verb);
     const off2s = verbSamples(off2, verb);
@@ -289,12 +317,14 @@ if (files["OFF-1"] && files["OFF-2"]) {
 // ---- G4 tokens per tree backend at the cap ---------------------------------
 const g4 = { cap: null, backends: {} };
 for (const n of present) {
+  if (!isValid(n)) continue; // a fallback's tokens must not land under the arm's label
   const d = files[n].block.describe;
   if (!d) continue;
   g4.cap = d.cap;
-  // The two ON arms share the xcuitest tree; record once per backend.
-  if (!g4.backends[d.backend]) {
-    g4.backends[d.backend] = {
+  // The two ON arms share the xcuitest tree; record once per OBSERVED backend.
+  const backend = validity[n].observedTreeBackend;
+  if (!g4.backends[backend]) {
+    g4.backends[backend] = {
       block: n,
       source: d.source,
       elements: d.elements,
@@ -308,8 +338,8 @@ for (const n of present) {
 
 // ---- fidelity OFF-1 vs first ON (describe tree identity) -------------------
 let fidelity = null;
-const firstOn = present.find((n) => n.startsWith("ON"));
-if (files["OFF-1"] && firstOn) {
+const firstOn = present.find((n) => n.startsWith("ON") && isValid(n));
+if (files["OFF-1"] && isValid("OFF-1") && firstOn) {
   const a = files["OFF-1"].block.fidelitySet || [];
   const b = files[firstOn].block.fidelitySet || [];
   const A = new Set(a);
@@ -328,7 +358,7 @@ if (files["OFF-1"] && firstOn) {
 const scroll = {};
 for (const n of present) {
   const s = files[n].block.scroll;
-  if (s)
+  if (s && isValid(n))
     scroll[n] = {
       unit: s.unit || "screen-points",
       rasterScale: s.rasterScale,
@@ -370,6 +400,7 @@ const merged = {
   simulatorByBlock,
   envPerBlock: Object.fromEntries(present.map((n) => [n, files[n].env])),
   blocksRan: present,
+  validity,
   gates: {
     G0: {
       passed: failures.filter((f) => f.startsWith("G0")).length === 0,
@@ -401,6 +432,10 @@ const merged = {
       sums: g3,
       notes: failures.filter((f) => f.startsWith("G3")),
     },
+    VALIDITY: {
+      passed: failures.filter((f) => f.startsWith("VALIDITY")).length === 0,
+      notes: failures.filter((f) => f.startsWith("VALIDITY")),
+    },
   },
   g2,
   g4,
@@ -410,6 +445,7 @@ const merged = {
     present.map((n) => {
       const b = files[n].block;
       const c = b.effectCheckedTotal || 0;
+      if (!isValid(n)) return [n, { invalid: validityLabel(validity[n]) }];
       return [
         n,
         {
@@ -428,10 +464,10 @@ fs.writeFileSync(outPath, JSON.stringify(merged, null, 2));
 
 console.log(`iOS blocks merged: ${present.join(", ")}`);
 if (failures.length) {
-  console.error("PRE-REGISTERED GATE FAILURES (G0/G1/G3 + drift):");
+  console.error("PRE-REGISTERED GATE FAILURES (G0/G1/G3 + drift + validity):");
   for (const f of failures) console.error("  ✗ " + f);
   console.log("MERGED_JSON=" + outPath);
   throw new Error(`iOS bench gates failed: ${failures.length} violation(s) — see above`);
 }
-console.log("G0/G1/G3 + gesture-drift gates: OK");
+console.log("G0/G1/G3 + gesture-drift + validity gates: OK");
 console.log("MERGED_JSON=" + outPath);

@@ -4,7 +4,8 @@
 //
 // Unlike the Android loader there are no self-orchestrated strategy arms: the iOS
 // blocks (OFF-1, ON-xcuitest, ON-siminput, OFF-2) are driven one-per-invocation by
-// the workflow's run_block loop.
+// the workflow's run_block loop. BENCH_WARM_RUNNER=1 instead builds, starts and
+// reads the tool layer's runner once and shuts it down (the pre-block warm step).
 require("ts-node").register({
   transpileOnly: true,
   skipProject: true,

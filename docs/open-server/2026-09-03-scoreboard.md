@@ -574,6 +574,12 @@ O1/O2/O4 equivalent.
 
 ## iOS (simulator) — first like-for-like run, report-only
 
+**2026-10-04:** the iOS figures below (run 34926722346) come from the previous harness at
+`ab05ce6a`; that run failed one gate (G1 ON-siminput 10/20). No run of this workflow has
+concluded `success`, and the like-for-like harness (`3f3ecdea`) never executed in CI before
+2026-10-04 (run 37213144359, 32 gate violations). See
+`2026-10-04-ios-bench-harness-repair.md`.
+
 > **iOS (simulator) — first like-for-like run, report-only.** Run **34926722346**
 > (sha `ab05ce6a`), `macos-latest`, Xcode 26.6 (Build 17F113), iOS 26.5 simulator,
 > iPhone 17, N = 20 per verb per block, blocks OFF-1 → ON-xcuitest → ON-siminput → OFF-2
