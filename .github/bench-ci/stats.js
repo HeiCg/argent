@@ -11,7 +11,9 @@
 //  - bootstrap: seeded mulberry32, 10 000 draws, independent resampling of each arm.
 //  - margin: the 95th percentile of |Δp50| when OFF-1 and OFF-2 are each resampled
 //    (driftMargin), or, for two different arms (P6), when both resamples are drawn
-//    from the pooled samples (pooledNullMargin).
+//    from the pooled samples (pooledNullMargin). The OFF-graded gates use
+//    equivalenceMargin = max(driftMargin, 2 % of the pooled OFF p50, 1 ms), the
+//    pre-registered practical margin (run 37561512651, Review 2026-10-07).
 //  - reading: the CI of Δp50 against ±margin. win = CI upper < -margin, loss = CI
 //    lower > +margin, parity = the whole CI inside [-margin, +margin], otherwise
 //    inconclusive.
@@ -131,6 +133,31 @@ function driftMargin(off1, off2, opt = {}) {
   const d = bootstrapDiffs(off1, off2, opt);
   if (!d) return null;
   return round1(quantile(d.map(Math.abs), 0.95));
+}
+
+// Pre-registered practical equivalence margin (run 37561512651, Review 2026-10-07): a
+// difference smaller than 2 % of the proprietary p50, or than 1 ms, is not a practical
+// difference, and the margin is never below the measured OFF drift (driftMargin). With
+// the bootstrap margin alone a tight verb could only read parity with a sub-ms CI.
+const EQUIV_PCT = 0.02;
+const EQUIV_FLOOR_MS = 1.0;
+
+/**
+ * Gate margin of a verb: max(driftMargin(OFF-1, OFF-2), 2 % of p50(OFF-1 ∪ OFF-2), 1 ms),
+ * rounded to 0.1 ms. null when either OFF block has fewer than 2 samples.
+ * @param {number[] | null} off1 @param {number[] | null} off2
+ * @param {{ B?: number, seed?: number }} [opt]
+ * @returns {{ margin: number, bootstrap: number, pctOfP50: number, floor: number,
+ *   binding: "bootstrap" | "2% of p50" | "1 ms floor" } | null}
+ */
+function equivalenceMargin(off1, off2, opt = {}) {
+  const bootstrap = driftMargin(off1, off2, opt);
+  if (bootstrap == null) return null;
+  const pctOfP50 = round1(EQUIV_PCT * median(off1.concat(off2)));
+  const margin = round1(Math.max(bootstrap, pctOfP50, EQUIV_FLOOR_MS));
+  const binding =
+    margin === bootstrap ? "bootstrap" : margin === pctOfP50 ? "2% of p50" : "1 ms floor";
+  return { margin, bootstrap, pctOfP50, floor: EQUIV_FLOOR_MS, binding };
 }
 
 /**
@@ -331,6 +358,7 @@ module.exports = {
   median,
   summarize,
   driftMargin,
+  equivalenceMargin,
   pooledNullMargin,
   readCI,
   gateOf,

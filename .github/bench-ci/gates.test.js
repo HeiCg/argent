@@ -1520,3 +1520,190 @@ test("scoreboard: build provenance (git SHA, Node, js-tiktoken, installed APK sh
   );
   assert.match(md, /\| OFF-1 \| .* \| com\.argent\.androiddevtools \| `(cd){32}` \|/);
 });
+
+/* ---------- run 37561512651 / Review 2026-10-07: B (fallbacks, empty trees) ---------- */
+
+test("bench: the fallback counter hooks console.warn and console.error, not only console.debug", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  // The open/main host logs open-path fallbacks at console.warn since PR #20.
+  assert.match(src, /console\.warn = /);
+  assert.match(src, /console\.error = /);
+  assert.match(src, /console\.debug = /);
+  // Empty trees are counted per timed sample from the describe result itself.
+  assert.match(src, /treeEmpty === true/);
+  assert.match(src, /openServerEmptyTreeCount\(\)/);
+});
+
+const withTreeEmpty = (b, verb, n) => {
+  b.block.verbs = b.block.verbs.map((v) =>
+    v.verb === verb ? { ...v, treeEmpty: n, treeEmptySamples: [`i=3 verb='${verb}'`] } : v
+  );
+  return b;
+};
+
+test("merge-blocks: a timed treeEmpty on an ON block makes the block INVALID (fail closed)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withTreeEmpty(bs[2], "gesture-tap", 9);
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, false);
+  const inv = m.invalidBlocks.find((x) => x.block === "ON-input-manager");
+  assert.ok(inv, JSON.stringify(m.invalidBlocks));
+  assert.match(inv.reasons.join(), /treeEmpty.*gesture-tap=9/);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 1);
+  assert.match(sb.stdout.split("\n").slice(0, 4).join("\n"), /INVALID/);
+});
+
+test("merge-blocks: the OFF equivalent (0 elements inside a timed verb) gets the same rule", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withTreeEmpty(bs[0], "gesture-tap", 2);
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, false);
+  assert.deepStrictEqual(
+    m.invalidBlocks.map((x) => x.block),
+    ["OFF-1"]
+  );
+  assert.match(m.invalidBlocks[0].reasons.join(), /treeEmpty.*gesture-tap=2/);
+});
+
+test("merge-blocks: treeEmpty 0 on every timed verb keeps the run valid", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  for (const b of bs) withTreeEmpty(b, "gesture-tap", 0);
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(mergedOf(r).valid, true);
+});
+
+test("merge-blocks: an ON fallback line logged at console.warn still FIRES the fallback gate", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.openServerFallbacks = {
+    count: 1,
+    samples: ["[describe.android] open-device-server failed, falling back: ECONNRESET"],
+  };
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /ON-input-manager=1/);
+});
+
+test("scoreboard: treeEmpty column per verb and resetWaitMs mean/max per block", () => {
+  const bs = FOUR();
+  for (const b of bs) {
+    withTreeEmpty(b, "gesture-tap", 0);
+    b.block.resetWait = { n: 4, meanMs: 312.5, maxMs: 1840.25, timeouts: 0, relaunches: 1 };
+  }
+  const md = scoreboardOf(bs);
+  assert.match(md, /### Fallbacks, empty trees and resets/);
+  assert.match(md, /\| verb \| block \| fallbacks \| treeEmpty \|/);
+  assert.match(md, /\| gesture-tap \| ON-input-manager \| 0 \| 0 \|/);
+  assert.match(
+    md,
+    /\| block \| resets \| resetWaitMs mean \| resetWaitMs max \| timeouts \| relaunches \|/
+  );
+  assert.match(md, /\| OFF-2 \| 4 \| 312\.5 \| 1840\.3 \| 0 \| 1 \|/);
+});
+
+/* ------------- run 37561512651 / Review 2026-10-07: C (practical margin) ------------- */
+
+test("stats: equivalenceMargin = max(bootstrap OFF drift margin, 2 % of pooled OFF p50, 1 ms)", () => {
+  const { equivalenceMargin, driftMargin } = stats;
+  // Bootstrap binding: two OFF blocks 10 ms apart, p50 ~58 ms (2 % = 1.2 ms).
+  const a = spreadAround(53, 8, 40);
+  const b = spreadAround(63, 8, 40);
+  const boot = equivalenceMargin(a, b);
+  assert.strictEqual(boot.bootstrap, driftMargin(a, b));
+  assert.strictEqual(boot.margin, boot.bootstrap);
+  assert.strictEqual(boot.binding, "bootstrap");
+  // 2 % binding: tight blocks at 1000 ms, bootstrap well under 20 ms.
+  const t = spreadAround(1000, 1, 40);
+  const pct = equivalenceMargin(t, t.slice());
+  assert.ok(pct.bootstrap < 20, `bootstrap ${pct.bootstrap}`);
+  assert.strictEqual(pct.pctOfP50, 20);
+  assert.strictEqual(pct.margin, 20);
+  assert.strictEqual(pct.binding, "2% of p50");
+  // 1 ms floor: tight blocks at 20 ms (2 % = 0.4 ms).
+  const f = spreadAround(20, 0.2, 40);
+  const floor = equivalenceMargin(f, f.slice());
+  assert.strictEqual(floor.margin, 1);
+  assert.strictEqual(floor.binding, "1 ms floor");
+  // No samples: no margin (the gate reads N/A, never a default).
+  assert.strictEqual(equivalenceMargin([1], b), null);
+  assert.strictEqual(equivalenceMargin(null, b), null);
+});
+
+test("stats: the four readings against the equivalence margin (parity no longer needs a sub-ms CI)", () => {
+  const { equivalenceMargin, compareOnce, readCI, driftMargin } = stats;
+  const off = spreadAround(1000, 1, 40);
+  const M = equivalenceMargin(off, off.slice()).margin; // 20 ms, the 2 % term
+  const pooled = off.concat(off);
+  const read = (cand) => readCI(compareOnce(cand, pooled).ci, M);
+  assert.strictEqual(read(spreadAround(950, 1, 40)), "win");
+  assert.strictEqual(read(spreadAround(1050, 1, 40)), "loss");
+  assert.strictEqual(read(spreadAround(1010, 1, 40)), "parity");
+  assert.strictEqual(read(spreadAround(1000, 400, 40)), "inconclusive");
+  // The same +10 ms on 1000 ms read against the bootstrap margin alone was a "loss".
+  const bootOnly = driftMargin(off, off.slice());
+  assert.strictEqual(readCI(compareOnce(spreadAround(1010, 1, 40), pooled).ci, bootOnly), "loss");
+});
+
+test("stats: Holm over a family graded at the equivalence margin", () => {
+  const { equivalenceMargin, gradeFamily } = stats;
+  const off = spreadAround(1000, 1, 40);
+  const pooled = off.concat(off);
+  const M = equivalenceMargin(off, off.slice()).margin;
+  const fam = gradeFamily([
+    { key: "win", a: spreadAround(950, 1, 40), b: pooled, margin: M },
+    { key: "loss", a: spreadAround(1050, 1, 40), b: pooled, margin: M },
+    { key: "parity", a: spreadAround(1010, 1, 40), b: pooled, margin: M },
+    { key: "inconclusive", a: spreadAround(1000, 400, 40), b: pooled, margin: M },
+  ]);
+  const by = Object.fromEntries(fam.map((r) => [r.key, r]));
+  assert.deepStrictEqual(
+    ["win", "loss", "parity", "inconclusive"].map((k) => by[k].reading),
+    ["win", "loss", "parity", "inconclusive"]
+  );
+  assert.deepStrictEqual(
+    ["win", "loss", "parity", "inconclusive"].map((k) => by[k].gate),
+    ["PASS", "FAIL", "PASS", "INCONCLUSIVE"]
+  );
+  for (const r of fam) assert.strictEqual(r.margin, 20);
+  // The undecided verb ranks last; Holm alphas by rank are 0.05 / (m − k + 1).
+  assert.strictEqual(by.inconclusive.rank, 4);
+  assert.deepStrictEqual(
+    fam
+      .slice()
+      .sort((x, y) => x.rank - y.rank)
+      .map((r) => r.alpha),
+    [0.0125, 0.05 / 3, 0.025, 0.05]
+  );
+});
+
+test("scoreboard: gate margin is the equivalence margin; footer states the pre-registered rule", () => {
+  const md = scoreboardOf(FAMILY());
+  const rows = gateRows(md);
+  // OFF swipe 300 ± 2 and pinch 350 ± 1: the 2 % term (6, 7 ms) binds.
+  assert.strictEqual(rows["gesture-swipe"].margin, "±6");
+  assert.strictEqual(rows["gesture-pinch"].margin, "±7");
+  assert.strictEqual(rows["gesture-pinch"].reading, "parity");
+  assert.match(
+    md,
+    /pre-registered equivalence margin: 2 % of the proprietary p50 or 1 ms, whichever is larger, never below the measured OFF drift/
+  );
+  // The drift table publishes the bootstrap margin and the equivalence margin side by side.
+  assert.match(
+    md,
+    /\| verb \| OFF-1 p50 \| OFF-2 p50 \| drift \| bootstrap margin \| equivalence margin \|/
+  );
+  assert.match(md, /\| gesture-pinch \| 350 \| 350 \| 0 \| ±[\d.]+ \| ±7 \(2% of p50\) \|/);
+});

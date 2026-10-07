@@ -364,12 +364,37 @@ if (degraded.length) {
   );
 }
 
+// Empty-tree gate (run 37561512651, Review 2026-10-07). A timed verb sample whose
+// describe came back empty measured a screen with no active window (the Settings reset
+// race), not the verb. The bench counts them per verb (`treeEmpty`): on ON the open
+// server's `treeEmpty` marker, on OFF the equivalent, a describe with 0 elements. Any
+// on any block (OFF or ON) makes that block INVALID; OFF-legacy only its own section.
+const treeEmptyOf = (n) =>
+  (files[n].block.verbs || [])
+    .filter((v) => (v.treeEmpty || 0) > 0)
+    .map((v) => `${v.verb}=${v.treeEmpty}`);
+for (const n of present) {
+  const hits = treeEmptyOf(n);
+  if (!hits.length) continue;
+  const what =
+    files[n].block.config === "ON"
+      ? "the open server returned an empty tree"
+      : "describe returned 0 elements";
+  markInvalid(
+    n,
+    `treeEmpty inside timed verb samples (${what}): ${hits.join(", ")} — those samples timed a ` +
+      `screen with no active window, not the verb`
+  );
+}
+
 // Open-server fallback gate (review 2026-10-07 finding 3). gesture-tap/swipe/pinch,
 // await-screen-idle, describe, paste … fall back to the proprietary path with a
 // `console.debug("[<tool>] open-device-server … failed, falling back …")` line. The
 // bench captures those lines per block (`openServerFallbacks`, counted over the whole
 // block, untimed calls included) and fails an ON block on any; this gate re-checks
-// it, so an ON number can never be a proprietary number in disguise.
+// it, so an ON number can never be a proprietary number in disguise. Since PR #20 the
+// host logs the describe fallback at console.warn; the bench hooks console.debug,
+// console.warn and console.error (run 37561512651, Review 2026-10-07).
 const fellBack = present
   .filter((n) => n.startsWith("ON"))
   .filter((n) => ((files[n].block.openServerFallbacks || {}).count || 0) > 0)
@@ -379,7 +404,7 @@ const fellBack = present
   });
 if (fellBack.length) {
   throw new Error(
-    `ON block(s) fell back off the open server (console.debug "falling back" lines): ` +
+    `ON block(s) fell back off the open server ("falling back" lines at console.debug/warn/error): ` +
       `${fellBack.join(" | ")} — some calls in the block ran on the proprietary path, so its ` +
       `rows are not open-server numbers.`
   );

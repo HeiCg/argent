@@ -16,6 +16,7 @@ const {
   median,
   round1,
   driftMargin,
+  equivalenceMargin,
   pooledNullMargin,
   readCI,
   gateOf,
@@ -170,19 +171,31 @@ const verbLabel = (vn) => (isHostAlgo(vn) ? `${vn} (host algorithm)` : vn);
 
 const off1Blk = blocks.find((b) => b.block === "OFF-1");
 const off2Blk = blocks.find((b) => b.block === "OFF-2");
-// Drift (published): OFF-1 p50 − OFF-2 p50, a point difference. Margin (gating): the
+// Drift (published): OFF-1 p50 − OFF-2 p50, a point difference. Bootstrap margin: the
 // 95th percentile of |Δp50| over 10 000 resamples of OFF-1 and OFF-2 (stats.driftMargin).
+// Margin (gating, run 37561512651 / Review 2026-10-07): the pre-registered equivalence
+// margin max(bootstrap margin, 2 % of the pooled OFF p50, 1 ms) (stats.equivalenceMargin).
 function drift(vn) {
   const a = p50Of(off1Blk, vn),
     b = p50Of(off2Blk, vn);
   return a != null && b != null ? round1(a - b) : null;
 }
 const marginCache = new Map();
-function offMargin(vn) {
+function offEquivalence(vn) {
   if (!marginCache.has(vn))
-    marginCache.set(vn, driftMargin(samplesOf(off1Blk, vn), samplesOf(off2Blk, vn)));
+    marginCache.set(vn, equivalenceMargin(samplesOf(off1Blk, vn), samplesOf(off2Blk, vn)));
   return marginCache.get(vn);
 }
+function offMargin(vn) {
+  const e = offEquivalence(vn);
+  return e ? e.margin : null;
+}
+function offBootMargin(vn) {
+  return driftMargin(samplesOf(off1Blk, vn), samplesOf(off2Blk, vn));
+}
+const EQUIV_FOOTER =
+  "pre-registered equivalence margin: 2 % of the proprietary p50 or 1 ms, whichever is " +
+  "larger, never below the measured OFF drift";
 const pooledOffSamplesOf = (vn) => {
   const a = samplesOf(off1Blk, vn),
     b = samplesOf(off2Blk, vn);
@@ -244,6 +257,54 @@ if (drainRows.length) {
     );
   }
   L.push("");
+}
+
+// Run 37561512651 / Review 2026-10-07: per verb, the open-server fallback lines (now
+// counted at console.debug, console.warn and console.error) and the timed samples whose
+// describe came back empty (`treeEmpty`: the open server's marker on ON, 0 elements on
+// OFF; any one makes the block INVALID). Per block, the Settings reset wait (resumed +
+// focused + not finishing + stable pid after am start). Older artifacts carry neither.
+const hasTreeEmpty = blocks.some((b) => (b.verbs || []).some((v) => v.treeEmpty != null));
+const hasResetWait = blocks.some((b) => b.resetWait);
+if (hasTreeEmpty || hasResetWait) {
+  L.push("### Fallbacks, empty trees and resets");
+  L.push("");
+  if (hasTreeEmpty) {
+    L.push(
+      "treeEmpty = timed samples whose describe returned an empty tree (ON: the open " +
+        "server's `treeEmpty`; OFF: 0 elements). Any treeEmpty or ON fallback invalidates the block."
+    );
+    L.push("");
+    L.push("| verb | block | fallbacks | treeEmpty |");
+    L.push("| --- | --- | --- | --- |");
+    for (const vn of verbNames) {
+      for (const b of blocks) {
+        const v = verbOf(b, vn);
+        if (!v) continue;
+        L.push(
+          `| ${vn} | ${b.block} | ${v.fallbacks || 0} | ${v.treeEmpty == null ? "-" : v.treeEmpty} |`
+        );
+      }
+    }
+    L.push("");
+  }
+  if (hasResetWait) {
+    L.push(
+      "Settings reset wait after `am start` until Settings is resumed, focused, not finishing " +
+        "and on the same pid over two reads (bounded at 5 s; relaunched if it was killed)."
+    );
+    L.push("");
+    L.push("| block | resets | resetWaitMs mean | resetWaitMs max | timeouts | relaunches |");
+    L.push("| --- | --- | --- | --- | --- | --- |");
+    for (const b of blocks) {
+      const r = b.resetWait;
+      if (!r) continue;
+      L.push(
+        `| ${b.block} | ${r.n} | ${fmt(r.meanMs)} | ${fmt(r.maxMs)} | ${r.timeouts} | ${r.relaunches} |`
+      );
+    }
+    L.push("");
+  }
 }
 
 // describe sample + screenshot dims
@@ -330,20 +391,24 @@ if (off1 && off2) {
   L.push("### OFF-1 vs OFF-2 drift (proprietary self-consistency)");
   L.push("");
   L.push(
-    "drift = OFF-1 p50 − OFF-2 p50 (point). margin = 95th percentile of |p50(OFF-1\\*) − " +
-      "p50(OFF-2\\*)| over 10 000 seeded resamples of each block; the gates read CIs against ±margin."
+    "drift = OFF-1 p50 − OFF-2 p50 (point). bootstrap margin = 95th percentile of |p50(OFF-1\\*) − " +
+      "p50(OFF-2\\*)| over 10 000 seeded resamples of each block. equivalence margin = " +
+      "max(bootstrap margin, 2 % of the pooled OFF p50, 1 ms), the term that binds in brackets; " +
+      "the gates read CIs against ±equivalence margin."
   );
   L.push("");
-  L.push("| verb | OFF-1 p50 | OFF-2 p50 | drift | margin |");
-  L.push("| --- | --- | --- | --- | --- |");
+  L.push("| verb | OFF-1 p50 | OFF-2 p50 | drift | bootstrap margin | equivalence margin |");
+  L.push("| --- | --- | --- | --- | --- | --- |");
   for (const vn of verbNames) {
     const a = verbOf(off1, vn);
     const b = verbOf(off2, vn);
     if (!a && !b) continue;
-    const m = offMargin(vn);
+    const m = offBootMargin(vn);
+    const e = offEquivalence(vn);
     L.push(
       `| ${verbLabel(vn)} | ${a ? fmt(a.latency.p50) : "-"} | ${b ? fmt(b.latency.p50) : "-"} | ` +
-        `${fmt(drift(vn))} | ${m == null ? "N/A" : `±${m}`} |`
+        `${fmt(drift(vn))} | ${m == null ? "N/A" : `±${m}`} | ` +
+        `${e ? `±${e.margin} (${e.binding})` : "N/A"} |`
     );
   }
   L.push("");
@@ -378,7 +443,7 @@ if (la && la.invalid) {
   L.push(
     `OFF-legacy (${la.label}) vs the current OFF arm (${la.currentLabel}; OFF-1/OFF-2 pooled), ` +
       "same job and emulator. Report only. Δ = legacy p50 − pooled current p50; 95% CI = seeded " +
-      "10 000-draw bootstrap; reading = CI vs ±margin (the OFF-1↔OFF-2 bootstrap margin) " +
+      "10 000-draw bootstrap; reading = CI vs ±margin (the equivalence margin of the OFF arm) " +
       "(win = the legacy release is faster, loss = slower)."
   );
   L.push("");
@@ -447,7 +512,7 @@ if (onIm && off1Blk && off2Blk) {
   const readingCell = (r) => (r.holmStop ? `${r.reading} (Holm stop)` : r.reading);
 
   L.push(
-    "### Promotion gates P2–P6 (ON-input-manager vs pooled PROPRIETARY OFF, bootstrap CI vs drift margin, Holm)"
+    "### Promotion gates P2–P6 (ON-input-manager vs pooled PROPRIETARY OFF, bootstrap CI vs equivalence margin, Holm)"
   );
   L.push("");
   L.push(
@@ -628,7 +693,8 @@ if (onIm && off1Blk && off2Blk) {
     "_Method (review 2026-10-07 findings 4/5). Timing: `performance.now()`, float ms. p50 = the " +
       "true median (linear-interpolation quantile from `.github/bench-ci/stats.js`, shared by the " +
       "bench script, the merge and this scoreboard). drift = OFF-1 p50 − OFF-2 p50 (published, " +
-      "not gating). margin = 95th percentile of |p50(OFF-1\\*) − p50(OFF-2\\*)| over 10 000 seeded " +
+      "not gating). margin = max(bootstrap margin, 2 % of p50(OFF-1 ∪ OFF-2), 1 ms), where the " +
+      "bootstrap margin is the 95th percentile of |p50(OFF-1\\*) − p50(OFF-2\\*)| over 10 000 seeded " +
       "resamples of each OFF block. Δ = p50(ON-input-manager) − p50(OFF-1 ∪ OFF-2 samples); CI = " +
       "seeded 10 000-draw percentile bootstrap of that difference. Reading: win if CI upper < " +
       "−margin, loss if CI lower > +margin, parity if the whole CI lies inside ±margin, otherwise " +
@@ -642,6 +708,8 @@ if (onIm && off1Blk && off2Blk) {
       "is recentred on its own median, the residuals are pooled and both resamples are drawn " +
       "from that pool (95th percentile of |Δp50|). p95 Δ is report only._"
   );
+  L.push("");
+  L.push(`_${EQUIV_FOOTER} (run 37561512651, Review 2026-10-07)._`);
   L.push("");
   L.push(
     "_Not captured: block-level variance is not captured — each arm is ONE block, so every CI " +
