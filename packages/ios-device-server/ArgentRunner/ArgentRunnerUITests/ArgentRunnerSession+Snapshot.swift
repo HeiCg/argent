@@ -77,10 +77,22 @@ extension ArgentRunnerSession {
         }
 
         let version = versionForHash(hash)
-        let geo = Self.screenGeometry()
+        // The snapshot root is the target app, so its frame is the screen in points
+        // at no extra XPC cost (see `screenGeometry` for why not `UIScreen.main`).
+        // A fresh read, so it also refreshes the `getScreenSize` cache.
+        let rootFrame = root.frame
+        let rootReadable = !rootFrame.isNull && !rootFrame.isInfinite && rootFrame.width > 0 && rootFrame.height > 0
+        let (geo, cacheable) = rootReadable
+            ? geometry(points: rootFrame)
+            : screenGeometry(foreground: nil)
+        if rootReadable, cacheable, let target = targetBundleId(),
+           (params.bundleId?.trimmedNonEmpty ?? target) == target
+        {
+            storeGeometry(geo, for: Self.geometryKey(bundleId: target))
+        }
         let info = StateInfo(
             bundleId: targetBundleId() ?? (params.bundleId?.trimmedNonEmpty ?? ""),
-            orientation: geo.width <= geo.height ? "portrait" : "landscape",
+            orientation: geo.orientation,
             keyboardVisible: app.keyboards.firstMatch.exists,
             screenWidth: geo.width,
             screenHeight: geo.height,

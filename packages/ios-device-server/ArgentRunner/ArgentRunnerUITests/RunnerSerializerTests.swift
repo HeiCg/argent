@@ -73,6 +73,51 @@ final class RunnerSerializerTests: XCTestCase {
         XCTAssertNil(ArgentRunnerSession.swipeVelocity(distance: 0, durationMs: 300))
     }
 
+    // MARK: - screen geometry
+
+    func testScaleIsPanelPixelsOverPointsOnTheLongSide() {
+        // iPhone 17: 1206×2622 px panel, 402×874 pt, in either orientation.
+        XCTAssertEqual(ArgentRunnerSession.roundedScale(panelLongSidePx: 2622, pointSize: CGSize(width: 402, height: 874)), 3)
+        XCTAssertEqual(ArgentRunnerSession.roundedScale(panelLongSidePx: 2622, pointSize: CGSize(width: 874, height: 402)), 3)
+    }
+
+    func testScaleRoundsToHundredths() {
+        // 2622 / 873 = 3.00343… → 3; 2000 / 600 = 3.3333… → 3.33.
+        XCTAssertEqual(ArgentRunnerSession.roundedScale(panelLongSidePx: 2622, pointSize: CGSize(width: 402, height: 873)), 3)
+        XCTAssertEqual(ArgentRunnerSession.roundedScale(panelLongSidePx: 2000, pointSize: CGSize(width: 300, height: 600)), 3.33)
+    }
+
+    func testScaleIsNilForUnusableInput() {
+        XCTAssertNil(ArgentRunnerSession.roundedScale(panelLongSidePx: 2622, pointSize: .zero))
+        XCTAssertNil(ArgentRunnerSession.roundedScale(panelLongSidePx: 0, pointSize: CGSize(width: 402, height: 874)))
+        XCTAssertNil(ArgentRunnerSession.roundedScale(panelLongSidePx: .nan, pointSize: CGSize(width: 402, height: 874)))
+        // Fewer pixels than points is not a framebuffer scale.
+        XCTAssertNil(ArgentRunnerSession.roundedScale(panelLongSidePx: 400, pointSize: CGSize(width: 402, height: 874)))
+    }
+
+    func testGeometryCacheHitsOnlyTheStoredKey() {
+        var cache = GeometryCache()
+        let portrait = GeometryCache.Key(bundleId: "com.apple.Preferences", orientation: 1)
+        let geo = ScreenGeometry(width: 402, height: 874, scale: 3)
+        XCTAssertNil(cache.geometry(for: portrait))
+        cache.store(geo, for: portrait)
+        XCTAssertEqual(cache.geometry(for: portrait), geo)
+        // A rotation or another target is a miss.
+        XCTAssertNil(cache.geometry(for: GeometryCache.Key(bundleId: "com.apple.Preferences", orientation: 3)))
+        XCTAssertNil(cache.geometry(for: GeometryCache.Key(bundleId: "com.apple.mobilesafari", orientation: 1)))
+    }
+
+    func testGeometryCacheInvalidateKeepsThePanelMeasurement() {
+        var cache = GeometryCache()
+        let key = GeometryCache.Key(bundleId: "com.apple.Preferences", orientation: 1)
+        cache.panelLongSidePx = 2622
+        cache.store(ScreenGeometry(width: 402, height: 874, scale: 3), for: key)
+        cache.invalidate()
+        XCTAssertNil(cache.geometry(for: key))
+        // The panel does not change within a session, so no new screenshot is due.
+        XCTAssertEqual(cache.panelLongSidePx, 2622)
+    }
+
     // MARK: - method table
 
     func testMethodTableHasNoDeferredOverlap() {

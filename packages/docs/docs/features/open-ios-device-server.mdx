@@ -34,6 +34,8 @@ The agent uses the same tools. Only the backend they reach changes.
   acts on this app until the agent launches a different app.
 - **`gesture-swipe`** keeps the requested duration. The runner converts the
   duration to a drag speed, so a slow scroll and a fast fling stay different.
+- The runner reads the screen size from the target app. A tap at a point from a
+  screenshot or from `describe` hits the element at that point.
 
 ## Automatic fallback
 

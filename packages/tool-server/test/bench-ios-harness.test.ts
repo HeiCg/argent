@@ -18,6 +18,9 @@ import {
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
   gesturePath,
+  landedOn,
+  navigationTitles,
+  screenOf,
   toolLayerRunner,
   waitForStableFrame,
   watchRunnerLifecycle,
@@ -535,5 +538,96 @@ describe("settle before the swipe 'before' frame (D)", () => {
     expect(r.frame).toBe("frame-4");
     expect(r.waitedMs).toBe(1000);
     expect(r.frames).toBe(5);
+  });
+});
+
+describe("oracle geometry and landing (run 37572773799: 480 pt runner, wrong row counted as landed)", () => {
+  function n(
+    type: string,
+    b: { y1: number; y2: number; x2?: number },
+    extra: Partial<IosOpenServerNode> = {},
+    children: IosOpenServerNode[] = []
+  ): IosOpenServerNode {
+    return {
+      type,
+      bounds: { x1: 0, y1: b.y1, x2: b.x2 ?? 402, y2: b.y2 },
+      enabled: true,
+      hittable: true,
+      selected: false,
+      focused: false,
+      children,
+      ...extra,
+    };
+  }
+
+  /** Settings root on an iPhone 17 (402×874 pt) whose runner reported `info`. */
+  function settingsRoot(info: { w: number; h: number }): IosOpenServerState {
+    const general = n("Cell", { y1: 558, y2: 606 }, { label: "General" });
+    const list = n("Table", { y1: 100, y2: 874 }, {}, [general]);
+    const bar = n("NavigationBar", { y1: 54, y2: 100 }, { identifier: "Settings" });
+    return {
+      ...nestedState(),
+      tree: [n("Application", { y1: 0, y2: 874 }, { label: "Settings" }, [bar, list])],
+      info: { ...nestedState().info, screenWidth: info.w, screenHeight: info.h },
+    };
+  }
+
+  function pushed(title: string): IosOpenServerState {
+    const bar = n("NavigationBar", { y1: 54, y2: 100 }, { identifier: title }, [
+      n("Button", { y1: 54, y2: 100, x2: 100 }, { label: "Settings" }),
+      n("StaticText", { y1: 54, y2: 100 }, { label: title }),
+    ]);
+    return { ...nestedState(), tree: [n("Application", { y1: 0, y2: 874 }, {}, [bar])] };
+  }
+
+  function runnerWith(state: () => IosOpenServerState): OracleRunner {
+    return {
+      getInfo: async () => ({ ...state().info, version: 1 }),
+      launchApp: async (bundleId: string) => ({ success: true, bundleId }),
+      getNestedState: async () => state(),
+      getScreenSize: async () => ({ screenWidth: 402, screenHeight: 874, scale: 3 }),
+    };
+  }
+
+  it("normalizes against the target app's frame (402×874), not a compat-mode info size", async () => {
+    for (const info of [
+      { w: 402, h: 874 },
+      { w: 320, h: 480 },
+    ]) {
+      const oracle = new RunnerOracle({ runner: async () => runnerWith(() => settingsRoot(info)) });
+      const p = await oracle.locate("General");
+      expect(p).not.toBeNull();
+      expect(p!.x).toBeCloseTo(201 / 402, 6);
+      expect(p!.y).toBeCloseTo(582 / 874, 6);
+      const region = await oracle.scrollRegion();
+      expect(region.y1).toBeCloseTo(100 / 874, 6);
+      expect(region.y2).toBe(1);
+    }
+  });
+
+  it("screenOf falls back to info when the tree has no Application root with area", () => {
+    const st = { ...nestedState(), tree: [node("list", 100)] };
+    expect(screenOf(st)).toEqual({ w: 390, h: 844 });
+  });
+
+  it("landedOn: the destination's navigation bar must carry the target title", () => {
+    expect(landedOn(pushed("General").tree, "General")).toBe(true);
+    // The run's miss: any row navigates, so a pixel diff alone counted this.
+    expect(landedOn(pushed("Apple Intelligence & Siri").tree, "General")).toBe(false);
+    // Still on the root: the "General" cell is not a destination title.
+    expect(landedOn(settingsRoot({ w: 402, h: 874 }).tree, "General")).toBe(false);
+    // No navigation bar at all: undecidable, so not landed (fail closed).
+    expect(landedOn([n("Application", { y1: 0, y2: 874 })], "General")).toBe(false);
+    expect(navigationTitles(pushed("General").tree)).toEqual(["General"]);
+  });
+
+  it("oracle.destination reads the tree once and reports the titles it saw", async () => {
+    const oracle = new RunnerOracle({
+      runner: async () => runnerWith(() => pushed("Apple Intelligence & Siri")),
+    });
+    expect(await oracle.destination("General")).toEqual({
+      landed: false,
+      titles: ["Apple Intelligence & Siri"],
+    });
   });
 });

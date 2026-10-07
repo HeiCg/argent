@@ -36,6 +36,7 @@ import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag } from "@argent/configuration-core";
 import { IosOpenServerClient } from "../src/utils/ios-open-server-client";
 import { IosSimInputService } from "../src/utils/ios-sim-input-service";
+import { screenOf } from "./bench-ios-harness";
 
 const execFileAsync = promisify(execFile);
 
@@ -227,9 +228,9 @@ async function main(): Promise<void> {
   await relaunch();
   // Locate the target ONCE and freeze it.
   const st = await client.getNestedState();
-  const size = await client.getScreenSize();
-  const w = size.screenWidth;
-  const h = size.screenHeight;
+  // The target app's frame in points (screenOf), not a size the runner may have
+  // read from its own compatibility-mode screen (run 37572773799: 480 pt).
+  const { w, h } = screenOf(st);
   let hit: { x: number; y: number } | null = null;
   const walk = (nodes: typeof st.tree): void => {
     for (const n of nodes) {
