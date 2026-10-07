@@ -18,6 +18,10 @@ import {
   openServerSwipe,
   openServerSwipeWithOutcomeTimed,
   openServerVerifiedSwipe,
+  ACTION_SETTLE_BOUNDS,
+  SETTLE_IGNORED_NOT_OPEN,
+  actionSettleFields,
+  settleIgnoredAfterFallback,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
 } from "../../utils/open-server-input";
@@ -143,6 +147,17 @@ const zodSchema = z
           "the dominant component of the vector, finger up or left = forward (later content), " +
           "down or right = backward. Not combinable with verify. Default false: a touch swipe."
       ),
+    settleAfter: z
+      .boolean()
+      .optional()
+      .describe(
+        "Android open server only: wait for the screen to settle before returning: first event " +
+          "≤600 ms, then 80 ms quiet capped at 1500 ms (up to ~2.1 s); settledMs covers both phases. " +
+          "The reply carries settledMs, settled and screenChanged. Default false. Named " +
+          "settleAfter because `settle` is the retired name of `momentum`. Not applied with verify " +
+          "or scrollAction, and ignored off the Android open server; the reply then carries " +
+          "settleIgnored."
+      ),
     verify: verifyParamSchema
       .optional()
       .describe(
@@ -241,6 +256,16 @@ interface Result {
   inputBackend?: IosInputBackend;
   /** `inputBackend: "sim-input"` only: the ack's pacing and timing. */
   simInput?: SimInputResultFields;
+  /**
+   * `settleAfter: true` on an Android open server motion swipe (step
+   * settle-on-action): device-clock settle time, how the settle ended, and
+   * whether the screen identity changed.
+   */
+  settledMs?: number;
+  settled?: OpenServerActionOutcome["settled"];
+  screenChanged?: boolean;
+  /** `settleAfter: true` that did not run, and why. */
+  settleIgnored?: string;
 }
 
 const pctPair = (a: number | undefined, b: number | undefined): string =>
@@ -432,7 +457,7 @@ const capability: ToolCapability = {
 };
 
 export function createGestureSwipeTool(registry: Registry): ToolDefinition<Params, Result> {
-  return {
+  const tool: ToolDefinition<Params, Result> = {
     id: "gesture-swipe",
     interaction: {
       startedMsg: ({ params }) => swipeDescription(params, "present"),
@@ -466,6 +491,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       const momentumFree = params.momentum === false;
       const timestampMs = Date.now();
       const device = resolveDevice(params.udid);
+      const settle = params.settleAfter === true;
 
       if (params.scrollAction === true) {
         if (!shouldUseOpenServer(device)) {
@@ -494,6 +520,9 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           timestampMs,
           method: "scroll-action",
           ...r,
+          ...(settle
+            ? { settleIgnored: "scrollAction: the device settles the scroll itself" }
+            : {}),
         };
       }
 
@@ -534,6 +563,9 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
 
       // Set when the open iOS path fell back, so the result says so.
       let iosFallback: IosOpenServerFallbackMarker | undefined;
+      // Set when the open Android path failed under `settleAfter: true`: the
+      // fallback swipe does not settle, and the reply says why.
+      let settleIgnored: string | undefined;
       if (shouldUseIosOpenServer(device)) {
         // sim-input first (HID, no XCUITest), then the open runner, then the
         // simulator-server. A momentum-free swipe stays on the runner unless
@@ -624,6 +656,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             resolvedBounds: vr.resolvedBounds,
             version: vr.version,
             verifyMs: vr.verifyMs,
+            ...(settle ? { settleIgnored: "not applied with verify" } : {}),
           };
         }
         const verifyCode =
@@ -669,7 +702,8 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           // is dropped. It returns when the graph is being recorded
           // (`screenGraphRecordingEnabled()`: the `screen-graph` flag or the
           // bench's `ARGENT_SG_RECORD` record-only mode). `outcome` stays optional.
-          if (!screenGraphRecordingEnabled()) {
+          const recording = screenGraphRecordingEnabled();
+          if (!recording && !settle) {
             const timing = await openServerSwipe(
               registry,
               device,
@@ -683,6 +717,8 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             clearIncident(device.id);
             return { swiped: true, timestampMs, method: "motion", ...timingFields(timing) };
           }
+          // `settleAfter: true` asks for the outcome on the SAME swipe RPC the
+          // recorder uses, so recording + settle is still one action RPC.
           const { outcome, timing } = await openServerSwipeWithOutcomeTimed(
             registry,
             device,
@@ -691,16 +727,25 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             params.toX,
             params.toY,
             steps,
-            momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
+            momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined,
+            settle ? { bounds: ACTION_SETTLE_BOUNDS, failOnDrop: true } : {}
           );
           clearIncident(device.id);
-          return { swiped: true, timestampMs, outcome, method: "motion", ...timingFields(timing) };
+          return {
+            swiped: true,
+            timestampMs,
+            ...(recording ? { outcome } : {}),
+            method: "motion",
+            ...timingFields(timing),
+            ...(settle ? actionSettleFields(outcome) : {}),
+          };
         } catch (err) {
           console.debug(
             `[gesture-swipe] open-device-server failed, falling back to simulator-server: ${
               err instanceof Error ? err.message : String(err)
             }`
           );
+          if (settle) settleIgnored = settleIgnoredAfterFallback(err);
         }
       }
 
@@ -794,9 +839,26 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
         swiped: true,
         timestampMs,
         ...(warning !== undefined ? { warning } : {}),
+        ...(settleIgnored !== undefined ? { settleIgnored } : {}),
         ...iosFallback,
         ...(iosFallback ? { inputBackend: "simulator-server" as const } : {}),
       };
     },
   };
+
+  // settle-on-action: every path that is not the Android open server ignores
+  // `settleAfter` and says so, never an error.
+  const run = tool.execute;
+  tool.execute = async (services, params, ctx) => {
+    const result = await run(services, params, ctx);
+    if (
+      params.settleAfter === true &&
+      !shouldUseOpenServer(resolveDevice(params.udid)) &&
+      result.settleIgnored === undefined
+    ) {
+      return { ...result, settleIgnored: SETTLE_IGNORED_NOT_OPEN };
+    }
+    return result;
+  };
+  return tool;
 }

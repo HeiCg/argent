@@ -495,14 +495,88 @@
         }
       ],
       "commitMessage": "feat(open-server): settle on the action with event-gated quiet window",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "agent:impl:settle-on-action:1",
+      "review": {
+        "at": "2026-10-07T21:54:04.888Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-android-device-server-gradle.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/open-server-settle-on-action.test.ts test/tools/gesture-swipe.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "node --test --test-concurrency=2 .github/bench-ci/gates.test.js",
+            "exitCode": 0,
+            "outputFile": "3-node-test-test-concurrency-2-github-benc.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "4-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/tools/gesture-tap/index.ts",
+            "note": "L52 (also gesture-swipe/index.ts L155, button/index.ts L40, tap-describe-destination.js and bench comment): the tool descriptions say 'capped at 1500 ms', but 1500 ms caps only phase 2. The real wait is up to 600+1500 = 2100 ms in settledMs, plus up to 1500 ms more from awaitNonEmptyTree that settledMs does not count (JsonRpcHandler.kt L261-262). Fix: say 'quiet phase capped at 1500 ms, total <= 2100 ms', the same as the docs page.",
+            "cause": "Wording copied from the plan's per-phase bounds and rewritten as one total cap, without a check against TreeStore.settleAfterAction/runAction"
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/tools/gesture-tap/index.ts",
+            "note": "L377/L546: with verify (and target+verify), the settle fields come from openServerVerifiedTap (open-server-input.ts L505), whose tapWithOutcome sends no outcome bounds, so the server defaults apply. This goes against the ACTION_SETTLE_BOUNDS comment (L183, 'sent explicitly'). gesture-swipe answers settleIgnored 'not applied with verify' (L658), so the two tools are inconsistent. No test covers tap verify+settle, and the docs do not say it. Fix: pass ACTION_SETTLE_BOUNDS into openServerVerifiedTap when settle is set, add a test, and document tap+verify.",
+            "cause": "The verify path was only wired to read vr.actionOutcome. Its RPC was not changed to carry the explicit bounds the plain and index paths send"
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/test/open-server-settle-on-action.test.ts",
+            "note": "No tests for: gesture-swipe settleAfter with verify and with scrollAction (settleIgnored text, no outcome RPC); button settle when the open-server key RPC fails or is dropped (adb fallback + settleIgnored, gesture-swipe/button L747/L197); a settle tap by index that is dropped. The contract says these cases inform the caller, but no test pins that.",
+            "cause": "The test file covers the happy path, non-open backends and the tap fallback, but not the refusal and fallback branches added in swipe and button"
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/tools/navigate-to/index.ts",
+            "note": "L301 (out of the diff, existed before this step): navigate-to replays a {kind:'back'} edge with keyWithOutcome('KEYCODE_BACK'). KeyHandler.kt L36-39 lowercases the name and knows only 'back', so it throws 'Unknown key'. button settle:true with recording on now records {kind:'back'} edges (button/index.ts L192), and those edges cannot be replayed. Fix: send 'back' in navigate-to (and 'KEYCODE_ENTER' -> 'enter' in L303). A device run must confirm this: no fake test exercises it."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/utils/open-server-input.ts",
+            "note": "actionSettleFields: settledMs = firstEventMs + idleMs agrees with TreeStore.settleAfterAction, and screenChanged = newScreen. On no-event, 600 is the time the device really waited and 'settled' tells the cases apart, so it does not mislead. The docs could add that no-event means the action fired no accessibility event (it probably had no effect)."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/tools/button/index.ts",
+            "note": "L197: a key RPC error that comes after the press already landed (e.g. an RPC timeout or a socket error after injection) falls back to adb and presses again. For power, this toggles the screen twice. failOnDrop only covers an explicit drop. gesture-tap had the same risk before this step. Consider no fallback on a timeout after send."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+            "note": "tdVariantsFor('ON') adds N/2 samples on ON blocks only. N for P2-P6 and for the gated variant does not change (gates.test 133/133). But the seeded interleave and the block wall time now differ between ON and OFF (up to 2.1 s more per settle sample), which is a confound for the ON vs OFF load and P5 comparison. Record this in the scoreboard footnote."
+          },
+          {
+            "severity": "note",
+            "file": "docs/plans/2026-10-07-beat-official.md",
+            "note": "L89-98: the plan says the reply carries 'timedOut' and lists the tool 'key'. The step ships 'settled' (quiet|timeout|no-event), the tool 'button' and the swipe parameter 'settleAfter'. The coordinator accepted this, but the Amendments section does not record it. Add an amendment so the plan matches the contract."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:settle-on-action:1"
+      },
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T22:03:30.666Z"
     },
     {
       "id": "siminput-registry-route",

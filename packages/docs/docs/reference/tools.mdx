@@ -114,7 +114,9 @@ read only.
 The `settle` parameter makes `describe` wait for UiAutomator idle before the
 read, for a maximum of 500 ms. A number sets a different maximum in ms. This
 wait does not confirm that the screen is quiet. To wait for the end of a
-transition, use `await-screen-idle`.
+transition, use `await-screen-idle`. After a tap, a swipe or a button press,
+set the settle on the action instead, and read with `describe` `settle: false`.
+See [Settle on the action](#settle-on-the-action-android-open-server).
 
 ## Interacting
 
@@ -283,6 +285,53 @@ in these cases:
 | `verify_ambiguous`   | More than one element matched. The reply lists up to five of the colliding candidates.                                                                                        |
 | `verify_mismatch`    | The x and y fall outside the matched bounds ± `tolerancePx` (default 0). The reply returns the requested coordinates and the matched element. Only when x and y are supplied. |
 | `verify_unsupported` | The device is not on the Android open path (iOS or the proprietary backend). Argent issues no tap.                                                                            |
+
+### Settle on the action (Android open server)
+
+Three tools can wait for the screen to settle after the action, before they
+return:
+
+| Tool            | Parameter           | Default |
+| --------------- | ------------------- | ------- |
+| `gesture-tap`   | `settle: true`      | `false` |
+| `gesture-swipe` | `settleAfter: true` | `false` |
+| `button`        | `settle: true`      | `false` |
+
+`gesture-swipe` uses `settleAfter` because `settle` is the old name of
+`momentum` on that tool. Argent refuses `settle` on `gesture-swipe`.
+
+The wait applies only on Android when the open device server is active. The
+device server does the wait in the same call as the action:
+
+1. The device server waits for the first accessibility event after the action,
+   for a maximum of 600 ms.
+2. Then the device server waits for 80 ms with no event, for a maximum of
+   1500 ms.
+
+The total wait is a maximum of approximately 2.1 s.
+
+The reply adds these fields:
+
+| Field           | Meaning                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------- |
+| `settledMs`     | The time of the wait on the device, in ms, for the two steps. 600 when no event came.                    |
+| `settled`       | `quiet` (80 ms with no event), `timeout` (events after 1500 ms) or `no-event` (no event in 600 ms).      |
+| `screenChanged` | `true` when the screen identity changed. `false` when only the content changed, or when nothing changed. |
+
+Read the screen after the action with `describe` `settle: false`. A
+`describe` `settle: true` does not confirm that the screen is quiet.
+
+With `settle: true`, `button` sends the press through the open device server.
+Without it, `button` sends the press with `adb`.
+
+On iOS, on Chromium and on the proprietary Android path, Argent ignores the
+parameter. The action runs, and the reply carries `settleIgnored` with the
+reason. When the open device server fails and another backend does the action,
+the reply also carries `settleIgnored`. `gesture-tap` and `gesture-swipe` do
+not wait with `verify`. `gesture-swipe` does not wait with `scrollAction`. In
+these cases the reply carries `settleIgnored`. With the
+screen graph on, the same call records the action, so Argent sends one action
+call to the device.
 
 ### Scroll action swipe (Android open server)
 

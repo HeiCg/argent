@@ -81,10 +81,10 @@ import { summarize } from "../../../.github/bench-ci/stats.js";
 import {
   TTC_POLL_MS,
   TTC_BUDGET_MS,
-  TD_VARIANTS,
   classifyDestination,
   deriveDestinationMarkers,
   summarizeDestination,
+  tdVariantsFor,
   variantCounts,
   variantSchedule,
 } from "../../../.github/bench-ci/tap-describe-destination.js";
@@ -3079,13 +3079,21 @@ async function runBlock(
   // either backend makes to read a settled screen. P5 is pre-registered on the await
   // variant (time-to-correct AND correct-at-first-read); the other two are report only.
   // No row is picked after the fact.
+  //
+  // Step settle-on-action: ON blocks also run tap(settle)+describe (tdVariantsFor), the
+  // settle on the action: gesture-tap settle:true (first accessibility event <= 600 ms,
+  // then 80 ms quiet, cap 1500 ms, on the device) and then describe settle:false. Report
+  // only; pre-registered target (no gate): correct at first read >= 90 % and
+  // time-to-correct <= tap+await-idle+describe on ON-im.
   setPhase("tap+describe");
-  type TdCall = { settle?: boolean; awaitIdle?: boolean };
+  type TdCall = { settle?: boolean; awaitIdle?: boolean; tapSettle?: boolean };
   const TD_CALLS: Record<string, TdCall> = {
     "tap+describe(settle:false)": { settle: false },
     "tap+describe(settle:true)": { settle: true },
     "tap+await-idle+describe": { awaitIdle: true },
+    "tap(settle)+describe": { tapSettle: true, settle: false },
   };
+  const tdVariantList = tdVariantsFor(config) as string[];
   const tdRead = (c: TdCall): Promise<unknown> =>
     reg.invokeTool("describe", {
       udid: SERIAL,
@@ -3094,13 +3102,23 @@ async function runBlock(
   const tapDescribeAt =
     (c: TdCall) =>
     async (x: number, y: number, _i: number): Promise<unknown> => {
-      await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
+      await reg.invokeTool("gesture-tap", {
+        udid: SERIAL,
+        x,
+        y,
+        ...(c.tapSettle ? { settle: true } : {}),
+      });
       if (c.awaitIdle) await awaitIdle();
       // The describe reply leaves the timed window as its result; it is classified after.
       return tdRead(c);
     };
   const tapThenDescribeFixed = (c: TdCall) => async (): Promise<void> => {
-    await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
+    await reg.invokeTool("gesture-tap", {
+      udid: SERIAL,
+      x: tapX,
+      y: tapY,
+      ...(c.tapSettle ? { settle: true } : {}),
+    });
     if (c.awaitIdle) await awaitIdle();
     await tdRead(c);
   };
@@ -3120,11 +3138,11 @@ async function runBlock(
     (c: TdCall) =>
     (timed: unknown, t0: number, timedEnd: number, i: number): Promise<TtcSample> =>
       measureTimeToCorrect(() => tdRead(c), destMarkers!, timed, t0, timedEnd, i);
-  const tdCounts = variantCounts(N) as number[];
+  const tdCounts = variantCounts(N, tdVariantList) as number[];
   const tdSchedule = variantSchedule(tdCounts, block) as number[];
-  const tapDescribeSchedule = tdSchedule.map((k) => TD_VARIANTS[k] as string);
+  const tapDescribeSchedule = tdSchedule.map((k) => tdVariantList[k] as string);
   if (canEffect) {
-    const tdVariants: TapVariant[] = (TD_VARIANTS as string[]).map((label) => ({
+    const tdVariants: TapVariant[] = tdVariantList.map((label) => ({
       label,
       timedTapAt: tapDescribeAt(TD_CALLS[label]!),
       afterTimed: destMarkers ? ttcAfterTimed(TD_CALLS[label]!) : undefined,
@@ -3141,7 +3159,7 @@ async function runBlock(
       ))
     );
   } else {
-    for (const label of TD_VARIANTS as string[])
+    for (const label of tdVariantList)
       verbs.push(
         await timeCalls(label, tapThenDescribeFixed(TD_CALLS[label]!), undefined, ensureOrigin)
       );
@@ -3719,7 +3737,7 @@ async function runBlock(
   // performed exactly one on-device injection; effect-checked verbs also injected on the
   // (excluded-from-latency) missed/errored iterations, so count `effectChecked + errors`
   // there and the full `latencySamples + errors` on the OFF-style timed verbs.
-  const INJECT_VERB = /^(gesture-tap|gesture-swipe|gesture-pinch|tap\+)/;
+  const INJECT_VERB = /^(gesture-tap|gesture-swipe|gesture-pinch|tap\+|tap\(settle\)\+)/;
   const measuredInjectRpcs = verbs
     .filter((v) => INJECT_VERB.test(v.verb))
     .reduce(

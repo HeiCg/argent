@@ -16,6 +16,10 @@ import {
   resolveTargetNorm,
   IndexTargetError,
   openServerVerifiedTap,
+  ACTION_SETTLE_BOUNDS,
+  SETTLE_IGNORED_NOT_OPEN,
+  actionSettleFields,
+  settleIgnoredAfterFallback,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
 } from "../../utils/open-server-input";
@@ -42,6 +46,13 @@ import {
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const SETTLE_PARAM_DESCRIPTION =
+  "Android open server only: wait for the screen to settle before returning: first event " +
+  "≤600 ms, then 80 ms quiet capped at 1500 ms (up to ~2.1 s); settledMs covers both phases. " +
+  "The reply carries settledMs, settled and screenChanged. Default false. Use it before a " +
+  "describe that must see the screen the tap opened. Not applied with verify, and ignored off " +
+  "the Android open server; the reply then carries settleIgnored.";
 
 const zodSchema = z
   .object({
@@ -105,6 +116,7 @@ const zodSchema = z
           'tier:"index" read, verified against the same snapshot version (refused if the screen moved). ' +
           "When set, x and y are ignored."
       ),
+    settle: z.boolean().optional().describe(SETTLE_PARAM_DESCRIPTION),
   })
   .refine(
     (p) =>
@@ -185,6 +197,15 @@ interface Result {
    * next backend sent the whole multi-tap again.
    */
   partialTapsPossible?: true;
+  /**
+   * `settle: true` on the Android open server (step settle-on-action): device-clock
+   * settle time, how the settle ended, and whether the screen identity changed.
+   */
+  settledMs?: number;
+  settled?: OpenServerActionOutcome["settled"];
+  screenChanged?: boolean;
+  /** `settle: true` that did not run, and why (another backend did the tap). */
+  settleIgnored?: string;
 }
 
 function tapVerb(count: number, tense: "present" | "past"): string {
@@ -250,7 +271,7 @@ async function tapChromium(
 }
 
 export function createGestureTapTool(registry: Registry): ToolDefinition<Params, Result> {
-  return {
+  const tool: ToolDefinition<Params, Result> = {
     id: "gesture-tap",
     interaction: {
       startedMsg: ({ params }) => tapDescription(params, "present"),
@@ -294,6 +315,13 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       const device = resolveDevice(params.udid);
       const timestampMs = Date.now();
       const clickCount = params.clickCount ?? 1;
+      // settle-on-action: the action RPC carries the settle bounds; the reply's
+      // outcome becomes settledMs / settled / screenChanged.
+      const settle = params.settle === true;
+      const settleOf = (o: OpenServerActionOutcome | undefined) =>
+        settle && o ? actionSettleFields(o) : {};
+      // Same as gesture-swipe: no settle with `verify`; the reply says so.
+      const settleNotWithVerify = settle ? { settleIgnored: "not applied with verify" } : {};
       // A1-M5: `verify` is only honored on the Android open path. On iOS or the
       // proprietary Android path, refuse rather than silently issue an unverified
       // tap — an explicit safety request must never downgrade.
@@ -349,6 +377,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
                 version: vr.version,
                 verifyMs: vr.verifyMs,
                 ...(vr.actionOutcome ? { outcome: vr.actionOutcome } : {}),
+                ...settleNotWithVerify,
               };
             }
             const verifyCode =
@@ -378,8 +407,20 @@ Before tapping, determine the correct coordinates by using discovery tools — p
             };
           }
           // `target` alone: tap by index and NAME what was tapped (A2-M10).
-          const r = await openServerTapAtIndex(registry, device, params.target, clickCount);
-          return { tapped: true, timestampMs, targetIndex: r.index, targetLabel: r.label };
+          const r = await openServerTapAtIndex(
+            registry,
+            device,
+            params.target,
+            clickCount,
+            settle ? ACTION_SETTLE_BOUNDS : undefined
+          );
+          return {
+            tapped: true,
+            timestampMs,
+            targetIndex: r.index,
+            targetLabel: r.label,
+            ...settleOf(r.outcome),
+          };
         } catch (err) {
           // A2-M10: surface the IndexTargetError code as a structured refusal.
           if (err instanceof IndexTargetError) {
@@ -417,6 +458,9 @@ Before tapping, determine the correct coordinates by using discovery tools — p
         };
       }
       let api: SimulatorServerApi;
+      // Set when the open Android path failed under `settle: true`: the fallback tap
+      // does not settle, and the reply says why.
+      let settleIgnored: string | undefined;
       // Set when the open iOS path fell back, so the result says so.
       let iosFallback: (IosOpenServerFallbackMarker & { partialTapsPossible?: true }) | undefined;
       if (shouldUseIosOpenServer(device)) {
@@ -502,6 +546,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
             version: vr.version,
             verifyMs: vr.verifyMs,
             ...(vr.actionOutcome ? { outcome: vr.actionOutcome } : {}),
+            ...settleNotWithVerify,
           };
         }
         const verifyCode =
@@ -537,20 +582,36 @@ Before tapping, determine the correct coordinates by using discovery tools — p
           // exactly what `screenGraphRecordingEnabled()` gates (the `screen-graph`
           // flag, or the bench's `ARGENT_SG_RECORD` record-only mode). `outcome`
           // stays optional on the result and is absent here.
-          if (!screenGraphRecordingEnabled()) {
+          const recording = screenGraphRecordingEnabled();
+          if (!recording && !settle) {
             await openServerTap(registry, device, px, py, clickCount);
             clearIncident(device.id);
             return { tapped: true, timestampMs };
           }
-          const outcome = await openServerTapWithOutcome(registry, device, px, py, clickCount);
+          // `settle: true` (settle-on-action) asks for the outcome on the SAME tap
+          // RPC the recorder uses, so recording + settle is still one action RPC.
+          const outcome = await openServerTapWithOutcome(
+            registry,
+            device,
+            px,
+            py,
+            clickCount,
+            settle ? { bounds: ACTION_SETTLE_BOUNDS, failOnDrop: true } : {}
+          );
           clearIncident(device.id);
-          return { tapped: true, timestampMs, outcome };
+          return {
+            tapped: true,
+            timestampMs,
+            ...(recording ? { outcome } : {}),
+            ...settleOf(outcome),
+          };
         } catch (err) {
           console.debug(
             `[gesture-tap] open-device-server failed, falling back to simulator-server: ${
               err instanceof Error ? err.message : String(err)
             }`
           );
+          if (settle) settleIgnored = settleIgnoredAfterFallback(err);
           const ref = simulatorServerRef(device);
           api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
         }
@@ -583,9 +644,26 @@ Before tapping, determine the correct coordinates by using discovery tools — p
         tapped: true,
         timestampMs,
         ...(warning !== undefined ? { warning } : {}),
+        ...(settleIgnored !== undefined ? { settleIgnored } : {}),
         ...iosFallback,
         ...(iosFallback ? { inputBackend: "simulator-server" as const } : {}),
       };
     },
   };
+
+  // settle-on-action: every path that is not the Android open server ignores
+  // `settle` and says so, never an error.
+  const run = tool.execute;
+  tool.execute = async (services, params) => {
+    const result = await run(services, params);
+    if (
+      params.settle === true &&
+      !shouldUseOpenServer(resolveDevice(params.udid)) &&
+      result.settleIgnored === undefined
+    ) {
+      return { ...result, settleIgnored: SETTLE_IGNORED_NOT_OPEN };
+    }
+    return result;
+  };
+  return tool;
 }

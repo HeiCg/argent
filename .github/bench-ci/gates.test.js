@@ -2726,6 +2726,83 @@ test("tap+describe variants: seeded per-sample schedule, N for the gated variant
   assert.ok(longest < 10, `longest same-variant run ${longest}`);
 });
 
+/* ---- Step settle-on-action: tap(settle)+describe, ON blocks only, report only ---- */
+
+const TD_SETTLE = "tap(settle)+describe";
+
+test("tap(settle)+describe: a fourth variant on ON blocks only, N/2 samples, in the same seeded schedule", () => {
+  assert.strictEqual(dest.TD_ACTION_SETTLE_VARIANT, TD_SETTLE);
+  assert.deepStrictEqual(dest.tdVariantsFor("ON"), [...dest.TD_VARIANTS, TD_SETTLE]);
+  assert.deepStrictEqual(dest.tdVariantsFor("OFF"), dest.TD_VARIANTS);
+  assert.deepStrictEqual(dest.variantCounts(40, dest.tdVariantsFor("ON")), [20, 20, 40, 20]);
+  assert.deepStrictEqual(dest.variantCounts(40, dest.tdVariantsFor("OFF")), [20, 20, 40]);
+  const s = dest.variantSchedule([20, 20, 40, 20], "ON-im-1");
+  assert.deepStrictEqual(
+    [0, 1, 2, 3].map((v) => s.filter((x) => x === v).length),
+    [20, 20, 40, 20]
+  );
+});
+
+// ABBA_RUN plus the new variant on every ON block: 19/20 correct at first read, time-to-
+// correct ~600 ms (the ON await variant is ~900 ms).
+const settleRun = (o = {}) =>
+  ABBA_RUN().map((b) => {
+    if (b.block.config === "ON")
+      b.block.verbs.push(
+        tdVerb(TD_SETTLE, 300, o.ttc ?? 600, {
+          n: 20,
+          counts: o.counts || { correct: 19, preTransition: 1, empty: 0, other: 0 },
+        })
+      );
+    return b;
+  });
+
+test("merge-blocks: tap(settle)+describe is classified (P12) and graded in P11 report only, with its pre-registered target", () => {
+  const out = freshOut();
+  writeBlocks(out, settleRun());
+  const m = mergedOf(run(MERGE_BLOCKS, out, ABBAENV));
+  assert.strictEqual(m.valid, true, JSON.stringify(m.runInvalidReasons));
+  const row = m.destinationRates.find((x) => x.block === "ON-im-1" && x.verb === TD_SETTLE);
+  assert.deepStrictEqual(row.counts, { correct: 19, preTransition: 1, empty: 0, other: 0 });
+  assert.ok(m.p12.rows.some((x) => x.block === "ON-im-2" && x.verb === TD_SETTLE));
+  assert.ok(!m.destinationRates.some((x) => x.block.startsWith("OFF") && x.verb === TD_SETTLE));
+  const w = m.wrongReadRates.find((x) => x.block === "ON-im-1" && x.verb === TD_SETTLE);
+  assert.deepStrictEqual([w.wrong, w.n, w.gated], [1, 20, false]);
+  assert.match(w.reportOnly, /pre-registered target: correct at first read ≥ 90 %/);
+  assert.match(w.reportOnly, /time-to-correct ≤ tap\+await-idle\+describe/);
+  assert.deepStrictEqual(m.p11.gatedVerbs, ["tap+await-idle+describe", "describe"]);
+});
+
+test("scoreboard: tap(settle)+describe in the variants table (ON arms only) and its pre-registered target line, no gate", () => {
+  const md = scoreboardOf(settleRun(), ABBAENV);
+  assert.match(md, /\| tap\(settle\)\+describe \| ON-im \| 300 \| 600 \| 57\/60 \| 3\/60 \|/);
+  assert.doesNotMatch(md, /\| tap\(settle\)\+describe \| OFF \|/);
+  assert.match(
+    md,
+    /- \*\*tap\(settle\)\+describe target\*\* \(pre-registered, report only, no gate\) — correct at first read ≥ 90 % and time-to-correct p50 ≤ tap\+await-idle\+describe on ON-im: 57\/60 = 95% correct at first read, time-to-correct p50 600 vs 900 ms: \*\*MET\*\*/
+  );
+  // Missed on either half → NOT MET, still no gate.
+  const md2 = scoreboardOf(
+    settleRun({ ttc: 1200, counts: { correct: 15, preTransition: 3, empty: 2, other: 0 } }),
+    ABBAENV
+  );
+  assert.match(md2, /tap\(settle\)\+describe target\*\* .*: \*\*NOT MET\*\*/);
+  // Old runs without the variant: no target line.
+  assert.doesNotMatch(scoreboardOf(ABBA_RUN(), ABBAENV), /tap\(settle\)\+describe target/);
+});
+
+test("bench: tap(settle)+describe = gesture-tap settle:true then describe settle:false, ON blocks only", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const rb = src.slice(src.indexOf("async function runBlock("));
+  assert.match(rb, /"tap\(settle\)\+describe": \{ tapSettle: true, settle: false \}/);
+  assert.match(rb, /const tdVariantList = tdVariantsFor\(config\) as string\[\];/);
+  assert.match(rb, /variantCounts\(N, tdVariantList\)/);
+  assert.match(
+    rb,
+    /reg\.invokeTool\("gesture-tap", \{\s*udid: SERIAL,\s*x,\s*y,\s*\.\.\.\(c\.tapSettle \? \{ settle: true \} : \{\}\),?\s*\}\)/
+  );
+});
+
 test("bench: ABBA blocks, interleaved tap+describe variants, screenshot after the last timed verb, ON diagnostics in ON-im-1 only, PROBE-BG", () => {
   const src = fs.readFileSync(BENCH_TS, "utf8");
   const abba = src.slice(src.indexOf("const ABBA_BLOCKS"), src.indexOf("const ALL_BLOCKS"));
@@ -2740,6 +2817,11 @@ test("bench: ABBA blocks, interleaved tap+describe variants, screenshot after th
   const rb = src.slice(src.indexOf("async function runBlock("));
   assert.match(rb, /variantSchedule\(tdCounts, block\)/);
   assert.match(rb, /timeTapEffectVariants\(\s*tdVariants,\s*tdSchedule,/);
+  // Step settle-on-action: the tap(settle)+describe variant injects one tap like tap+.
+  assert.match(
+    src,
+    /const INJECT_VERB = \/\^\(gesture-tap\|gesture-swipe\|gesture-pinch\|tap\\\+\|tap\\\(settle\\\)\\\+\)\//
+  );
   assert.match(rb, /await reg\.invokeTool\("await-screen-idle", \{ udid: SERIAL \}\)/);
   // The screenshot is taken after the pinch (the last timed verb), not at block start.
   const pinch = rb.indexOf('"gesture-pinch",');
@@ -2750,10 +2832,6 @@ test("bench: ABBA blocks, interleaved tap+describe variants, screenshot after th
     /const ON_DIAGNOSTIC_BLOCKS = new Set\(\["ON-im-1", "ON-input-manager", "ON-uiautomation"\]\)/
   );
   assert.match(rb, /const ping = onDiagnostics \? await measurePing/);
-  assert.match(
-    src,
-    /const INJECT_VERB = \/\^\(gesture-tap\|gesture-swipe\|gesture-pinch\|tap\\\+\)\//
-  );
   assert.match(src, /if \(only === PROBE_BG\)/);
   assert.match(src, /SIMSERVER_LOG = "simulator_server=debug"/);
   // Review run 37609765062 findings 2 and 6: the PROBE-BG verdict is the log conclusion
