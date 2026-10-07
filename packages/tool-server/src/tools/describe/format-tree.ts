@@ -142,8 +142,10 @@ interface FormatDescribeOptions {
   source: DescribeSource;
   // Set when the tree was read from a simulator. The iOS open-device-server
   // path reports `xcuitest-runner` too, but from a simulator, where the
-  // physical-iOS rendering below (nested mode, no two-finger gestures) does
-  // not apply; it keeps the flat rendering and the gesture-pinch hint.
+  // physical-iOS "no two-finger gestures" header does not apply; it keeps the
+  // gesture-pinch hint. Its tree is the same nested runner tree, so it renders
+  // nested like the physical device (flat printed only the Application's
+  // children: 3 lines on Settings, iOS bench run 37584719906).
   simulator?: boolean;
 }
 
@@ -161,8 +163,9 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     opts.source === "open-device-server" ||
     opts.source === "cdp-dom" ||
     opts.source === "vega-automation" ||
-    // Physical iOS: the runner reports a parent/child tree. Nested mode keeps that structure.
-    physicalIosRunner
+    // The XCUITest runner (physical iOS, and the open iOS server on a simulator)
+    // reports a parent/child tree. Nested mode keeps that structure.
+    opts.source === "xcuitest-runner"
       ? "nested"
       : "flat";
   const isVega = opts.source === "vega-automation";

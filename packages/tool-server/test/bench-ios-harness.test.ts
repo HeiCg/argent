@@ -21,10 +21,12 @@ import {
   gesturePath,
   landedOn,
   navigationTitles,
+  retryLocateOnce,
   screenOf,
   toolLayerRunner,
   waitForStableFrame,
   watchRunnerLifecycle,
+  type NPoint,
   type OracleRunner,
 } from "../scripts/bench-ios-harness";
 
@@ -704,5 +706,36 @@ describe("sim-input ack decomposition (iOS-4 ticket 1)", () => {
       hostPipeMs: 1.5,
     });
     expect(decomposeSimInputAck({ id: 1, hostWriteAt: 0, hostAckAt: 2, timing: null })).toBeNull();
+  });
+});
+
+describe("locate retry (M4, run 37584719906: ON-siminput tap+describe locateFailed=1)", () => {
+  it("returns the first locate without a retry", async () => {
+    let calls = 0;
+    const r = await retryLocateOnce(async () => {
+      calls++;
+      return { x: 0.5, y: 0.6 };
+    });
+    expect(r).toEqual({ value: { x: 0.5, y: 0.6 }, retried: false });
+    expect(calls).toBe(1);
+  });
+
+  it("retries a miss (null or a throw) once and reports the retry", async () => {
+    const outcomes: Array<() => Promise<NPoint | null>> = [
+      async () => {
+        throw new Error("connection reset");
+      },
+      async () => ({ x: 0.5, y: 0.6 }),
+    ];
+    const r = await retryLocateOnce(() => outcomes.shift()!());
+    expect(r).toEqual({ value: { x: 0.5, y: 0.6 }, retried: true });
+
+    let calls = 0;
+    const miss = await retryLocateOnce(async () => {
+      calls++;
+      return null;
+    });
+    expect(miss).toEqual({ value: null, retried: true });
+    expect(calls).toBe(2);
   });
 });

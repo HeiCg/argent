@@ -622,6 +622,20 @@ export async function waitForStableFrame(opts: {
   return { stable: false, frame: prev, frames, waitedMs: clock() - t0 };
 }
 
+/**
+ * Run an untimed locate, and once more when it misses (null or a throw). A miss
+ * on both tries excludes the sample (M4 still fails the block); one retry keeps a
+ * single transient miss (run 37584719906: ON-siminput tap+describe locateFailed=1,
+ * 19 of 20 samples) from costing a sample. `retried` is recorded per verb.
+ */
+export async function retryLocateOnce<T>(
+  locate: () => Promise<T | null>
+): Promise<{ value: T | null; retried: boolean }> {
+  const first = await locate().catch(() => null);
+  if (first !== null) return { value: first, retried: false };
+  return { value: await locate().catch(() => null), retried: true };
+}
+
 /** Byte-identical PNG files (simctl encodes identical pixels identically). */
 export function sameFileBytes(a: string, b: string): boolean {
   try {

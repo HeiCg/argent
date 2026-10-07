@@ -110,6 +110,7 @@ import {
   gesturePath,
   isConnectionError,
   isFallbackResult,
+  retryLocateOnce,
   sameFileBytes,
   toolLayerRunner,
   waitForStableFrame,
@@ -949,6 +950,8 @@ interface VerbResult {
   errors: number;
   errorSamples: string[];
   locateFailed?: number;
+  /** Measured samples whose untimed locate missed once and was retried (M4). */
+  retries?: number;
   effectChecked?: number;
   effectZero?: number;
   /** C.1: the path that served each measured attempt ("error" when it threw). */
@@ -980,8 +983,9 @@ interface Attempt {
   input?: SimInputSample | null;
 }
 
-/** Generic timed verb loop with an optional untimed per-iteration setup. Counts a
- * setup that returns `false` as a locate failure (excluded, never a blind tap).
+/** Generic timed verb loop with an optional untimed per-iteration setup. A setup
+ * that returns `false` (or throws) is retried once, untimed, and counted in
+ * `retries`; a second miss is a locate failure (excluded, never a blind tap).
  * When `fn` resolves to an {@link Attempt} it names the serving path of that
  * attempt (C.1) and is tallied into `fallbacks` / `emptyDescribes`. */
 async function timeCalls(
@@ -997,6 +1001,7 @@ async function timeCalls(
   const lat: number[] = [];
   let errors = 0;
   let locateFailed = 0;
+  let retries = 0;
   const errorSamples: string[] = [];
   const servedBy: string[] = [];
   let pathReported = false;
@@ -1007,7 +1012,10 @@ async function timeCalls(
   const inputTimings: SimInputSample[] = [];
   for (let i = 0; i < N; i++) {
     if (setup) {
-      const ok = await setup(i).catch(() => false);
+      const { value: ok, retried } = await retryLocateOnce(async () =>
+        (await setup(i)) ? true : null
+      );
+      if (retried) retries++;
       if (!ok) {
         locateFailed++;
         continue; // IOS2-H7: a locate failure EXCLUDES the iteration, no blind tap.
@@ -1041,6 +1049,7 @@ async function timeCalls(
     latencySamples: lat.slice(),
     errors,
     locateFailed,
+    ...(setup ? { retries } : {}),
     errorSamples,
     ...(pathReported ? { servedBy, fallbacks } : {}),
     ...(emptyReported ? { emptyDescribes } : {}),
@@ -1081,6 +1090,7 @@ interface TapEffectResult extends VerbResult {
   effectZero: number;
   firstTapNoEffect: number;
   locateFailed: number;
+  retries: number;
   landingThreshold: number;
   medianTapCoord: NPoint | null;
   records: TapRecord[];
@@ -1097,7 +1107,8 @@ interface TapEffectResult extends VerbResult {
  * title check fails closed (a failed read or no navigation bar is a miss): any
  * Settings row navigates, so the pixel diff alone counted run 37572773799's taps on
  * "Apple Intelligence & Siri" as landings on "General". A locate failure EXCLUDES
- * the iteration (never a blind tap); a miss is never retried away.
+ * the iteration (never a blind tap); a locate miss is retried once, untimed
+ * (ensureRoot + locate again, counted in `retries`), a landing miss never is.
  */
 async function timeTapEffect(
   arm: Arm,
@@ -1111,14 +1122,18 @@ async function timeTapEffect(
   let effectChecked = 0;
   let effectZero = 0;
   let locateFailed = 0;
+  let retries = 0;
   const records: TapRecord[] = [];
   const noEffectSamples: string[] = [];
   const inputTimings: SimInputSample[] = [];
   let keptShots = 0;
 
   const runOne = async (record: boolean): Promise<void> => {
-    await arm.ensureRoot();
-    const coord = await arm.locate(target);
+    const { value: coord, retried } = await retryLocateOnce(async () => {
+      await arm.ensureRoot();
+      return arm.locate(target);
+    });
+    if (record && retried) retries++;
     if (!coord) {
       if (record) locateFailed++;
       return;
@@ -1218,6 +1233,7 @@ async function timeTapEffect(
     effectZero,
     firstTapNoEffect: effectZero,
     locateFailed,
+    retries,
     landingThreshold: Number(landingThreshold.toFixed(4)),
     medianTapCoord,
     records,
@@ -1684,6 +1700,7 @@ async function runBlock(block: string): Promise<BlockResult> {
     errors: tapVerb.errors,
     errorSamples: tapVerb.errorSamples,
     locateFailed: tapVerb.locateFailed,
+    retries: tapVerb.retries,
     effectChecked: tapVerb.effectChecked,
     effectZero: tapVerb.effectZero,
     servedBy: tapVerb.records.map((r) => r.servedBy),
@@ -1867,7 +1884,10 @@ async function runBlock(block: string): Promise<BlockResult> {
 /* -------------------------------------------------------------------------- */
 
 /** `verb=n,…` for the verbs with a non-zero `key`, or `0`. */
-function perVerb(verbs: VerbResult[], key: "fallbacks" | "emptyDescribes"): string {
+function perVerb(
+  verbs: VerbResult[],
+  key: "fallbacks" | "emptyDescribes" | "retries" | "locateFailed"
+): string {
   const hits = verbs.filter((v) => (v[key] ?? 0) > 0).map((v) => `${v.verb}=${v[key]}`);
   return hits.length ? hits.join(",") : "0";
 }
@@ -2002,6 +2022,7 @@ async function main(): Promise<void> {
         `fallbackNotes=${r.fallbackNotes.length} runnerStarts=${r.runner.starts} ` +
         `runnerReadyMs=${r.runner.readyMs ?? "n/a"} oracleRetries=${r.runner.oracleRetries} ` +
         `timedFallbacks=${perVerb(r.verbs, "fallbacks")} timedEmptyDescribes=${perVerb(r.verbs, "emptyDescribes")} ` +
+        `locateRetries=${perVerb(r.verbs, "retries")} locateFailed=${perVerb(r.verbs, "locateFailed")} ` +
         `simulatorServerReady=${r.proprietaryReady ? r.proprietaryReady.ready : "n/a"} ` +
         `describeTokens=${r.describe.tokens}@${r.describe.elements}el ` +
         `stageMaxDelta=${r.describeStages ? r.describeStages.maxDelta : "n/a"} ` +
