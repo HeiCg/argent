@@ -38,8 +38,24 @@
 //    fallbacks still fail the merge.
 //
 // Run 37578606526 (review finding 12): `destinationRates` = the tap+describe reads
-// classified correct / stale / empty / other per (block, verb), with Wilson CIs, the
-// correct-only latency and time-to-correct; `p12` = the stale rate per row, report only.
+// classified correct / pre-transition / empty / other per (block, verb), with Wilson CIs,
+// the correct-only latency and time-to-correct; `p12` = the pre-transition/mixed rate per
+// row, report only.
+//
+// Review 2026-10-07 run 37591260027 ("Next run"):
+//  - ABBA blocks: OFF-1, ON-im-1, ON-uia, OFF-2, ON-im-2, OFF-3, ON-im-3, OFF-legacy.
+//    Arms by name: OFF-<n> = the current proprietary arm (pooled, every OFF-<n> must share
+//    one provenance), ON-im-<n> (or the pre-ABBA ON-input-manager) = the candidate,
+//    ON-uia (or ON-uiautomation) = the control. Q4 applies to every candidate block. The
+//    order check: with ABBA names, blocks must start in the BENCH_BLOCKS order; the
+//    pre-ABBA bracket check (OFF-1 before, OFF-2 after every ON block) otherwise.
+//  - `transitionTimeline`: tap → first frame / transition finished per (block, verb) from
+//    the BENCH markers in logcat-bench.txt (logcat-timeline.js), plus the per-sample
+//    time-to-correct after the transition finished for the tap+describe variants.
+//  - `loadByBlock`: qemu, simulator-server and on-device com.argent.* CPU per (block,
+//    phase) from load-samples.jsonl (load-sampler.js).
+//  - `propBackground`: the Part A probe (prop-background.json): what the proprietary
+//    stack runs in the background.
 const fs = require("fs");
 const path = require("path");
 const {
@@ -51,6 +67,8 @@ const {
 const { readValidity, entryReasons } = require("./block-validity");
 const { median, round1, p11Gate, p11Verdict, P11_THRESHOLD } = require("./stats");
 const { destinationRates: destinationRatesOf } = require("./tap-describe-destination");
+const { timelineOfFile, residualAfterFinish, markerVerbKey } = require("./logcat-timeline");
+const { readSamples, aggregate: aggregateLoad } = require("./load-sampler");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // Phase 3n: the block universe now includes the three Kotlin injection-strategy
@@ -62,18 +80,26 @@ const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // binaries (legacy_proprietary_version), run in the same job + emulator, LAST
 // (after OFF-2, so it never sits inside the OFF-1↔OFF-2 drift interval). It is
 // its own arm — never pooled with OFF-1/OFF-2, never part of the drift floor.
+// Run 37591260027: the ABBA names join the universe; canonical order = the pre-registered
+// run order (pre-ABBA names keep their old relative order).
 const ALL = [
   "OFF-1",
+  "ON-im-1",
+  "ON-uia",
   "ON-uiautomation",
   "ON-uia-sync",
   "ON-uia-async",
   "ON-input-manager",
   "OFF-2",
+  "ON-im-2",
+  "OFF-3",
+  "ON-im-3",
   "OFF-legacy",
 ];
-// The CURRENT proprietary arm: the blocks the gates, fidelity and drift floor use.
-const CURRENT_OFF = ["OFF-1", "OFF-2"];
 const LEGACY_OFF = "OFF-legacy";
+const { isCurrentOff, isOnIm, isOnUia, isAbbaName } = require("./block-arms");
+// The CURRENT proprietary arm: the blocks the gates, fidelity and drift floor use.
+const CURRENT_OFF = ALL.filter(isCurrentOff);
 
 const readJson = (p) => {
   if (!p || !fs.existsSync(p)) return null;
@@ -173,6 +199,8 @@ const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
 const missingOn = requested.filter(
   (n) => n.startsWith("ON") && ALL.includes(n) && !files[n] && !invalid[n]
 );
+const imPresent = ALL.filter((n) => files[n] && isOnIm(n));
+const uiaPresent = ALL.filter((n) => files[n] && isOnUia(n));
 if (missingOn.length && !partial) {
   throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
 }
@@ -182,14 +210,15 @@ if (missingOn.length && !partial) {
 // no "no regression of the default" (P6) or default-path claim is possible. A 3n.1
 // run with ON-input-manager but no ON-uiautomation is VOID.
 if (
-  files["ON-input-manager"] &&
-  !files["ON-uiautomation"] &&
+  imPresent.length &&
+  !uiaPresent.length &&
   !partial &&
-  !invalid["ON-uiautomation"]
+  !ALL.some((n) => isOnUia(n) && invalid[n])
 ) {
   throw new Error(
-    "P0 VOID: ON-input-manager ran but the ON-uiautomation control block is absent — " +
-      "the run cannot grade the promotion candidate against the current default (P6)."
+    `P0 VOID: ${imPresent.join(", ")} ran but the UiAutomation control block (ON-uia / ` +
+      "ON-uiautomation) is absent — the run cannot grade the promotion candidate against the " +
+      "current default (P6)."
   );
 }
 
@@ -420,10 +449,12 @@ for (const n of present) {
   }
 }
 // Run 37578606526 / review finding 12: every timed tap+describe read is classified by the
-// bench (tap-describe-destination.js) as correct / stale / empty / other against the
-// block's own destination markers, and followed by a time-to-correct loop. One row per
+// bench (tap-describe-destination.js) as correct / pre-transition / empty / other against
+// the block's own destination markers, and followed by a time-to-correct loop. One row per
 // (block, verb) with the counts, Wilson 95 % CIs, the correct-only latency and the
-// time-to-correct summary. P12 = the stale rate per (block, verb): report only.
+// time-to-correct summary. P12 = the pre-transition/mixed rate per (block, verb): report
+// only (run 37591260027 finding 2: such a read showed the screen as it was, it is not a
+// cached tree).
 const destinationRates = [];
 for (const n of present) {
   const b = files[n].block;
@@ -454,10 +485,10 @@ const p12 = {
   rows: destinationRates.map((r) => ({
     block: r.block,
     verb: r.verb,
-    stale: r.counts.stale,
+    preTransition: r.counts.preTransition,
     n: r.n,
-    rate: r.rates.stale.rate,
-    ci: r.rates.stale.ci,
+    rate: r.rates.preTransition.rate,
+    ci: r.rates.preTransition.ci,
   })),
 };
 const p11Main = emptyRates.filter((r) => r.block !== LEGACY_OFF);
@@ -535,49 +566,61 @@ let strategyTotal = null;
 let measuredInjectRpcs = null;
 let strategyExpected = null;
 let strategyMatched = null;
-if (files["ON-input-manager"]) {
-  const im = files["ON-input-manager"].block;
+// Run 37591260027 (ABBA): every candidate block (ON-im-<n>, or the pre-ABBA
+// ON-input-manager) passes the same Q4 checks; `q4ByBlock` keeps each block's numbers,
+// the top-level fields carry the first candidate block (pre-ABBA readers).
+const q4ByBlock = {};
+for (const n of imPresent) {
+  const im = files[n].block;
   const counts = im.injectStrategyCounts || {};
-  strategyTotal =
+  const total =
     im.injectStrategyTotal != null
       ? im.injectStrategyTotal
-      : Object.values(counts).reduce((s, n) => s + n, 0);
-  strategyUnavailable = counts["unavailable"] || 0;
-  measuredInjectRpcs = im.measuredInjectRpcs != null ? im.measuredInjectRpcs : null;
-  if (strategyTotal === 0) {
+      : Object.values(counts).reduce((s, x) => s + x, 0);
+  const unavailable = counts["unavailable"] || 0;
+  const measured = im.measuredInjectRpcs != null ? im.measuredInjectRpcs : null;
+  if (total === 0) {
     throw new Error(
-      "ON-input-manager reported NO on-device injections (injectStrategyCounts empty / total 0) — " +
+      `${n} reported NO on-device injections (injectStrategyCounts empty / total 0) — ` +
         "the strategy counter never ran (getInfo unread, or an absent counter), so this run cannot " +
         "certify a clean input-manager arm. Expected the process-wide inject total (e.g. 161)."
     );
   }
-  if (strategyUnavailable > 0) {
+  if (unavailable > 0) {
     throw new Error(
-      `ON-input-manager fell back to uia-async on ${strategyUnavailable}/${strategyTotal} injection(s) ` +
+      `${n} fell back to uia-async on ${unavailable}/${total} injection(s) ` +
         `(injectStrategyCounts.unavailable) — the reflective pipe degraded, so the measurement is NOT a ` +
         `clean input-manager arm. Counts: ${JSON.stringify(counts)}`
     );
   }
-  strategyExpected = im.expectedInjectRpcs != null ? im.expectedInjectRpcs : null;
-  if (strategyExpected == null) {
+  const expected = im.expectedInjectRpcs != null ? im.expectedInjectRpcs : null;
+  if (expected == null) {
     throw new Error(
-      "ON-input-manager carries no expectedInjectRpcs (the gesture tool calls the bench issued " +
+      `${n} carries no expectedInjectRpcs (the gesture tool calls the bench issued ` +
         "in the block) — Q4 cannot match the on-device injectStrategyCounts against the " +
         "injections actually made, so a silent proprietary fallback could pass."
     );
   }
-  strategyMatched = counts["input-manager"] || 0;
-  if (strategyMatched !== strategyExpected || strategyTotal !== strategyExpected) {
+  const matched = counts["input-manager"] || 0;
+  if (matched !== expected || total !== expected) {
     throw new Error(
-      `Q4: ON-input-manager on-device injectStrategyCounts["input-manager"]=${strategyMatched} ` +
-        `(total ${strategyTotal}) but expected ${strategyExpected} injections (gesture tool calls ` +
+      `Q4: ${n} on-device injectStrategyCounts["input-manager"]=${matched} ` +
+        `(total ${total}) but expected ${expected} injections (gesture tool calls ` +
         `the bench issued) — the difference did not run through the input-manager injector ` +
         `(fallback to the proprietary path, a server restart, or an extra RPC). Counts: ` +
         `${JSON.stringify(counts)}`
     );
   }
+  q4ByBlock[n] = { total, unavailable, measured, expected, matched };
+  if (strategyTotal === null) {
+    strategyTotal = total;
+    strategyUnavailable = unavailable;
+    measuredInjectRpcs = measured;
+    strategyExpected = expected;
+    strategyMatched = matched;
+  }
 }
-for (const n of present.filter((x) => x.startsWith("ON") && x !== "ON-input-manager")) {
+for (const n of present.filter((x) => x.startsWith("ON") && !isOnIm(x))) {
   const b = files[n].block;
   if (b.expectedInjectRpcs == null || !b.injectStrategyCounts) continue;
   const key = b.injectStrategy && b.injectStrategy !== "default" ? b.injectStrategy : "default";
@@ -602,7 +645,26 @@ const startOfBlock = (n) =>
   null;
 const onPresent = mainPresent.filter((n) => n.startsWith("ON"));
 const bracketing = CURRENT_OFF.filter((n) => files[n]);
-if (onPresent.length && bracketing.length) {
+const abba = present.some(isAbbaName) || requested.some(isAbbaName);
+if (abba) {
+  // Run 37591260027 (ABBA): the pre-registered order is BENCH_BLOCKS (else the canonical
+  // order); every present main block must start after the one listed before it.
+  const order = (process.env.BENCH_BLOCKS ? requested : ALL).filter((n) => mainPresent.includes(n));
+  const missingTs = order.filter((n) => !startOfBlock(n));
+  for (const n of missingTs)
+    runInvalidReasons.push(`block order cannot be verified: no start timestamp for ${n}`);
+  if (!missingTs.length) {
+    for (let k = 1; k < order.length; k++) {
+      const prev = order[k - 1],
+        cur = order[k];
+      if (!(Date.parse(startOfBlock(cur)) > Date.parse(startOfBlock(prev))))
+        runInvalidReasons.push(
+          `${cur} (started ${startOfBlock(cur)}) did not start after ${prev} ` +
+            `(started ${startOfBlock(prev)}); the pre-registered ABBA order is ${order.join(", ")}`
+        );
+    }
+  }
+} else if (onPresent.length && bracketing.length) {
   const missingTs = [...bracketing, ...onPresent].filter((n) => !startOfBlock(n));
   for (const n of missingTs)
     runInvalidReasons.push(`block order cannot be verified: no start timestamp for ${n}`);
@@ -710,6 +772,37 @@ if (fs.existsSync(ciEnvPath)) {
   }
 }
 
+// Run 37591260027 finding 1: the transition timeline per (block, verb) from the BENCH
+// markers in logcat-bench.txt, keyed by the block JSON's verb names; for verbs with a
+// time-to-correct, the per-sample time after the transition finished (matched by the
+// loop iteration).
+const rawTimeline = timelineOfFile(path.join(OUT, "logcat-bench.txt"));
+let transitionTimeline = null;
+if (rawTimeline) {
+  transitionTimeline = {};
+  for (const n of present) {
+    const b = files[n].block;
+    const byKey = rawTimeline[n] || {};
+    for (const v of b.verbs || []) {
+      const row = byKey[markerVerbKey(v.verb)];
+      if (!row) continue;
+      (transitionTimeline[n] = transitionTimeline[n] || {})[v.verb] = {
+        markers: row.markers,
+        firstFrameMs: row.firstFrameMs,
+        finishedMs: row.finishedMs,
+        firstFrameSamples: row.firstFrame.map((x) => ({ i: x.i, ms: x.ms })),
+        finishedSamples: row.finished,
+        afterFinishTtcMs: residualAfterFinish(v.timeToCorrect || null, row),
+      };
+    }
+  }
+}
+// Run 37591260027 finding 1: per-phase CPU (load-sampler.js) and the Part A probe.
+const loadSamples = readSamples(path.join(OUT, "load-samples.jsonl"));
+const loadByBlock = loadSamples.length ? aggregateLoad(loadSamples) : null;
+const propBackgroundFile = readJson(path.join(OUT, "prop-background.json"));
+const propBackground = propBackgroundFile ? propBackgroundFile.probe || null : null;
+
 const result = {
   // Emulator lost mid-run: only `blocksRan` completed; `missingBlocks` never produced
   // a file. A partial merge is never a complete result.
@@ -759,6 +852,11 @@ const result = {
   // gesture tool calls the bench issued (the merge refuses any mismatch).
   strategyExpected,
   strategyMatched,
+  q4ByBlock,
+  // Run 37591260027: timeline, per-phase load, the proprietary background probe.
+  transitionTimeline,
+  loadByBlock,
+  propBackground,
   // Phase 3h: parity + effect evidence carried into the scoreboard.
   tapTimelines: Object.fromEntries(tls.map(({ block, tl }) => [block, tl])),
   effectByBlock: Object.fromEntries(
@@ -793,7 +891,7 @@ console.log(
   `blocks merged: ${present.join(", ")}` +
     (strategyUnavailable === null
       ? " (no ON-input-manager arm)"
-      : `; ON-input-manager on-device inject fallbacks (injectStrategyCounts.unavailable): ` +
+      : `; ${imPresent.join("/")} on-device inject fallbacks (injectStrategyCounts.unavailable): ` +
         `${strategyUnavailable}/${strategyTotal} (gate 0) — OK; input-manager ` +
         `${strategyMatched} == expected ${strategyExpected} injections — OK` +
         (measuredInjectRpcs != null ? `; measured gated-inject RPCs: ${measuredInjectRpcs}` : ""))
@@ -818,8 +916,8 @@ console.log(
 );
 if (p12.rows.length) {
   console.log(
-    "P12 stale tap+describe reads (report only): " +
-      p12.rows.map((r) => `${r.block} ${r.verb} ${r.stale}/${r.n}`).join(", ")
+    "P12 pre-transition/mixed tap+describe reads (report only): " +
+      p12.rows.map((r) => `${r.block} ${r.verb} ${r.preTransition}/${r.n}`).join(", ")
   );
 }
 if (!valid) console.log("::error::latency run INVALID — see the scoreboard banner");

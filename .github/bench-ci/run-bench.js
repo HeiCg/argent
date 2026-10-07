@@ -6,8 +6,10 @@
 // injection-strategy arms. It used to spawn ON-input-manager from the FIRST run_block
 // call (OFF-1), so the candidate arm ran before OFF-1 and outside the OFF-1↔OFF-2
 // drift window, with its ready-gate advisory and its failure reported as OFF-1's. The
-// workflow now runs every block explicitly, in order OFF-1, ON-uiautomation,
-// ON-input-manager, OFF-2, OFF-legacy, each behind the blocking ready-gate.
+// workflow now runs every block explicitly, in the BENCH_BLOCKS order (since run
+// 37591260027 the ABBA sequence OFF-1, ON-im-1, ON-uia, OFF-2, ON-im-2, OFF-3, ON-im-3,
+// OFF-legacy), each behind the blocking ready-gate; BENCH_ONLY=PROBE-BG runs the
+// proprietary background probe (Part A) before them.
 //
 // Ticket 3o: the optical fling harness still self-orchestrates here — a `FLING` token
 // in the `blocks` input runs `run-fling.js` + `merge-fling.js` once, inside the latency

@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       blocks:
-        description: "Latency blocks to run (comma list)"
+        description: "Latency blocks to run, in run order (comma list; ABBA since run 37591260027)"
         required: false
-        default: "OFF-1,ON-uiautomation,ON-input-manager,OFF-2,OFF-legacy"
+        default: "OFF-1,ON-im-1,ON-uia,OFF-2,ON-im-2,OFF-3,ON-im-3,OFF-legacy"
       proprietary_version:
         description: "@swmansion/argent release whose binaries the proprietary (OFF) blocks use"
         required: false
@@ -41,6 +41,10 @@ on:
         description: "Iterations per verb (BENCH_N)"
         required: false
         default: "20"
+      n_secondary:
+        description: "BENCH_N for the ON-uia and OFF-legacy blocks (ABBA runtime budget; empty = n)"
+        required: false
+        default: "30"
       suite:
         description: "Which suite(s) to run"
         required: false
@@ -77,7 +81,12 @@ jobs:
     name: Latency bench (OFF/ON, x86_64 KVM)
     if: ${{ github.event.inputs.suite == 'latency' || github.event.inputs.suite == 'both' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Run 37591260027 ("Next run", ABBA): eight blocks. Its blocks took 18.8-21.4 min
+    # (validity.json start → recorded), ~20 min each; with the tap+describe variants and
+    # N=40 eight blocks were estimated above 165 min, so ON-uia and OFF-legacy run at
+    # n_secondary (30) and the ON-only diagnostics run in ON-im-1 only. ~25 min of setup
+    # (SDK, boot, npm ci + build, gradle, device test) comes on top.
+    timeout-minutes: 240
 
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -94,6 +103,7 @@ jobs:
       # controller and the emulator agree on where the discovery ini lives.
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
       BENCH_N: ${{ github.event.inputs.n }}
+      BENCH_N_SECONDARY: ${{ github.event.inputs.n_secondary }}
       BENCH_BLOCKS: ${{ github.event.inputs.blocks }}
       # Re-baseline (0.27): the proprietary release(s) the OFF arms run. Read by the
       # fetch step, the provenance stamp and the merge (which refuses a block stamped
@@ -410,6 +420,11 @@ jobs:
           adb -s emulator-5554 logcat -v threadtime > "$BENCH_OUT/logcat-bench.txt" 2>&1 &
           BENCH_LOGCAT_PID=$!
           stop_logcat () { kill "$BENCH_LOGCAT_PID" 2>/dev/null || true; }
+          # Review 2026-10-07 run 37591260027 finding 1: per-phase CPU every 10 s (qemu,
+          # simulator-server, on-device com.argent.*) into load-samples.jsonl; the harness
+          # writes `block <name> phase <phase>` into $BENCH_CONTEXT_FILE.
+          LOAD_SAMPLER_PID=""
+          stop_load_sampler () { [ -n "$LOAD_SAMPLER_PID" ] && kill "$LOAD_SAMPLER_PID" 2>/dev/null || true; }
           # Fail-closed on a lost emulator: the watchdog (emulator-diagnostics.sh)
           # SIGTERMs the running block when the qemu process dies, `adb get-state`
           # fails 3x (10 s apart) or the memory guard trips (host avail < 700 MB with
@@ -424,6 +439,7 @@ jobs:
           finish () {
             local rc=$?
             stop_logcat
+            stop_load_sampler
             bash .github/bench-ci/emulator-diagnostics.sh stop
             if emu_lost; then
               if [ "$MERGED" != "1" ]; then
@@ -437,6 +453,9 @@ jobs:
           }
           trap finish EXIT
           bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'run-bench\.js'
+          node .github/bench-ci/load-sampler.js --serial emulator-5554 --context "$BENCH_CONTEXT_FILE" \
+            --out "$BENCH_OUT/load-samples.jsonl" --interval 10000 &
+          LOAD_SAMPLER_PID=$!
 
           # Re-baseline (0.27): an OFF block takes its proprietary package dir + the
           # release it must be (args 2/3); its block JSON is then stamped with the
@@ -477,8 +496,17 @@ jobs:
             node .github/bench-ci/block-validity.js record "$BENCH_OUT/validity.json" \
               --block "$1" --did-not-run "$2" 2>&1 | tee -a "$BENCH_OUT/bench-log-$1.txt" || true
           }
+          # Run 37591260027 (ABBA runtime budget): ON-uia and OFF-legacy run at
+          # BENCH_N_SECONDARY, every other block at BENCH_N.
+          block_n () {
+            case "$1" in
+              ON-uia|OFF-legacy) echo "${BENCH_N_SECONDARY:-$BENCH_N}" ;;
+              *) echo "$BENCH_N" ;;
+            esac
+          }
           run_block () {
-            local b="$1" pkg="${2:-}" ver="${3:-}" rc=0 src=0 started
+            local b="$1" pkg="${2:-}" ver="${3:-}" rc=0 src=0 started n
+            n="$(block_n "$b")"
             if emu_lost; then
               echo "::warning::block $b skipped: emulator lost (no restart — results would not be comparable)"
               record_not_run "$b" "emulator lost before the block (no restart: results would not be comparable)"
@@ -499,7 +527,7 @@ jobs:
               # ON block (finding 3): the proprietary dirs are unset, so a fallback to
               # the proprietary path cannot find its binaries and fails loudly.
               env -u ARGENT_SIMULATOR_SERVER_DIR -u ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR -u ARGENT_NATIVE_DEVTOOLS_DIR \
-                BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
+                BENCH_ONLY="$b" BENCH_N="$n" node .github/bench-ci/run-bench.js \
                 2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || rc=$?
               record_validity "$b" pass "$rc" n/a "$started"
               return "$rc"
@@ -513,7 +541,7 @@ jobs:
             ARGENT_SIMULATOR_SERVER_DIR="$pkg/bin" \
             ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR="$pkg/bin" \
             ARGENT_NATIVE_DEVTOOLS_DIR="$pkg/dylibs" \
-            BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
+            BENCH_ONLY="$b" BENCH_N="$n" node .github/bench-ci/run-bench.js \
               2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || rc=$?
             if [ "$rc" != "0" ]; then
               record_validity "$b" pass "$rc" no "$started"
@@ -532,14 +560,15 @@ jobs:
           # not a silent absent baseline. The remaining blocks + merge still run so the
           # diagnostics survive; failures are enforced at the end of the step.
           #
-          # Finding 1: blocks run in this order and nothing else runs between them:
-          # OFF-1, ON-uiautomation, ON-input-manager, OFF-2, OFF-legacy. OFF-1 and OFF-2
-          # bracket every ON block; merge-blocks.js re-checks it from the block start
-          # timestamps and marks the run INVALID otherwise.
+          # Review 2026-10-07 run 37591260027 ("Next run"): interleaved ABBA. The blocks run
+          # in the BENCH_BLOCKS order (default OFF-1, ON-im-1, ON-uia, OFF-2, ON-im-2, OFF-3,
+          # ON-im-3, OFF-legacy) and nothing else runs between them; merge-blocks.js
+          # re-checks the order from the block start timestamps and marks the run INVALID
+          # otherwise. OFF-legacy (the older release) is meant to be last: its helper APK
+          # replaces the current one (uninstall below), outside every current-OFF interval.
           #
           # Run 37571460849: every requested block runs whatever happened to the blocks
-          # before it (OFF-2 used to be gated on OFF_FAILED=0 and was skipped when OFF-1
-          # exited 1). validity.json and the merge grade each block; the *_FAILED flags
+          # before it. validity.json and the merge grade each block; the *_FAILED flags
           # only decide the step's exit code at the end.
           RUN_OFF=0
           if [ "${PROP_EXECUTABLE:-0}" = "1" ]; then
@@ -549,71 +578,79 @@ jobs:
           fi
           OFF_FAILED=0
           ON_FAILED=0
-          OFF_DOWNGRADE="proprietary simulator-server not executable on this runner (documented ON-only downgrade)"
-          if echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
-            if [ "$RUN_OFF" != "1" ]; then
-              record_not_run "OFF-1" "$OFF_DOWNGRADE"
-            else
-              if run_block "OFF-1" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
-                OFF_FAILED=1
-                echo "::error::OFF-1 proprietary baseline FAILED though the binary is executable — a missing baseline fails the run (F13)"
-              fi
-              sleep 3
-            fi
-          fi
-          # ON blocks — hard requirement: a failure is recorded, the remaining blocks
-          # and the merge still run (diagnostics + INVALID scoreboard), the step fails.
-          if echo "$BENCH_BLOCKS" | grep -q "ON-uiautomation"; then
-            if run_block "ON-uiautomation"; then :; else
-              ON_FAILED=1
-              echo "::error::ON-uiautomation FAILED"
-            fi
-            sleep 3
-          fi
-          if echo "$BENCH_BLOCKS" | grep -q "ON-input-manager"; then
-            if run_block "ON-input-manager"; then :; else
-              ON_FAILED=1
-              echo "::error::ON-input-manager FAILED"
-            fi
-            sleep 3
-          fi
-          if echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
-            if [ "$RUN_OFF" != "1" ]; then
-              record_not_run "OFF-2" "$OFF_DOWNGRADE"
-            else
-              if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
-                OFF_FAILED=1
-                echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
-              fi
-              sleep 3
-            fi
-          fi
-          # Re-baseline (0.27): OFF-legacy — the proprietary arm on the OLDER release's
-          # binaries (legacy_proprietary_version), its own BENCH_ONLY invocation in this
-          # same job + emulator, so one run yields a same-device legacy-vs-current
-          # proprietary comparison. It runs LAST, after OFF-2: the OFF-1 -> OFF-2 interval
-          # is the drift floor every ON-vs-OFF delta is read against, so no extra block
-          # (and no helper-APK reinstall) may sit inside it. Skipped when the input is
-          # empty or that binary cannot exec here; an executable legacy block that FAILS
-          # fails the run at the end (like F13), but only invalidates the legacy
-          # section of the merge (finding 6).
           LEGACY_FAILED=0
-          if echo "$BENCH_BLOCKS" | grep -q "OFF-legacy"; then
-            if [ -z "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
-              echo "::notice::OFF-legacy requested but legacy_proprietary_version is empty — skipped"
-              record_not_run "OFF-legacy" "legacy_proprietary_version is empty"
-            elif [ "${PROP_LEGACY_EXECUTABLE:-0}" != "1" ]; then
-              echo "::warning::legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner — OFF-legacy skipped"
-              record_not_run "OFF-legacy" "legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner"
-            elif run_block "OFF-legacy" "$PROP_PKG_LEGACY" "$BENCH_LEGACY_PROPRIETARY_VERSION"; then
-              sleep 3
-            else
-              LEGACY_FAILED=1
-              echo "::error::OFF-legacy ($BENCH_LEGACY_PROPRIETARY_VERSION) FAILED though its binary is executable"
-            fi
+          OFF_DOWNGRADE="proprietary simulator-server not executable on this runner (documented ON-only downgrade)"
+          # Part A (run 37591260027 finding 1): what the proprietary stack runs in the
+          # background (simulator-server spawned with no call / after one screenshot, CPU
+          # windows, its debug log). Not a block: prop-background.json, report only, never
+          # fails the run. Before the first block, on the current release.
+          if [ "$RUN_OFF" = "1" ]; then
+            echo "########## PROBE-BG (proprietary background, report only) ##########"
+            echo "block PROBE-BG" > "$BENCH_CONTEXT_FILE"
+            ARGENT_SIMULATOR_SERVER_DIR="$PROP_PKG/bin" \
+            ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR="$PROP_PKG/bin" \
+            ARGENT_NATIVE_DEVTOOLS_DIR="$PROP_PKG/dylibs" \
+            BENCH_ONLY=PROBE-BG node .github/bench-ci/run-bench.js 2>&1 | tee "$BENCH_OUT/bench-log-PROBE-BG.txt" \
+              || echo "::warning::PROBE-BG failed (report only) — the scoreboard says stream=unknown"
+            # The helper APK the probe may have installed is the current release's, the one
+            # OFF-1 uses: nothing to uninstall.
+            LAST_OFF_PKG="$PROP_PKG"
+            sleep 3
           fi
+          IFS=',' read -r -a REQ_BLOCKS <<< "$BENCH_BLOCKS"
+          for b in "${REQ_BLOCKS[@]}"; do
+            b="$(echo "$b" | tr -d '[:space:]')"
+            [ -n "$b" ] || continue
+            case "$b" in
+              FLING) continue ;;
+              OFF-legacy)
+                # Re-baseline (0.27): OFF-legacy — the proprietary arm on the OLDER release's
+                # binaries (legacy_proprietary_version), its own BENCH_ONLY invocation in
+                # this same job + emulator. An executable legacy block that FAILS fails the
+                # run at the end, but only invalidates the legacy section of the merge.
+                if [ -z "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
+                  echo "::notice::OFF-legacy requested but legacy_proprietary_version is empty — skipped"
+                  record_not_run "OFF-legacy" "legacy_proprietary_version is empty"
+                elif [ "${PROP_LEGACY_EXECUTABLE:-0}" != "1" ]; then
+                  echo "::warning::legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner — OFF-legacy skipped"
+                  record_not_run "OFF-legacy" "legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner"
+                elif run_block "OFF-legacy" "$PROP_PKG_LEGACY" "$BENCH_LEGACY_PROPRIETARY_VERSION"; then
+                  sleep 3
+                else
+                  LEGACY_FAILED=1
+                  echo "::error::OFF-legacy ($BENCH_LEGACY_PROPRIETARY_VERSION) FAILED though its binary is executable"
+                fi
+                ;;
+              OFF-*)
+                if [ "$RUN_OFF" != "1" ]; then
+                  record_not_run "$b" "$OFF_DOWNGRADE"
+                else
+                  if run_block "$b" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
+                    OFF_FAILED=1
+                    echo "::error::$b proprietary baseline FAILED though the binary is executable — a missing baseline fails the run (F13)"
+                  fi
+                  sleep 3
+                fi
+                ;;
+              ON-*)
+                # ON blocks — hard requirement: a failure is recorded, the remaining blocks
+                # and the merge still run (diagnostics + INVALID scoreboard), the step fails.
+                if run_block "$b"; then :; else
+                  ON_FAILED=1
+                  echo "::error::$b FAILED"
+                fi
+                sleep 3
+                ;;
+              *)
+                echo "::error::unknown block '$b' in BENCH_BLOCKS"
+                record_not_run "$b" "unknown block name"
+                ON_FAILED=1
+                ;;
+            esac
+          done
           echo "########## MERGE ##########"
           stop_logcat
+          stop_load_sampler
           node .github/bench-ci/merge-blocks.js
           MERGED=1
           # F13 enforcement: fail the run if an executable proprietary baseline block
