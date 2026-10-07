@@ -30,6 +30,8 @@ The agent uses the same tools. Only the backend they reach changes.
   tagged `source: "xcuitest-runner"`.
 - **`gesture-tap`**, **`gesture-swipe`**, the **keyboard** text and key entry, and
   **`screenshot`** dispatch through the runner instead of the simulator-server.
+- **`launch-app`** also makes the launched app the runner target. The runner
+  acts on this app until the agent launches a different app.
 
 ## Automatic fallback
 
@@ -37,7 +39,8 @@ Every path degrades safely. If the runner is not built, cannot start, or stops
 answering, `describe` falls back to the `ax-service` and native-devtools chain,
 the gestures and text fall back to the simulator-server, and `screenshot` falls
 back to `xcrun simctl io screenshot`. Turning the flag on never removes a working
-path. It only adds a preferred one.
+path. It only adds a preferred one. Argent logs each fallback as a warning and
+marks the tool result, so the agent knows which backend served the call.
 
 ## Building the runner
 

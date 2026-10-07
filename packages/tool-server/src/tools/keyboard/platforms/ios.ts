@@ -8,6 +8,7 @@ import {
   shouldUseIosOpenServer,
   iosOpenServerTypeText,
   iosOpenServerKey,
+  iosOpenServerFallback,
 } from "../../../utils/ios-open-server-input";
 
 // Named keys the open iOS server's `key` method supports; others fall back to
@@ -56,16 +57,13 @@ export function makeIosImpl(
         return typeTv(registry, device, params);
       }
       // Open iOS server behind the flag; falls back on any failure or an
-      // unsupported key.
+      // unsupported key, and marks the result so the fallback is not silent.
       if (shouldUseIosOpenServer(device)) {
         try {
           return await typeIosOpenServer(registry, device, params);
         } catch (err) {
-          console.debug(
-            `[keyboard] open ios-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          const marker = iosOpenServerFallback("keyboard", err, "simulator-server");
+          return { ...(await typeSimulatorServer(registry, device, params)), ...marker };
         }
       }
       return typeSimulatorServer(registry, device, params);

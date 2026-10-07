@@ -60,6 +60,9 @@ function withDescription(
   // must ride the describe result too, or the bench records "transport metadata
   // absent" for every ON block even when the open path set it (run-2 regression).
   if (data.transport !== undefined) out.transport = data.transport;
+  // The open iOS path fell back: say so on the result, not only in the log.
+  if (data.backend !== undefined) out.backend = data.backend;
+  if (data.fallbackReason !== undefined) out.fallbackReason = data.fallbackReason;
   return out;
 }
 

@@ -18,4 +18,10 @@ export interface KeyboardResult {
    * a side effect. Set only when true.
    */
   reactivated?: true;
+  /**
+   * iOS simulator, `open-ios-device-server` flag: the open runner failed (or
+   * does not support the key) and the proprietary path typed it. Set only then.
+   */
+  backend?: "proprietary-fallback";
+  fallbackReason?: string;
 }

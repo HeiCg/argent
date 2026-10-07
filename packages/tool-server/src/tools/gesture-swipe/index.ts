@@ -23,7 +23,12 @@ import {
 import { verifyParamSchema } from "../../utils/open-server-verify";
 import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
 import { recordIncident, clearIncident } from "../../utils/open-server-incident";
-import { shouldUseIosOpenServer, iosOpenServerSwipe } from "../../utils/ios-open-server-input";
+import {
+  shouldUseIosOpenServer,
+  iosOpenServerSwipe,
+  iosOpenServerFallback,
+  type IosOpenServerFallbackMarker,
+} from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
@@ -167,6 +172,12 @@ interface Result {
    * be resolved, so the swipe went to the cover panel. Says why and what to check.
    */
   warning?: string;
+  /**
+   * iOS simulator, `open-ios-device-server` flag: the open runner failed and
+   * the simulator-server swiped instead. Set only then.
+   */
+  backend?: "proprietary-fallback";
+  fallbackReason?: string;
 }
 
 const pctPair = (a: number | undefined, b: number | undefined): string =>
@@ -266,6 +277,8 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
         };
       }
 
+      // Set when the open iOS path fell back, so the result says so.
+      let iosFallback: IosOpenServerFallbackMarker | undefined;
       if (shouldUseIosOpenServer(device)) {
         try {
           const steps = Math.max(1, Math.round(duration / 16));
@@ -281,11 +294,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           );
           return { swiped: true, timestampMs };
         } catch (err) {
-          console.debug(
-            `[gesture-swipe] ios open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          iosFallback = iosOpenServerFallback("gesture-swipe", err, "simulator-server");
         }
       }
 
@@ -491,7 +500,12 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
         if (i < steps) await sleep(16);
       }
 
-      return { swiped: true, timestampMs, ...(warning !== undefined ? { warning } : {}) };
+      return {
+        swiped: true,
+        timestampMs,
+        ...(warning !== undefined ? { warning } : {}),
+        ...iosFallback,
+      };
     },
   };
 }

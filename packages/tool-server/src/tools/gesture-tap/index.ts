@@ -22,7 +22,12 @@ import {
 import { verifyParamSchema } from "../../utils/open-server-verify";
 import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
 import { recordIncident, clearIncident } from "../../utils/open-server-incident";
-import { shouldUseIosOpenServer, iosOpenServerTap } from "../../utils/ios-open-server-input";
+import {
+  shouldUseIosOpenServer,
+  iosOpenServerTap,
+  iosOpenServerFallback,
+  type IosOpenServerFallbackMarker,
+} from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
@@ -151,6 +156,12 @@ interface Result {
    * be resolved, so the tap went to the cover panel. Says why and what to check.
    */
   warning?: string;
+  /**
+   * iOS simulator, `open-ios-device-server` flag: the open runner failed and
+   * the simulator-server tapped instead. Set only then.
+   */
+  backend?: "proprietary-fallback";
+  fallbackReason?: string;
 }
 
 function tapVerb(count: number, tense: "present" | "past"): string {
@@ -383,6 +394,8 @@ Before tapping, determine the correct coordinates by using discovery tools — p
         };
       }
       let api: SimulatorServerApi;
+      // Set when the open iOS path fell back, so the result says so.
+      let iosFallback: IosOpenServerFallbackMarker | undefined;
       if (shouldUseIosOpenServer(device)) {
         // Open iOS server (XCUITest runner) behind the `open-ios-device-server`
         // flag. Falls back to the proprietary simulator-server on any failure.
@@ -390,11 +403,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
           await iosOpenServerTap(registry, device, px, py, clickCount);
           return { tapped: true, timestampMs };
         } catch (err) {
-          console.debug(
-            `[gesture-tap] ios open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          iosFallback = iosOpenServerFallback("gesture-tap", err, "simulator-server");
           const ref = simulatorServerRef(device);
           api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
         }
@@ -519,7 +528,12 @@ Before tapping, determine the correct coordinates by using discovery tools — p
           second_y: null,
         });
       }
-      return { tapped: true, timestampMs, ...(warning !== undefined ? { warning } : {}) };
+      return {
+        tapped: true,
+        timestampMs,
+        ...(warning !== undefined ? { warning } : {}),
+        ...iosFallback,
+      };
     },
   };
 }

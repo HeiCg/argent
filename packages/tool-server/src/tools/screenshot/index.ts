@@ -30,6 +30,8 @@ import { shouldUseOpenServer, captureAndroidScreenshot } from "../../utils/open-
 import {
   shouldUseIosOpenServer,
   captureIosScreenshotViaOpenServer,
+  iosOpenServerFallback,
+  type IosOpenServerFallbackMarker,
 } from "../../utils/ios-open-server-input";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 import type { DeviceInfo } from "@argent/registry";
@@ -95,6 +97,12 @@ interface Result {
    * the same; this rides the field the flow `snapshot` step reports.
    */
   warning?: string;
+  /**
+   * iOS simulator, `open-ios-device-server` flag: the open runner's capture
+   * failed and `simctl io` or the simulator-server captured instead. Set only then.
+   */
+  backend?: "proprietary-fallback";
+  fallbackReason?: string;
 }
 
 const capability: ToolCapability = {
@@ -303,6 +311,8 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
       // iOS + open-ios-device-server flag: capture via the XCUITest runner's
       // `screenshot` RPC (PNG). If the runner is not ready, fall back to
       // `xcrun simctl io <udid> screenshot`, then to the simulator-server below.
+      // Set when the open iOS path fell back, so the result says so.
+      let iosFallback: IosOpenServerFallbackMarker | undefined;
       if (device.platform === "ios" && shouldUseIosOpenServer(device)) {
         try {
           const { path: openPath } = await captureIosScreenshotViaOpenServer(
@@ -317,11 +327,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
           });
           return { image };
         } catch (err) {
-          console.debug(
-            `[screenshot] open ios-device-server capture failed, falling back to simctl io: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          iosFallback = iosOpenServerFallback("screenshot", err, "simctl io");
           try {
             const pngPath = await tvScreenshot(params.udid, scale, signal);
             const image = await requireArtifacts(ctx).register({
@@ -329,7 +335,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
               kind: "screenshot",
               mimeType: "image/png",
             });
-            return { image };
+            return { image, ...iosFallback };
           } catch (simctlErr) {
             console.debug(
               `[screenshot] simctl io fallback failed, falling back to simulator-server: ${
@@ -387,6 +393,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
         image,
         ...(panel ? { [RESULT_NOTE_KEY]: panel.note } : {}),
         ...(panel?.warning !== undefined ? { warning: panel.warning } : {}),
+        ...iosFallback,
       };
     },
   };
