@@ -1,8 +1,11 @@
 package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
+import android.os.SystemClock
+import android.util.Log
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.TreeStore
+import com.argent.devicecontrol.accessibility.ActiveRootRetry
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.NodeSerializer
 import com.argent.devicecontrol.accessibility.WindowTimings
@@ -14,6 +17,10 @@ class HierarchyHandler(
     private val uiDevice: UiDevice,
     private val uiAutomation: UiAutomation
 ) {
+
+    companion object {
+        private const val TAG = "HierarchyHandler"
+    }
 
     fun execute(params: JSONObject): JSONObject {
         val maxElements = params.optInt("maxElements", 50)
@@ -63,10 +70,24 @@ class HierarchyHandler(
         // Read the active window's root from the interactive-windows snapshot rather
         // than `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase
         // 3g bench). `rootSource` records which path served it.
+        // No active root: re-read for up to ~500 ms first, as StateHandler does.
         val rootStart = System.currentTimeMillis()
-        val resolved = NestedWindowSerializer.activeRoot(uiAutomation)
-        val rootNode = resolved.root
-            ?: throw RuntimeException("No active window")
+        val retried = ActiveRootRetry.resolve(
+            read = { NestedWindowSerializer.activeRoot(uiAutomation).takeIf { it.root != null } },
+            sleep = { SystemClock.sleep(it) },
+            clock = { SystemClock.uptimeMillis() }
+        )
+        val resolved = retried.value
+        val rootNode = resolved?.root
+        if (resolved == null || rootNode == null) {
+            Log.w(TAG, "no active window root after ${retried.attempts} reads in ${retried.retryMs} ms")
+            throw RuntimeException(
+                "No active window (after ${retried.attempts} reads in ${retried.retryMs} ms)"
+            )
+        }
+        if (retried.attempts > 1) {
+            Log.i(TAG, "active window root found on read ${retried.attempts} after ${retried.retryMs} ms")
+        }
         val rootMs = System.currentTimeMillis() - rootStart
 
         try {
@@ -104,6 +125,8 @@ class HierarchyHandler(
                 put("encodeMs", encodeMs)
                 put("fingerprintMs", fingerprintMs)
                 put("rootSource", resolved.source)
+                put("rootAttempts", retried.attempts)
+                put("rootRetryMs", retried.retryMs)
             }
             val response = JSONObject().apply {
                 put("tree", tree)

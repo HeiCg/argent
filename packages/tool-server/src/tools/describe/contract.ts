@@ -140,10 +140,17 @@ export interface DescribeTreeData {
   // into the frame space with this. Absent when the source does not report
   // it, which is when its frames are in the UI's own space.
   uiOrientation?: UiOrientation;
-  // iOS simulator, `open-ios-device-server` flag: the open runner failed and the
-  // tree came from the proprietary chain instead. Set only on that fallback.
+  // The open path failed and the tree came from another backend instead: on iOS
+  // (`open-ios-device-server`) the proprietary chain; on Android
+  // (`open-device-server`) android-devtools, or the `uiautomator dump` when that
+  // is unavailable (`source` says which). Set only on that fallback.
   backend?: "proprietary-fallback";
   fallbackReason?: string;
+  // Android open path: the device reported no accessibility tree (no active window
+  // root after the server's re-reads, or an empty reply from an older server), so
+  // `tree` is an empty Screen. Returned as-is, not replaced by another backend.
+  treeEmpty?: true;
+  treeEmptyReason?: string;
 }
 
 export interface DescribeStageTimings {
@@ -167,6 +174,10 @@ export interface DescribeStageTimings {
   // `windows.firstOrNull { it.isActive }?.root` (the fast, mid-transition-safe
   // path), "activeWindow" = `rootInActiveWindow` fallback. Absent on older servers.
   rootSource?: "windows" | "activeWindow";
+  // Active-root reads this capture made (1 = no retry) and the ms the re-reads
+  // took, part of `rootMs`. Absent on older servers.
+  rootAttempts?: number;
+  rootRetryMs?: number;
   // Server-side request timeline of the PREVIOUS same-method request (phase 3i),
   // piggybacked because a response cannot time its own write: `prevServerHandleMs`
   // = handler entry → response ready, `prevServerWriteMs` = response write + flush
@@ -216,9 +227,12 @@ export interface DescribeResult {
   // Which host↔device transport carried the open-path reply (phase 3j item 3d):
   // "adb-forward" or "redir". Undefined on the proprietary / dump paths.
   transport?: "adb-forward" | "redir";
-  // The open iOS path fell back to the proprietary chain. See DescribeTreeData.
+  // The open path fell back to another backend. See DescribeTreeData.
   backend?: "proprietary-fallback";
   fallbackReason?: string;
+  // The Android open path got an empty tree from the device. See DescribeTreeData.
+  treeEmpty?: true;
+  treeEmptyReason?: string;
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {

@@ -5,9 +5,11 @@ import android.app.UiAutomation
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Base64
+import android.util.Log
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.TreeStore
+import com.argent.devicecontrol.accessibility.ActiveRootRetry
 import com.argent.devicecontrol.accessibility.NestedWindowSerializer
 import com.argent.devicecontrol.accessibility.WindowTimings
 import com.argent.devicecontrol.accessibility.NodeSerializer
@@ -33,6 +35,8 @@ class StateHandler(
     private val context get() = instrumentation.context
 
     companion object {
+        private const val TAG = "StateHandler"
+
         // Placeholder the serialize-once path (phase 3j) puts in place of the tree.
         // JsonRpcHandler splices the raw pre-serialized tree JSON over
         // `"<TREE_TOKEN>"` in the finished response, so the tree is encoded exactly
@@ -177,11 +181,28 @@ class StateHandler(
         //    The root comes from the interactive-windows snapshot rather than
         //    `rootInActiveWindow`, which blocks ~170-210 ms mid-transition (phase 3g
         //    bench); `timings.rootSource` records which path served it.
+        //    No active root (a window that is going away, an activity whose process
+        //    died before its first frame): re-read for up to ~500 ms before
+        //    reporting an empty tree (bench run 37561512651). `rootMs` includes the
+        //    retries; `rootAttempts` / `rootRetryMs` say how much of it they were.
         val windowTimings = WindowTimings()
         val rootStart = SystemClock.uptimeMillis()
-        val resolved = NestedWindowSerializer.activeRoot(uiAutomation)
+        val retried = ActiveRootRetry.resolve(
+            read = { NestedWindowSerializer.activeRoot(uiAutomation).takeIf { it.root != null } },
+            sleep = { SystemClock.sleep(it) },
+            clock = { SystemClock.uptimeMillis() }
+        )
+        // Both paths came back null: `activeRoot` reports that as "activeWindow".
+        val resolved = retried.value ?: NestedWindowSerializer.ActiveRoot(null, "activeWindow")
         val rootNode = resolved.root
         val rootMs = SystemClock.uptimeMillis() - rootStart
+        if (retried.attempts > 1) {
+            if (rootNode == null) {
+                Log.w(TAG, "no active window root after ${retried.attempts} reads in ${retried.retryMs} ms; returning an empty tree")
+            } else {
+                Log.i(TAG, "active window root found on read ${retried.attempts} after ${retried.retryMs} ms")
+            }
+        }
         val activePackage = rootNode?.packageName?.toString() ?: ""
         var serializeMsFlat = 0L
         // Screen-graph Phase A: the flat compressed list can be cut short by
@@ -309,6 +330,8 @@ class StateHandler(
             put("recycleMs", recycleMs)
             put("otherMs", otherMs)
             put("rootSource", resolved.source)
+            put("rootAttempts", retried.attempts)
+            put("rootRetryMs", retried.retryMs)
         }
 
         return JSONObject().apply {
@@ -316,6 +339,12 @@ class StateHandler(
             put("tree", treeValue)
             // Screen-graph Phase A: flat-list truncation flag (false for nested).
             put("truncated", truncated)
+            // No active root after the retries above: the tree is empty because of
+            // that, not because the screen has no nodes. Absent otherwise.
+            if (rootNode == null) {
+                put("treeEmpty", true)
+                put("treeEmptyReason", ActiveRootRetry.REASON_NO_ACTIVE_WINDOW)
+            }
             put("info", info)
             put("waitedMs", waitedMs)
             put("captureMs", captureMs)
