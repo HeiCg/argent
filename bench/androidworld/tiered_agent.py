@@ -19,16 +19,63 @@ arms.
 It also records per-step metrics (observation tokens on our side + the LLM's own
 ``usage`` per call) into ``step_data`` so ``run_aw`` can attribute tokens/step
 and cost per tier without a mean over tasks.
+
+AW-2 (screen graph arms, an env built with ``graph=True``): the grammar gains ONE
+action, ``{"action_type": "navigate_to", "label": "<screen>"}`` (the call form
+``navigate_to("<screen>")`` is accepted too), explained to the model by one extra
+guideline (``NAVIGATE_TO_GUIDELINE``, passed as T3A's ``additional_guidelines``).
+It runs the ``navigate-to`` tool; the destination's compact tree from the reply
+is the step's after-observation. ``step_data["navigate_call"]`` is 1 on such a
+step, 0 otherwise. Without ``graph`` the action does not exist and is rejected
+exactly like any unknown action.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Optional
 
 from android_world.agents import agent_utils, base_agent, infer, m3a_utils, t3a
 from android_world.env import json_action
 
 from driver_env import OpenDriverEnv
+
+# The one guideline the graph arms add to T3A's prompt.
+NAVIGATE_TO_GUIDELINE = (
+    "Screen graph: when the observation starts with a 'Screen graph:' block, its"
+    " 'reachable screens' lines are screens of the current app you can reach in"
+    " ONE action. To go to one, output"
+    ' {"action_type": "navigate_to", "label": "<the label as listed>"} (use the'
+    " listed 8-character id for a screen without a label). It taps the whole route"
+    " for you and the next element list is the destination's. It knows only"
+    " screens of the app in the foreground that were visited before; otherwise act"
+    " step by step as usual."
+)
+
+_NAVIGATE_CALL_RE = re.compile(
+    r"""navigate_to\s*\(\s*(?:label\s*=\s*)?(["'])(.*?)\1\s*\)""", re.DOTALL
+)
+
+
+def parse_navigate_to(action: str) -> Optional[str]:
+  """The screen label of a ``navigate_to`` action, else None.
+
+  Accepts the T3A JSON form ``{"action_type": "navigate_to", "label": "X"}`` and
+  the call form ``navigate_to("X")`` / ``navigate_to(label='X')``. An empty
+  label is not an action.
+  """
+  if not action:
+    return None
+  m = _NAVIGATE_CALL_RE.search(action)
+  if m:
+    return m.group(2).strip() or None
+  try:
+    obj = agent_utils.extract_json(action)
+  except Exception:  # noqa: BLE001 — a malformed action is simply not navigation
+    return None
+  if isinstance(obj, dict) and obj.get("action_type") == "navigate_to":
+    return str(obj.get("label") or "").strip() or None
+  return None
 
 
 class TieredAgent(t3a.T3A):
@@ -36,6 +83,9 @@ class TieredAgent(t3a.T3A):
 
   def __init__(self, env: OpenDriverEnv, llm: infer.LlmWrapper):
     super().__init__(env, llm, name=f"TieredAgent[{env.tier}]")
+    self.graph = bool(getattr(env, "graph", False))
+    if self.graph:
+      self.additional_guidelines = [NAVIGATE_TO_GUIDELINE]
 
   def _observe(self) -> tuple[str, dict[str, Any]]:
     """Return (numbered tier text, observation metrics) for the current screen."""
@@ -65,6 +115,7 @@ class TieredAgent(t3a.T3A):
         "summary_prompt": None,
         "summary": None,
         "llm_calls": None,
+        "navigate_call": 0,
     }
     print("----------step " + str(len(self.history) + 1))
 
@@ -112,6 +163,23 @@ Action: {{"action_type": "status", "goal_status": "infeasible"}}"""
 
     print("Action: " + action)
     print("Reason: " + reason)
+
+    # AW-2: the one action outside JSONAction's set, graph arms only.
+    nav_label = parse_navigate_to(action) if self.graph else None
+    if nav_label is not None:
+      step_data["navigate_call"] = 1
+      try:
+        self.env.navigate_to(nav_label)
+      except Exception as e:  # noqa: BLE001 — a refusal is reported to the model
+        print(f"navigate_to({nav_label!r}) failed: {e}")
+        step_data["summary"] = (
+            f"navigate_to({nav_label!r}) failed: {e}. Use a label from the"
+            " reachable screens list, or act step by step."
+        )
+        step_data["llm_calls"] = self._drain_calls()
+        self.history.append(step_data)
+        return base_agent.AgentInteractionResult(False, step_data)
+      return self._summarize_step(goal, action, reason, before_element_list, step_data)
 
     try:
       converted_action = json_action.JSONAction(**agent_utils.extract_json(action))
@@ -170,6 +238,17 @@ Action: {{"action_type": "status", "goal_status": "infeasible"}}"""
       self.history.append(step_data)
       return base_agent.AgentInteractionResult(False, step_data)
 
+    return self._summarize_step(goal, action, reason, before_element_list, step_data)
+
+  def _summarize_step(
+      self,
+      goal: str,
+      action: str,
+      reason: str,
+      before_element_list: str,
+      step_data: dict[str, Any],
+  ) -> base_agent.AgentInteractionResult:
+    """T3A's post-action tail: observe the result, summarize, record the step."""
     self.get_post_transition_state()
     after_element_list, after_obs = self._observe()
     step_data["after_element_list"] = after_element_list

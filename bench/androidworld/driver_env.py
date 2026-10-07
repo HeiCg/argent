@@ -27,6 +27,13 @@ connection with flags 0, i.e. suppressing again after the first describe.
 Everything else (``controller``, ``logical_screen_size``, ``hide_automation_ui``,
 ``reset``, ``close``, ...) is delegated to the wrapped env via ``__getattr__``.
 
+AW-2 (screen graph arms, ``graph=True``): tier ``summary`` reads ``describe
+tier=summary`` (the screen's label, affordances and the "reachable screens" the
+model can name) and heads the indexed ``compact`` tree with it, so ``click``
+keeps working; ``navigate_to(label)`` calls the ``navigate-to`` tool, and the
+``compact`` tree in its reply is the observation the agent reads right after it
+(no describe for that read).
+
 The tool-server is reached over its HTTP surface (``ToolServerClient``): the
 standalone server started by ``node packages/tool-server/dist/index.js start``
 with the ``open-device-server`` flag on and no auth — the simplest stable entry
@@ -69,6 +76,15 @@ _BLANK_PIXELS = np.zeros((1, 1, 3), dtype=np.uint8)
 
 class ToolServerError(RuntimeError):
   pass
+
+
+class NavigateError(RuntimeError):
+  """``navigate-to`` refused or stopped short; the message is the tool's own."""
+
+
+# A `navigate-to` screen address as the summary prints it for an unlabelled
+# screen (its hash8, longer on a prefix collision); anything else is a label.
+_SCREEN_ADDRESS_RE = re.compile(r"^[0-9a-f]{8,}$")
 
 
 class ToolServerClient:
@@ -173,8 +189,13 @@ class OpenDriverEnv:
       serial: str,
       tier: str,
       client: ToolServerClient,
+      graph: bool = False,
   ):
     self._aw_env = aw_env
+    self.graph = graph
+    self.navigate_calls = 0
+    # The observation a navigate_to reply carries, served by the next get_state.
+    self._pending: Optional[tuple[Observation, list[Node]]] = None
     self.serial = serial
     self.tier = tier
     self.client = client
@@ -190,6 +211,14 @@ class OpenDriverEnv:
 
   # ----- observation: our describe tier -----------------------------------
   def get_state(self, wait_to_stabilize: bool = False) -> interface.State:
+    if self._pending is not None:
+      # The read right after navigate_to: its reply already holds the final
+      # screen's compact tree, so it is the observation (no describe).
+      obs, nodes = self._pending
+      self._pending = None
+      self.last_nodes = nodes
+      self.last_observation = obs
+      return interface.State(pixels=_BLANK_PIXELS, forest=None, ui_elements=nodes)
     if wait_to_stabilize:
       try:
         self.client.call(
@@ -197,9 +226,17 @@ class OpenDriverEnv:
         )
       except ToolServerError:
         pass
-    data = self.client.call("describe", {"udid": self.serial, "tier": self.tier})
+    summary = None
+    if self.tier == "summary":
+      head = self.client.call("describe", {"udid": self.serial, "tier": "summary"})
+      summary = head.get("description", "") or ""
+      data = self.client.call("describe", {"udid": self.serial, "tier": "compact"})
+    else:
+      data = self.client.call("describe", {"udid": self.serial, "tier": self.tier})
     text = data.get("description", "") or ""
     nodes, numbered = parse_describe(text)
+    if summary is not None:
+      numbered = f"Screen graph:\n{summary}\n\nUI elements:\n{numbered}"
     self.last_nodes = nodes
     self.last_observation = Observation(
         tier=self.tier,
@@ -214,6 +251,36 @@ class OpenDriverEnv:
         timings=data.get("timings"),
     )
     return interface.State(pixels=_BLANK_PIXELS, forest=None, ui_elements=nodes)
+
+  def navigate_to(self, label: str) -> dict[str, Any]:
+    """Run ``navigate-to`` to a screen named as the summary lists it.
+
+    A hash8 goes as ``target.screen``, anything else as ``target.label``. On
+    arrival the reply's ``compact`` tree becomes the next observation; a refusal
+    or a route that stopped short raises :class:`NavigateError`.
+    """
+    name = label.strip()
+    target = {"screen": name} if _SCREEN_ADDRESS_RE.match(name) else {"label": name}
+    self.navigate_calls += 1
+    data = self.client.call("navigate-to", {"udid": self.serial, "target": target})
+    if not data.get("reached"):
+      raise NavigateError(
+          data.get("error")
+          or f"navigate-to stopped on {data.get('finalScreen')!r} before {name!r}"
+      )
+    compact = data.get("compact") or ""
+    if compact:
+      nodes, numbered = parse_describe(compact)
+      obs = Observation(
+          tier="navigate",
+          text=numbered,
+          tokens_o200k=len(_O200K.encode(numbered)),
+          chars=len(numbered),
+          node_count=len(nodes),
+          describe_source="navigate-to",
+      )
+      self._pending = (obs, nodes)
+    return data
 
   # ----- action: our tools, faithful to actuation.execute_adb_action ------
   def execute_action(self, action: json_action.JSONAction) -> None:

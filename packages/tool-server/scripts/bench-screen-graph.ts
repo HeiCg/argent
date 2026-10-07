@@ -49,6 +49,17 @@
  * emulator was lost), BENCH_EMULATOR_LOST_FILE (the watchdog's marker; on SIGTERM the
  * harness writes a partial JSON + report with the interrupted/not-run configs INVALID).
  *
+ * Blocks (BENCH_BLOCKS, comma list, default `MATRIX`): `MATRIX` the seven-config matrix
+ * above; `CHURN` the E-1 churn experiment (also on with BENCH_CHURN=1); `MULTIHOP` the
+ * multi-hop navigation block (`src/screen-graph/bench/multihop.ts`): a summary read +
+ * ONE `navigate-to` on a warmed store vs locate + tap + `describe tier=compact` per hop
+ * over `MULTIHOP_TASKS`,
+ * BENCH_MULTIHOP_REPS (default 20) samples per arm and task, written to
+ * `multihop.json` + `multihop-results.md` and appended to the report. Measurement
+ * only: MULTIHOP never fails the job on its numbers. With BENCH_FRESH_STORE=1 it
+ * empties the Settings graph (that package only, through the store API) before its
+ * warm-up; without it the store is reused and the report says so.
+ *
  * Validity gate (fail-closed): a config aborted after consecutive task errors, with
  * any pre-action infra exclusion, with fewer task-runs than planned, or interrupted
  * by the watchdog is reported `INVALID (emulator lost)` with no success rate, and the
@@ -77,9 +88,15 @@ import { resolveDevice } from "../src/utils/device-info";
 import {
   getSkippedNoIdHash,
   resetSkippedNoIdHash,
+  resolveStoreForCurrentApp,
   takeRecordMs,
 } from "../src/utils/screen-graph-open-wiring";
-import { ALL_TASKS, validateTasks } from "../src/screen-graph/bench/tasks";
+import {
+  ALL_TASKS,
+  MULTIHOP_TASKS,
+  validateMultihopTasks,
+  validateTasks,
+} from "../src/screen-graph/bench/tasks";
 import type { BenchSelector, BenchStep, BenchTask } from "../src/screen-graph/bench/types";
 import { BENCH_CONFIG_IDS } from "../src/screen-graph/bench/types";
 import type { BenchConfigId } from "../src/screen-graph/bench/types";
@@ -94,7 +111,14 @@ import { parseDescribeLocate } from "../src/screen-graph/bench/describe-locate";
 import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/locate";
 import { ScreenGraphStore } from "../src/screen-graph/store";
 import { runChurnExperiment } from "../src/screen-graph/bench/churn";
-import { formatEnvValue } from "../src/screen-graph/bench/report";
+import { formatEnvValue, renderMultihopReport } from "../src/screen-graph/bench/report";
+import {
+  chooseGraphTarget,
+  countDeviceRpcs,
+  runMultihopBlock,
+  type MultihopBlockResult,
+  type MultihopDeps,
+} from "../src/screen-graph/bench/multihop";
 import {
   countBoth,
   range,
@@ -167,6 +191,23 @@ const TASKS = TASK_FILTER ? ALL_TASKS.filter((t) => TASK_FILTER.has(t.id)) : ALL
  * config in the stable B1..O5 order; absent configs are skipped in `buildReport`.
  */
 const REPORT_ORDER: BenchConfigId[] = [...BENCH_CONFIG_IDS];
+
+/** The blocks this run executes (BENCH_BLOCKS; BENCH_CHURN=1 adds CHURN). */
+const KNOWN_BLOCKS = ["MATRIX", "CHURN", "MULTIHOP"] as const;
+const BLOCKS = new Set(
+  (process.env.BENCH_BLOCKS ?? "MATRIX")
+    .split(",")
+    .map((b) => b.trim().toUpperCase())
+    .filter(Boolean)
+);
+if (process.env.BENCH_CHURN === "1") BLOCKS.add("CHURN");
+for (const b of BLOCKS) {
+  if (!(KNOWN_BLOCKS as readonly string[]).includes(b)) {
+    throw new Error(`unknown block '${b}' in BENCH_BLOCKS (known: ${KNOWN_BLOCKS.join(", ")})`);
+  }
+}
+/** MULTIHOP samples per arm and task. */
+const MULTIHOP_REPS = Number(process.env.BENCH_MULTIHOP_REPS ?? 20);
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -2767,6 +2808,86 @@ function regenerateFromJson(regenPath: string): void {
   enforceValidity(aggs, skipped, env);
 }
 
+/* -------------------------------------------------------------------------- */
+/* MULTIHOP block                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The MULTIHOP block on the device: the open server with the screen graph on
+ * (O5's flags, recording on), one registry, one RPC counter on the shared
+ * open-server instance. The runner (`runMultihopBlock`) warms the store per task
+ * and alternates the arms; launch, locate and the oracle are the matrix's own.
+ */
+async function runMultihopBench(): Promise<
+  MultihopBlockResult & {
+    storeReset: { reset: boolean; packageName: string; nodesBefore: number; edgesBefore: number };
+  }
+> {
+  validateMultihopTasks(MULTIHOP_TASKS);
+  applyFlags("O5");
+  await teardownBackend();
+  const reg = createRegistry();
+  const server = await openServer(reg);
+  const counter = countDeviceRpcs(server);
+  const deviceId = resolveDevice(SERIAL).id;
+  try {
+    // "Warmed by one pass" holds only on an empty graph. With BENCH_FRESH_STORE=1
+    // (CI) the routes' app graph is emptied through the store API (that package's
+    // document only, the same cached instance navigate-to reads) before the warm-up.
+    // Without it (a local run that reuses its store) nothing is cleared, and the
+    // report says so with the node count the warm-up started from.
+    await launchApp(reg, "settings");
+    const { store: appStore, packageName } = await resolveStoreForCurrentApp(deviceId, server);
+    const storeReset = {
+      reset: Boolean(process.env.BENCH_FRESH_STORE),
+      packageName,
+      nodesBefore: Object.keys(appStore.nodes).length,
+      edgesBefore: appStore.edges.length,
+    };
+    if (storeReset.reset) {
+      appStore.clear();
+      await appStore.flush();
+    }
+    realDebug(`[bench-sg] multihop store before the warm-up: ${JSON.stringify(storeReset)}`);
+    // The H_id of the screen shown once it settled (bookkeeping, off the clock):
+    // a read right after a launch or tap could catch a transitional screen.
+    const currentHash = async (): Promise<string> => {
+      await reg
+        .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 3000 })
+        .catch(() => undefined);
+      const st = await server.getState({ includeScreenshot: false, fingerprints: true });
+      return st.idHash ?? "";
+    };
+    const deps: MultihopDeps = {
+      udid: SERIAL,
+      invokeTool: (name, args) => reg.invokeTool(name, args),
+      launch: (task) => launchApp(reg, task.app),
+      locate: (sel) => locateNorm(reg, "O5", sel),
+      oracle: async (needle) => ({ matched: (await oracleRead(reg, needle)).matched }),
+      currentTarget: async () => {
+        const id = await currentHash();
+        if (!id) return null;
+        const { store } = await resolveStoreForCurrentApp(deviceId, server);
+        return chooseGraphTarget({ nodes: store.nodes, edges: store.edges }, id);
+      },
+      currentHash,
+      graph: async () => {
+        const { store } = await resolveStoreForCurrentApp(deviceId, server);
+        return { nodes: store.nodes, edges: store.edges };
+      },
+      rpcs: () => counter.count(),
+      now: () => Date.now(),
+      countTokens: (text) => countBoth(text).tiktoken,
+      log: (m) => realDebug(m),
+    };
+    const result = await runMultihopBlock(deps, MULTIHOP_TASKS, { reps: MULTIHOP_REPS });
+    return { ...result, storeReset };
+  } finally {
+    counter.restore();
+    await reg.dispose().catch(() => undefined);
+  }
+}
+
 async function main(): Promise<void> {
   const regenPath = process.env.BENCH_REGEN;
   if (regenPath) {
@@ -2777,7 +2898,9 @@ async function main(): Promise<void> {
   // Phase 3n.3 (3N2-H4): start from an EMPTY output dir and (when asked) an empty
   // persisted graph store, so this run's artifact can never carry a previous
   // execution's `results-ci.md` / `bench-sg-*.json` / `graph-store`. `BENCH_FRESH_STORE`
-  // is set by the CI workflow; local runs that intentionally reuse a store leave it off.
+  // is set by the CI workflow; local runs that intentionally reuse a store leave it off,
+  // and then nothing in the run clears a graph (MULTIHOP's pre-warm-up reset of the
+  // Settings graph is gated on the same variable, see runMultihopBench).
   const runId = process.env.BENCH_RUN_ID ?? process.env.GITHUB_RUN_ID ?? "local";
   const jobStartedAt = process.env.BENCH_JOB_STARTED ?? "(unset)";
   // Phase 3n.3 (3N2-L5): pin the injection strategy EXPLICITLY instead of relying on
@@ -2805,6 +2928,7 @@ async function main(): Promise<void> {
     // Phase 3n.3 (3N2-L5): the resolved injection strategy the open configs ran, recorded
     // in the run env block so it is never an unstated assumption.
     injectStrategy: process.env.ARGENT_OPEN_INJECT_STRATEGY ?? "(default)",
+    blocks: [...BLOCKS].join(","),
   };
   // Re-baseline (0.27): the proprietary release B1 ran, named in the env table and
   // recorded in full (per-file sha256) in the JSON + the report's provenance section.
@@ -2819,6 +2943,9 @@ async function main(): Promise<void> {
   const aggs: ConfigAgg[] = [];
   const skipped: Record<string, string> = {};
   const blockParams: Array<{ block: string; gestureParams: BenchGestureParams }> = [];
+  // The MULTIHOP section, appended to the report by `finalize` (declared before the
+  // SIGTERM handler, which can call `finalize` while the matrix runs).
+  let multihopMd: string | null = null;
 
   // Uninstall any pre-existing open device server ONCE up front (e.g. another
   // agent's build or a stale versionCode) so the FIRST open config installs our
@@ -2832,7 +2959,7 @@ async function main(): Promise<void> {
   // every chrome task and every config (incl. B1, which launches Chrome with the
   // open flag off). Without this all 6 chrome tasks fail identically for all
   // configs, flattening success and making H4 unmeasurable. Best-effort.
-  if (TASKS.some((t) => t.app === "chrome")) {
+  if (BLOCKS.has("MATRIX") && TASKS.some((t) => t.app === "chrome")) {
     await prepareChromeOnce();
   }
 
@@ -2884,8 +3011,8 @@ async function main(): Promise<void> {
   });
 
   // O3 must run before O4/O5 so the warm store is populated; iterate CONFIGS as
-  // given (default order already B1,B2,O1..O5).
-  for (const config of CONFIGS) {
+  // given (default order already B1,B2,O1..O5). Skipped when MATRIX is not a block.
+  for (const config of BLOCKS.has("MATRIX") ? CONFIGS : []) {
     writeBenchContext(`config ${config}`);
     if (config === "B1") {
       const p = proprietaryReady();
@@ -2996,7 +3123,7 @@ async function main(): Promise<void> {
   // gated graph dir (copied + invariant-checked below); the OFF (control) arm
   // persists OUTSIDE it so its expected duplicateEdgeTargets break cannot kill the
   // job — per-arm scoping decided BEFORE the run (the hard constraint).
-  if (process.env.BENCH_CHURN === "1") {
+  if (BLOCKS.has("CHURN")) {
     try {
       const churnReg = createRegistry();
       const churnServer = await openServer(churnReg);
@@ -3077,6 +3204,41 @@ async function main(): Promise<void> {
       if (churnFail) process.exitCode = 1;
     } catch (e) {
       process.stderr.write(`[bench-sg] churn experiment error (run ${runId}): ${String(e)}\n`);
+      process.exitCode = 1;
+    }
+  }
+
+  // MULTIHOP: after the matrix and churn, same device. Measurement only — a harness
+  // error fails the job, its numbers never do.
+  if (BLOCKS.has("MULTIHOP")) {
+    writeBenchContext("block MULTIHOP");
+    try {
+      const mh = await runMultihopBench();
+      writeFileSync(
+        join(OUT_DIR, "multihop.json"),
+        JSON.stringify({ runId, jobStartedAt, reps: MULTIHOP_REPS, ...mh }, null, 2)
+      );
+      multihopMd = renderMultihopReport({
+        samples: mh.samples,
+        warmups: mh.warmups,
+        reps: MULTIHOP_REPS,
+        storeReset: mh.storeReset,
+      });
+      writeFileSync(join(OUT_DIR, "multihop-results.md"), multihopMd);
+      env.multihop = {
+        reps: MULTIHOP_REPS,
+        tasks: MULTIHOP_TASKS.length,
+        samples: mh.samples.length,
+        warmupsOk: mh.warmups.filter((w) => w.ok).length,
+        targetInSummary: mh.samples.filter((x) => x.targetInSummary).length,
+        graphSamples: mh.samples.filter((x) => x.arm === "graph").length,
+      };
+      process.stdout.write(
+        `[bench-sg] multihop done (run ${runId}): ${mh.samples.length} samples, ` +
+          `warm-ups ok ${mh.warmups.filter((w) => w.ok).length}/${mh.warmups.length}\n`
+      );
+    } catch (e) {
+      process.stderr.write(`[bench-sg] multihop block error (run ${runId}): ${String(e)}\n`);
       process.exitCode = 1;
     }
   }
@@ -3193,7 +3355,10 @@ async function main(): Promise<void> {
       realDebug(`[bench-sg] merged prior pass for ${reused.join(",")} from ${priorPath}`);
     }
 
-    const report = buildReport(aggs, env, skipped, allRecords, proprietaryProvenance);
+    const matrixReport = BLOCKS.has("MATRIX")
+      ? buildReport(aggs, env, skipped, allRecords, proprietaryProvenance)
+      : `# Screen-graph bench (blocks: ${[...BLOCKS].join(", ")}; run ${runId})\n`;
+    const report = multihopMd ? `${matrixReport}\n${multihopMd}` : matrixReport;
     const reportPath =
       process.env.BENCH_REPORT ??
       "/Users/heicg/Desktop/projects/device-farm/docs/specs/2026-09-02-screen-graph-results.md";

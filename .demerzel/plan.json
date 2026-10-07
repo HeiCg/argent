@@ -539,7 +539,7 @@
       "commitMessage": "feat(ios): sim-input registry service and product input routing under the open-iOS flag",
       "status": "implementing",
       "implementer": "agent:impl:siminput-registry-route:1",
-      "reviewRounds": 0,
+      "reviewRounds": 2,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
@@ -869,14 +869,61 @@
         }
       ],
       "commitMessage": "bench(screen-graph): multi-hop block and AndroidWorld navigate_to arm",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "agent:impl:sg-multihop-bench:1",
+      "review": {
+        "at": "2026-10-07T20:52:13.619Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-bench-*.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          },
+          {
+            "cmd": "python3 -I -m py_compile bench/androidworld/tiered_agent.py bench/androidworld/driver_env.py bench/androidworld/run_aw.py",
+            "exitCode": 0,
+            "outputFile": "3-python3-i-m-py-compile-bench-androidworl.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "note",
+            "file": "bench/androidworld/tiered_agent.py",
+            "note": "L55-73: carried over from round 3 as a note. _NAVIGATE_CALL_RE.search() runs before extract_json, so a type action whose text contains navigate_to(\"x\") runs as navigation. Try extract_json first and anchor the call form with ^\\s*navigate_to."
+          },
+          {
+            "severity": "note",
+            "file": "bench/androidworld/tiered_agent.py",
+            "note": "L48-49: carried over from round 3 as a note. The prompt says to use the 8-char id only for a screen without a label. A label cut with an ellipsis and copied as listed fails resolveScreenTarget. Tell the model to use the id when the label ends with an ellipsis."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/screen-graph/describe-tiers.ts",
+            "note": "L107-111: carried over from round 3 as a note. A labelled 1-hop screen past the cap of 8 is dropped from both the reachable list and the affordances. Keep the affordance for every 1-hop edge whose target is not in `listed`."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:sg-multihop-bench:4"
+      },
+      "reviewRounds": 4,
+      "adjudication": {
+        "decision": "accept",
+        "reason": "Three review rounds each found a real defect (renderer mismatch, HOME rmtree, listedFromDepth on a partial store); all fixed with tests. Round-4 fix verified by the coordinator in the root: vitest 167/0, tsc clean, unittest 24 OK, prettier clean. Pre-registration split recorded in the plan Amendments.",
+        "by": "fable:coordinator",
+        "at": "2026-10-07T20:50:47.233Z"
+      },
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T20:52:35.174Z"
     },
     {
       "id": "bench-final-scoreboard",

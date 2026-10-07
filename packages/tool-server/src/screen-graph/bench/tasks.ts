@@ -406,3 +406,98 @@ export function validateTasks(tasks: BenchTask[] = ALL_TASKS): void {
     }
   }
 }
+
+/**
+ * MULTIHOP block: Settings routes of at least 3 taps from the root, measured as
+ * ONE `navigate-to` (graph arm, warm store) against locate + tap + describe per
+ * hop (nograph arm). Not part of `ALL_TASKS`: the matrix and its pre-flight are
+ * unchanged.
+ *
+ * Hop 1 is a row of the captured Settings root and hop 2 a row of the screen it
+ * opened (`test/fixtures/screen-graph-run-33958064084-settings.json`, captured on
+ * the CI image, API 34; checked by the tasks test). Hop 3 and the needles are NOT
+ * in any capture: they are the Settings rows below those screens as AOSP lays
+ * them out on Android 14 and 15, and the first CI run must confirm them. A label
+ * the emulator does not show fails that task's warm-up, the task is excluded from
+ * the pairs, and the report says so; no other task is affected. Each needle is
+ * absent from the root and the hop-1 screen, and hop 3 is not a row there, so a
+ * missed hop cannot pass the oracle.
+ */
+const route = (id: string, rows: [string, string, string], needle: string): BenchTask => ({
+  id,
+  app: "settings",
+  description: `Settings → ${rows.join(" → ")}`,
+  steps: [
+    { action: { kind: "launch" } },
+    ...rows.map((text) => ({ action: { kind: "tap" as const, selector: t(text) } })),
+  ],
+  assertion: t(needle),
+});
+
+export const MULTIHOP_TASKS: BenchTask[] = [
+  // Network preferences (Wi-Fi turn-on, public-network notice, certificates).
+  route(
+    "mh-internet-network-prefs",
+    ["Network & internet", "Internet", "Network preferences"],
+    "Install certificates"
+  ),
+  // The per-app unrestricted-data list under Data Saver.
+  route(
+    "mh-datasaver-unrestricted",
+    ["Network & internet", "Data Saver", "Unrestricted data"],
+    "Chrome"
+  ),
+  // Printing: the default print service row.
+  route(
+    "mh-connection-printing",
+    ["Connected devices", "Connection preferences", "Printing"],
+    "Default Print Service"
+  ),
+  // Bluetooth: its main switch bar.
+  route(
+    "mh-connection-bluetooth",
+    ["Connected devices", "Connection preferences", "Bluetooth"],
+    "Use Bluetooth"
+  ),
+  // Battery Saver schedule: the percentage option.
+  route(
+    "mh-battery-saver-schedule",
+    ["Battery", "Battery Saver", "Set a schedule"],
+    "Based on percentage"
+  ),
+  // Do Not Disturb schedules: the default sleeping rule.
+  route("mh-sound-dnd-schedules", ["Sound & vibration", "Do Not Disturb", "Schedules"], "Sleeping"),
+];
+
+/** Fewest taps a MULTIHOP route must take from its launch screen. */
+export const MULTIHOP_MIN_HOPS = 3;
+
+/**
+ * Structural validation of the MULTIHOP routes: the shared task rules
+ * ({@link validateTasks}), then a launch followed by ONLY taps (each a hop the
+ * nograph arm locates and taps), at least {@link MULTIHOP_MIN_HOPS} of them, and
+ * a needle that is not a tapped row. Throws on the first violation.
+ */
+export function validateMultihopTasks(tasks: BenchTask[] = MULTIHOP_TASKS): void {
+  validateTasks(tasks);
+  for (const task of tasks) {
+    const route = task.steps.slice(1);
+    if (route.some((s) => s.action.kind !== "tap")) {
+      throw new Error(`multihop task ${task.id} must take only taps after its launch`);
+    }
+    if (route.length < MULTIHOP_MIN_HOPS) {
+      throw new Error(
+        `multihop task ${task.id} must take at least ${MULTIHOP_MIN_HOPS} hops (has ${route.length})`
+      );
+    }
+    const needle = (task.assertion.text ?? "").trim().toLowerCase();
+    for (const s of route) {
+      if (
+        s.action.kind === "tap" &&
+        (s.action.selector.text ?? "").trim().toLowerCase() === needle
+      ) {
+        throw new Error(`multihop task ${task.id} needle is one of its tapped rows`);
+      }
+    }
+  }
+}

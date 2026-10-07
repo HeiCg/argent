@@ -10,11 +10,14 @@ name: bench-androidworld
 #             whether the forest is empty (the a11y-suppression blocker, research
 #             §2). Decides whether DeviceControlInstrumentation needs
 #             FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES.
-#   harness — Step 3 one run: 5 tasks x 2 tiers x 1 model on the open driver,
-#             per-episode JSON. The model is the `model` dispatch input (default
-#             claude-opus-5) and the effort the `effort` input. Needs the
+#   harness — Step 3 one run: 5 tasks x the `arms` input x 1 model on the open
+#             driver, per-episode JSON. The model is the `model` dispatch input
+#             (default claude-opus-5) and the effort the `effort` input. Needs the
 #             ANTHROPIC_API_KEY repo secret; without it the job fails fast with the
-#             exact name.
+#             exact name. AW-2: `arms` defaults to compact,graph-warm,graph-cold (the
+#             screen graph arms with navigate_to; README section AW-2);
+#             compact,full reproduces AW-1. graph-warm adds one unscored warm-up
+#             episode per task.
 #
 # The emulator recipe (KVM + SDK + AVD + boot) is lifted from
 # bench-open-vs-proprietary.yml with three edits the research (§3) requires:
@@ -45,10 +48,14 @@ on:
         description: "Comma list of AndroidWorld task names (harness)"
         required: false
         default: "ContactsAddContact,ClockStopWatchRunning,MarkorCreateFolder,MarkorDeleteNote,SimpleCalendarDeleteOneEvent"
-      tiers:
-        description: "Comma list of describe tiers (harness)"
+      arms:
+        description: "Comma list of arms (harness): compact, full, graph-cold, graph-warm (AW-2; README). Empty = compact,graph-warm,graph-cold"
         required: false
-        default: "compact,full"
+        default: ""
+      tiers:
+        description: "DEPRECATED alias of arms (AW-1 name; used only when arms is empty), e.g. compact,full"
+        required: false
+        default: ""
       seed:
         description: "task_random_seed (harness; pinned per run)"
         required: false
@@ -292,11 +299,14 @@ jobs:
 
   # ── Step 3: harness run (needs ANTHROPIC_API_KEY) ─────────────────────────
   harness:
-    name: AW harness (5 tasks x 2 tiers x ${{ github.event.inputs.model || 'claude-opus-5' }}, API 33)
+    name: AW harness (arms ${{ github.event.inputs.arms || github.event.inputs.tiers || 'compact,graph-warm,graph-cold' }} x ${{ github.event.inputs.model || 'claude-opus-5' }}, API 33)
     if: >-
       github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'harness'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # AW-2 default arms run 4 episodes per task (compact, graph-warm warm-up +
+    # scored, graph-cold) against AW-1's 2, plus a tool-server restart per graph
+    # episode: 300 min instead of 180.
+    timeout-minutes: 300
 
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -450,7 +460,7 @@ jobs:
             --serial emulator-5554 --console-port 5554 --grpc-port 8554 \
             2>&1 | tee "$RUNNER_TEMP/aw-setup.log"
 
-      - name: Harness — 5 tasks x 2 tiers
+      - name: Harness — 5 tasks x arms
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
@@ -470,7 +480,7 @@ jobs:
           python bench/androidworld/run_aw.py run \
             --serial emulator-5554 --console-port 5554 --grpc-port 8554 \
             --tasks "${{ github.event.inputs.tasks }}" \
-            --tiers "${{ github.event.inputs.tiers }}" \
+            --arms "${{ github.event.inputs.arms || github.event.inputs.tiers || 'compact,graph-warm,graph-cold' }}" \
             --task-random-seed "${{ github.event.inputs.seed }}" \
             --n-task-combinations 1 \
             --model "${{ github.event.inputs.model }}" \

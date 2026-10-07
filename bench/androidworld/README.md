@@ -9,14 +9,15 @@ resource policy: no local emulator, no local `pip install`).
 
 ## Files
 
-| file                | role                                                                                                       |
-| ------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `claude_wrapper.py` | `ClaudeWrapper` over the `anthropic` SDK — `claude-opus-5`, one `effort`, no temperature, records `usage`. |
-| `tiered_agent.py`   | `TieredAgent` = AndroidWorld `T3A` with the observation swapped for our describe `tier=<arm>`.             |
-| `driver_env.py`     | `OpenDriverEnv` — observes + acts through our tool-server; keeps AW's env for init/checker/teardown/adb.   |
-| `run_aw.py`         | harness: `setup` + `run` subcommands, per-episode JSON, manifest, gate tables G0-G5.                       |
-| `probe_a11y.py`     | Step 0 blocking pre-flight probe (a11y suppression).                                                       |
-| `requirements.txt`  | AndroidWorld pinned by commit; `anthropic`; `requests`; `tiktoken`.                                        |
+| file                   | role                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `claude_wrapper.py`    | `ClaudeWrapper` over the `anthropic` SDK — `claude-opus-5`, one `effort`, no temperature, records `usage`. |
+| `tiered_agent.py`      | `TieredAgent` = AndroidWorld `T3A` with the observation swapped for our describe `tier=<arm>`.             |
+| `driver_env.py`        | `OpenDriverEnv` — observes + acts through our tool-server; keeps AW's env for init/checker/teardown/adb.   |
+| `run_aw.py`            | harness: `setup` + `run` subcommands, per-episode JSON, manifest, gate tables G0-G5 + AW-2.                |
+| `probe_a11y.py`        | Step 0 blocking pre-flight probe (a11y suppression).                                                       |
+| `test_tiered_agent.py` | unit tests for the AW-2 arms (`navigate_to`, `summary` tier, arm parsing, pairing); stubs AndroidWorld.    |
+| `requirements.txt`     | AndroidWorld pinned by commit; `anthropic`; `requests`; `tiktoken`.                                        |
 
 Nothing is vendored from `android_world`; it is a pinned git dependency
 (`requirements.txt`, commit `e3fea3c`).
@@ -57,8 +58,9 @@ frame; `driver_env.parse_describe` numbers the frame-bearing lines
 ## Tiers
 
 `compact` (the default: the pruned tree, screen-graph cache when unchanged) and
-`full` (the full tree). `summary` needs the graph and `index` does not exist yet
-— both are AW-2. Enum: `packages/tool-server/src/tools/describe/index.ts:81`.
+`full` (the full tree). `summary` (the screen graph's label, affordances and
+reachable screens) is the observation of the AW-2 graph arms (next section);
+`index` is not wired here. Enum: `packages/tool-server/src/tools/describe/index.ts`.
 
 ## The five pinned tasks + seed
 
@@ -104,7 +106,10 @@ effort and task list (research §5).
 
 - `job=probe` — Step 0 a11y-suppression probe (no model key).
 - `job=harness` — Step 3 run. Needs the `ANTHROPIC_API_KEY` repo secret; without
-  it the job fails fast naming the secret.
+  it the job fails fast naming the secret. Input `arms` (empty =
+  `compact,graph-warm,graph-cold`; `compact,full` reproduces AW-1) picks the
+  arms; the AW-1 input `tiers` (and `run_aw.py --tiers`) is still accepted as a
+  deprecated alias, used only when `arms` is empty.
 
 Inputs `model` (default `claude-opus-5`) and `effort` (`low` / `medium` / `high` /
 `xhigh` / `max`, default `medium`) go to `--model` / `--effort`. The optional
@@ -123,8 +128,50 @@ be re-measured against run 34870686468 at the drift floor (scheduled as AW-1.1,
 never folded into the AW-1 run). The chosen outcome is recorded in the ticket's
 `## Result`.
 
-## Left for AW-2
+## AW-2 — screen graph arms (`navigate_to`)
 
-`index` tier (needs the tier shipped first), `summary` tier (graph-dependent),
-and the full 20×4 matrix as one job per tier (the full grid does not fit one 6 h
-job — research §3).
+What the screen graph saves an LLM agent, measured on the same fixed agent. Three
+arms, passed as `--arms` (the workflow input `arms`, default
+`compact,graph-warm,graph-cold`):
+
+| arm          | flag `screen-graph` | observation                                            | `navigate_to` | store before the scored episode                          |
+| ------------ | ------------------- | ------------------------------------------------------ | ------------- | -------------------------------------------------------- |
+| `compact`    | off                 | `describe tier=compact` (AW-1)                         | no            | n/a                                                      |
+| `graph-cold` | on                  | `describe tier=summary` above the indexed compact tree | yes           | empty (tool-server restarted on a fresh temp HOME)       |
+| `graph-warm` | on                  | same                                                   | yes           | warmed by ONE unscored episode of the same task + params |
+
+- Grammar: T3A's, plus one action, `{"action_type": "navigate_to", "label":
+"<screen>"}` (the call form `navigate_to("<screen>")` is accepted too),
+  explained by one added guideline (`NAVIGATE_TO_GUIDELINE` in
+  `tiered_agent.py`). It calls the `navigate-to` tool with `target.label` (or
+  `target.screen` for a listed hash8); the destination's `compact` tree in the
+  reply is the step's after-observation, so no describe follows it. In the
+  `compact` arm the action does not exist and is rejected like any unknown one.
+- Observation at tier `summary`: a `Screen graph:` block (the summary, whose
+  "reachable screens" lines are what the model can pass to `navigate_to`), then
+  the indexed compact tree, so `click{index}` works as in AW-1.
+- Store: before every graph arm episode `run_aw.py` restarts the tool-server
+  with `HOME` on a fresh temp dir (`tempfile.mkdtemp`, `aw-graph-home-*`), where
+  it sets `open-device-server` and `screen-graph` and copies the real
+  `~/.emulator_console_auth_token` (so the open server keeps the same transport
+  as the plain arms); the store starts empty there
+  (the server caches stores in memory, so a restart is needed anyway). Only
+  those temp dirs are ever deleted: the graph arms never read or write the real
+  `~/.argent`. The plain arms run on the real `HOME` with `screen-graph` off,
+  and that flag's previous value is restored when the run ends. The warm-up
+  episode is written to `episode-<task>-graph-warm-warmup.json` and
+  `warmups.json`; it counts in no gate except its own row of the G5 cost table.
+- Metrics per episode, as AW-1 (steps, API usage tokens, `is_successful`,
+  wall time) plus `navigate_calls` (per step and per episode).
+
+**Pre-registered (written before any AW-2 run):** graph-warm: steps and API input
+tokens ≤ 0.7× graph-cold, success non-inferior, paired by task + seed (one
+seeded parameter set per task, shared by every arm). With five tasks,
+"non-inferior" means warm loses no more tasks than it wins (cold-only ≤
+warm-only). `gates.md` prints the per-task pairs and the verdicts under **AW-2**;
+there is no promotion gate.
+
+## Left for later
+
+`index` tier as an arm, and the full 20×4 matrix as one job per arm (the full
+grid does not fit one 6 h job — research §3).

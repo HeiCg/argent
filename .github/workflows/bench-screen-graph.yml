@@ -1,0 +1,296 @@
+name: bench-screen-graph
+
+# The screen-graph bench (packages/tool-server/scripts/bench-screen-graph.ts) on its
+# own, with the blocks chosen by name. Same emulator recipe and harness invocation as
+# the `screen-graph` job of bench-open-vs-proprietary.yml (x86_64 KVM, API 34, gRPC
+# with a token for B1), so a block's numbers are comparable across the two workflows.
+#
+# Blocks (`blocks` input -> BENCH_BLOCKS):
+#   MATRIX   — the seven-config matrix (B1, B2, O1..O5); needs the proprietary
+#              binaries (fetched below) and the needle pre-flight.
+#   CHURN    — the E-1 churn experiment (builds + installs bench/churn-app).
+#   MULTIHOP — multi-hop navigation: ONE navigate-to on a warmed store vs locate +
+#              tap + describe per hop over the 3-hop Settings routes
+#              (src/screen-graph/bench/multihop.ts), `multihop_reps` samples per arm
+#              and task. Measurement only: its numbers never fail the job; a harness
+#              error, a lost emulator or a store-invariant break does.
+#
+# Image: android-34, the image of the other workflow's screen-graph job and of the
+# capture the MULTIHOP hops 1-2 were checked against (screen-graph-run-33958064084).
+# MULTIHOP hop 3 and its needles were written from the AOSP Settings layout and are
+# unconfirmed until the first run: a missing row fails that task's warm-up and the
+# report lists the task as excluded ("warm-up failed").
+#
+# Artifacts: .bench-results/screen-graph (results-ci.md with the MULTIHOP section
+# appended, multihop.json, multihop-results.md, bench-sg-*.json, graph-store) +
+# emulator diagnostics.
+
+on:
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: "Blocks to run, comma list: MATRIX, CHURN, MULTIHOP"
+        required: false
+        default: "MULTIHOP"
+      multihop_reps:
+        description: "MULTIHOP samples per arm and task (BENCH_MULTIHOP_REPS)"
+        required: false
+        default: "20"
+      reps:
+        description: "MATRIX reps per config and task (BENCH_REPS)"
+        required: false
+        default: "5"
+      proprietary_version:
+        description: "@swmansion/argent release whose binaries the MATRIX B1 config uses"
+        required: false
+        default: "0.27.0"
+      emulator_build:
+        description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
+        required: false
+        default: ""
+      emulator_gpu:
+        description: "Emulator -gpu mode"
+        required: false
+        default: "swiftshader_indirect"
+      emulator_memory_mb:
+        description: "AVD hw.ramSize (MB)"
+        required: false
+        default: "4096"
+
+jobs:
+  screen-graph:
+    name: Screen-graph bench (${{ github.event.inputs.blocks || 'MULTIHOP' }}, x86_64 KVM)
+    runs-on: ubuntu-latest
+    # MULTIHOP at 20 reps: 6 routes x 2 arms x 20 = 240 samples of ~10 s, ~40 min.
+    # The MATRIX alone took up to ~150 min in the other workflow.
+    timeout-minutes: 240
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_USER_HOME: /home/runner/.android
+      QT_QPA_PLATFORM: offscreen
+      XDG_RUNTIME_DIR: /tmp/xdg-runtime
+      BENCH_BLOCKS: ${{ github.event.inputs.blocks || 'MULTIHOP' }}
+      BENCH_PROPRIETARY_VERSION: ${{ github.event.inputs.proprietary_version || '0.27.0' }}
+      # Emulator diagnostics + levers (emulator-diagnostics.sh). Defaults = today.
+      EMU_DIAG_DIR: /tmp/emu-diag
+      EMULATOR_BUILD: ${{ github.event.inputs.emulator_build }}
+      EMULATOR_GPU: ${{ github.event.inputs.emulator_gpu || 'swiftshader_indirect' }}
+      EMULATOR_MEMORY_MB: ${{ github.event.inputs.emulator_memory_mb || '4096' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate blocks
+        run: |
+          set -e
+          IFS=',' read -r -a REQ <<< "$BENCH_BLOCKS"
+          for b in "${REQ[@]}"; do
+            b="$(echo "$b" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+            case "$b" in
+              MATRIX|CHURN|MULTIHOP|"") ;;
+              *) echo "::error::unknown block '$b' (known: MATRIX, CHURN, MULTIHOP)"; exit 1 ;;
+            esac
+          done
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install emulator native deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            weston xkb-data libxkbcommon0 seatd libgoogle-perftools4t64
+
+      - name: Install Android SDK packages
+        run: |
+          set -e
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "emulator" "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
+            "system-images;android-34;google_apis;x86_64" >/dev/null
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+
+      - name: Pin emulator build (optional) + record emulator environment
+        run: |
+          set -e
+          [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
+          [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
+          bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
+          bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-34;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+
+      - name: Create AVD
+        run: |
+          set -e
+          mkdir -p "$HOME/.android"
+          echo no | avdmanager -v create avd -n argent-test \
+            -k "system-images;android-34;google_apis;x86_64" -d "pixel_6" 2>&1 | tee /tmp/avdmanager.log
+          CFG=$HOME/.android/avd/argent-test.avd/config.ini
+          sed -i "s/^hw.ramSize.*\$/hw.ramSize = $EMULATOR_MEMORY_MB/" "$CFG" || echo "hw.ramSize = $EMULATOR_MEMORY_MB" >> "$CFG"
+          sed -i 's/^hw.cpu.ncore.*$/hw.cpu.ncore = 2/' "$CFG" || echo "hw.cpu.ncore = 2" >> "$CFG"
+
+      - name: Boot emulator with gRPC + token
+        run: |
+          set -e
+          mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+          nohup $ANDROID_HOME/emulator/emulator @argent-test \
+            -no-window -no-audio -no-boot-anim -no-snapshot -read-only \
+            -gpu "$EMULATOR_GPU" -grpc 8554 -grpc-use-token -no-metrics \
+            > /tmp/emulator.log 2>&1 &
+          echo $! > /tmp/emulator.pid
+          adb start-server
+          timeout 300 adb wait-for-device
+          for i in $(seq 1 180); do
+            [ "$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')" = "1" ] && break
+            sleep 2
+          done
+          adb -s emulator-5554 shell settings put global window_animation_scale 0 || true
+          adb -s emulator-5554 shell settings put global transition_animation_scale 0 || true
+          adb -s emulator-5554 shell settings put global animator_duration_scale 0 || true
+
+      - name: Install deps + build
+        run: |
+          npm ci
+          npm install @rollup/rollup-linux-x64-gnu --no-save
+          npm run build
+          npm run build:android-device-server
+          ls -la packages/android-device-server/bin/
+
+      - name: Build churn app (CHURN)
+        if: ${{ contains(env.BENCH_BLOCKS, 'CHURN') }}
+        run: |
+          set -euo pipefail
+          bash bench/churn-app/scripts/build.sh
+          ls -la bench/churn-app/build/outputs/apk/debug/
+
+      - name: Fetch proprietary binaries (MATRIX B1, @swmansion/argent@<proprietary_version>)
+        if: ${{ contains(env.BENCH_BLOCKS, 'MATRIX') }}
+        run: |
+          set -e
+          if ! [[ "$BENCH_PROPRIETARY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::proprietary_version '$BENCH_PROPRIETARY_VERSION' is not a semver"; exit 1
+          fi
+          PKGTMP="$RUNNER_TEMP/argent-pkg"; mkdir -p "$PKGTMP"
+          ( cd "$PKGTMP" && npm pack "@swmansion/argent@$BENCH_PROPRIETARY_VERSION" )
+          TARBALL=$(ls "$PKGTMP"/*.tgz | head -n1)
+          mkdir -p "$PKGTMP/extracted"; tar -xzf "$TARBALL" -C "$PKGTMP/extracted"
+          echo "PROP_PKG=$PKGTMP/extracted/package" >> "$GITHUB_ENV"
+          chmod +x "$PKGTMP/extracted/package/bin/linux/simulator-server" 2>/dev/null || true
+          node .github/bench-ci/proprietary-provenance.js npm \
+            --bin-dir "$PKGTMP/extracted/package/bin" \
+            --expect-version "$BENCH_PROPRIETARY_VERSION" \
+            --out "$RUNNER_TEMP/proprietary-provenance.json"
+          echo "BENCH_PROPRIETARY_PROVENANCE=$RUNNER_TEMP/proprietary-provenance.json" >> "$GITHUB_ENV"
+
+      - name: Pre-flight needle gate (MATRIX)
+        if: ${{ contains(env.BENCH_BLOCKS, 'MATRIX') }}
+        env:
+          BENCH_SERIAL: emulator-5554
+          BENCH_OUT: ${{ github.workspace }}/.bench-results/screen-graph
+          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+        run: |
+          set -euo pipefail
+          node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-preflight.ts");' \
+            2>&1 | tee "$RUNNER_TEMP/sg-preflight.log"
+
+      - name: Install churn app (CHURN)
+        if: ${{ contains(env.BENCH_BLOCKS, 'CHURN') }}
+        run: |
+          set -euo pipefail
+          APK="$(find bench/churn-app/build/outputs/apk/debug -name '*.apk' | head -n1)"
+          adb -s emulator-5554 install -r "$APK"
+          adb -s emulator-5554 shell pm list packages | grep com.argent.churnapp
+
+      - name: Screen-graph bench
+        id: bench
+        env:
+          BENCH_SERIAL: emulator-5554
+          BENCH_REPS: ${{ github.event.inputs.reps || '5' }}
+          BENCH_MULTIHOP_REPS: ${{ github.event.inputs.multihop_reps || '20' }}
+          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
+          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+          NODE_OPTIONS: "--max-old-space-size=3072"
+          BENCH_OUT: ${{ github.workspace }}/.bench-results/screen-graph
+          BENCH_REPORT: ${{ github.workspace }}/.bench-results/screen-graph/results-ci.md
+          BENCH_FRESH_STORE: "1"
+          BENCH_RUN_ID: ${{ github.run_id }}
+          BENCH_EMULATOR_ENV: ${{ github.workspace }}/.bench-results/ci-emulator-env.json
+          BENCH_CONTEXT_FILE: ${{ env.EMU_DIAG_DIR }}/context
+          BENCH_EMULATOR_LOST_FILE: ${{ env.EMU_DIAG_DIR }}/emulator-lost.json
+        run: |
+          set -euo pipefail
+          [[ "$BENCH_MULTIHOP_REPS" =~ ^[0-9]+$ ]] || { echo "::error::multihop_reps '$BENCH_MULTIHOP_REPS' is not a number"; exit 1; }
+          [[ "$BENCH_REPS" =~ ^[0-9]+$ ]] || { echo "::error::reps '$BENCH_REPS' is not a number"; exit 1; }
+          bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'bench-screen-graph\.ts'
+          trap 'bash .github/bench-ci/emulator-diagnostics.sh stop' EXIT
+          export BENCH_JOB_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          rm -rf "$BENCH_OUT"; mkdir -p "$BENCH_OUT"
+          echo "[bench-sg] run_id=${{ github.run_id }} blocks=$BENCH_BLOCKS job_started=$BENCH_JOB_STARTED — fresh $BENCH_OUT" | tee "$RUNNER_TEMP/sg-bench.log"
+          node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-screen-graph.ts");' \
+            2>&1 | tee -a "$RUNNER_TEMP/sg-bench.log"
+          if [ -s "$BENCH_OUT/multihop-results.md" ]; then
+            cat "$BENCH_OUT/multihop-results.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Stop host sampler + emulator post-mortem
+        if: always()
+        run: |
+          bash .github/bench-ci/emulator-diagnostics.sh stop
+          bash .github/bench-ci/emulator-diagnostics.sh postmortem emulator-5554 "$EMU_DIAG_DIR/postmortem"
+
+      - name: Stage screen-graph artifacts
+        if: always()
+        run: |
+          STAGE="$RUNNER_TEMP/sg-artifacts"
+          rm -rf "$STAGE"; mkdir -p "$STAGE/logs"
+          cp -r .bench-results "$STAGE/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/sg-preflight.log" "$RUNNER_TEMP/sg-bench.log" /tmp/emulator.log "$STAGE/logs/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/proprietary-provenance.json" "$STAGE/" 2>/dev/null || true
+          cp -r "$EMU_DIAG_DIR/." "$STAGE/logs/" 2>/dev/null || true
+          find "$STAGE" -type f | sed "s|$STAGE/||" | sort
+
+      - name: Upload screen-graph artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-screen-graph-${{ github.run_id }}
+          path: ${{ runner.temp }}/sg-artifacts
+          # .bench-results is dot-prefixed; upload-artifact@v4 drops hidden paths by default.
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce validity + emulator liveness
+        if: always()
+        run: |
+          echo "bench outcome: ${{ steps.bench.outcome }}"
+          rc=0
+          bash .github/bench-ci/emulator-diagnostics.sh enforce || rc=1
+          if [ "${{ steps.bench.outcome }}" = "failure" ]; then
+            echo "::error::screen-graph bench failed (validity gate, store invariants or harness error) — see results-ci.md"
+            rc=1
+          fi
+          exit "$rc"
