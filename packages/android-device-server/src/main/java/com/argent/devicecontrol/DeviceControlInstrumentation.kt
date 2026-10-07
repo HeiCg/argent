@@ -3,9 +3,9 @@ package com.argent.devicecontrol
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.Instrumentation
-import android.app.UiAutomation
 import android.os.Bundle
 import android.util.Log
+import androidx.test.uiautomator.Configurator
 import androidx.test.uiautomator.UiDevice
 import java.util.concurrent.CountDownLatch
 
@@ -49,7 +49,6 @@ class DeviceControlInstrumentation : Instrumentation() {
 
     override fun onStart() {
         super.onStart()
-        val uiDevice = UiDevice.getInstance(this)
         // AW-1 probe (run 34946274170) confirmed research §2: a default UiAutomation
         // connection SUPPRESSES other accessibility services for its lifetime, so
         // while our server is alive AndroidWorld's a11y forwarder forest comes back
@@ -65,10 +64,22 @@ class DeviceControlInstrumentation : Instrumentation() {
             UiAutomationFlags.dontSuppressA11y(
                 startArgs?.getString(UiAutomationFlags.ARG_DONT_SUPPRESS_A11Y)
             )
+        // Pin the SAME flags on UiAutomator's Configurator BEFORE UiDevice.getInstance
+        // and before our own getUiAutomation(flags). UiDevice asks for
+        // getUiAutomation(Configurator flags) on every waitForIdle/pressKeyCode; with
+        // the default 0 the platform disconnects and reconnects the shared connection
+        // with flags 0, re-suppressing AW's forwarder after the first describe (run
+        // 37549293325: `UiAutomation@...[id=-1, flags=0]`). Default path: untouched.
+        val pinnedFlags = UiAutomationFlags.pinnedFlags(dontSuppressA11y)
+        if (pinnedFlags != null) {
+            Configurator.getInstance().setUiAutomationFlags(pinnedFlags)
+        }
+        Log.i(TAG, "UiAutomation flags in effect: ${pinnedFlags ?: 0} (dontSuppressA11y=$dontSuppressA11y)")
+        val uiDevice = UiDevice.getInstance(this)
         val uiAutomation =
-            if (dontSuppressA11y) {
+            if (pinnedFlags != null) {
                 Log.w(TAG, "dontSuppressA11y is ON — UiAutomation will not suppress other a11y services (AW harness path)")
-                getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+                getUiAutomation(pinnedFlags)
             } else {
                 uiAutomation
             }

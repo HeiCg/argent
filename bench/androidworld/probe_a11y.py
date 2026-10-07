@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -80,6 +81,33 @@ def stop_instrumentation(serial: str, proc: subprocess.Popen) -> None:
   time.sleep(3)  # let the UiAutomation connection be released before the next phase
 
 
+def exercise_server(serial: str, device_port: int) -> dict:
+  """Send a describe (``getState``) and one ``enter`` key over raw JSON-RPC.
+
+  Both reach UiDevice (``waitForIdle`` / ``pressKeyCode``), the calls that made
+  UiAutomator reconnect UiAutomation with Configurator flags 0 and re-suppress
+  AW's forwarder (run 37549293325). Reading AW's forest AFTER this is the check.
+  """
+  out: dict = {}
+  host_port = None
+  try:
+    host_port = int(adb(serial, ["forward", "tcp:0", f"tcp:{device_port}"]).stdout.strip())
+    with socket.create_connection(("127.0.0.1", host_port), timeout=30) as s:
+      f = s.makefile("rw", encoding="utf-8", newline="\n")
+      calls = (("getState", {"includeScreenshot": False}), ("key", {"key": "enter"}))
+      for i, (method, params) in enumerate(calls, 1):
+        f.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params}) + "\n")
+        f.flush()
+        reply = json.loads(f.readline())
+        out[method] = "ok" if "result" in reply else f"error: {reply.get('error')}"
+  except Exception as e:  # noqa: BLE001
+    out["error"] = f"{type(e).__name__}: {e}"
+  finally:
+    if host_port is not None:
+      adb(serial, ["forward", "--remove", f"tcp:{host_port}"])
+  return out
+
+
 def read_aw_forest(console_port: int, grpc_port: int, adb_path: str) -> dict:
   """Read AndroidWorld's a11y forest through its own controller (fresh env)."""
   out: dict = {"ok": False}
@@ -130,6 +158,8 @@ def run_phase(
   phase: dict = {"instrumentation_alive": alive, "instrumentation_port": port}
   if alive:
     time.sleep(3)  # hold the UiAutomation before reading
+    phase["server_calls"] = exercise_server(serial, port)
+    print(f"[probe]   server_calls -> {phase['server_calls']}")
     phase["aw_forest"] = read_aw_forest(console_port, grpc_port, adb_path)
     print(f"[probe]   aw_forest -> {phase['aw_forest']}")
     phase["uiautomator_dump"] = uiautomator_dump(serial)

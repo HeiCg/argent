@@ -1,6 +1,9 @@
 package com.argent.devicecontrol
 
+import android.app.UiAutomation
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -25,5 +28,19 @@ class UiAutomationFlagsTest {
         assertFalse(UiAutomationFlags.dontSuppressA11y(""))
         assertFalse(UiAutomationFlags.dontSuppressA11y("TRUE"))
         assertFalse(UiAutomationFlags.dontSuppressA11y("1"))
+    }
+
+    // Run 37549293325: the flags requested from Instrumentation and the ones pinned
+    // on UiAutomator's Configurator must be the same value, or the first UiDevice
+    // waitForIdle/pressKeyCode reconnects UiAutomation with flags 0 (suppressing).
+    @Test fun optInPinsDontSuppressFlag() {
+        assertEquals(
+            UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES,
+            UiAutomationFlags.pinnedFlags(true)
+        )
+    }
+
+    @Test fun defaultLeavesConfiguratorUntouched() {
+        assertNull(UiAutomationFlags.pinnedFlags(false))
     }
 }

@@ -10,9 +10,11 @@ name: bench-androidworld
 #             whether the forest is empty (the a11y-suppression blocker, research
 #             §2). Decides whether DeviceControlInstrumentation needs
 #             FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES.
-#   harness — Step 3 one run: 5 tasks x 2 tiers x 1 model (claude-opus-5) on the
-#             open driver, per-episode JSON. Needs the ANTHROPIC_API_KEY repo
-#             secret; without it the job fails fast with the exact name.
+#   harness — Step 3 one run: 5 tasks x 2 tiers x 1 model on the open driver,
+#             per-episode JSON. The model is the `model` dispatch input (default
+#             claude-opus-5) and the effort the `effort` input. Needs the
+#             ANTHROPIC_API_KEY repo secret; without it the job fails fast with the
+#             exact name.
 #
 # The emulator recipe (KVM + SDK + AVD + boot) is lifted from
 # bench-open-vs-proprietary.yml with three edits the research (§3) requires:
@@ -290,7 +292,7 @@ jobs:
 
   # ── Step 3: harness run (needs ANTHROPIC_API_KEY) ─────────────────────────
   harness:
-    name: AW harness (5 tasks x 2 tiers x claude-opus-5, API 33)
+    name: AW harness (5 tasks x 2 tiers x ${{ github.event.inputs.model || 'claude-opus-5' }}, API 33)
     if: >-
       github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'harness'
     runs-on: ubuntu-latest
@@ -441,6 +443,7 @@ jobs:
         env:
           AW_CONSOLE_PORT: "5554"
           AW_GRPC_PORT: "8554"
+          PYTHONUNBUFFERED: "1"
         run: |
           set -uo pipefail
           python bench/androidworld/run_aw.py setup \
@@ -455,6 +458,7 @@ jobs:
           AW_CONSOLE_PORT: "5554"
           AW_GRPC_PORT: "8554"
           NODE_OPTIONS: "--max-old-space-size=3072"
+          PYTHONUNBUFFERED: "1"
           AW_OUT: ${{ github.workspace }}/.bench-results/androidworld
         run: |
           set -uo pipefail
