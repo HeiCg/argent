@@ -8,8 +8,9 @@
 //
 // Every timed tap+describe read is now classified, the same way on every arm:
 //  - empty:   the describe returned no elements (or the open server's treeEmpty).
-//  - stale:   at least one ROOT-ONLY marker is present (the screen before the tap,
-//             alone or mixed with the destination). A stale read is a wrong answer.
+//  - preTransition ("pre-transition/mixed"; "stale" before run 37591260027): at least
+//             one ROOT-ONLY marker is present (the screen as it was before the tap,
+//             alone or mixed with the destination).
 //  - correct: at least one DESTINATION marker is present and no root-only marker.
 //  - other:   neither (a dialog, another app, a half-built screen).
 // Markers are id+text keys (`id:<id>`, `text:<label>`) read from the describe text with
@@ -20,12 +21,25 @@
 // destination. A key on both (the "Network & internet" row and the sub-screen title)
 // marks neither. Same selector on both arms; each arm's markers come from its own
 // backend, so a rendering difference between backends cannot misclassify one of them.
+//
+// Review 2026-10-07 run 37591260027 finding 2: "stale = a wrong answer" was not supported.
+// 22-27 of the 29-32 OFF reads in that class ended before the destination's first frame:
+// they showed the screen as it was, there is no sign of a cached tree. The class is now
+// `preTransition`, printed "pre-transition/mixed". Old block files carry `stale`; the
+// counts read it as preTransition.
 "use strict";
 
 const { summarize, wilsonCI } = require("./stats");
 
 /** The four classes, in the order every table prints them. */
-const DESTINATION_CLASSES = ["correct", "stale", "empty", "other"];
+const DESTINATION_CLASSES = ["correct", "preTransition", "empty", "other"];
+/** Printed name of each class. */
+const CLASS_LABEL = {
+  correct: "correct",
+  preTransition: "pre-transition/mixed",
+  empty: "empty",
+  other: "other",
+};
 
 /** time-to-correct loop: same describe call, POLL_MS apart, up to BUDGET_MS after the timed read. */
 const TTC_POLL_MS = 50;
@@ -55,7 +69,7 @@ function describeKeys(desc) {
  * Markers from one settled root describe and one settled destination describe.
  * `valid` is false when either side has no marker of its own (the destination read was
  * still the root, or the root read was already the destination): no read can then be
- * classified correct or stale, and the caller re-derives.
+ * classified correct or pre-transition, and the caller re-derives.
  * @param {string} rootDesc
  * @param {string} destDesc
  * @returns {{ dest: string[], root: string[], valid: boolean }}
@@ -73,7 +87,7 @@ function deriveDestinationMarkers(rootDesc, destDesc) {
  * treeEmpty? }) or undefined (the call failed: other).
  * @param {unknown} r
  * @param {{ dest: string[], root: string[] } | null | undefined} markers
- * @returns {"correct" | "stale" | "empty" | "other"}
+ * @returns {"correct" | "preTransition" | "empty" | "other"}
  */
 function classifyDestination(r, markers) {
   if (!r || typeof r !== "object") return "other";
@@ -83,19 +97,22 @@ function classifyDestination(r, markers) {
   if (d.treeEmpty === true || (parsed && parsed.elements === 0)) return "empty";
   if (!parsed || !markers) return "other";
   const keys = new Set(parsed.keys);
-  if (markers.root.some((k) => keys.has(k))) return "stale";
+  if (markers.root.some((k) => keys.has(k))) return "preTransition";
   if (markers.dest.some((k) => keys.has(k))) return "correct";
   return "other";
 }
 
 /**
  * Per-class counts, rates and Wilson 95 % CIs over `n` classified reads.
- * @param {{ correct?: number, stale?: number, empty?: number, other?: number }} counts
+ * @param {{ correct?: number, preTransition?: number, stale?: number, empty?: number,
+ *   other?: number }} counts `stale` = the pre-run-37591260027 name of preTransition.
  * @returns {{ n: number, counts: Record<string, number>,
  *   rates: Record<string, { k: number, rate: number | null, ci: [number, number] | null }> }}
  */
 function destinationRates(counts) {
-  const c = Object.fromEntries(DESTINATION_CLASSES.map((k) => [k, (counts && counts[k]) || 0]));
+  const src = { ...(counts || {}) };
+  if (src.preTransition == null && src.stale != null) src.preTransition = src.stale;
+  const c = Object.fromEntries(DESTINATION_CLASSES.map((k) => [k, src[k] || 0]));
   const n = DESTINATION_CLASSES.reduce((s, k) => s + c[k], 0);
   const rates = Object.fromEntries(
     DESTINATION_CLASSES.map((k) => [
@@ -116,8 +133,9 @@ function destinationRates(counts) {
  *   censoredAtMs: number | null, polls: number }>} samples
  */
 function summarizeDestination(samples) {
-  const counts = { correct: 0, stale: 0, empty: 0, other: 0 };
-  for (const s of samples) counts[/** @type {"correct"} */ (s.cls)]++;
+  const counts = { correct: 0, preTransition: 0, empty: 0, other: 0 };
+  for (const s of samples)
+    counts[/** @type {"correct"} */ (s.cls === "stale" ? "preTransition" : s.cls)]++;
   const correctLat = samples.filter((s) => s.cls === "correct").map((s) => s.latencyMs);
   const reached = /** @type {number[]} */ (samples.map((s) => s.ttcMs).filter((x) => x !== null));
   return {
@@ -138,6 +156,9 @@ function summarizeDestination(samples) {
       samples: samples.map((s) => s.ttcMs),
       censoredAtMs: samples.map((s) => s.censoredAtMs),
       polls: samples.map((s) => s.polls),
+      // Run 37591260027: the loop iteration of each sample (the index in its BENCH logcat
+      // marker), so the merge can align time-to-correct with the transition timeline.
+      iters: samples.map((s) => (s.i == null ? null : s.i)),
     },
   };
 }
@@ -164,7 +185,73 @@ function ttcGateSamples(ttc) {
   return { samples: out, timedOut };
 }
 
+/* ---- tap+describe variants (review 2026-10-07 run 37591260027 finding 4) ---- */
+
+// The run picked the P5 comparator after seeing the results (the better of two ON rows),
+// ran settle:true at the end of the block instead of interleaved, and never measured the
+// call an OFF agent would make (tap → await-screen-idle → describe). Every block now runs
+// the same three variants, interleaved per sample in a seeded random order:
+//  - "tap+describe(settle:false)": the describe right after the tap (settle is ignored by
+//    the proprietary path, so on OFF this is its plain describe);
+//  - "tap+describe(settle:true)": the open path's idle-gated describe (plain on OFF);
+//  - "tap+await-idle+describe": tap, await-screen-idle (tool defaults), describe (tool
+//    defaults): what an agent on either backend does to read a settled screen.
+// P5 is pre-registered on the await variant only, on both arms (time-to-correct AND
+// correct-at-first-read); the other two are report only. The await variant gets N
+// samples, each of the other two N/2.
+const TD_VARIANTS = [
+  "tap+describe(settle:false)",
+  "tap+describe(settle:true)",
+  "tap+await-idle+describe",
+];
+const TD_GATED_VARIANT = "tap+await-idle+describe";
+
+/** Samples per variant for a block with BENCH_N = n (TD_VARIANTS order). */
+function variantCounts(n) {
+  const half = Math.max(1, Math.round(n / 2));
+  return [half, half, n];
+}
+
+/** 32-bit string hash (FNV-1a), the seed of a block's schedule. */
+function hashSeed(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/**
+ * Seeded per-sample order of the variants: counts[v] copies of each index v, shuffled
+ * (Fisher–Yates, mulberry32 seeded by `seed`). Same seed → same order.
+ * @param {number[]} counts @param {string} seed @returns {number[]}
+ */
+function variantSchedule(counts, seed) {
+  const out = [];
+  counts.forEach((c, v) => {
+    for (let k = 0; k < c; k++) out.push(v);
+  });
+  let a = hashSeed(String(seed));
+  const rnd = () => {
+    let t = (a = (a + 0x6d2b79f5) >>> 0);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 module.exports = {
+  TD_VARIANTS,
+  TD_GATED_VARIANT,
+  variantCounts,
+  variantSchedule,
+  CLASS_LABEL,
   TTC_POLL_MS,
   TTC_BUDGET_MS,
   deriveDestinationMarkers,

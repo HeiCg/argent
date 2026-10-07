@@ -33,6 +33,23 @@
 // relaunched, what the relaunch's am start answered, the outcome); the bench sums them
 // per block into the block JSON.
 //
+// Review 2026-10-07 run 37591260027 finding 6: the gate never passed. All 489 resets
+// (every block, both arms) ended `outcome:timeout` at ~5 s with `wait:not-focused` on
+// every poll (OFF-1: 1697 not-focused polls, 83 dead-record, 0 ready), while logcat shows
+// the Settings windows taking focus normally. The focus read was
+// `dumpsys window | grep -m1 mCurrentFocus`: the FIRST mCurrentFocus line of the full
+// window dump. That dump starts with the "WINDOW MANAGER LAST ANR" section when an ANR
+// was recorded since boot, which carries a copy of the window state at the ANR time, so
+// grep -m1 can read a frozen focus. Not established from the artifact (it kept only the
+// parsed summary, not the raw line). The probe now reads focus from two current sources
+// and keeps what it read:
+//  - `dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp'`: the WINDOWS section
+//    only (no LAST ANR copy), every line, not the first;
+//  - `dumpsys input | grep -A1 FocusedWindows`: InputDispatcher's focused window.
+// Settings is focused when either source names a com.android.settings window. Each poll
+// adds `focus:<what the window manager named>` and `focus-input:<what input named>` to the
+// reasons histogram, so the next artifact shows the raw focus reads.
+//
 // The probe, relaunch, clock and sleep are injected so the logic is unit-tested
 // without adb (settings-reset.test.js).
 "use strict";
@@ -40,11 +57,14 @@
 const SETTINGS_PKG = "com.android.settings";
 const PID_MARK = "@@BENCH_PID";
 const FOCUS_MARK = "@@BENCH_FOCUS";
-// One adb shell call per poll: the activity stack, the Settings pid, the focused window.
-// Ends in `true` so a missing pid or focus line (exit 1) is data, not an adb error.
+const INPUT_MARK = "@@BENCH_INPUT";
+// One adb shell call per poll: the activity stack, the Settings pid, the focused window
+// (window manager, WINDOWS section) and the input dispatcher's focused window. Ends in
+// `true` so a missing pid or focus line (exit 1) is data, not an adb error.
 const PROBE_CMD =
   `dumpsys activity activities; echo '${PID_MARK}'; pidof ${SETTINGS_PKG}; ` +
-  `echo '${FOCUS_MARK}'; dumpsys window | grep -m1 mCurrentFocus; true`;
+  `echo '${FOCUS_MARK}'; dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp'; ` +
+  `echo '${INPUT_MARK}'; dumpsys input | grep -A1 FocusedWindows; true`;
 
 // am start the probe issues when Settings is gone: force-stop first, so a resumed record
 // left by a killed process is removed instead of receiving the intent (run 37571460849).
@@ -68,19 +88,50 @@ const SETTINGS_RECORD = new RegExp(
 const FINISHING = /\bm?[Ff]inishing=true\b|\bstate=(?:FINISHING|DESTROYING|DESTROYED)\b/;
 
 /**
+ * Components named by focus lines: `mCurrentFocus=Window{… <comp>}` (window manager) or
+ * `name='… <comp>'` (input dispatcher). `null` entries stand for `mCurrentFocus=null`.
+ * @param {string} part
+ * @param {RegExp} lineRx
+ * @returns {(string | null)[]}
+ */
+function focusComponents(part, lineRx) {
+  const out = [];
+  for (const line of part.split("\n")) {
+    const m = line.match(lineRx);
+    if (!m) continue;
+    const c = m[1].match(COMPONENT);
+    out.push(c ? c[1] : null);
+  }
+  return out;
+}
+const WM_FOCUS_LINE = /mCurrentFocus=(Window\{[^}]*\}|null)/;
+const INPUT_FOCUS_LINE = /name='([^']*)'/;
+
+/** Short histogram value for a focus read: the component, `null`, or `absent`. */
+function focusValue(comps) {
+  if (!comps.length) return "absent";
+  const c = comps.find((x) => x && x.startsWith(`${SETTINGS_PKG}/`)) || comps[0];
+  return c === null ? "null" : c;
+}
+
+/**
  * Parse one PROBE_CMD output.
  * @param {string} text
  * @returns {{ resumed: string | null, settingsResumed: boolean, settingsFocused: boolean,
- *   finishing: boolean, pid: string | null, clean: boolean }}
+ *   focusWm: string, focusInput: string, finishing: boolean, pid: string | null,
+ *   clean: boolean }}
  */
 function parseResetProbe(text) {
   const s = String(text || "");
   const pidAt = s.indexOf(PID_MARK);
   const focusAt = s.indexOf(FOCUS_MARK);
+  const inputAt = s.indexOf(INPUT_MARK);
   const activities = pidAt >= 0 ? s.slice(0, pidAt) : s;
   const pidPart =
     pidAt >= 0 ? s.slice(pidAt + PID_MARK.length, focusAt >= 0 ? focusAt : undefined) : "";
-  const focusPart = focusAt >= 0 ? s.slice(focusAt + FOCUS_MARK.length) : "";
+  const focusPart =
+    focusAt >= 0 ? s.slice(focusAt + FOCUS_MARK.length, inputAt >= 0 ? inputAt : undefined) : "";
+  const inputPart = inputAt >= 0 ? s.slice(inputAt + INPUT_MARK.length) : "";
 
   let resumed = null;
   let finishing = false;
@@ -101,14 +152,18 @@ function parseResetProbe(text) {
     .split(/\s+/)
     .filter((x) => /^\d+$/.test(x));
   const pid = pids.length ? pids.join(" ") : null;
-  const focusM = focusPart.match(/mCurrentFocus=Window\{[^}]*\}/);
-  const focusComp = focusM ? (focusM[0].match(COMPONENT) || [])[1] || null : null;
+  // Every current focus line, from both sources: Settings is focused when any names it.
+  const wm = focusComponents(focusPart, WM_FOCUS_LINE);
+  const input = focusComponents(inputPart, INPUT_FOCUS_LINE);
+  const isSettings = (c) => !!c && c.startsWith(`${SETTINGS_PKG}/`);
   const settingsResumed = !!resumed && resumed.startsWith(`${SETTINGS_PKG}/`);
-  const settingsFocused = !!focusComp && focusComp.startsWith(`${SETTINGS_PKG}/`);
+  const settingsFocused = wm.some(isSettings) || input.some(isSettings);
   return {
     resumed,
     settingsResumed,
     settingsFocused,
+    focusWm: focusValue(wm),
+    focusInput: focusValue(input),
     finishing,
     pid,
     clean: settingsResumed && settingsFocused && !finishing && pid !== null,
@@ -118,7 +173,8 @@ function parseResetProbe(text) {
 /** One-line summary of a parsed probe, for logs and a timeout record. */
 function probeSummary(p) {
   return (
-    `resumed=${p.resumed || "-"} focused=${p.settingsFocused} finishing=${p.finishing} ` +
+    `resumed=${p.resumed || "-"} focused=${p.settingsFocused} ` +
+    `(wm=${p.focusWm || "-"} input=${p.focusInput || "-"}) finishing=${p.finishing} ` +
     `pid=${p.pid || "-"}`
   );
 }
@@ -177,6 +233,9 @@ async function waitSettingsReady(o) {
   for (;;) {
     const p = parseResetProbe(o.probe());
     polls++;
+    // Run 37591260027 finding 6: what each focus source named, every poll.
+    count(`focus:${p.focusWm}`);
+    count(`focus-input:${p.focusInput}`);
     const last = probeSummary(p);
     const now = o.now();
     if (p.clean) {
@@ -249,6 +308,7 @@ module.exports = {
   classifyAmStart,
   PID_MARK,
   FOCUS_MARK,
+  INPUT_MARK,
   KILL_GUARD_MS,
   RELAUNCH_AFTER_MS,
   parseResetProbe,

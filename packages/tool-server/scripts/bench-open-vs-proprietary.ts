@@ -15,8 +15,9 @@
  * output rather than silently scored as the wrong backend.
  *
  * The UiAutomation channel is exclusive AND exclusive between the ADT apk and
- * the open server: blocks run OFF-1 -> ON -> OFF-2, force-stopping the other
- * instrumentation + killing simulator-server between blocks. OFF-2 detects drift.
+ * the open server: blocks alternate OFF and ON (ABBA since run 37591260027: OFF-1,
+ * ON-im-1, ON-uia, OFF-2, ON-im-2, OFF-3, ON-im-3, OFF-legacy), force-stopping the other
+ * instrumentation + killing simulator-server between blocks.
  *
  * Run against a booted emulator that exposes gRPC with a token (the proprietary
  * simulator-server `android` controller discovers the emulator via the
@@ -80,10 +81,14 @@ import { summarize } from "../../../.github/bench-ci/stats.js";
 import {
   TTC_POLL_MS,
   TTC_BUDGET_MS,
+  TD_VARIANTS,
   classifyDestination,
   deriveDestinationMarkers,
   summarizeDestination,
+  variantCounts,
+  variantSchedule,
 } from "../../../.github/bench-ci/tap-describe-destination.js";
+import { MARKER_TAG, markerMessage } from "../../../.github/bench-ci/logcat-timeline.js";
 import {
   PROBE_CMD as SETTINGS_PROBE_CMD,
   RELAUNCH_CMD as SETTINGS_RELAUNCH_CMD,
@@ -91,6 +96,8 @@ import {
   waitSettingsReady,
 } from "../../../.github/bench-ci/settings-reset.js";
 import { openServerEmptyTreeCount } from "../src/tools/describe/platforms/android/index";
+import { simulatorServerRef } from "../src/blueprints/simulator-server";
+import { statTicks } from "../../../.github/bench-ci/load-sampler.js";
 
 /* -------------------------------------------------------------------------- */
 /* Config + guards                                                           */
@@ -117,6 +124,10 @@ if (!SERIAL.startsWith("emulator-")) {
   throw new Error(`BENCH_SERIAL must be an emulator- serial (got "${SERIAL}"); refusing.`);
 }
 
+// Run 37591260027 ("Next run", ABBA): the ON-only diagnostic phases run in these blocks
+// only. ON-im-1 in the ABBA design; the pre-ABBA single ON blocks keep them.
+const ON_DIAGNOSTIC_BLOCKS = new Set(["ON-im-1", "ON-input-manager", "ON-uiautomation"]);
+
 const SETTINGS = "com.android.settings";
 const CHROME = "com.android.chrome";
 const OPEN_PKG = "com.argent.devicecontrol";
@@ -138,6 +149,44 @@ function adb(args: string[], timeoutMs = 20_000): string {
 }
 function adbShell(cmd: string, timeoutMs = 20_000): string {
   return adb(["shell", cmd], timeoutMs);
+}
+
+/* -------------------------------------------------------------------------- */
+/* logcat markers + phase context (review 2026-10-07 run 37591260027)          */
+/* -------------------------------------------------------------------------- */
+
+// The block being measured (markers and the phase context name it).
+let currentBlock = "?";
+
+// Finding 1 / "Next run": a logcat marker at each timed t0, `log -t BENCH "<block> <verb>
+// <i> t0"` (logcat-timeline.js markerMessage), so the merge can align the tap with the
+// destination's first frame and the end of its transition. Written synchronously just
+// before t0 is taken, never inside the timed window, the same call on every arm. A
+// failed marker is logged once and never fails the block.
+let markerFailed = false;
+function benchMarker(verb: string, i: number): void {
+  try {
+    adb(["shell", "log", "-t", MARKER_TAG, `'${markerMessage(currentBlock, verb, i)}'`], 5_000);
+  } catch (e) {
+    if (!markerFailed)
+      realDebug(
+        `[bench] logcat marker failed (timeline will miss samples): ${e instanceof Error ? e.message : String(e)}`
+      );
+    markerFailed = true;
+  }
+}
+
+// Finding 1: the load sampler (.github/bench-ci/load-sampler.js) attributes each 10 s
+// interval to the phase written here (`block <name> phase <phase>`, the context file the
+// emulator watchdog also reads).
+function setPhase(phase: string): void {
+  const f = process.env.BENCH_CONTEXT_FILE;
+  if (!f) return;
+  try {
+    writeFileSync(f, `block ${currentBlock} phase ${phase}\n`);
+  } catch {
+    /* diagnostics only */
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -254,7 +303,7 @@ function noteTimedEmpty(acc: EmptyAcc, mark: WindowMark, label: string, i: numbe
 
 // Time to a correct describe (run 37578606526, review finding 12; extends the run
 // 37571460849 time-to-non-empty loop). Every timed tap+describe read is classified
-// (correct / stale / empty / other, .github/bench-ci/tap-describe-destination.js). When
+// (correct / pre-transition / empty / other, .github/bench-ci/tap-describe-destination.js). When
 // the timed read is correct, its time-to-correct is the timed latency itself. Otherwise
 // one untimed describe loop (the same call, TTC_POLL_MS apart, up to TTC_BUDGET_MS after
 // the timed read) runs until a read is correct, on EVERY sample, not only after an empty
@@ -266,6 +315,8 @@ interface TtneSample {
   polls: number;
 }
 interface TtcSample {
+  // The variant's loop iteration (the index in its BENCH logcat marker).
+  i: number;
   cls: DestinationClass;
   latencyMs: number;
   ttcMs: number | null;
@@ -274,7 +325,7 @@ interface TtcSample {
   // Only when the timed read was empty: the first non-empty read of the loop.
   ttne: TtneSample | null;
 }
-type DestinationClass = "correct" | "stale" | "empty" | "other";
+type DestinationClass = "correct" | "preTransition" | "empty" | "other";
 interface DestinationMarkers {
   dest: string[];
   root: string[];
@@ -285,12 +336,13 @@ async function measureTimeToCorrect(
   markers: DestinationMarkers,
   timed: unknown,
   t0: number,
-  timedEnd: number
+  timedEnd: number,
+  i: number
 ): Promise<TtcSample> {
   const latencyMs = Number((timedEnd - t0).toFixed(3));
   const cls = classifyDestination(timed, markers) as DestinationClass;
   if (cls === "correct")
-    return { cls, latencyMs, ttcMs: latencyMs, censoredAtMs: null, polls: 0, ttne: null };
+    return { i, cls, latencyMs, ttcMs: latencyMs, censoredAtMs: null, polls: 0, ttne: null };
   const wasEmpty = cls === "empty";
   let ttne: TtneSample | null = null;
   let polls = 0;
@@ -307,6 +359,7 @@ async function measureTimeToCorrect(
       };
     if (c === "correct")
       return {
+        i,
         cls,
         latencyMs,
         ttcMs: Number((now - t0).toFixed(3)),
@@ -316,6 +369,7 @@ async function measureTimeToCorrect(
       };
     if (now - timedEnd >= TTC_BUDGET_MS)
       return {
+        i,
         cls,
         latencyMs,
         ttcMs: null,
@@ -783,6 +837,7 @@ async function timeGestureDrained(
     if (setup) await setup(i).catch(() => undefined);
     if (setup) resetWaitMs.push(resetWaitSince(resetMark));
     const mark = windowMark();
+    benchMarker(label, i);
     const t0 = performance.now();
     let sample: { total: number; gesture: number } | null = null;
     try {
@@ -846,6 +901,7 @@ async function timeCalls(
     if (setup) await setup(i).catch(() => undefined);
     if (setup) resetWaitMs.push(resetWaitSince(resetMark));
     const mark = windowMark();
+    benchMarker(label, i);
     const t0 = performance.now();
     let dt: number | null = null;
     try {
@@ -918,6 +974,8 @@ interface TapEffectResult extends VerbResult {
   locateVia: { dump: number; describe: number };
   // F7: per-miss identity strings for the first-attempt no-effect taps (capped).
   noEffectSamples: string[];
+  // Loop iterations of this verb (timed or excluded), the range of its marker index.
+  iterations?: number;
 }
 
 /**
@@ -946,8 +1004,46 @@ async function timeTapEffect(
   // Run 37578606526 (review finding 12): tap+describe's destination check. After EVERY
   // timed window (never inside it), the timed read is classified and the untimed
   // time-to-correct loop runs (measureTimeToCorrect), before the effect poll.
-  afterTimed?: (timed: unknown, t0: number, timedEnd: number) => Promise<TtcSample>
+  afterTimed?: (timed: unknown, t0: number, timedEnd: number, i: number) => Promise<TtcSample>
 ): Promise<TapEffectResult> {
+  const [r] = await timeTapEffectVariants(
+    [{ label, timedTapAt, afterTimed }],
+    new Array<number>(N).fill(0),
+    target,
+    reg,
+    fingerprint,
+    ensureOrigin,
+    restoreBack
+  );
+  return r!;
+}
+
+// One effect-checked tap variant: its verb label, the timed call and the optional
+// destination check that runs after its timed window.
+interface TapVariant {
+  label: string;
+  timedTapAt: (x: number, y: number, i: number) => Promise<unknown>;
+  afterTimed?: (timed: unknown, t0: number, timedEnd: number, i: number) => Promise<TtcSample>;
+}
+
+/**
+ * timeTapEffect over several variants interleaved per sample (review 2026-10-07 run
+ * 37591260027 finding 4). `schedule[k]` is the variant index of loop iteration k (a
+ * seeded shuffle, tap-describe-destination.js variantSchedule), so every variant sees the
+ * same drift, load and screen history within the block. Each iteration is exactly the
+ * single-variant iteration below (locate, origin, BENCH marker, timed call, destination
+ * check, effect poll, BACK), counted on its own variant; `i` is the variant's own
+ * iteration number. One result per variant, in `variants` order.
+ */
+async function timeTapEffectVariants(
+  variants: TapVariant[],
+  schedule: number[],
+  target: string,
+  reg: Reg,
+  fingerprint: () => Promise<string | undefined>,
+  ensureOrigin: () => Promise<void>,
+  restoreBack: () => Promise<void>
+): Promise<TapEffectResult[]> {
   // Canonical ROOT fingerprint: after a reset, the first defined fingerprint is the
   // root the navigating tap moves AWAY from. Used only to confirm BACK restored it.
   let rootFp: string | undefined;
@@ -956,141 +1052,163 @@ async function timeTapEffect(
     rootFp = await fingerprint().catch(() => undefined);
   }
   for (let i = 0; i < WARMUP; i++) {
+    const v = variants[i % variants.length]!;
     const loc = await locateTargetCoord(reg, target);
-    if (loc) await timedTapAt(loc.x, loc.y, i).catch(() => undefined);
+    if (loc) await v.timedTapAt(loc.x, loc.y, i).catch(() => undefined);
     await ensureOrigin().catch(() => undefined);
   }
-  const mark = debugLines.length;
-  const lat: number[] = [];
-  let errors = 0;
-  const errorSamples: string[] = [];
-  let effectChecked = 0;
-  let effectZero = 0;
-  let originLost = 0;
-  let locateFailed = 0;
-  let coordMoved = 0;
-  const locateVia = { dump: 0, describe: 0 };
-  // F7: identity of each first-attempt no-effect tap (block/verb/iteration, origin
-  // and final fingerprints, timings, coordinate + locate source), so a 59/60 is
-  // diagnosable from the artifacts rather than a bare aggregate count.
-  const noEffectSamples: string[] = [];
-  const empty = newEmptyAcc();
-  const emptyLat: number[] = [];
-  const ttne: TtneSample[] = [];
-  const ttc: TtcSample[] = [];
+  const accs = variants.map(() => ({
+    iter: 0,
+    lat: [] as number[],
+    errors: 0,
+    errorSamples: [] as string[],
+    effectChecked: 0,
+    effectZero: 0,
+    originLost: 0,
+    locateFailed: 0,
+    coordMoved: 0,
+    locateVia: { dump: 0, describe: 0 },
+    // F7: identity of each first-attempt no-effect tap (block/verb/iteration, origin
+    // and final fingerprints, timings, coordinate + locate source), so a 59/60 is
+    // diagnosable from the artifacts rather than a bare aggregate count.
+    noEffectSamples: [] as string[],
+    empty: newEmptyAcc(),
+    emptyLat: [] as number[],
+    ttne: [] as TtneSample[],
+    ttc: [] as TtcSample[],
+    fallbackLines: [] as string[],
+  }));
   let prev: { x: number; y: number } | undefined;
-  for (let i = 0; i < N; i++) {
-    // 1. UNTIMED fresh locate on the CURRENT screen. If it fails, relaunch a pristine
-    //    root ONCE (the only relaunch path) and re-locate; still nothing ⇒ exclude.
-    let loc = await locateTargetCoord(reg, target);
-    if (!loc) {
-      await ensureOrigin().catch(() => undefined);
-      loc = await locateTargetCoord(reg, target);
-    }
-    if (!loc) {
-      locateFailed++;
-      if (errorSamples.length < 5)
-        errorSamples.push(`i=${i}: locate('${target}') failed — excluded`);
-      continue;
-    }
-    locateVia[loc.source]++;
-    if (prev && (Math.abs(loc.x - prev.x) > 0.002 || Math.abs(loc.y - prev.y) > 0.002))
-      coordMoved++;
-    prev = { x: loc.x, y: loc.y };
-    // 2. Origin fingerprint (baseline for the effect poll).
-    const origin = await fingerprint().catch(() => undefined);
-    if (origin === undefined) {
-      originLost++;
-      continue;
-    }
-    const originFp = origin;
-    // 3. TIMED window: the coordinate tap [+describe] through the backend under test.
-    const mark = windowMark();
-    const t0 = performance.now();
-    let dt: number;
-    let timed: unknown;
+  for (const vIdx of schedule) {
+    const v = variants[vIdx]!;
+    const a = accs[vIdx]!;
+    const i = a.iter++;
+    const label = v.label;
+    const iterMark = debugLines.length;
     try {
-      timed = await timedTapAt(loc.x, loc.y, i);
-      dt = elapsedMs(t0);
-    } catch (e) {
-      errors++;
-      if (errorSamples.length < 5)
-        errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
-      noteTimedEmpty(empty, mark, label, i);
-      await ensureOrigin().catch(() => undefined);
-      continue;
-    }
-    const timedEnd = t0 + dt;
-    const wasEmpty = noteTimedEmpty(empty, mark, label, i);
-    if (afterTimed) {
-      const s = await afterTimed(timed, t0, timedEnd);
-      ttc.push(s);
-      if (s.ttne) ttne.push(s.ttne);
-    }
-    // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
-    const changed = await pollUntil(
-      fingerprint,
-      (f) => f !== undefined && f !== originFp,
-      3000,
-      150
-    );
-    effectChecked++;
-    // The miss iteration's latency is EXCLUDED from the tap percentiles (team-lead
-    // run-6 decision): a tap that produced no effect is not a representative timing.
-    // Its count is firstTapNoEffect (printed); it is never retried away. Run
-    // 37571460849: an empty window is left out too (emptyLatencySamples, P11).
-    if (changed && wasEmpty) emptyLat.push(dt);
-    else if (changed) lat.push(dt);
-    else {
-      effectZero++;
-      // F7: capture WHY this first attempt showed no effect — the fingerprint the
-      // poll ended on, the origin it was compared against, the tapped coordinate and
-      // its locate source, and the tap timing — so a silent 59/60 is explicable.
-      const finalFp = await fingerprint().catch(() => undefined);
-      const sample =
-        `i=${i} verb='${label}' tapMs=${dt} coord=(${loc.x.toFixed(4)},${loc.y.toFixed(4)}) ` +
-        `via=${loc.source} originFp='${originFp}' finalFp='${finalFp ?? "(undef)"}'`;
-      if (noEffectSamples.length < 10) noEffectSamples.push(sample);
-      realDebug(`[bench][no-effect] ${sample}`);
-    }
-    // 5. Restore for the next iteration: BACK; if not back on the root, hard-reset.
-    if (changed) {
-      await restoreBack().catch(() => undefined);
-      const restored = await pollUntil(
+      // 1. UNTIMED fresh locate on the CURRENT screen. If it fails, relaunch a pristine
+      //    root ONCE (the only relaunch path) and re-locate; still nothing ⇒ exclude.
+      let loc = await locateTargetCoord(reg, target);
+      if (!loc) {
+        await ensureOrigin().catch(() => undefined);
+        loc = await locateTargetCoord(reg, target);
+      }
+      if (!loc) {
+        a.locateFailed++;
+        if (a.errorSamples.length < 5)
+          a.errorSamples.push(`i=${i}: locate('${target}') failed — excluded`);
+        continue;
+      }
+      a.locateVia[loc.source]++;
+      if (prev && (Math.abs(loc.x - prev.x) > 0.002 || Math.abs(loc.y - prev.y) > 0.002))
+        a.coordMoved++;
+      prev = { x: loc.x, y: loc.y };
+      // 2. Origin fingerprint (baseline for the effect poll).
+      const origin = await fingerprint().catch(() => undefined);
+      if (origin === undefined) {
+        a.originLost++;
+        continue;
+      }
+      const originFp = origin;
+      // 3. TIMED window: the coordinate tap [+describe] through the backend under test,
+      //    after the BENCH logcat marker (outside the window).
+      const mark = windowMark();
+      benchMarker(label, i);
+      const t0 = performance.now();
+      let dt: number;
+      let timed: unknown;
+      try {
+        timed = await v.timedTapAt(loc.x, loc.y, i);
+        dt = elapsedMs(t0);
+      } catch (e) {
+        a.errors++;
+        if (a.errorSamples.length < 5)
+          a.errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+        noteTimedEmpty(a.empty, mark, label, i);
+        await ensureOrigin().catch(() => undefined);
+        continue;
+      }
+      const timedEnd = t0 + dt;
+      const wasEmpty = noteTimedEmpty(a.empty, mark, label, i);
+      if (v.afterTimed) {
+        const s = await v.afterTimed(timed, t0, timedEnd, i);
+        a.ttc.push(s);
+        if (s.ttne) a.ttne.push(s.ttne);
+      }
+      // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
+      const changed = await pollUntil(
         fingerprint,
-        (f) => f !== undefined && f === rootFp,
-        2000,
+        (f) => f !== undefined && f !== originFp,
+        3000,
         150
       );
-      if (!restored) {
-        originLost++;
-        await ensureOrigin().catch(() => undefined);
+      a.effectChecked++;
+      // The miss iteration's latency is EXCLUDED from the tap percentiles (team-lead
+      // run-6 decision): a tap that produced no effect is not a representative timing.
+      // Its count is firstTapNoEffect (printed); it is never retried away. Run
+      // 37571460849: an empty window is left out too (emptyLatencySamples, P11).
+      if (changed && wasEmpty) a.emptyLat.push(dt);
+      else if (changed) a.lat.push(dt);
+      else {
+        a.effectZero++;
+        // F7: capture WHY this first attempt showed no effect — the fingerprint the
+        // poll ended on, the origin it was compared against, the tapped coordinate and
+        // its locate source, and the tap timing — so a silent 59/60 is explicable.
+        const finalFp = await fingerprint().catch(() => undefined);
+        const sample =
+          `i=${i} verb='${label}' tapMs=${dt} coord=(${loc.x.toFixed(4)},${loc.y.toFixed(4)}) ` +
+          `via=${loc.source} originFp='${originFp}' finalFp='${finalFp ?? "(undef)"}'`;
+        if (a.noEffectSamples.length < 10) a.noEffectSamples.push(sample);
+        realDebug(`[bench][no-effect] ${sample}`);
       }
+      // 5. Restore for the next iteration: BACK; if not back on the root, hard-reset.
+      if (changed) {
+        await restoreBack().catch(() => undefined);
+        const restored = await pollUntil(
+          fingerprint,
+          (f) => f !== undefined && f === rootFp,
+          2000,
+          150
+        );
+        if (!restored) {
+          a.originLost++;
+          await ensureOrigin().catch(() => undefined);
+        }
+      }
+    } finally {
+      // The open-server fallback lines this iteration logged, on its own variant.
+      for (const l of debugLines.slice(iterMark))
+        if (OPEN_SERVER_FALLBACK.test(l)) a.fallbackLines.push(l);
     }
   }
-  const fb = fallbackCountSince(mark);
-  return {
-    verb: label,
-    latency: summarize(lat),
-    latencySamples: lat.slice(),
-    errors,
-    errorSamples,
-    fallbacks: fb.count,
-    fallbackSamples: fb.samples,
-    treeEmpty: empty.count,
-    treeEmptySamples: empty.samples,
-    describeWindows: empty.describeWindows,
-    emptyLatencySamples: emptyLat,
-    ...(afterTimed ? { timeToNonEmpty: summarizeTtne(ttne), ...summarizeDestination(ttc) } : {}),
-    effectChecked,
-    effectZero,
-    originLost,
-    firstTapNoEffect: effectZero,
-    locateFailed,
-    coordMoved,
-    locateVia,
-    noEffectSamples,
-  };
+  return variants.map((v, k) => {
+    const a = accs[k]!;
+    return {
+      verb: v.label,
+      latency: summarize(a.lat),
+      latencySamples: a.lat.slice(),
+      errors: a.errors,
+      errorSamples: a.errorSamples,
+      fallbacks: a.fallbackLines.length,
+      fallbackSamples: a.fallbackLines.slice(0, 3),
+      treeEmpty: a.empty.count,
+      treeEmptySamples: a.empty.samples,
+      describeWindows: a.empty.describeWindows,
+      emptyLatencySamples: a.emptyLat,
+      ...(v.afterTimed
+        ? { timeToNonEmpty: summarizeTtne(a.ttne), ...summarizeDestination(a.ttc) }
+        : {}),
+      effectChecked: a.effectChecked,
+      effectZero: a.effectZero,
+      originLost: a.originLost,
+      firstTapNoEffect: a.effectZero,
+      locateFailed: a.locateFailed,
+      coordMoved: a.coordMoved,
+      locateVia: a.locateVia,
+      noEffectSamples: a.noEffectSamples,
+      iterations: a.iter,
+    };
+  });
 }
 
 /**
@@ -2422,6 +2540,11 @@ function buildProvenance(config: "OFF" | "ON"): BuildProvenance {
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
+  // Run 37591260027 finding 4: the seeded per-sample order of the tap+describe variants
+  // this block ran (verb names, in loop order).
+  tapDescribeSchedule?: string[];
+  // Run 37591260027 ("Next run"): whether the ON-only diagnostics ran in this block.
+  onDiagnostics?: boolean;
   buildProvenance?: BuildProvenance;
   // Phase 3n: the on-device injection strategy this ON block requested (uia-sync /
   // uia-async / input-manager), or undefined for the DEFAULT / OFF arms.
@@ -2592,6 +2715,8 @@ async function runBlock(
   injectStrategy?: OpenInjectStrategy | "default"
 ): Promise<BlockResult> {
   const notes: string[] = [];
+  currentBlock = block;
+  setPhase("cold-start");
   // Review 2026-10-07 finding 3: every open-server "falling back" line from here to the
   // end of the block (cold start and untimed calls included) is counted; an ON block
   // with any fails (main() writes the block JSON first, then exits non-zero).
@@ -2612,6 +2737,7 @@ async function runBlock(
 
   const coldStartMs = await coldStart(config);
 
+  setPhase("setup");
   await teardownBackend();
   const reg = createRegistry();
   // Review 2026-10-07 finding 3 (Q4 equality): count every gesture tool call this
@@ -2672,6 +2798,7 @@ async function runBlock(
   // describes (phase 3i correction): the verb p50/p95 and the stage + host/server
   // timeline table are now one sample, not a latency loop minus a separate
   // Math.min(N,10) split loop with untimed setup between calls.
+  setPhase("describe-idle");
   const idle = await describeIdleLatencyWithStages(reg, "describe", N);
   const describeRes = idle.verb;
   const describeSplitIdle = idle.split;
@@ -2702,31 +2829,13 @@ async function runBlock(
     }, n=${adbFF.n})`
   );
 
-  // screenshot — NOT a latency verb (F6). The two backends return different-sized
-  // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
-  // side by side compares an encode of very different pixel counts, not the same
-  // work. We capture dims once for the report and note the asymmetry instead of
-  // scoring a bogus latency row.
+  // screenshot — NOT a latency verb (F6), and taken at the END of the block since run
+  // 37591260027 (Part A): on OFF the first simulator-server-backed tool call spawns the
+  // proprietary host process, and a screenshot may additionally start its frame stream
+  // (gRPC streamScreenshot). A headless agent's first such call is usually a tap, so the
+  // timed phases run with only what a tap starts; the screenshot's dims are read after
+  // the last timed verb (see "screenshot" below).
   let shot = { bytes: 0, width: 0, height: 0, format: "unknown" };
-  try {
-    const s = (await reg.invokeTool("screenshot", {
-      udid: SERIAL,
-      includeImageInContext: false,
-    })) as { image: { hostPath: string; mimeType: string; size: number } };
-    const info = pngInfo(s.image.hostPath);
-    shot = {
-      bytes: info.bytes,
-      width: info.width,
-      height: info.height,
-      format: s.image.mimeType + (info.sig ? " (PNG sig ok)" : " (no PNG sig)"),
-    };
-  } catch {
-    /* dims stay zero */
-  }
-  notes.push(
-    "screenshot latency row removed (F6): OFF and ON return different-resolution " +
-      "frames, so a side-by-side latency is not like-for-like — see the dims below."
-  );
 
   // Derive a NAVIGATING tap target once (a real Settings category that opens a
   // sub-screen), then reuse it for the effect-checked gesture-tap / tap+describe
@@ -2734,6 +2843,7 @@ async function runBlock(
   // a gap and change nothing — worthless for an effect check — so the effect gate
   // taps a known-navigating row. On the pristine Settings root this target is
   // stable across resets.
+  setPhase("nav-derive");
   const nav = await deriveNavTarget(reg, config === "ON" ? true : undefined);
   const tapX = nav ? nav.x : 0.5;
   const tapY = nav ? nav.y : 0.5;
@@ -2776,6 +2886,7 @@ async function runBlock(
   // as first-attempt taps missing during the measured loop. Skipped when no target
   // was derivable (canEffect false — already surfaced as no effect check).
   let oracleSelfTestPassed = true;
+  setPhase("oracle-self-test");
   if (canEffect) {
     oracleSelfTestPassed = await oracleSelfTest(
       target,
@@ -2793,6 +2904,7 @@ async function runBlock(
     );
     await ensureSettings(reg);
   }
+  setPhase("gesture-tap");
   // gesture-tap. TIMED = the coordinate tap ONLY; the per-iteration UNTIMED fresh
   // locate + the effect poll + BACK restore are outside the timed window (phase 3h).
   // effectZero = firstTapNoEffect counts the FIRST tap missing; the block fails on
@@ -2814,31 +2926,47 @@ async function runBlock(
   await ensureSettings(reg);
 
   // tap+describe (F4 / P3d): what an agent actually does (act, then read). TIMED
-  // window = coordinate tap RPC + describe RPC; the fresh locate, effect poll and BACK
-  // restore are outside it. ON runs both idle policies (settle:false like-for-like,
-  // settle:true our policy); OFF has one policy.
+  // window = coordinate tap RPC + the variant's read; the fresh locate, effect poll and
+  // BACK restore are outside it.
+  //
+  // Review 2026-10-07 run 37591260027 finding 4: three variants on EVERY block, one per
+  // sample in a seeded random order (tap-describe-destination.js variantSchedule, seeded
+  // by the block name, recorded as `tapDescribeSchedule`): settle:false, settle:true
+  // (the proprietary path ignores `settle`, so on OFF both are its plain describe) and
+  // tap → await-screen-idle → describe with the tools' defaults, the call an agent on
+  // either backend makes to read a settled screen. P5 is pre-registered on the await
+  // variant (time-to-correct AND correct-at-first-read); the other two are report only.
+  // No row is picked after the fact.
+  setPhase("tap+describe");
+  type TdCall = { settle?: boolean; awaitIdle?: boolean };
+  const TD_CALLS: Record<string, TdCall> = {
+    "tap+describe(settle:false)": { settle: false },
+    "tap+describe(settle:true)": { settle: true },
+    "tap+await-idle+describe": { awaitIdle: true },
+  };
+  const tdRead = (c: TdCall): Promise<unknown> =>
+    reg.invokeTool("describe", {
+      udid: SERIAL,
+      ...(c.settle === undefined ? {} : { settle: c.settle }),
+    });
   const tapDescribeAt =
-    (settle?: boolean) =>
+    (c: TdCall) =>
     async (x: number, y: number, _i: number): Promise<unknown> => {
       await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
+      if (c.awaitIdle) await reg.invokeTool("await-screen-idle", { udid: SERIAL });
       // The describe reply leaves the timed window as its result; it is classified after.
-      return reg.invokeTool("describe", {
-        udid: SERIAL,
-        ...(settle === undefined ? {} : { settle }),
-      });
+      return tdRead(c);
     };
-  const tapThenDescribeFixed = (settle?: boolean) => async (): Promise<void> => {
+  const tapThenDescribeFixed = (c: TdCall) => async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
-    await reg.invokeTool("describe", {
-      udid: SERIAL,
-      ...(settle === undefined ? {} : { settle }),
-    });
+    if (c.awaitIdle) await reg.invokeTool("await-screen-idle", { udid: SERIAL });
+    await tdRead(c);
   };
   // Run 37578606526 (review finding 12): after EVERY timed tap+describe, classify the
   // timed read against this block's destination markers and run the untimed
-  // time-to-correct loop (same describe call, 50 ms apart, up to 3 s), on every arm. No
-  // valid markers (the derive never saw a distinct destination): no destination check,
-  // said in the notes, and the merge has no time-to-correct for P5 (N/A).
+  // time-to-correct loop (the variant's describe call, 50 ms apart, up to 3 s), on every
+  // arm. No valid markers (the derive never saw a distinct destination): no destination
+  // check, said in the notes, and the merge has no time-to-correct for P5 (N/A).
   const destMarkers = nav && nav.destinationMarkers.valid ? nav.destinationMarkers : null;
   if (nav && !destMarkers) {
     notes.push(
@@ -2847,38 +2975,34 @@ async function runBlock(
     );
   }
   const ttcAfterTimed =
-    (settle?: boolean) =>
-    (timed: unknown, t0: number, timedEnd: number): Promise<TtcSample> =>
-      measureTimeToCorrect(
-        () =>
-          reg.invokeTool("describe", {
-            udid: SERIAL,
-            ...(settle === undefined ? {} : { settle }),
-          }),
-        destMarkers!,
-        timed,
-        t0,
-        timedEnd
-      );
-  const runTapDescribe = (name: string, settle?: boolean): Promise<VerbResult> =>
-    canEffect
-      ? timeTapEffect(
-          name,
-          target,
-          tapDescribeAt(settle),
-          reg,
-          fingerprint,
-          ensureOrigin,
-          restoreBack,
-          destMarkers ? ttcAfterTimed(settle) : undefined
-        )
-      : timeCalls(name, tapThenDescribeFixed(settle), undefined, ensureOrigin);
-  // Review 2026-10-07 finding 8: the ON-only settle:true row runs AFTER the latency
-  // verbs (below), so it no longer loads the ON arms before swipe/await/paste/pinch.
-  if (config === "ON") {
-    verbs.push(await runTapDescribe("tap+describe(settle:false)", false));
+    (c: TdCall) =>
+    (timed: unknown, t0: number, timedEnd: number, i: number): Promise<TtcSample> =>
+      measureTimeToCorrect(() => tdRead(c), destMarkers!, timed, t0, timedEnd, i);
+  const tdCounts = variantCounts(N) as number[];
+  const tdSchedule = variantSchedule(tdCounts, block) as number[];
+  const tapDescribeSchedule = tdSchedule.map((k) => TD_VARIANTS[k] as string);
+  if (canEffect) {
+    const tdVariants: TapVariant[] = (TD_VARIANTS as string[]).map((label) => ({
+      label,
+      timedTapAt: tapDescribeAt(TD_CALLS[label]!),
+      afterTimed: destMarkers ? ttcAfterTimed(TD_CALLS[label]!) : undefined,
+    }));
+    verbs.push(
+      ...(await timeTapEffectVariants(
+        tdVariants,
+        tdSchedule,
+        target,
+        reg,
+        fingerprint,
+        ensureOrigin,
+        restoreBack
+      ))
+    );
   } else {
-    verbs.push(await runTapDescribe("tap+describe", undefined));
+    for (const label of TD_VARIANTS as string[])
+      verbs.push(
+        await timeCalls(label, tapThenDescribeFixed(TD_CALLS[label]!), undefined, ensureOrigin)
+      );
   }
 
   await ensureSettings(reg);
@@ -2886,6 +3010,7 @@ async function runBlock(
   // waitedMs/captureMs split for describe right after a tap into a content-heavy
   // sub-screen — the tap+describe scenario. `setup` resets to root then taps, so
   // each describe reads a freshly-navigated (possibly still-settling) screen.
+  setPhase("describe-split");
   const describeSplitAfterTap = await describeSplit(reg, Math.min(N, 10), async () => {
     await ensureSettings(reg);
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY }).catch(() => undefined);
@@ -2908,6 +3033,7 @@ async function runBlock(
   // so an async final UP still queued when the RPC returns is paid for; the swipe call
   // alone is kept as the no-drain column. The server returns no delivered gesture
   // duration (`{ swiped, timestampMs }` only), so none is recorded per sample.
+  setPhase("gesture-swipe");
   const drainRead = async (): Promise<void> => {
     await reg.invokeTool("describe", { udid: SERIAL, settle: false });
   };
@@ -2935,6 +3061,7 @@ async function runBlock(
   // ALREADY-idle screen (run-2 OFF-2 degraded here: it capped 20/20 because the block
   // started on a still-rendering screen). The 20 back-to-back await-* calls below do
   // not change the screen, so one robust settle holds for the whole await section.
+  setPhase("await");
   const settledLines = await ensureSettledSettingsRoot(reg);
 
   // await-screen-idle (already idle -> resolve time)
@@ -2981,6 +3108,7 @@ async function runBlock(
   // after a reset (run-2 OFF-2, run-3 OFF-1 both degraded here). Retry the settle +
   // describe + locate a few times before giving up, so an intermittent render race is
   // not scored as a degraded arm.
+  setPhase("paste");
   let pasteReady = false;
   for (let attempt = 0; attempt < 3 && !pasteReady; attempt++) {
     await ensureSettledSettingsRoot(reg);
@@ -3017,6 +3145,7 @@ async function runBlock(
   // verb absorbed the PREVIOUS iteration's zoom-settle animation into the next
   // call's implicit `waitForIdle` (the 1029 ms pinch in v3), so the number was
   // measuring idle-wait drift, not the gesture.
+  setPhase("gesture-pinch");
   const chromeOk = await ensureChrome(reg);
   if (!chromeOk)
     notes.push("gesture-pinch: Chrome/example.com did not confirm content; latency still measured");
@@ -3055,38 +3184,77 @@ async function runBlock(
     )
   );
 
+  // screenshot dims, after the last timed verb (Part A, run 37591260027: see the
+  // declaration of `shot` above). Not a latency verb (F6): OFF and ON return different
+  // resolutions.
+  setPhase("screenshot");
+  try {
+    const s = (await reg.invokeTool("screenshot", {
+      udid: SERIAL,
+      includeImageInContext: false,
+    })) as { image: { hostPath: string; mimeType: string; size: number } };
+    const info = pngInfo(s.image.hostPath);
+    shot = {
+      bytes: info.bytes,
+      width: info.width,
+      height: info.height,
+      format: s.image.mimeType + (info.sig ? " (PNG sig ok)" : " (no PNG sig)"),
+    };
+  } catch {
+    /* dims stay zero */
+  }
+  notes.push(
+    "screenshot latency row removed (F6): OFF and ON return different-resolution " +
+      "frames, so a side-by-side latency is not like-for-like — see the dims below. " +
+      "Taken after the last timed verb (run 37591260027 Part A)."
+  );
+
   // ---- ON-only diagnostics, AFTER every latency verb (review 2026-10-07 finding 8) ----
   // ping, the 2xN getNestedState / getState+screenshot decompositions, the nested-reply
-  // capture, the phase-3j experiment, the tap+describe(settle:true) policy row and the
-  // fingerprinted after-tap split used to run before tap/swipe on ON blocks only, so the
-  // ON arms measured their latency verbs after extra warm-up load OFF never got. They
-  // now run here, after the last latency verb, and change no OFF-vs-ON row.
+  // capture, the phase-3j experiment, the end-of-block tap+describe(settle:true) row and
+  // the fingerprinted after-tap split run after the last latency verb and change no
+  // OFF-vs-ON row. Run 37591260027 ("Next run", ABBA): they run in ONE ON block only
+  // (ON-im-1; the pre-ABBA single ON blocks keep them), so eight blocks fit the job.
+  const onDiagnostics = config === "ON" && ON_DIAGNOSTIC_BLOCKS.has(block);
   const rpcBreakdowns: RpcBreakdown[] = [];
   let phase3j: Phase3jResults | undefined;
-  if (config === "ON") {
+  if (onDiagnostics) setPhase("on-diagnostics");
+  if (onDiagnostics && canEffect) {
+    // Report only: settle:true run back to back at the end of the block (its interleaved
+    // samples are the tap+describe(settle:true) variant above).
     await ensureSettings(reg);
-    verbs.push(await runTapDescribe("tap+describe(settle:true)", true));
+    verbs.push(
+      await timeTapEffect(
+        "tap+describe(settle:true) end-of-block",
+        target,
+        tapDescribeAt({ settle: true }),
+        reg,
+        fingerprint,
+        ensureOrigin,
+        restoreBack,
+        destMarkers ? ttcAfterTimed({ settle: true }) : undefined
+      )
+    );
     await ensureSettings(reg);
   }
   // Phase 3m.1 (3M-M4): a companion after-tap split read with fingerprints ON, so
   // `describeSplitAfterTapFp.stages.fingerprintMs` measures the opt-in rebuild cost
   // (the plain split above is opt-out and reads fingerprintMs 0 tautologically).
   // ON arms only; the proprietary path has no open server.
-  const describeSplitAfterTapFp =
-    config === "ON"
-      ? await describeSplitAfterTapFingerprints(reg, Math.min(N, 10), tapX, tapY)
-      : null;
+  const describeSplitAfterTapFp = onDiagnostics
+    ? await describeSplitAfterTapFingerprints(reg, Math.min(N, 10), tapX, tapY)
+    : null;
 
   // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
   // this is an ON-only probe; OFF blocks report nulls.
-  const ping = config === "ON" ? await measurePing(reg, N) : { p50: null, p95: null, n: 0 };
+  const ping = onDiagnostics ? await measurePing(reg, N) : { p50: null, p95: null, n: 0 };
 
   // Back-to-back RPC decompositions (phase 3i), ON only, on the idle Settings root.
   // getNestedState = the describe path (big nested text, no screenshot);
   // getState+screenshot = a JPEG-heavy payload. Comparing the 5-point timeline of
   // the two (and vs ping) shows whether the residual scales per-byte or is a fixed
   // per-request cost. Back-to-back so the piggybacked prevServer* is clean.
-  if (config === "ON") {
+  if (onDiagnostics) {
     await ensureSettings(reg);
     const nested = await measureRpcBreakdown(
       reg,
@@ -3166,7 +3334,7 @@ async function runBlock(
   // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
   // baseline (proprietary path leaves these null) and ON to read the open path.
   realDebug(formatStageTable(config, describeSplitIdle, describeSplitAfterTap));
-  if (config === "ON") {
+  if (onDiagnostics) {
     realDebug(
       `[bench] ${config} ping p50/p95=${ping.p50 === null ? "-" : ping.p50.toFixed(2)}/${
         ping.p95 === null ? "-" : ping.p95.toFixed(2)
@@ -3371,14 +3539,17 @@ async function runBlock(
         const c = v.destination!.counts;
         const t = v.timeToCorrect!;
         return (
-          `${v.verb} correct/stale/empty/other=${c.correct}/${c.stale}/${c.empty}/${c.other} ` +
+          `${v.verb} correct/pre-transition/empty/other=${c.correct}/${c.preTransition}/${c.empty}/${c.other} ` +
           `time-to-correct p50=${t.fromTapMs ? t.fromTapMs.p50.toFixed(1) : "-"} ms ` +
           `(timed out ${t.timedOut}/${t.measured})`
         );
       })
       .join("; ");
     realDebug(`[bench] ${block} destination: ${line}`);
-    notes.push(`DESTINATION CHECK: ${line} — stale = a wrong answer to the user (P12)`);
+    notes.push(
+      `DESTINATION CHECK: ${line} — pre-transition/mixed = a read that showed (part of) the ` +
+        `screen as it was before the tap (P12)`
+    );
   }
   if (resetWait.timeouts > 0) {
     notes.push(
@@ -3387,6 +3558,7 @@ async function runBlock(
     );
   }
 
+  setPhase("teardown");
   await reg.dispose().catch(() => undefined);
   await teardownBackend();
 
@@ -3396,7 +3568,7 @@ async function runBlock(
   // performed exactly one on-device injection; effect-checked verbs also injected on the
   // (excluded-from-latency) missed/errored iterations, so count `effectChecked + errors`
   // there and the full `latencySamples + errors` on the OFF-style timed verbs.
-  const INJECT_VERB = /^(gesture-tap|gesture-swipe|gesture-pinch|tap\+describe)/;
+  const INJECT_VERB = /^(gesture-tap|gesture-swipe|gesture-pinch|tap\+)/;
   const measuredInjectRpcs = verbs
     .filter((v) => INJECT_VERB.test(v.verb))
     .reduce(
@@ -3411,6 +3583,8 @@ async function runBlock(
   return {
     block,
     config,
+    tapDescribeSchedule,
+    onDiagnostics,
     injectStrategy,
     injectStrategyReported,
     injectStrategyCounts,
@@ -3457,6 +3631,221 @@ async function runBlock(
     transport: lastTransport,
     degradedReasons,
     notes,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Part A: what the proprietary stack runs in the background (run 37591260027) */
+/* -------------------------------------------------------------------------- */
+
+// Finding 1: the guest ran slower in every OFF block (tap → transition finished p50 OFF
+// 1064-1361 ms vs ON 515-620 ms; qemu CPU p50 250-262 % vs 202-210 %), with the
+// simulator-server host process alive only in OFF. From the code (identical to
+// upstream/main: blueprints/simulator-server.ts, blueprints/android-devtools.ts, the OFF
+// branch of tools/screenshot): the tool-server spawns `simulator-server android --id
+// <serial>` lazily, on the first tool that resolves the SimulatorServer service (any
+// gesture, paste or screenshot; boot-device does not), with no streaming flag and no
+// ARGENT_* env; nothing on the host reads its MJPEG endpoint except screen-recording and
+// the preview UI, which the bench never calls. The binary itself prints "MJPEG server
+// started" at spawn, and the only screen RPC it links against the emulator is
+// `EmulatorController/streamScreenshot` (a server-streaming gRPC: the emulator pushes a
+// frame on every display change; there is no single-shot getScreenshot). Whether the
+// binary opens that stream at spawn or on the first screenshot is inside the closed
+// binary, so it is measured here:
+//  - one fixed workload (adb `input swipe` up/down on the Settings root, the same in
+//    every window, driven outside both backends) with qemu and simulator-server CPU
+//    ticks read from /proc around it;
+//  - windows: A no simulator-server; B simulator-server spawned through the registry
+//    exactly as a headless agent's first gesture does it, no other call; C after one
+//    `screenshot` tool call; A2 simulator-server killed again (drift control);
+//  - the binary's own log at debug level for this process only (SIMSERVER_LOG and
+//    RUST_LOG = simulator_server=debug): which window first prints a stream lifecycle
+//    line ("Requesting screenshot stream", "Starting GRPC stream receiver", "Starting
+//    screenshot service").
+const PROBE_BG = "PROBE-BG";
+const STREAM_LINE =
+  /Requesting screenshot stream|Starting GRPC stream receiver|Starting screenshot service/i;
+// Review run 37609765062 findings 2 and 6: the per-window qemu CPU deltas stay in the
+// JSON as raw data but never in the verdict.
+const PROBE_CPU_DELTA_CAVEAT =
+  "The per-window qemu CPU deltas (qemuDeltaVsNoServerPct) are not evidence of load: " +
+  "window A includes the warm-up right after `am start`, and with qemu saturating the " +
+  "host cores (4 on CI) extra work shows as a slower guest, not as higher CPU. The " +
+  "verdict rests only on the window of the first stream lifecycle line in the " +
+  "simulator-server log.";
+const PROBE_SWIPES = 8;
+
+interface ProbeWindow {
+  window: string;
+  seconds: number;
+  qemuCpuPct: number | null;
+  simServerCpuPct: number | null;
+  simServerAlive: boolean;
+  simLines: number;
+  streamLines: number;
+}
+interface PropBackground {
+  workload: string;
+  windows: ProbeWindow[];
+  firstStreamLineWindow: string | null;
+  debugLogHonoured: boolean;
+  streamLineSamples: string[];
+  // Raw, not evidence of load: see cpuDeltaCaveat.
+  qemuDeltaVsNoServerPct: { spawnedIdle: number | null; afterScreenshot: number | null };
+  stream: "on-at-spawn" | "on-after-screenshot" | "not-seen";
+  // From the simulator-server log only (window of the first stream lifecycle line).
+  verdict: string;
+  cpuDeltaCaveat: string;
+}
+
+function pidsOf(pattern: string): number[] {
+  try {
+    return execFileSync("pgrep", ["-f", pattern], { encoding: "utf8" })
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number)
+      .filter((p) => p !== process.pid);
+  } catch {
+    return [];
+  }
+}
+function procTicks(pids: number[]): number | null {
+  let sum = 0;
+  let any = false;
+  for (const pid of pids) {
+    try {
+      const t = statTicks(readFileSync(`/proc/${pid}/stat`, "utf8"));
+      if (t != null) {
+        sum += t;
+        any = true;
+      }
+    } catch {
+      /* gone or not Linux */
+    }
+  }
+  return any ? sum : null;
+}
+
+async function runPropBackgroundProbe(): Promise<PropBackground> {
+  currentBlock = PROBE_BG;
+  setPhase("probe");
+  unsetFlag("open-device-server", "project");
+  delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
+  await teardownBackend();
+  adbShell(`am force-stop ${SETTINGS}`, 8_000);
+  adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
+  await sleep(3000);
+  const simPattern = `simulator-server .*android --id ${SERIAL}`;
+  const lines: Array<{ window: string; line: string }> = [];
+  let window = "A";
+  const rawWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    const text = String(chunk);
+    if (text.startsWith("[sim "))
+      for (const l of text.split("\n")) if (l.trim()) lines.push({ window, line: l.slice(0, 300) });
+    return (rawWrite as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  process.env.SIMSERVER_LOG = "simulator_server=debug";
+  process.env.RUST_LOG = "simulator_server=debug";
+  const reg = createRegistry();
+  const workload = async (): Promise<void> => {
+    for (let k = 0; k < PROBE_SWIPES; k++) {
+      adbShell("input swipe 540 1700 540 900 250", 8_000);
+      await sleep(700);
+      adbShell("input swipe 540 900 540 1700 250", 8_000);
+      await sleep(700);
+    }
+  };
+  const measure = async (name: string): Promise<ProbeWindow> => {
+    window = name;
+    const before = lines.length;
+    const q = pidsOf("qemu-system-");
+    const sp = pidsOf(simPattern);
+    const q0 = procTicks(q);
+    const s0 = procTicks(sp);
+    const w0 = performance.now();
+    await workload();
+    const sec = (performance.now() - w0) / 1000;
+    const q1 = procTicks(q);
+    const s1 = procTicks(sp);
+    const pct = (a: number | null, b: number | null): number | null =>
+      a == null || b == null ? null : Number((((b - a) / 100 / sec) * 100).toFixed(1));
+    const mine = lines.slice(before);
+    return {
+      window: name,
+      seconds: Number(sec.toFixed(1)),
+      qemuCpuPct: pct(q0, q1),
+      simServerCpuPct: sp.length ? pct(s0, s1) : 0,
+      simServerAlive: sp.length > 0,
+      simLines: mine.length,
+      streamLines: mine.filter((x) => STREAM_LINE.test(x.line)).length,
+    };
+  };
+  const windows: ProbeWindow[] = [];
+  try {
+    windows.push(await measure("A: no simulator-server"));
+    window = "B: spawned, no call";
+    const device = resolveDevice(SERIAL);
+    const ref = simulatorServerRef(device);
+    await reg.resolveService(ref.urn, ref.options);
+    await sleep(2000);
+    windows.push(await measure("B: spawned, no call"));
+    window = "C: after one screenshot";
+    await reg
+      .invokeTool("screenshot", { udid: SERIAL, includeImageInContext: false })
+      .catch(() => undefined);
+    await sleep(1000);
+    windows.push(await measure("C: after one screenshot"));
+    await reg.dispose().catch(() => undefined);
+    killSimServerForEmulator();
+    await sleep(1500);
+    windows.push(await measure("A2: no simulator-server"));
+  } finally {
+    process.stderr.write = rawWrite as typeof process.stderr.write;
+    delete process.env.SIMSERVER_LOG;
+    delete process.env.RUST_LOG;
+    await reg.dispose().catch(() => undefined);
+    await teardownBackend();
+  }
+  const first = lines.find((x) => STREAM_LINE.test(x.line));
+  const debugLogHonoured = lines.some((x) => /\bDEBUG\b|\bTRACE\b/.test(x.line));
+  const base = windows
+    .filter((w) => w.window.startsWith("A") && w.qemuCpuPct != null)
+    .map((w) => w.qemuCpuPct as number);
+  const baseMean = base.length ? base.reduce((x, y) => x + y, 0) / base.length : null;
+  const dOf = (prefix: string): number | null => {
+    const w = windows.find((x) => x.window.startsWith(prefix));
+    return w && w.qemuCpuPct != null && baseMean != null
+      ? Number((w.qemuCpuPct - baseMean).toFixed(1))
+      : null;
+  };
+  const stream: PropBackground["stream"] = !first
+    ? "not-seen"
+    : first.window.startsWith("B")
+      ? "on-at-spawn"
+      : "on-after-screenshot";
+  const delta = { spawnedIdle: dOf("B"), afterScreenshot: dOf("C") };
+  const verdict =
+    stream === "on-at-spawn"
+      ? "stream=on: simulator-server opens its screen stream at spawn (first lifecycle line in window B, before any screenshot), so every headless agent that taps runs it"
+      : stream === "on-after-screenshot"
+        ? "stream=on after the first screenshot: spawn alone does not open it (first lifecycle line in window C)"
+        : debugLogHonoured
+          ? "stream=not seen: debug log honoured but no stream lifecycle line"
+          : "stream=undetermined from the log (the debug filter was not honoured)";
+  return {
+    workload: `${PROBE_SWIPES}× adb input swipe up+down on the Settings root, 0.7 s apart`,
+    windows,
+    firstStreamLineWindow: first ? first.window : null,
+    debugLogHonoured,
+    streamLineSamples: lines
+      .filter((x) => STREAM_LINE.test(x.line))
+      .slice(0, 10)
+      .map((x) => `${x.window}: ${x.line}`),
+    qemuDeltaVsNoServerPct: delta,
+    stream,
+    verdict,
+    cpuDeltaCaveat: PROBE_CPU_DELTA_CAVEAT,
   };
 }
 
@@ -3524,21 +3913,43 @@ async function main(): Promise<void> {
   // workflow runs it as its own BENCH_ONLY invocation with the legacy dirs, as the
   // LAST block (after OFF-2, outside the OFF-1↔OFF-2 drift interval); the
   // single-process full run skips it (it would just repeat OFF on the same binaries).
-  const ALL_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
+  //
+  // Review 2026-10-07 run 37591260027 ("Next run"): interleaved ABBA with three blocks per
+  // main arm, in this order: OFF-1, ON-im-1, ON-uia, OFF-2, ON-im-2, OFF-3, ON-im-3,
+  // OFF-legacy. ON-im-N = the input-manager candidate, ON-uia = the UiAutomation control
+  // (one block), OFF-N = the current proprietary release. The pre-ABBA names
+  // (ON-uiautomation, ON-input-manager) stay accepted under BENCH_ONLY.
+  const ABBA_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
     ["OFF-1", "OFF"],
-    ["ON-uiautomation", "ON", "default"],
-    ["ON-input-manager", "ON", "input-manager"],
+    ["ON-im-1", "ON", "input-manager"],
+    ["ON-uia", "ON", "default"],
     ["OFF-2", "OFF"],
+    ["ON-im-2", "ON", "input-manager"],
+    ["OFF-3", "OFF"],
+    ["ON-im-3", "ON", "input-manager"],
     ["OFF-legacy", "OFF"],
   ];
+  const ALL_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
+    ...ABBA_BLOCKS,
+    ["ON-uiautomation", "ON", "default"],
+    ["ON-input-manager", "ON", "input-manager"],
+  ];
   const only = process.env.BENCH_ONLY;
+  // Part A (run 37591260027 finding 1): the proprietary background probe, not a block.
+  if (only === PROBE_BG) {
+    const probe = await runPropBackgroundProbe();
+    const probePath = join(OUT_DIR, "prop-background.json");
+    writeFileSync(probePath, JSON.stringify({ env, probe }, null, 2));
+    realDebug(`[bench] wrote ${probePath}: ${probe.verdict}`);
+    return;
+  }
   // Phase 3n.2 (Q7): refuse a scrcpy arm name outright — the ON-scrcpy block and its
   // fast-inject backend no longer exist.
   if (only && /scrcpy/i.test(only))
     throw new Error(`BENCH_ONLY="${only}" names a removed scrcpy arm (removed in phase 3n.2)`);
   const toRun = only
     ? ALL_BLOCKS.filter(([b]) => b === only)
-    : ALL_BLOCKS.filter(([b]) => b !== "OFF-legacy");
+    : ABBA_BLOCKS.filter(([b]) => b !== "OFF-legacy");
   if (only && toRun.length === 0)
     throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.map(([b]) => b).join("|")}`);
 

@@ -88,7 +88,9 @@ function block(name, over = {}) {
         ? {}
         : {
             injectStrategyCounts:
-              name === "ON-uiautomation" ? { default: 161 } : { "input-manager": 161 },
+              name === "ON-uiautomation" || name === "ON-uia"
+                ? { default: 161 }
+                : { "input-manager": 161 },
             injectStrategyTotal: 161,
             measuredInjectRpcs: 100,
             // Review 2026-10-07 finding 3: host-issued gesture tool calls this block.
@@ -510,7 +512,8 @@ test("scoreboard: renders 'Proprietary baseline: <legacy> vs <current>' with p50
   assert.match(r.stdout, /### Proprietary provenance/);
   assert.match(r.stdout, /OFF-legacy \| @swmansion\/argent@0\.22\.1/);
   // The P-gates still grade against the CURRENT OFF blocks, never OFF-legacy.
-  assert.match(r.stdout, /\| gesture-tap \| 86 \| 55 \| 53 \| 53 \| 0 \| ±[\d.]+ \|/);
+  // Columns: row | ON-im block p50s | ON-uia | OFF block p50s | margin | …
+  assert.match(r.stdout, /\| gesture-tap \| 55 \| 86 \| 53 \/ 53 \| ±[\d.]+ \|/);
 });
 
 test("scoreboard: no legacy block → no baseline section, provenance reads unknown", () => {
@@ -529,24 +532,23 @@ test("scoreboard: RUN2 gates — drift row + bootstrap margin; tap +2 ms is INCO
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  // Drift (OFF-1 − OFF-2 p50) stays published; the margin is the bootstrap, never 0.
-  assert.match(r.stdout, /\| gesture-tap \| 86 \| 55 \| 53 \| 53 \| 0 \| ±[1-9][\d.]* \|/);
-  assert.match(r.stdout, /\| gesture-swipe \| 291 \| 268 \| 307 \| 300 \| 7 \| ±[\d.]+ \|/);
-  assert.match(r.stdout, /\| gesture-pinch \| 340 \| 323 \| 351 \| 356 \| -5 \| ±[\d.]+ \|/);
+  // Drift (OFF-1 − OFF-2 p50) stays published in the drift table; the gate margin is
+  // never 0. Gate table columns: row | ON-im p50s | ON-uia | OFF p50s | margin | …
+  assert.match(r.stdout, /\| gesture-tap \| 55 \| 86 \| 53 \/ 53 \| ±[1-9][\d.]* \|/);
+  assert.match(r.stdout, /\| swipe\+describe \| 268 \| 291 \| 307 \/ 300 \| ±[\d.]+ \|/);
+  assert.match(r.stdout, /\| pinch\+describe \| 323 \| 340 \| 351 \/ 356 \| ±[\d.]+ \|/);
+  assert.match(r.stdout, /\| swipe\+describe \(gesture-swipe\) \| 307 \| 300 \| 7 \| ±[\d.]+ \|/);
+  assert.match(r.stdout, /\| pinch\+describe \(gesture-pinch\) \| 351 \| 356 \| -5 \| ±[\d.]+ \|/);
   // Review 2026-10-07 finding 5: one rule. tap Δ +2 with a CI spanning the margin is
   // INCONCLUSIVE (not a pass, not a fail); swipe/pinch are clear wins vs pooled OFF.
   assert.match(r.stdout, /\*\*P2\*\* — tap .*: \*\*INCONCLUSIVE\*\*/);
-  assert.match(r.stdout, /\*\*P3\*\* — swipe .*: \*\*PASS\*\*/);
-  assert.match(r.stdout, /\*\*P4\*\* — pinch .*: \*\*PASS\*\*/);
+  // No gesture-only samples in these blocks: P3/P4 name the one row they decide on.
+  assert.match(r.stdout, /\*\*P3\*\* — swipe\+describe: .*swipe\+describe only.*: \*\*PASS\*\*/);
+  assert.match(r.stdout, /\*\*P4\*\* — pinch\+describe: .*: \*\*PASS\*\*/);
   assert.doesNotMatch(r.stdout, /min\(OFF\)|max\(OFF\)/);
-  // Run 37578606526: P5 is time-to-correct; these blocks carry none → N/A. The old
-  // headline (first read, any non-empty) stays as a report-only row with its ratio.
-  assert.match(r.stdout, /\*\*P5\*\*.*no time-to-correct.*: \*\*N\/A\*\*$/m);
-  assert.match(r.stdout, /first-read latency \(any non-empty\) — report only/);
-  assert.match(
-    r.stdout,
-    /\| tap\+describe\(settle:false\) \| 422 \| 400 \| 445 \| 548 \|.*\| 0\.90 \/ 0\.73 \/ 0\.8\d \|/
-  );
+  // Run 37591260027: P5 is pre-registered on tap+await-idle+describe; none here → N/A.
+  assert.match(r.stdout, /\*\*P5\*\*.*no tap\+await-idle\+describe samples.*: \*\*N\/A\*\*$/m);
+  assert.match(r.stdout, /tap\+describe variants, interleaved per sample/);
 });
 
 test("scoreboard: P1 — a verb with no OFF comparator floors as N/A, never ±2", () => {
@@ -560,7 +562,8 @@ test("scoreboard: P1 — a verb with no OFF comparator floors as N/A, never ±2"
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /tap\+describe\(settle:false\).*\*\*N\/A\*\*/);
+  // No comparator: the row is not in the gated family (no ±2 floor), P5 is N/A.
+  assert.doesNotMatch(r.stdout, /\| tap\+describe[^|]*time-to-correct \|/);
   assert.match(r.stdout, /\*\*P5\*\*.*: \*\*N\/A/);
 });
 
@@ -590,8 +593,8 @@ test("scoreboard: 3n.1 gate FAILS when input-manager is distinguishably slower b
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\| gesture-swipe \|.*\| loss \|/);
-  assert.match(r.stdout, /\*\*P3\*\* — swipe .*: \*\*FAIL\*\*/);
+  assert.match(r.stdout, /\| swipe\+describe \|.*\| loss \|/);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe.*: \*\*FAIL\*\*/);
 });
 
 test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", () => {
@@ -1133,9 +1136,12 @@ test("scoreboard: swipe/pinch drain table with a no-drain column per block", () 
   const sb = run(SCOREBOARD, out);
   assert.strictEqual(sb.code, 0, sb.stderr);
   assert.match(sb.stdout, /describe\(settle:false\)/);
-  assert.match(sb.stdout, /\| verb \| block \| gesture \+ drain p50\/p95 \| no-drain p50\/p95 \|/);
-  assert.match(sb.stdout, /\| gesture-swipe \| ON-input-manager \| 268\/276 \| 250\/258 \|/);
-  assert.match(sb.stdout, /\| gesture-pinch \| OFF-1 \| 351\/359 \| 310\/318 \|/);
+  assert.match(
+    sb.stdout,
+    /\| verb \| block \| gesture \+ describe p50\/p95 \| gesture only p50\/p95 \|/
+  );
+  assert.match(sb.stdout, /\| swipe\+describe \| ON-input-manager \| 268\/276 \| 250\/258 \|/);
+  assert.match(sb.stdout, /\| pinch\+describe \| OFF-1 \| 351\/359 \| 310\/318 \|/);
 });
 
 test("scoreboard: no merged JSON -> NO RESULTS and exit 1", () => {
@@ -1146,16 +1152,20 @@ test("scoreboard: no merged JSON -> NO RESULTS and exit 1", () => {
 });
 
 // Findings 1, 3, 7: workflow + loader wiring (static: the workflow cannot run here).
-test("workflow: run_block order is OFF-1, ON-uiautomation, ON-input-manager, OFF-2, OFF-legacy", () => {
+test("workflow: blocks run in the BENCH_BLOCKS order; the default is the ABBA sequence", () => {
+  // Review 2026-10-07 run 37591260027 ("Next run"): interleaved ABBA, ≥ 3 blocks per arm.
   const y = fs.readFileSync(WORKFLOW, "utf8");
-  const calls = [...y.matchAll(/run_block "([A-Za-z0-9-]+)"/g)].map((m) => m[1]);
-  assert.deepStrictEqual(calls, [
-    "OFF-1",
-    "ON-uiautomation",
-    "ON-input-manager",
-    "OFF-2",
-    "OFF-legacy",
-  ]);
+  assert.match(y, /default: "OFF-1,ON-im-1,ON-uia,OFF-2,ON-im-2,OFF-3,ON-im-3,OFF-legacy"/);
+  const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
+  // One loop over the requested list, in its order; no hard-coded block sequence.
+  assert.match(step, /IFS=',' read -r -a REQ_BLOCKS <<< "\$BENCH_BLOCKS"/);
+  assert.match(step, /for b in "\$\{REQ_BLOCKS\[@\]\}"; do/);
+  assert.doesNotMatch(step, /grep -q "OFF-1"/);
+  for (const pat of ["OFF-legacy)", "OFF-*)", "ON-*)"]) assert.ok(step.includes(pat), pat);
+  // ON-uia and OFF-legacy run at n_secondary (runtime budget), the rest at n.
+  assert.match(step, /ON-uia\|OFF-legacy\) echo "\$\{BENCH_N_SECONDARY:-\$BENCH_N\}"/);
+  assert.match(y, /n_secondary:[\s\S]*default: "30"/);
+  assert.match(y, /timeout-minutes: 240/);
 });
 
 test("workflow: ready-gate failure returns non-zero from run_block for every block", () => {
@@ -1298,9 +1308,12 @@ test("stats: Holm — per-verb adjusted alpha by rank, CI widened to 1 - alpha_k
   assert.ok(c99[0] <= c95[0] && c99[1] >= c95[1], `${c99} must contain ${c95}`);
 });
 
-test("stats: Holm step-down — after the first inconclusive verb every later verb is retained", () => {
+test("stats: Holm step-down — after the first non-decisive verb every later verb is retained", () => {
   const { gradeFamily, readCI, compareOnce } = stats;
-  // A (p 0.0274) is rank 1 at alpha 0.025: its 97.5% CI is not decisive. B (p 0.0486)
+  // A (p 0.0274) is rank 1 at alpha 0.025: its 97.5% CI [-21.5, -1.5] does not clear the
+  // ±2 margin. It excludes zero with the point (-11.5) beyond the margin, so since run
+  // 37591260027 finding 7 it reads "win (within/at margin)" (gate PASS), not inconclusive;
+  // it still does not settle the margin hypothesis, so Holm stops there. B (p 0.0486)
   // would read win on its own 95% CI, but Holm stops at A, so B is retained.
   const base = spreadAround(100, 20);
   const fam = gradeFamily([
@@ -1309,8 +1322,8 @@ test("stats: Holm step-down — after the first inconclusive verb every later ve
   ]);
   const [a, b] = fam;
   assert.deepStrictEqual(
-    [a.rank, a.alpha, a.reading, a.holmStop],
-    [1, 0.025, "inconclusive", false]
+    [a.rank, a.alpha, a.reading, a.holmStop, a.gate],
+    [1, 0.025, stats.WIN_WITHIN, false, "PASS"]
   );
   assert.deepStrictEqual([b.rank, b.alpha, b.reading, b.holmStop], [2, 0.05, "inconclusive", true]);
   assert.strictEqual(readCI(b.ci, 2), "win", "B's own CI is decisive; only Holm retains it");
@@ -1351,7 +1364,13 @@ const vS = (verb, p50, spread = 8, n = 40) => ({
 // evenly spread samples for both, so the P5 headline row reads like the old one did.
 const vTd = (verb, p50, spread) => ({
   ...vS(verb, p50, spread),
-  timeToCorrect: { samples: spreadAround(p50, spread, 40), censoredAtMs: [], timedOut: 0 },
+  timeToCorrect: {
+    samples: spreadAround(p50, spread, 40),
+    censoredAtMs: [],
+    timedOut: 0,
+    measured: 40,
+    firstRead: 20,
+  },
 });
 // Fixed merged input: tap win, swipe loss, pinch parity, headline inconclusive.
 const FAMILY = () => [
@@ -1360,7 +1379,7 @@ const FAMILY = () => [
       vS("gesture-tap", 60, 2),
       vS("gesture-swipe", 300, 2),
       vS("gesture-pinch", 350, 1),
-      vTd("tap+describe", 400, 80),
+      vTd("tap+await-idle+describe", 400, 80),
     ],
   }),
   block("ON-uiautomation", {
@@ -1368,7 +1387,7 @@ const FAMILY = () => [
       vS("gesture-tap", 60, 2),
       vS("gesture-swipe", 300, 2),
       vS("gesture-pinch", 350, 1),
-      vTd("tap+describe(settle:false)", 400, 80),
+      vTd("tap+await-idle+describe", 400, 80),
     ],
   }),
   block("ON-input-manager", {
@@ -1376,7 +1395,7 @@ const FAMILY = () => [
       vS("gesture-tap", 40, 2),
       vS("gesture-swipe", 330, 2),
       vS("gesture-pinch", 350, 1),
-      vTd("tap+describe(settle:false)", 412, 80),
+      vTd("tap+await-idle+describe", 412, 80),
     ],
   }),
   block("OFF-2", {
@@ -1384,7 +1403,7 @@ const FAMILY = () => [
       vS("gesture-tap", 60, 2),
       vS("gesture-swipe", 300, 2),
       vS("gesture-pinch", 350, 1),
-      vTd("tap+describe", 400, 80),
+      vTd("tap+await-idle+describe", 400, 80),
     ],
   }),
 ];
@@ -1397,14 +1416,24 @@ const scoreboardOf = (bs, env = ALLENV) => {
   assert.strictEqual(r.code, 0, r.stderr);
   return r.stdout;
 };
-// Gate table rows: | verb | uia | im | OFF-1 | OFF-2 | drift | margin | Δ | Holm α | CI | reading |
+// Gate table rows (run 37591260027): | row | ON-im block p50s | ON-uia | OFF block p50s |
+// margin | Δ | Holm α | CI (primary) | reading | within-block secondary |
 const gateRows = (md) => {
   const sec = md.slice(md.indexOf("### Promotion gates"), md.indexOf("- **P2**"));
   const rows = {};
   for (const line of sec.split("\n")) {
     const c = line.split("|").map((x) => x.trim());
-    if (c.length === 13 && /^(gesture-|tap\+)/.test(c[1]))
-      rows[c[1]] = { margin: c[7], delta: c[8], holm: c[9], ci: c[10], reading: c[11] };
+    if (c.length === 12 && /^(gesture-|swipe|pinch|tap\+)/.test(c[1]))
+      rows[c[1]] = {
+        im: c[2],
+        off: c[4],
+        margin: c[5],
+        delta: c[6],
+        holm: c[7],
+        ci: c[8],
+        reading: c[9],
+        secondary: c[10],
+      };
   }
   return rows;
 };
@@ -1417,23 +1446,25 @@ const pLine = (md, id) => {
 test("scoreboard: table reading and P2/P3/P4 come from the same rule and the same numbers", () => {
   const md = scoreboardOf(FAMILY());
   const rows = gateRows(md);
-  // Run 37578606526: the tap+describe headline row is time-to-correct.
-  const TTC = "tap+describe time-to-correct (ON row tap+describe(settle:false))";
+  // Run 37591260027: the P5 rows are the pre-registered await variant.
+  const TTC = "tap+await-idle+describe time-to-correct";
+  const CAFR = "tap+await-idle+describe correct-at-first-read";
   assert.deepStrictEqual(Object.keys(rows).sort(), [
-    "gesture-pinch",
-    "gesture-swipe",
     "gesture-tap",
+    "pinch+describe",
+    "swipe+describe",
+    CAFR,
     TTC,
   ]);
   assert.strictEqual(rows["gesture-tap"].reading, "win");
-  assert.strictEqual(rows["gesture-swipe"].reading, "loss");
-  assert.strictEqual(rows["gesture-pinch"].reading, "parity");
+  assert.strictEqual(rows["swipe+describe"].reading, "loss");
+  assert.strictEqual(rows["pinch+describe"].reading, "parity");
   assert.match(rows[TTC].reading, /^inconclusive/);
   const { gateOf } = stats;
   for (const [id, vn] of [
     ["P2", "gesture-tap"],
-    ["P3", "gesture-swipe"],
-    ["P4", "gesture-pinch"],
+    ["P3", "swipe+describe"],
+    ["P4", "pinch+describe"],
   ]) {
     const l = pLine(md, id);
     const row = rows[vn];
@@ -1447,11 +1478,11 @@ test("scoreboard: table reading and P2/P3/P4 come from the same rule and the sam
   assert.match(pLine(md, "P2"), /\*\*PASS\*\*$/);
   assert.match(pLine(md, "P3"), /\*\*FAIL\*\*$/);
   assert.match(pLine(md, "P4"), /\*\*PASS\*\*$/);
-  // P5: time-to-correct ratio 412/400 = 1.03 passes, the headline row's CI reading is
-  // inconclusive.
+  // P5: both pre-registered rows; time-to-correct reads inconclusive, so P5 is not a PASS.
   const p5 = pLine(md, "P5");
-  assert.match(p5, /1\.03 \/ 1\.03 \/ 1\.03/);
-  assert.ok(p5.includes(`CI reading ${rows[TTC].reading.split(" ")[0]}`), p5);
+  assert.ok(p5.includes(`${TTC}: Δ ${rows[TTC].delta}`), p5);
+  assert.ok(p5.includes(`reading ${rows[TTC].reading}`), p5);
+  assert.ok(p5.includes(CAFR), p5);
   assert.match(p5, /\*\*INCONCLUSIVE\*\*$/);
 });
 
@@ -1459,6 +1490,7 @@ test("scoreboard: Holm alpha per verb is printed in the table and documented in 
   const md = scoreboardOf(FAMILY());
   const rows = gateRows(md);
   const alphas = Object.values(rows)
+    .filter((r) => r.holm !== "-") // the pre-ABBA rate row is read outside the Holm family
     .map((r) => r.holm.match(/α=([\d.]+) \(rank (\d)\/4\)/))
     .map((m) => {
       assert.ok(m, "Holm cell");
@@ -1475,7 +1507,7 @@ test("scoreboard: Holm alpha per verb is printed in the table and documented in 
   );
   assert.match(md, /Holm/);
   assert.match(md, /α_k = 0\.05 \/ \(m − k \+ 1\)/);
-  assert.match(md, /block-level variance is not captured/i);
+  assert.match(md, /Not captured: block-level variance/);
   assert.match(md, /ABBA/);
 });
 
@@ -1490,7 +1522,7 @@ test("scoreboard: P6 grades ON-input-manager vs ON-uiautomation at the pair's ow
   // im tap 40 vs uia 60 → win; swipe 330 vs 300 → loss → P6 FAIL naming swipe.
   const p6 = pLine(md, "P6");
   assert.match(p6, /null margin/);
-  assert.match(p6, /gesture-swipe/);
+  assert.match(p6, /swipe\+describe/);
   assert.match(p6, /\*\*FAIL\*\*$/);
   // RUN2: input-manager is faster than the control on every verb → PASS.
   const md2 = scoreboardOf(RUN2(), RUN2ENV);
@@ -1688,9 +1720,9 @@ test("scoreboard: gate margin is the equivalence margin; footer states the pre-r
   const md = scoreboardOf(FAMILY());
   const rows = gateRows(md);
   // OFF swipe 300 ± 2 and pinch 350 ± 1: the 2 % term (6, 7 ms) binds.
-  assert.strictEqual(rows["gesture-swipe"].margin, "±6");
-  assert.strictEqual(rows["gesture-pinch"].margin, "±7");
-  assert.strictEqual(rows["gesture-pinch"].reading, "parity");
+  assert.strictEqual(rows["swipe+describe"].margin, "±6");
+  assert.strictEqual(rows["pinch+describe"].margin, "±7");
+  assert.strictEqual(rows["pinch+describe"].reading, "parity");
   assert.match(
     md,
     /pre-registered equivalence margin: 2 % of the proprietary p50 or 1 ms, whichever is larger, never below the measured OFF drift/
@@ -1700,7 +1732,10 @@ test("scoreboard: gate margin is the equivalence margin; footer states the pre-r
     md,
     /\| verb \| OFF-1 p50 \| OFF-2 p50 \| drift \| bootstrap margin \| equivalence margin \|/
   );
-  assert.match(md, /\| gesture-pinch \| 350 \| 350 \| 0 \| ±[\d.]+ \| ±7 \(2% of p50\) \|/);
+  assert.match(
+    md,
+    /\| pinch\+describe \(gesture-pinch\) \| 350 \| 350 \| 0 \| ±[\d.]+ \| ±7 \(2% of p50\) \|/
+  );
 });
 
 /* ------- run 37571460849: empty describes as a quality metric (P11), TTNE ------- */
@@ -1958,17 +1993,12 @@ test("merge-blocks: an explicit did-not-run entry accounts for the block and is 
   ]);
 });
 
-test("workflow: OFF-2 runs regardless of an earlier block's failure; every skip records did-not-run", () => {
+test("workflow: every block runs regardless of an earlier block's failure; every skip records did-not-run", () => {
   const y = fs.readFileSync(WORKFLOW, "utf8");
   const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
-  // Run 37571460849: `[ "$OFF_FAILED" = "0" ] && … grep -q "OFF-2"` skipped OFF-2 after
-  // OFF-1 exited 1.
-  const off2 = step.split("\n").find((l) => l.includes('grep -q "OFF-2"'));
-  assert.ok(off2, "no OFF-2 condition");
-  assert.doesNotMatch(off2, /_FAILED/);
-  // No block condition reads an earlier block's result.
-  for (const m of step.matchAll(/^\s*(?:el)?if .*grep -q "([A-Za-z0-9-]+)".*$/gm))
-    assert.doesNotMatch(m[0], /_FAILED/, m[0]);
+  // Run 37571460849: a block condition must never read an earlier block's result.
+  const loop = step.slice(step.indexOf('for b in "${REQ_BLOCKS[@]}"'), step.indexOf("done\n"));
+  assert.doesNotMatch(loop, /if \[ "\$(OFF|ON|LEGACY)_FAILED"/);
   // The emulator-lost early return, the ON-only downgrade and the legacy skips record it.
   assert.ok((step.match(/--did-not-run/g) || []).length >= 1);
   assert.ok((step.match(/record_not_run /g) || []).length >= 4, "record_not_run call sites");
@@ -2017,18 +2047,18 @@ test("destination: markers are the id+text keys on one settled tree and not the 
   assert.strictEqual(dest.classifyDestination({ description: EMPTY_TREE }, m), "empty");
 });
 
-test("destination: classifier — correct / stale / empty / other on fixed trees", () => {
+test("destination: classifier — correct / pre-transition / empty / other on fixed trees", () => {
   const m = dest.deriveDestinationMarkers(ROOT_TREE, DEST_TREE);
   const c = (description, extra = {}) => dest.classifyDestination({ description, ...extra }, m);
   assert.strictEqual(c(DEST_TREE), "correct");
-  assert.strictEqual(c(ROOT_TREE), "stale");
+  assert.strictEqual(c(ROOT_TREE), "preTransition");
   assert.strictEqual(c(EMPTY_TREE), "empty");
   // The open server's marker counts as empty even with a window line.
   assert.strictEqual(c(DEST_TREE, { treeEmpty: true }), "empty");
-  // Mixed (both windows in the tree mid-transition): a root-only marker present → stale.
+  // Mixed (both windows in the tree mid-transition): a root-only marker present → pre-transition/mixed (run 37591260027 finding 2: not a cached tree, the screen as it was).
   assert.strictEqual(
     c(DEST_TREE + '  StaticText "Apps" id="title"  (0.1, 0.9, 0.2, 0.03)\n'),
-    "stale"
+    "preTransition"
   );
   // Neither marker set: a dialog or another app.
   const dialog =
@@ -2052,28 +2082,42 @@ test("destination: classifier — correct / stale / empty / other on fixed trees
   const offDest = DEST_TREE.replace(/id="/g, 'id="com.android.settings:id/');
   const mo = dest.deriveDestinationMarkers(offRoot, offDest);
   assert.strictEqual(dest.classifyDestination({ description: offDest }, mo), "correct");
-  assert.strictEqual(dest.classifyDestination({ description: offRoot }, mo), "stale");
+  assert.strictEqual(dest.classifyDestination({ description: offRoot }, mo), "preTransition");
 });
 
 test("destination: rates with Wilson CIs; correct-only latency; time-to-correct per sample", () => {
-  const r = dest.destinationRates({ correct: 19, stale: 0, empty: 21 });
+  const r = dest.destinationRates(
+    { correct: 19, stale: 0, empty: 21 } /* pre-run-37591260027 key */
+  );
   assert.strictEqual(r.n, 40);
-  assert.deepStrictEqual(r.counts, { correct: 19, stale: 0, empty: 21, other: 0 });
+  assert.deepStrictEqual(r.counts, { correct: 19, preTransition: 0, empty: 21, other: 0 });
   assert.strictEqual(r.rates.correct.rate, 0.475);
   assert.deepStrictEqual(r.rates.correct.ci, stats.wilsonCI(19, 40));
-  assert.deepStrictEqual(r.rates.stale.ci, [0, 0.0876]);
+  assert.deepStrictEqual(r.rates.preTransition.ci, [0, 0.0876]);
   assert.deepStrictEqual(r.rates.empty.ci, stats.wilsonCI(21, 40));
   assert.strictEqual(dest.destinationRates({}).rates.correct.ci, null);
 
   const s = dest.summarizeDestination([
     { cls: "correct", latencyMs: 300, ttcMs: 300, censoredAtMs: null, polls: 0 },
-    { cls: "stale", latencyMs: 200, ttcMs: 1100, censoredAtMs: null, polls: 12 },
+    {
+      i: 2,
+      cls: "stale" /* old name, counted as preTransition */,
+      latencyMs: 200,
+      ttcMs: 1100,
+      censoredAtMs: null,
+      polls: 12,
+    },
     { cls: "empty", latencyMs: 700, ttcMs: 900, censoredAtMs: null, polls: 3 },
     { cls: "correct", latencyMs: 500, ttcMs: 500, censoredAtMs: null, polls: 0 },
     { cls: "other", latencyMs: 250, ttcMs: null, censoredAtMs: 3260, polls: 50 },
   ]);
-  assert.deepStrictEqual(s.destination.counts, { correct: 2, stale: 1, empty: 1, other: 1 });
-  // The honest headline: latency over CORRECT reads only (the 200 ms stale read is out).
+  assert.deepStrictEqual(s.destination.counts, {
+    correct: 2,
+    preTransition: 1,
+    empty: 1,
+    other: 1,
+  });
+  // The honest headline: latency over CORRECT reads only (the 200 ms pre-transition read is out).
   assert.deepStrictEqual(s.destination.correctLatencySamples, [300, 500]);
   assert.strictEqual(s.destination.correctLatency.p50, 400);
   const t = s.timeToCorrect;
@@ -2157,14 +2201,14 @@ const TTC_RUN = (o = {}) => {
   ];
 };
 
-test("merge-blocks: destination rows (correct/stale/empty/other + Wilson CIs) and P12 stale rates per block", () => {
+test("merge-blocks: destination rows (correct/pre-transition/empty/other + Wilson CIs) and P12 pre-transition rates per block", () => {
   const out = freshOut();
   writeBlocks(out, TTC_RUN());
   const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
   const row = m.destinationRates.find((x) => x.block === "OFF-1" && x.verb === "tap+describe");
-  assert.deepStrictEqual(row.counts, { correct: 14, stale: 17, empty: 8, other: 1 });
+  assert.deepStrictEqual(row.counts, { correct: 14, preTransition: 17, empty: 8, other: 1 });
   assert.strictEqual(row.n, 40);
-  assert.deepStrictEqual(row.rates.stale.ci, stats.wilsonCI(17, 40));
+  assert.deepStrictEqual(row.rates.preTransition.ci, stats.wilsonCI(17, 40));
   assert.strictEqual(row.timeToCorrect.reached, 40);
   // Both ON rows carry it.
   assert.ok(
@@ -2172,83 +2216,14 @@ test("merge-blocks: destination rows (correct/stale/empty/other + Wilson CIs) an
       (x) => x.block === "ON-input-manager" && x.verb === "tap+describe(settle:true)"
     )
   );
-  // P12: report only, one stale rate per (block, verb).
+  // P12: report only, one pre-transition/mixed rate per (block, verb).
   assert.strictEqual(m.p12.reportOnly, true);
   const p12 = m.p12.rows.find(
     (x) => x.block === "ON-uiautomation" && x.verb === "tap+describe(settle:false)"
   );
-  assert.deepStrictEqual([p12.stale, p12.n, p12.rate], [4, 40, 0.1]);
+  assert.deepStrictEqual([p12.preTransition, p12.n, p12.rate], [4, 40, 0.1]);
   assert.deepStrictEqual(p12.ci, stats.wilsonCI(4, 40));
   assert.strictEqual(m.valid, true, "P12 is report only");
-});
-
-test("scoreboard: P5 is time-to-correct ON ÷ OFF on the ON row with the smaller time-to-correct; first-read row report only", () => {
-  const md = scoreboardOf(TTC_RUN());
-  const rows = gateRows(md);
-  // The family: tap, swipe, pinch and the time-to-correct row; the first-read row is out.
-  const ttcKey = Object.keys(rows).find((k) => k.startsWith("tap+describe time-to-correct"));
-  assert.ok(ttcKey, Object.keys(rows).join(", "));
-  assert.match(
-    ttcKey,
-    /tap\+describe\(settle:false\)/,
-    "settle:false has the smaller time-to-correct"
-  );
-  assert.ok(!rows["tap+describe(settle:false)"], "first-read row is not gated");
-  const p5 = pLine(md, "P5");
-  assert.match(p5, /time-to-correct/);
-  assert.match(
-    p5,
-    /ON row tap\+describe\(settle:false\) \(time-to-correct p50 800 ms; tap\+describe\(settle:true\) 900 ms\)/
-  );
-  assert.match(p5, /0\.80 \/ 0\.80 \/ 0\.80/);
-  assert.match(p5, /ratio PASS/);
-  assert.ok(p5.includes(`CI reading ${rows[ttcKey].reading.split(" ")[0]}`), p5);
-  assert.match(p5, /\*\*PASS\*\*$/);
-  // The old headline stays, report only, labelled as any non-empty first read.
-  assert.match(md, /first-read latency \(any non-empty\) — report only/);
-  assert.match(md, /\| tap\+describe\(settle:false\) \| 330 \| 330 \| 265 \| 265 \|/);
-  // P6 compares the same time-to-correct row ON-im vs ON-uia.
-  assert.match(md, /\| P6 verb \|[\s\S]*\| tap\+describe time-to-correct/);
-});
-
-test("scoreboard: P5 picks settle:true when its time-to-correct is smaller, and FAILs a ratio > 1.15", () => {
-  const md = scoreboardOf(TTC_RUN({ onFalse: 1400, onTrue: 1300 }));
-  const p5 = pLine(md, "P5");
-  assert.match(
-    p5,
-    /ON row tap\+describe\(settle:true\) \(time-to-correct p50 1300 ms; tap\+describe\(settle:false\) 1400 ms\)/
-  );
-  assert.match(p5, /1\.30 \/ 1\.30 \/ 1\.30/);
-  assert.match(p5, /ratio FAIL/);
-  assert.match(p5, /\*\*FAIL\*\*$/);
-});
-
-test("scoreboard: a time-to-correct timeout cannot carry a P5 PASS; no time-to-correct → N/A", () => {
-  const md = scoreboardOf(TTC_RUN({ onTd: { timedOut: 2 } }));
-  const p5 = pLine(md, "P5");
-  assert.match(p5, /timed out: ON 2\/40, OFF 0\/80/);
-  assert.doesNotMatch(p5, /\*\*PASS\*\*$/);
-  // Old artifacts without the loop.
-  const old = scoreboardOf(RUN2(), RUN2ENV);
-  assert.match(pLine(old, "P5"), /no time-to-correct.*: \*\*N\/A\*\*$/);
-});
-
-test("scoreboard: P12 stale rates printed next to P11; a stale read is a wrong answer (footer)", () => {
-  const md = scoreboardOf(TTC_RUN());
-  const lines = md.split("\n");
-  const i11 = lines.findIndex((l) => l.startsWith("- **P11**"));
-  const i12 = lines.findIndex((l) => l.startsWith("- **P12**"));
-  assert.ok(i11 >= 0 && i12 === i11 + 1, `P12 right after P11 (${i11}, ${i12})`);
-  assert.match(lines[i12], /report only/);
-  assert.match(lines[i12], /OFF-1 tap\+describe 17\/40 = 42\.5% \[/);
-  assert.match(md, /### tap\+describe destination check/);
-  assert.match(
-    md,
-    /\| OFF-1 \| tap\+describe \| 40 \| 14 \| 17 \| 8 \| 1 \| 35% \[[\d.]+%, [\d.]+%\] \| 42\.5% \[[\d.]+%, [\d.]+%\] \| 20% \[[\d.]+%, [\d.]+%\] \|/
-  );
-  assert.match(md, /a stale read is a wrong answer to the user/i);
-  const footer = md.slice(md.indexOf("_Method"));
-  assert.match(footer, /stale read is a wrong answer to the user/i);
 });
 
 test("bench: tap+describe classifies every timed read and runs time-to-correct on ALL samples (50 ms / 3 s)", () => {
@@ -2263,4 +2238,441 @@ test("bench: tap+describe classifies every timed read and runs time-to-correct o
   assert.doesNotMatch(src, /if \(wasEmpty && onEmpty\)/);
   assert.strictEqual(dest.TTC_POLL_MS, 50);
   assert.strictEqual(dest.TTC_BUDGET_MS, 3000);
+});
+
+/* ---- Review 2026-10-07 run 37591260027: ABBA, block-level CI, P3/P4/P5 rows, Part A ---- */
+
+// Literal destructured require so knip traces the test-only exports.
+const { tCdf, tQuantile, welchBlocks, LOSS_WITHIN, WIN_WITHIN } = require("./stats");
+
+test("stats: Student t quantiles and the Welch block-level interval", () => {
+  // Reference values (R: qt(0.975, df)).
+  for (const [p, df, want] of [
+    [0.975, 2, 4.302653],
+    [0.975, 4, 2.776445],
+    [0.975, 10, 2.228139],
+    [0.995, 4, 4.604095],
+  ])
+    assert.ok(Math.abs(tQuantile(p, df) - want) < 1e-5, `qt(${p}, ${df})`);
+  assert.strictEqual(tCdf(0, 3), 0.5);
+  assert.ok(Math.abs(tCdf(2.776445, 4) - 0.975) < 1e-6);
+  // Welch on block values: Δ = mean(a) − mean(b), se from the between-block variances.
+  const w = welchBlocks([836, 840, 844], [896, 900, 904]);
+  assert.strictEqual(w.delta, -60);
+  assert.ok(Math.abs(w.se - Math.sqrt(16 / 3 + 16 / 3)) < 1e-9);
+  assert.strictEqual(w.df, 4);
+  assert.strictEqual(welchBlocks([1], [2, 3]), null, "one block: no between-block variance");
+  assert.strictEqual(stats.readCI([1.0, 1.7], 1.1, 1.3), LOSS_WITHIN);
+  assert.strictEqual(stats.readCI([-1.7, -1.0], 1.1, -1.3), WIN_WITHIN);
+});
+
+const ABBA = ["OFF-1", "ON-im-1", "ON-uia", "OFF-2", "ON-im-2", "OFF-3", "ON-im-3"];
+const ABBAENV = { BENCH_BLOCKS: ABBA.join(",") };
+const abbaStart = (n) =>
+  new Date(Date.UTC(2026, 9, 8, 10, 0) + ABBA.indexOf(n) * 60_000).toISOString();
+const withNoDrain = (v, p50) => ({
+  ...v,
+  drainRead: "describe(settle:false)",
+  noDrain: { latency: { p50, p95: p50 + 8 }, latencySamples: spreadAround(p50, 8, 40) },
+});
+// Run 37591260027's shape, with a small per-block offset so the between-block variance is
+// not zero: swipe+describe OFF 900 vs ON 840, swipe alone 295 vs 272; pinch+describe 720
+// vs 216, pinch alone 354 vs 317; tap+await-idle+describe time-to-correct OFF 1300 vs ON
+// 900, correct at first read OFF 5/40 vs ON 30/40. ON settle:false has the SMALLEST
+// time-to-correct (500 ms): P5 must not pick it.
+const ABBA_RUN = (o = {}) =>
+  ABBA.map((name) => {
+    const off = name.startsWith("OFF");
+    const k = ABBA.filter((x) => x.startsWith(off ? "OFF" : name.slice(0, 5))).indexOf(name);
+    const d = (k - 1) * 4;
+    const tap = o.tap ? o.tap(name, off, k) : (off ? 60 : 58) + d / 4;
+    const verbs = [
+      vS("gesture-tap", tap, o.tapSpread ?? 2),
+      ...(o.onlyTap
+        ? []
+        : [
+            withNoDrain(vS("gesture-swipe", (off ? 900 : 840) + d, 8), (off ? 295 : 272) + d),
+            withNoDrain(vS("gesture-pinch", (off ? 720 : 216) + d, 8), (off ? 354 : 317) + d),
+            tdVerb("tap+describe(settle:false)", off ? 265 : 330, (off ? 1500 : 500) + d, {
+              counts: { correct: off ? 2 : 10, preTransition: off ? 30 : 5, empty: 8, other: 0 },
+            }),
+            tdVerb("tap+describe(settle:true)", off ? 265 : 810, (off ? 1500 : 950) + d, {
+              counts: { correct: off ? 2 : 25, preTransition: off ? 30 : 5, empty: 8, other: 0 },
+            }),
+            tdVerb("tap+await-idle+describe", off ? 900 : 700, (off ? 1300 : 900) + d, {
+              counts: {
+                correct: off ? 5 : 30,
+                preTransition: off ? 25 : 2,
+                empty: off ? 10 : 8,
+                other: 0,
+              },
+            }),
+          ]),
+    ];
+    const b = block(name, { verbs, ...(o.over && o.over[name] ? o.over[name] : {}) });
+    b.env.startedAt = abbaStart(name);
+    return b;
+  });
+
+test("merge-blocks (ABBA): the BENCH_BLOCKS order holds → valid; an out-of-order block → INVALID", () => {
+  const out = freshOut();
+  writeBlocks(out, ABBA_RUN());
+  const m = mergedOf(run(MERGE_BLOCKS, out, ABBAENV));
+  assert.strictEqual(m.valid, true, JSON.stringify(m.runInvalidReasons));
+  assert.deepStrictEqual(m.blocksRan, ABBA);
+  assert.deepStrictEqual(Object.keys(m.q4ByBlock), ["ON-im-1", "ON-im-2", "ON-im-3"]);
+  const out2 = freshOut();
+  const bs = ABBA_RUN();
+  bs[ABBA.indexOf("OFF-3")].env.startedAt = "2026-10-08T10:03:30.000Z"; // before ON-im-2
+  writeBlocks(out2, bs);
+  const m2 = mergedOf(run(MERGE_BLOCKS, out2, ABBAENV));
+  assert.strictEqual(m2.valid, false);
+  assert.match(
+    m2.runInvalidReasons.join(" "),
+    /ON-im-2 .*did not start after OFF-2|OFF-3 .*did not start after ON-im-2/
+  );
+});
+
+test("merge-blocks (ABBA): Q4 applies to every ON-im block; P0 needs the ON-uia control", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    ABBA_RUN({ over: { "ON-im-2": { injectStrategyCounts: { "input-manager": 160 } } } })
+  );
+  const r = run(MERGE_BLOCKS, out, ABBAENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /Q4: ON-im-2 on-device injectStrategyCounts\["input-manager"\]=160/);
+  const out2 = freshOut();
+  writeBlocks(
+    out2,
+    ABBA_RUN().filter((b) => b.block.block !== "ON-uia")
+  );
+  const r2 = run(MERGE_BLOCKS, out2, {
+    BENCH_BLOCKS: ABBA.filter((n) => n !== "ON-uia").join(","),
+  });
+  assert.strictEqual(r2.code, 1);
+  assert.match(r2.stderr, /P0 VOID: ON-im-1, ON-im-2, ON-im-3 ran/);
+});
+
+test("scoreboard (ABBA): primary CI = Welch t on the block p50s (between-block variance); within-block CI secondary", () => {
+  const md = scoreboardOf(ABBA_RUN(), ABBAENV);
+  assert.match(
+    md,
+    /Primary CI: \*\*block-level: Welch t on the block p50s \(3 ON-im vs 3 OFF blocks\)\*\*/
+  );
+  const rows = gateRows(md);
+  assert.deepStrictEqual(Object.keys(rows).sort(), [
+    "gesture-tap",
+    "pinch (gesture only)",
+    "pinch+describe",
+    "swipe (gesture only)",
+    "swipe+describe",
+    "tap+await-idle+describe correct-at-first-read",
+    "tap+await-idle+describe time-to-correct",
+  ]);
+  // Per-block p50s are printed; Δ = mean(ON-im block p50s) − mean(OFF block p50s).
+  assert.strictEqual(rows["swipe+describe"].im, "836 / 840 / 844");
+  assert.strictEqual(rows["swipe+describe"].off, "896 / 900 / 904");
+  assert.strictEqual(rows["swipe+describe"].delta, "-60");
+  // The primary CI is the stats.gradeFamilyBlocks interval; the secondary is the pooled bootstrap.
+  const fam = stats.gradeFamilyBlocks([
+    { key: "x", a: [836, 840, 844], b: [896, 900, 904], margin: 18 },
+  ]);
+  assert.strictEqual(fam[0].method, "Welch t on block values");
+  assert.match(rows["swipe+describe"].ci, /^\[-?[\d.]+, -?[\d.]+\] @\d/);
+  assert.match(rows["swipe+describe"].secondary, /^-60, \[-?[\d.]+, -?[\d.]+\], /);
+  // Rates are in percentage points, higher is better.
+  assert.strictEqual(rows["tap+await-idle+describe correct-at-first-read"].margin, "±10 pp");
+  assert.match(md, /### Current OFF arm per block \(ABBA\)/);
+  assert.match(md, /Welch t interval on the block p50s/);
+  assert.match(md, /Block-level variance captured: 3 ON-im and 3 OFF blocks/);
+});
+
+test("scoreboard (ABBA): P3/P4 report swipe+describe AND the gesture alone; the decision names both", () => {
+  const md = scoreboardOf(ABBA_RUN(), ABBAENV);
+  const rows = gateRows(md);
+  for (const [id, a, b] of [
+    ["P3", "swipe+describe", "swipe (gesture only)"],
+    ["P4", "pinch+describe", "pinch (gesture only)"],
+  ]) {
+    const l = pLine(md, id);
+    for (const k of [a, b]) {
+      assert.ok(l.includes(`${k}: Δ ${rows[k].delta}`), `${id} ${k}: ${l}`);
+      assert.ok(l.includes(`reading ${rows[k].reading}`), `${id} ${k} reading: ${l}`);
+    }
+    assert.ok(l.includes(`Promotion decision: both rows (${a} AND ${b}); PASS needs both`), l);
+    const gates = [rows[a], rows[b]].map((r) =>
+      stats.gateOf(r.reading.replace(/ \(Holm stop\)$/, ""))
+    );
+    if (gates.every((g) => g === "PASS")) assert.match(l, /\*\*PASS\*\*$/);
+    else assert.doesNotMatch(l, /\*\*PASS\*\*$/);
+  }
+  // Relabelled everywhere a verb name is printed.
+  assert.match(md, /\| swipe\+describe \(gesture-swipe\) \|/);
+  assert.match(md, /### swipe\+describe \/ pinch\+describe and the gesture alone/);
+});
+
+test("scoreboard (ABBA): P5 is the await variant (time-to-correct AND correct-at-first-read); faster settle variants stay report only", () => {
+  const md = scoreboardOf(ABBA_RUN(), ABBAENV);
+  const rows = gateRows(md);
+  assert.ok(!Object.keys(rows).some((k) => /settle/.test(k)), Object.keys(rows).join(", "));
+  const p5 = pLine(md, "P5");
+  assert.match(p5, /pre-registered on tap\+await-idle\+describe on both arms/);
+  assert.match(p5, /tap\+await-idle\+describe time-to-correct: Δ -400/);
+  assert.match(p5, /tap\+await-idle\+describe correct-at-first-read: Δ 62\.5 pp/);
+  assert.doesNotMatch(p5, /settle:false/);
+  assert.match(p5, /\*\*PASS\*\*$/);
+  // The other variants are printed, labelled report only, with the gated one marked.
+  assert.match(md, /only tap\+await-idle\+describe is gated \(P5\); the others are report only/);
+  assert.match(md, /\| tap\+describe\(settle:false\) \| ON-im \| [\d.]+ \| 500 \|/);
+  assert.match(md, /\| tap\+await-idle\+describe \(gated, P5\) \| OFF \|/);
+});
+
+test("stats + scoreboard: finding 7 — CI excluding zero with the point outside the margin reads loss (within/at margin), NOT PASSED", () => {
+  const { readCI, gateOf } = stats;
+  // Run 37591260027 P2: Δ +1.3, CI [1.0, 1.7], margin ±1.1.
+  assert.strictEqual(readCI([1.0, 1.7], 1.1, 1.3), LOSS_WITHIN);
+  assert.strictEqual(gateOf(LOSS_WITHIN), "NOT PASSED");
+  assert.strictEqual(readCI([-1.7, -1.0], 1.1, -1.3), WIN_WITHIN);
+  assert.strictEqual(gateOf(WIN_WITHIN), "PASS");
+  // Point inside the margin, or no point given: still inconclusive.
+  assert.strictEqual(readCI([0.3, 1.3], 1.1, 0.8), "inconclusive");
+  assert.strictEqual(readCI([1.0, 1.7], 1.1), "inconclusive");
+  // Block-level P2 with OFF block p50s 51.6/52/52.4 and ON-im 53.1/53.3/53.5.
+  const tapP50 = {
+    "OFF-1": 52,
+    "OFF-2": 52.4,
+    "OFF-3": 51.6,
+    "ON-im-1": 53.3,
+    "ON-im-2": 53.5,
+    "ON-im-3": 53.1,
+    "ON-uia": 53,
+  };
+  const md = scoreboardOf(
+    ABBA_RUN({ onlyTap: true, tapSpread: 0.2, tap: (name) => tapP50[name] }),
+    ABBAENV
+  );
+  const p2 = pLine(md, "P2");
+  assert.match(p2, /Δ 1\.3 \(\+2\.5 % of OFF\)/);
+  assert.match(p2, /reading loss \(within\/at margin\)/);
+  assert.match(p2, /NOT PASSED: ON 1\.3 ms slower/);
+  assert.match(p2, /\*\*NOT PASSED\*\*$/);
+});
+
+test("merge + scoreboard: transition timeline from the BENCH markers, CPU per phase, Part A statement", () => {
+  const out = freshOut();
+  writeBlocks(out, ABBA_RUN());
+  const { markerMessage } = require("./logcat-timeline");
+  fs.writeFileSync(
+    path.join(out, "logcat-bench.txt"),
+    [
+      `10-08 10:00:45.300  4321  4321 I BENCH   : ${markerMessage("OFF-1", "tap+await-idle+describe", 0)}`,
+      "10-08 10:00:46.236   843   910 V WindowManagerShell: onTransitionReady android.os.BinderProxy@1: {id=136 t=OPEN f=0x0}",
+      "10-08 10:00:46.239   524   545 I ActivityTaskManager: Displayed com.android.settings/.SubSettings for user 0: +782ms",
+      "10-08 10:00:46.730   524   545 V WindowManager: Finish Transition #136: created at 10-08 10:00:45.366 ready=1ms finished=1363ms",
+    ].join("\n") + "\n"
+  );
+  const S = (t, ctx, q, sim, dev) => ({
+    epochMs: t * 1000,
+    context: ctx,
+    qemu: [{ pid: 1, ticks: q }],
+    simServer: sim == null ? [] : [{ pid: 2, ticks: sim }],
+    device: [{ pid: 3, name: "com.argent.androiddevtools", ticks: dev }],
+  });
+  fs.writeFileSync(
+    path.join(out, "load-samples.jsonl"),
+    [
+      S(0, "block OFF-1 phase tap+describe", 0, 0, 0),
+      S(10, "block OFF-1 phase tap+describe", 2500, 100, 50),
+    ]
+      .map((x) => JSON.stringify(x))
+      .join("\n") + "\n"
+  );
+  fs.writeFileSync(
+    path.join(out, "prop-background.json"),
+    JSON.stringify({
+      probe: {
+        workload: "8× adb input swipe",
+        windows: [
+          {
+            window: "A: no simulator-server",
+            seconds: 12,
+            qemuCpuPct: 150,
+            simServerCpuPct: 0,
+            simServerAlive: false,
+            simLines: 0,
+            streamLines: 0,
+          },
+          {
+            window: "B: spawned, no call",
+            seconds: 12,
+            qemuCpuPct: 210,
+            simServerCpuPct: 30,
+            simServerAlive: true,
+            simLines: 9,
+            streamLines: 2,
+          },
+        ],
+        firstStreamLineWindow: "B: spawned, no call",
+        debugLogHonoured: true,
+        streamLineSamples: [
+          "B: spawned, no call: [sim emulator] DEBUG Requesting screenshot stream",
+        ],
+        qemuDeltaVsNoServerPct: { spawnedIdle: -24.2, afterScreenshot: -36.2 },
+        stream: "on-at-spawn",
+        verdict: "stream=on: simulator-server opens its screen stream at spawn",
+        cpuDeltaCaveat: "The per-window CPU deltas are not evidence of load (fixture caveat).",
+      },
+    })
+  );
+  const m = mergedOf(run(MERGE_BLOCKS, out, ABBAENV));
+  const tl = m.transitionTimeline["OFF-1"]["tap+await-idle+describe"];
+  assert.strictEqual(tl.finishedMs.p50, 1430);
+  assert.strictEqual(tl.firstFrameMs.p50, 939);
+  assert.strictEqual(m.loadByBlock["OFF-1"]["tap+describe"].qemuCpuPct.p50, 250);
+  assert.strictEqual(m.propBackground.stream, "on-at-spawn");
+  // Review run 37609765062 findings 2 and 6: the caveat travels through the merge.
+  assert.match(m.propBackground.cpuDeltaCaveat, /not evidence of load/);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(
+    sb.stdout,
+    /proprietary stack background: stream=on\*\* because stream=on: simulator-server opens/
+  );
+  assert.match(sb.stdout, /\| B: spawned, no call \| 12 \| 210 \| 30 \| yes \| 9 \| 2 \|/);
+  // Only what the run proves: stream on at spawn, OFF guest more loaded, cause not isolated.
+  assert.doesNotMatch(sb.stdout, /cost of the proprietary driver/);
+  assert.match(sb.stdout, /CPU deltas are not evidence of load \(fixture caveat\)/);
+  assert.match(sb.stdout, /does not isolate the cause/);
+  assert.match(sb.stdout, /`ON-im \+ simulator-server idle`/);
+  assert.match(sb.stdout, /crossed-await arm/);
+  assert.match(sb.stdout, /under-load timeline of each arm/);
+  assert.match(sb.stdout, /### CPU per phase \(10 s intervals\)/);
+  assert.match(
+    sb.stdout,
+    /\| OFF-1 \| tap\+describe \| 1 \| 250 \| 10 \(1\/1\) \| 5 \| androiddevtools 5 \|/
+  );
+  assert.match(sb.stdout, /### Transition timeline per block/);
+  assert.match(
+    sb.stdout,
+    /\| OFF-1 \| tap\+await-idle\+describe \| 1 \| 939\/939 \(1\) \| 1430\/1430 \(1\) \|/
+  );
+  // Without a probe: said, not guessed.
+  const out2 = freshOut();
+  writeBlocks(out2, ABBA_RUN());
+  assert.strictEqual(run(MERGE_BLOCKS, out2, ABBAENV).code, 0);
+  assert.match(run(SCOREBOARD, out2).stdout, /stream=unknown\*\* because no PROBE-BG result/);
+});
+
+test("scoreboard: the class reads pre-transition/mixed; no 'stale = a wrong answer' (finding 2)", () => {
+  const md = scoreboardOf(TTC_RUN());
+  const lines = md.split("\n");
+  const i11 = lines.findIndex((l) => l.startsWith("- **P11**"));
+  const i12 = lines.findIndex((l) => l.startsWith("- **P12**"));
+  assert.ok(i11 >= 0 && i12 === i11 + 1, `P12 right after P11 (${i11}, ${i12})`);
+  assert.match(lines[i12], /pre-transition\/mixed tap\+describe reads/);
+  assert.match(lines[i12], /OFF-1 tap\+describe 17\/40 = 42\.5% \[/);
+  assert.match(
+    md,
+    /### tap\+describe destination check — correct \/ pre-transition\/mixed \/ empty \/ other/
+  );
+  assert.match(md, /no sign of a cached tree/);
+  assert.doesNotMatch(md, /stale read is a wrong answer/i);
+  assert.doesNotMatch(md, /\| stale \|/);
+});
+
+test("tap+describe variants: seeded per-sample schedule, N for the gated variant and N/2 for the others", () => {
+  assert.deepStrictEqual(dest.TD_VARIANTS, [
+    "tap+describe(settle:false)",
+    "tap+describe(settle:true)",
+    "tap+await-idle+describe",
+  ]);
+  assert.strictEqual(dest.TD_GATED_VARIANT, "tap+await-idle+describe");
+  assert.deepStrictEqual(dest.variantCounts(40), [20, 20, 40]);
+  assert.deepStrictEqual(dest.variantCounts(30), [15, 15, 30]);
+  const a = dest.variantSchedule([20, 20, 40], "OFF-1");
+  assert.deepStrictEqual(a, dest.variantSchedule([20, 20, 40], "OFF-1"), "same seed, same order");
+  assert.notDeepStrictEqual(a, dest.variantSchedule([20, 20, 40], "ON-im-1"));
+  assert.deepStrictEqual(
+    [0, 1, 2].map((v) => a.filter((x) => x === v).length),
+    [20, 20, 40]
+  );
+  // Interleaved: no variant runs as one contiguous block.
+  const longest = a.reduce(
+    (acc, x, i) => {
+      const run = i && a[i - 1] === x ? acc.cur + 1 : 1;
+      return { cur: run, max: Math.max(acc.max, run) };
+    },
+    { cur: 0, max: 0 }
+  ).max;
+  assert.ok(longest < 10, `longest same-variant run ${longest}`);
+});
+
+test("bench: ABBA blocks, interleaved tap+describe variants, screenshot after the last timed verb, ON diagnostics in ON-im-1 only, PROBE-BG", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const abba = src.slice(src.indexOf("const ABBA_BLOCKS"), src.indexOf("const ALL_BLOCKS"));
+  assert.deepStrictEqual(
+    [...abba.matchAll(/\["([A-Za-z0-9-]+)", "(?:ON|OFF)"/g)].map((m) => m[1]),
+    ["OFF-1", "ON-im-1", "ON-uia", "OFF-2", "ON-im-2", "OFF-3", "ON-im-3", "OFF-legacy"]
+  );
+  const rb = src.slice(src.indexOf("async function runBlock("));
+  assert.match(rb, /variantSchedule\(tdCounts, block\)/);
+  assert.match(rb, /timeTapEffectVariants\(\s*tdVariants,\s*tdSchedule,/);
+  assert.match(rb, /await reg\.invokeTool\("await-screen-idle", \{ udid: SERIAL \}\)/);
+  // The screenshot is taken after the pinch (the last timed verb), not at block start.
+  const pinch = rb.indexOf('"gesture-pinch",');
+  const shot = rb.indexOf('reg.invokeTool("screenshot"');
+  assert.ok(pinch > 0 && shot > pinch, "screenshot after gesture-pinch");
+  assert.match(
+    src,
+    /const ON_DIAGNOSTIC_BLOCKS = new Set\(\["ON-im-1", "ON-input-manager", "ON-uiautomation"\]\)/
+  );
+  assert.match(rb, /const ping = onDiagnostics \? await measurePing/);
+  assert.match(
+    src,
+    /const INJECT_VERB = \/\^\(gesture-tap\|gesture-swipe\|gesture-pinch\|tap\\\+\)\//
+  );
+  assert.match(src, /if \(only === PROBE_BG\)/);
+  assert.match(src, /SIMSERVER_LOG = "simulator_server=debug"/);
+  // Review run 37609765062 findings 2 and 6: the PROBE-BG verdict is the log conclusion
+  // only; the CPU deltas stay in the JSON as raw data, next to a fixed caveat.
+  const probe = src.slice(
+    src.indexOf("async function runPropBackgroundProbe("),
+    src.indexOf("function assertNoOpenServerFallback(")
+  );
+  const vAt = probe.indexOf("const verdict =");
+  const verdict = probe.slice(vAt, probe.indexOf("return {", vAt));
+  assert.ok(vAt > 0 && verdict.length > 0, "verdict expression found");
+  assert.doesNotMatch(verdict, /qemu CPU vs/);
+  assert.doesNotMatch(verdict, /\bpp\b/);
+  assert.doesNotMatch(verdict, /delta\.|CPU windows/);
+  assert.match(probe, /qemuDeltaVsNoServerPct: delta,/);
+  assert.match(probe, /cpuDeltaCaveat: PROBE_CPU_DELTA_CAVEAT,/);
+  const caveat = src.slice(
+    src.indexOf("const PROBE_CPU_DELTA_CAVEAT ="),
+    src.indexOf("const PROBE_SWIPES")
+  );
+  assert.match(caveat, /not evidence of load/);
+  assert.match(caveat, /am start/);
+  assert.match(caveat, /slower guest/);
+  assert.match(caveat, /lifecycle line/);
+});
+
+test("workflow: PROBE-BG runs before the first block on the current release; the load sampler runs across the blocks", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
+  const probe = step.indexOf("BENCH_ONLY=PROBE-BG");
+  assert.ok(
+    probe > 0 && probe < step.indexOf('for b in "${REQ_BLOCKS[@]}"'),
+    "probe before the loop"
+  );
+  assert.match(
+    step,
+    /ARGENT_SIMULATOR_SERVER_DIR="\$PROP_PKG\/bin" \\\n\s+ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR="\$PROP_PKG\/bin" \\\n\s+ARGENT_NATIVE_DEVTOOLS_DIR="\$PROP_PKG\/dylibs" \\\n\s+BENCH_ONLY=PROBE-BG/
+  );
+  assert.match(
+    step,
+    /node \.github\/bench-ci\/load-sampler\.js --serial emulator-5554 --context "\$BENCH_CONTEXT_FILE"/
+  );
+  assert.match(step, /stop_load_sampler\n\s+node \.github\/bench-ci\/merge-blocks\.js/);
 });
