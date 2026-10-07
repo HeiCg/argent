@@ -13,11 +13,13 @@
  * must NOT tap the first match. Over the CAPTURED root tree, `resolveTapPoint`
  * skips the ambiguous id and resolves the unique row text to exactly one point.
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveTapPoint } from "../src/tools/navigate-to";
 import { ScreenGraphStore } from "../src/screen-graph/store";
+import { fnv1aHex } from "../src/screen-graph/template";
 import {
   parseSelectorKey,
   type CanonicalAction,
@@ -310,5 +312,127 @@ describe("phase D.3 (D2-M2) — edge-destination invariant", () => {
     const dups = s.duplicateEdgeTargets();
     s.dispose();
     expect(dups).toEqual([]);
+  });
+});
+
+/**
+ * Review E-1 finding 8 (store hygiene): a schema-1 document written before the
+ * fix still loads. Its plaintext `lastItemTexts` become `lastItemHashes`
+ * (fnv1a of the normalized text) on load, the in-memory keys use the unit
+ * separator, and the next write rewrites the file as schema 2 without the text.
+ */
+describe("schema-1 store migration (review E-1 finding 8)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "sg-migrate-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const TPL_ACTION: CanonicalAction = {
+    kind: "tap",
+    template: { containerKey: "CK", itemTemplate: "IT" },
+  };
+  const node = (hash: string, extra: Partial<ScreenNode> = {}): ScreenNode => ({
+    hash,
+    firstSeen: NOW,
+    lastSeen: NOW,
+    visits: 6,
+    compact: "",
+    index: {},
+    ...extra,
+  });
+  const v1Doc = {
+    version: 1,
+    packageName: "com.churn",
+    versionCode: "1",
+    nodes: { FEED: node("FEED"), TPL: node("TPL", { template: true }), D: node("D") },
+    edges: [
+      {
+        from: "FEED",
+        action: TPL_ACTION,
+        to: "TPL",
+        count: 2,
+        successes: 2,
+        lastSeen: NOW,
+        template: {
+          containerKey: "CK",
+          itemTemplate: "IT",
+          instances: 2,
+          targets: ["d1", "d2"],
+          lastItemTexts: ["Story 7", " Card 0 "],
+        },
+      },
+      {
+        from: "FEED",
+        action: { kind: "tap", target: { text: "Settings" } },
+        to: "D",
+        count: 1,
+        successes: 1,
+        lastSeen: NOW,
+      },
+      {
+        from: "FEED",
+        action: { kind: "tap", target: { text: "Settings" } },
+        to: "FEED",
+        count: 1,
+        successes: 1,
+        lastSeen: NOW,
+      },
+    ],
+  };
+
+  function writeV1(): string {
+    const file = join(dir, "com.churn", "1.json");
+    mkdirSync(join(dir, "com.churn"), { recursive: true });
+    writeFileSync(file, JSON.stringify(v1Doc, null, 2) + "\n", "utf8");
+    return file;
+  }
+
+  it("hashes legacy lastItemTexts on load and drops the plaintext", async () => {
+    writeV1();
+    const s = await ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: dir,
+      now: () => NOW,
+    });
+    const tpl = s.edges.find((e) => e.template)!;
+    expect(tpl.template?.lastItemHashes).toEqual([fnv1aHex("story 7"), fnv1aHex("card 0")]);
+    expect(tpl.template).not.toHaveProperty("lastItemTexts");
+    s.dispose();
+  });
+
+  it("re-keys legacy edges with the unit separator", async () => {
+    writeV1();
+    const s = await ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: dir,
+      now: () => NOW,
+    });
+    const dups = s.duplicateEdgeTargets();
+    expect(dups).toHaveLength(1);
+    expect(dups[0]!.key).toBe("FEED\u001ftap\u001ftext=Settings");
+    expect(s.edges).toHaveLength(3);
+    s.dispose();
+  });
+
+  it("rewrites the file as schema 2 without the item text on the next flush", async () => {
+    const file = writeV1();
+    const s = await ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: dir,
+      now: () => NOW,
+    });
+    await s.flush();
+    const raw = readFileSync(file, "utf8");
+    const doc = JSON.parse(raw) as { version: number };
+    expect(doc.version).toBe(2);
+    expect(raw).not.toContain("Story 7");
+    expect(raw).not.toContain("lastItemTexts");
+    expect(raw).not.toContain("\\u0000");
   });
 });

@@ -104,6 +104,12 @@ export interface ScreenNode {
   lastSeen: number;
   /** Number of times this screen was visited. */
   visits: number;
+  /**
+   * Review E-1 finding 8c: the store session (`ScreenGraphData.sessionSeq`) of
+   * the most recent visit. A pin (visits, template, strong edge) expires once
+   * the store has run 10 sessions without visiting the node, so the caps hold.
+   */
+  lastSession?: number;
   /** Optional heuristic / human label (see `label.ts`). */
   label?: string;
   /**
@@ -188,8 +194,9 @@ export interface Edge {
    * Phase E (design D1): present only on a TEMPLATE edge — a container-item tap
    * folded onto one edge. `instances` is the number of distinct CONCRETE
    * destinations folded in (the number `describe` reports); `targets` is the
-   * capped distinct-destination set it is derived from; `lastItemTexts` a small
-   * ring of recently-tapped item labels for the summary line. The edge's `to` is
+   * capped distinct-destination set it is derived from; `lastItemHashes` a small
+   * ring of recently-tapped items as `fnv1a(trim(lower(text)))` — never the text
+   * itself (R5: no user text on disk; review E-1 finding 8b). The edge's `to` is
    * the synthetic template node, so it has exactly one destination.
    */
   template?: {
@@ -199,15 +206,18 @@ export interface Edge {
     /** The container's stripped resource id (`list`), for the summary line. */
     containerId?: string;
     targets?: string[];
-    lastItemTexts?: string[];
+    lastItemHashes?: string[];
   };
 }
 
 /** The persisted graph document for one `(packageName, versionCode)`. */
 export interface ScreenGraphData {
-  version: 1;
+  /** 2 since review E-1 finding 8 (item hashes, sessions); 1 loads and migrates. */
+  version: 2;
   packageName: string;
   versionCode: string;
+  /** Sessions this store has been loaded in (persisted with the next write). */
+  sessionSeq?: number;
   nodes: Record<string, ScreenNode>;
   edges: Edge[];
 }

@@ -4,7 +4,8 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ScreenGraphStore } from "../src/screen-graph/store";
-import { FLAG_PASSWORD, selectorKeyForId } from "../src/screen-graph/types";
+import { fnv1aHex } from "../src/screen-graph/template";
+import { FLAG_PASSWORD, actionSignature, selectorKeyForId } from "../src/screen-graph/types";
 import type { CanonicalAction } from "../src/screen-graph/types";
 
 let tmpDir: string;
@@ -163,5 +164,48 @@ describe("ScreenGraphStore debounced writes", () => {
     });
     expect(loaded.edges).toHaveLength(0);
     expect(Object.keys(loaded.nodes)).toHaveLength(0);
+  });
+});
+
+describe("ScreenGraphStore text-safe separators (review E-1 finding 8a)", () => {
+  it("store.ts holds no NUL byte, so git diffs it as text", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../src/screen-graph/store.ts"));
+    expect(src.includes(0)).toBe(false);
+  });
+
+  it("keys edges and duplicate screens with the unit separator U+001F", () => {
+    const store = newStore();
+    store.observe("aaaa", TAP, "bbbb");
+    store.observe("aaaa", TAP, "cccc");
+    const dups = store.duplicateEdgeTargets();
+    expect(dups).toHaveLength(1);
+    expect(dups[0]!.key).toBe(`aaaa\u001f${actionSignature(TAP)}`);
+    expect(dups[0]!.key).not.toContain("\u0000");
+    store.dispose();
+  });
+});
+
+describe("ScreenGraphStore hashed item texts (review E-1 finding 8b, R5)", () => {
+  it("persists fnv1a(normalized item text), never the item text itself", async () => {
+    const store = newStore();
+    const tpl: CanonicalAction = {
+      kind: "tap",
+      template: { containerKey: "CK", itemTemplate: "IT" },
+    };
+    store.observe("FEED", tpl, "TPL", {
+      template: {
+        containerKey: "CK",
+        itemTemplate: "IT",
+        concreteTo: "d1",
+        itemText: "  Private Story 7 ",
+      },
+    });
+    const e = store.edges[0]!;
+    expect(e.template?.lastItemHashes).toEqual([fnv1aHex("private story 7")]);
+    expect(e.template).not.toHaveProperty("lastItemTexts");
+    await store.flush();
+    const raw = await fsp.readFile(store.filePath(), "utf8");
+    expect(raw).not.toContain("Private Story 7");
+    expect(raw.toLowerCase()).not.toContain("private story");
   });
 });
