@@ -359,7 +359,8 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
         if (liveness === "gone") throw neverUp(errMsg(err));
         if (attempt === 2) {
           throw new Error(
-            `[device] runner up (${liveness}) but launchApp(${SETTINGS}) failed twice: ${errMsg(err)}`
+            `[device] runner up (${liveness}) but launchApp(${SETTINGS}) failed twice: ${errMsg(err)}`,
+            { cause: err }
           );
         }
         try {
