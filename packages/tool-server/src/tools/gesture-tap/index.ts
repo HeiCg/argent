@@ -29,6 +29,16 @@ import {
   type IosOpenServerFallbackMarker,
 } from "../../utils/ios-open-server-input";
 import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
+import {
+  shouldUseIosSimInput,
+  simInputTapsLanded,
+  iosSimInputTap,
+  simInputResultFields,
+  simInputFallbackReason,
+  chainFallbackReason,
+  type IosInputBackend,
+  type SimInputResultFields,
+} from "../../blueprints/ios-sim-input";
 import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -157,11 +167,24 @@ interface Result {
    */
   warning?: string;
   /**
-   * iOS simulator, `open-ios-device-server` flag: the open runner failed and
-   * the simulator-server tapped instead. Set only then.
+   * iOS simulator, `open-ios-device-server` flag: sim-input and the open runner
+   * failed and the simulator-server tapped instead. Set only then.
    */
   backend?: "proprietary-fallback";
+  /**
+   * iOS simulator, `open-ios-device-server` flag: why the first backend did not
+   * serve the tap (sim-input, then the runner). Set only on a fallback.
+   */
   fallbackReason?: string;
+  /** iOS simulator, `open-ios-device-server` flag: the backend that tapped. */
+  inputBackend?: IosInputBackend;
+  /** `inputBackend: "sim-input"` only: the ack's pacing and timing (last tap). */
+  simInput?: SimInputResultFields;
+  /**
+   * A multi-tap on sim-input failed after at least one of its taps landed; the
+   * next backend sent the whole multi-tap again.
+   */
+  partialTapsPossible?: true;
 }
 
 function tapVerb(count: number, tense: "present" | "past"): string {
@@ -395,15 +418,43 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       }
       let api: SimulatorServerApi;
       // Set when the open iOS path fell back, so the result says so.
-      let iosFallback: IosOpenServerFallbackMarker | undefined;
+      let iosFallback: (IosOpenServerFallbackMarker & { partialTapsPossible?: true }) | undefined;
       if (shouldUseIosOpenServer(device)) {
-        // Open iOS server (XCUITest runner) behind the `open-ios-device-server`
-        // flag. Falls back to the proprietary simulator-server on any failure.
+        // Behind the `open-ios-device-server` flag: sim-input (HID, no XCUITest)
+        // first, then the open iOS server (XCUITest runner), then the
+        // proprietary simulator-server. Each fallback is on the result.
+        let simInputReason: string | undefined;
+        let partialTaps = false;
+        if (shouldUseIosSimInput(device)) {
+          try {
+            const ack = await iosSimInputTap(registry, device, px, py, clickCount);
+            return {
+              tapped: true,
+              timestampMs,
+              inputBackend: "sim-input",
+              simInput: simInputResultFields(ack),
+            };
+          } catch (err) {
+            simInputReason = simInputFallbackReason("gesture-tap", err);
+            partialTaps = simInputTapsLanded(err);
+          }
+        }
         try {
           await iosOpenServerTap(registry, device, px, py, clickCount);
-          return { tapped: true, timestampMs };
+          return {
+            tapped: true,
+            timestampMs,
+            inputBackend: "runner",
+            ...(simInputReason !== undefined ? { fallbackReason: simInputReason } : {}),
+            ...(partialTaps ? { partialTapsPossible: true as const } : {}),
+          };
         } catch (err) {
-          iosFallback = iosOpenServerFallback("gesture-tap", err, "simulator-server");
+          const marker = iosOpenServerFallback("gesture-tap", err, "simulator-server");
+          iosFallback = {
+            ...marker,
+            fallbackReason: chainFallbackReason(simInputReason, marker.fallbackReason),
+            ...(partialTaps ? { partialTapsPossible: true as const } : {}),
+          };
           const ref = simulatorServerRef(device);
           api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);
         }
@@ -533,6 +584,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
         timestampMs,
         ...(warning !== undefined ? { warning } : {}),
         ...iosFallback,
+        ...(iosFallback ? { inputBackend: "simulator-server" as const } : {}),
       };
     },
   };

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { IosSimInputService } from "../src/utils/ios-sim-input-service";
+import { IosSimInputService, isForwardableLogLine } from "../src/utils/ios-sim-input-service";
 
 /**
  * iOS-4 ticket 3 (send queue + deadline pacing): the sim-input ack carries
@@ -56,6 +56,9 @@ describe("IosSimInputService — pacing fields on the ack", () => {
     });
     await expect(p).resolves.toEqual({
       id: 1,
+      hostWriteAt: expect.any(Number),
+      hostAckAt: expect.any(Number),
+      timing: null,
       scheduledMs: 50,
       actualMs: 50.4,
       overshootMs: 0.4,
@@ -112,14 +115,52 @@ describe("IosSimInputService — pacing fields on the ack", () => {
     await expect(p).resolves.toMatchObject({ id: 1, scheduledMs: 220, actualMs: 230 });
   });
 
-  it("tap / swipe keep resolving undefined for the existing consumers", async () => {
+  it("tap / swipe resolve the same combined ack as the *WithAck aliases (pacing + timing)", async () => {
     const { svc, children } = serviceWithChild();
     const t = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 });
     const s = svc.swipe("UDID-A", { fromX: 1, fromY: 2, toX: 3, toY: 4 });
-    pushAck(children[0]!, { id: 1, ok: true, scheduledMs: 50, actualMs: 51 });
+    const timing = { recvAt: 10, sends: [{ sendStart: 10.1, sendEnd: 10.2 }], ackAt: 61 };
+    pushAck(children[0]!, { id: 1, ok: true, scheduledMs: 50, actualMs: 51, timing });
     pushAck(children[0]!, { id: 2, ok: true });
-    await expect(t).resolves.toBeUndefined();
-    await expect(s).resolves.toBeUndefined();
+    await expect(t).resolves.toMatchObject({ id: 1, scheduledMs: 50, actualMs: 51, timing });
+    const swipe = await s;
+    expect(swipe.id).toBe(2);
+    expect(swipe.timing).toBeNull();
+    expect(swipe.scheduledMs).toBeUndefined();
+  });
+});
+
+describe("IosSimInputService — stderr forwarding carries no typed input", () => {
+  it("isForwardableLogLine drops key-usage and character lines, keeps the rest", () => {
+    expect(isForwardableLogLine("[hid] key page=7 usage=4 modifiers=[] hold=100000us")).toBe(false);
+    expect(isForwardableLogLine("[hid] press home target=0x1 page=12 usage=64 hold=1us")).toBe(
+      false
+    );
+    expect(isForwardableLogLine("text: unsupported character 'é'")).toBe(false);
+    expect(isForwardableLogLine("sim-input ready (udid=ABC)")).toBe(true);
+    expect(isForwardableLogLine("text: unsupported input, skipped")).toBe(true);
+    expect(isForwardableLogLine("[hid] symbols resolved — mouse:true")).toBe(true);
+  });
+
+  it("the stderr forwarding path applies the filter", async () => {
+    const forwarded: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      forwarded.push(args.map(String).join(" "));
+    });
+    try {
+      const { svc, children } = serviceWithChild();
+      const p = svc.typeText("UDID-A", "abc");
+      children[0]!.stderr.write(
+        "sim-input ready (udid=UDID-A)\n[hid] key page=7 usage=4 modifiers=[] hold=100000us\n"
+      );
+      pushAck(children[0]!, { id: 1, ok: true });
+      await p;
+      await new Promise((r) => setImmediate(r));
+      expect(forwarded.some((l) => l.includes("sim-input ready"))).toBe(true);
+      expect(forwarded.some((l) => l.includes("usage="))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -133,7 +174,6 @@ const hasSwift =
 interface PacingCase {
   name: string;
   frames: number;
-  frameMs: number;
   scheduledMs: number;
   actualMs: number;
   overshootMs: number;
@@ -144,7 +184,7 @@ interface PacingCase {
 }
 
 describe.skipIf(!hasSwift)("sim-input selftest-pacing (macOS, swift build)", () => {
-  it("12 frames at 20 ms end in 240-290 ms, 1 frame of 50 ms in 50-60 ms, a stalled frame does not propagate", () => {
+  it("paces the real tap / swipe frame plans: tap 50 ms, swipe 250 ms (10 moves at 20 ms, Up at 220), a stalled frame does not propagate", () => {
     execFileSync("swift", ["build", "--package-path", PKG], { stdio: "ignore", timeout: 300_000 });
     const bin = execFileSync("swift", ["build", "--package-path", PKG, "--show-bin-path"], {
       encoding: "utf-8",
@@ -157,22 +197,41 @@ describe.skipIf(!hasSwift)("sim-input selftest-pacing (macOS, swift build)", () 
     const out = JSON.parse(run.stdout.trim()) as { ok: boolean; cases: PacingCase[] };
     expect(out.ok).toBe(true);
     const byName = new Map(out.cases.map((c) => [c.name, c]));
+    expect([...byName.keys()].sort()).toEqual([
+      "swipe-250",
+      "swipe-250-dwell120",
+      "swipe-250-stall60",
+      "tap-default",
+    ]);
 
-    const swipe = byName.get("frames-12x20")!;
-    expect(swipe.scheduledMs).toBe(240);
-    expect(swipe.actualMs).toBeGreaterThanOrEqual(240);
-    expect(swipe.actualMs).toBeLessThanOrEqual(290);
-
-    const tap = byName.get("frames-1x50")!;
+    // IndigoHIDInput.tap with no holdMs: one wait, the Up at 50 ms.
+    const tap = byName.get("tap-default")!;
+    expect(tap.frames).toBe(1);
     expect(tap.scheduledMs).toBe(50);
     expect(tap.actualMs).toBeGreaterThanOrEqual(50);
     expect(tap.actualMs).toBeLessThanOrEqual(60);
 
+    // IndigoHIDInput.swipe(durationMs 250): 10 moves at 250/12 = 20 ms, Up one
+    // step after the last move.
+    const swipe = byName.get("swipe-250")!;
+    expect(swipe.frames).toBe(11);
+    expect(swipe.scheduledMs).toBe(220);
+    expect(swipe.actualMs).toBeGreaterThanOrEqual(220);
+    expect(swipe.actualMs).toBeLessThanOrEqual(270);
+
     // A 60 ms stall inside frame 3 makes frame 4 late, but the deadlines after
-    // it are absolute: the gesture still ends near 240 ms (chained sleeps: 300).
-    const stall = byName.get("frames-12x20-stall60")!;
+    // it are absolute: the gesture still ends near 220 ms (chained sleeps: 280).
+    // holdEndMs 120 (the momentum-free end hold): 10 moves at 20 ms, dwell
+    // pulses at 200 and 250 ms (120 / 50 = 2), the Up one step after 300 ms.
+    const dwell = byName.get("swipe-250-dwell120")!;
+    expect(dwell.frames).toBe(13);
+    expect(dwell.scheduledMs).toBe(320);
+    expect(dwell.actualMs).toBeGreaterThanOrEqual(320);
+    expect(dwell.actualMs).toBeLessThanOrEqual(370);
+
+    const stall = byName.get("swipe-250-stall60")!;
     expect(stall.maxFrameLateMs).toBeGreaterThanOrEqual(30);
-    expect(stall.actualMs).toBeGreaterThanOrEqual(240);
-    expect(stall.actualMs).toBeLessThanOrEqual(290);
+    expect(stall.actualMs).toBeGreaterThanOrEqual(220);
+    expect(stall.actualMs).toBeLessThanOrEqual(270);
   }, 330_000);
 });

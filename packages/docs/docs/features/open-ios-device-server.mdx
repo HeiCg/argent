@@ -27,15 +27,27 @@ argent enable open-ios-device-server
 The agent uses the same tools. Only the backend they reach changes.
 
 - **`describe`** reads the accessibility tree from the runner. The result is
-  tagged `source: "xcuitest-runner"`.
-- **`gesture-tap`**, **`gesture-swipe`**, the **keyboard** text and key entry, and
-  **`screenshot`** dispatch through the runner instead of the simulator-server.
+  tagged `source: "xcuitest-runner"`. The result keeps the parent and child
+  structure of the tree, so the rows of a list appear under the list.
+- **`gesture-tap`**, **`gesture-swipe`** and the **keyboard** text go to sim-input
+  first. The keyboard key entry and **`screenshot`** dispatch through the runner
+  instead of the simulator-server.
 - **`launch-app`** also makes the launched app the runner target. The runner
   acts on this app until the agent launches a different app.
 - **`gesture-swipe`** keeps the requested duration. The runner converts the
   duration to a drag speed, so a slow scroll and a fast fling stay different.
 - The runner reads the screen size from the target app. A tap at a point from a
   screenshot or from `describe` hits the element at that point.
+
+## Input through sim-input
+
+sim-input is a small open-source Swift process that sends touch and key events
+directly to the simulator, without XCUITest. Argent starts one sim-input process
+for each simulator and stops it with the other services of that simulator. Text
+with characters outside printable ASCII, text with a secret, named keys and
+momentum-free swipes go to the runner. If sim-input fails, the call goes to the runner and then to the
+simulator-server. The tool result names the backend that served the call and the
+reason for each fallback.
 
 ## Automatic fallback
 

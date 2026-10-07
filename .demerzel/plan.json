@@ -537,15 +537,56 @@
         }
       ],
       "commitMessage": "feat(ios): sim-input registry service and product input routing under the open-iOS flag",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:siminput-registry-route:1",
-      "reviewRounds": 2,
+      "review": {
+        "at": "2026-10-07T20:57:03.943Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts test/ios-open-server-input-routing.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          },
+          {
+            "cmd": "npx prettier --check packages/docs/docs/features/open-ios-device-server.mdx",
+            "exitCode": 0,
+            "outputFile": "3-npx-prettier-check-packages-docs-docs-fe.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/utils/ios-sim-input-service.ts",
+            "note": "Carried from round 2 and not verifiable from the diff. The fix only documents the risk (tools.mdx L534-535: a timeout can stop sim-input between Down and Up, and no Up is sent). Nobody checked on a simulator whether a touch stays down when the runner fallback follows. To check: stall the pacer between Down and Up so the timeout SIGKILLs sim-input, then tap through the runner and confirm the tap registers."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/scripts/bench-ios-open-vs-proprietary.ts",
+            "note": "L839/L880/L928: each arm constructor sets or clears ARGENT_SIM_INPUT_MOMENTUM_FREE, and runBlock (L1669) runs the blocks one after another, so no env leaks between arms. No unit test covers this. ios-validity.js is the only guard: it marks ON-siminput INVALID when its swipes were served by the runner. Promotion still needs the bench-ios CI run named in the plan amendment (L167-178): ON-siminput VALID with simInputAckTimeouts 0. No run id is attached yet."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:siminput-registry-route:3"
+      },
+      "reviewRounds": 3,
+      "adjudication": {
+        "decision": "accept",
+        "reason": "Round 3 passed with 2 notes (device check of a mid-gesture kill; CI run pending for promotion). Rounds 1-2 majors (secret leak via HID log, late landing after timeout, bench not on product tools, unmeasured momentum-free routing) all fixed with tests; momentum-free routing gated behind ARGENT_SIM_INPUT_MOMENTUM_FREE per plan Amendments.",
+        "by": "fable:coordinator",
+        "at": "2026-10-07T20:57:29.698Z"
+      },
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T20:57:30.108Z"
     },
     {
       "id": "bench-harness-p11-arms",

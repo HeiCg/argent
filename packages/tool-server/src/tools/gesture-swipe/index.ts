@@ -44,6 +44,16 @@ import {
   type OpenSwipeTiming,
 } from "../../blueprints/android-open-server";
 import { openDeviceServerMutex } from "../../utils/device-mutex";
+import {
+  shouldUseIosSimInput,
+  simInputMomentumFreeEnabled,
+  iosSimInputSwipe,
+  simInputResultFields,
+  simInputFallbackReason,
+  chainFallbackReason,
+  type IosInputBackend,
+  type SimInputResultFields,
+} from "../../blueprints/ios-sim-input";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -218,11 +228,19 @@ interface Result {
    */
   warning?: string;
   /**
-   * iOS simulator, `open-ios-device-server` flag: the open runner failed and
-   * the simulator-server swiped instead. Set only then.
+   * iOS simulator, `open-ios-device-server` flag: sim-input (when tried) and
+   * the open runner failed and the simulator-server swiped instead. Set only then.
    */
   backend?: "proprietary-fallback";
+  /**
+   * iOS simulator, `open-ios-device-server` flag: why the first backend did not
+   * serve the swipe (sim-input, then the runner). Set only on a fallback.
+   */
   fallbackReason?: string;
+  /** iOS simulator, `open-ios-device-server` flag: the backend that swiped. */
+  inputBackend?: IosInputBackend;
+  /** `inputBackend: "sim-input"` only: the ack's pacing and timing. */
+  simInput?: SimInputResultFields;
 }
 
 const pctPair = (a: number | undefined, b: number | undefined): string =>
@@ -517,6 +535,33 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       // Set when the open iOS path fell back, so the result says so.
       let iosFallback: IosOpenServerFallbackMarker | undefined;
       if (shouldUseIosOpenServer(device)) {
+        // sim-input first (HID, no XCUITest), then the open runner, then the
+        // simulator-server. A momentum-free swipe stays on the runner unless
+        // ARGENT_SIM_INPUT_MOMENTUM_FREE=1: the sim-input end hold (`holdEndMs`)
+        // is not measured on a simulator yet (experimental).
+        let simInputReason: string | undefined;
+        if (shouldUseIosSimInput(device) && (!momentumFree || simInputMomentumFreeEnabled())) {
+          try {
+            const ack = await iosSimInputSwipe(
+              registry,
+              device,
+              fromX,
+              fromY,
+              params.toX,
+              params.toY,
+              duration,
+              momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
+            );
+            return {
+              swiped: true,
+              timestampMs,
+              inputBackend: "sim-input",
+              simInput: simInputResultFields(ack),
+            };
+          } catch (err) {
+            simInputReason = simInputFallbackReason("gesture-swipe", err);
+          }
+        }
         try {
           await iosOpenServerSwipe(
             registry,
@@ -528,9 +573,18 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             duration,
             momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
-          return { swiped: true, timestampMs };
+          return {
+            swiped: true,
+            timestampMs,
+            inputBackend: "runner",
+            ...(simInputReason !== undefined ? { fallbackReason: simInputReason } : {}),
+          };
         } catch (err) {
-          iosFallback = iosOpenServerFallback("gesture-swipe", err, "simulator-server");
+          const marker = iosOpenServerFallback("gesture-swipe", err, "simulator-server");
+          iosFallback = {
+            ...marker,
+            fallbackReason: chainFallbackReason(simInputReason, marker.fallbackReason),
+          };
         }
       }
 
@@ -741,6 +795,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
         timestampMs,
         ...(warning !== undefined ? { warning } : {}),
         ...iosFallback,
+        ...(iosFallback ? { inputBackend: "simulator-server" as const } : {}),
       };
     },
   };
