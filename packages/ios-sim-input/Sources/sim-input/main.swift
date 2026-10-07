@@ -3,6 +3,7 @@ import Foundation
 // sim-input — stdin JSONL → HID dispatch into a booted iOS Simulator.
 //
 // Usage:   sim-input --udid <UDID>
+//          sim-input selftest-pacing   // pacer check, no simulator; exit 0 = in range
 //
 // Each stdin line is a JSON command; each command writes one ack JSON
 // line to stdout. Logs go to stderr so they don't corrupt the wire.
@@ -18,6 +19,15 @@ import Foundation
 // Ack schemas:
 //   {"id":<int>,"ok":true}
 //   {"id":<int>,"ok":false,"error":"..."}
+// A tap/swipe ack also carries its pacing (iOS-4 ticket 3), in ms:
+//   "scheduledMs" (last frame deadline after the Down), "actualMs" (Down→Up
+//   measured), "overshootMs" (actual − scheduled), "maxFrameLateMs" (worst
+//   frame wake past its deadline). The ack is still written after the Up.
+//
+// Threading: this (main) thread only reads stdin and enqueues each line on the
+// serial `sim-input.send` queue (QoS userInteractive), which runs one command
+// at a time in arrival order. The process holds a latencyCritical activity for
+// its whole life so App Nap / timer coalescing do not stretch frame waits.
 //
 // Screen size is required for `tap`/`swipe`'s normalisation step
 // (IOHIDDigitizerDispatch expects 0..1 coords). The caller can supply
@@ -30,6 +40,16 @@ import Foundation
 func usageAndExit() -> Never {
     fputs("usage: sim-input --udid <UDID>\n", stderr)
     exit(2)
+}
+
+// One activity for the process lifetime (see LatencyActivity).
+LatencyActivity.begin()
+
+/// Serial send queue: one gesture at a time, in stdin order.
+let sendQueue = DispatchQueue(label: "sim-input.send", qos: .userInteractive)
+
+if CommandLine.arguments.dropFirst().first == "selftest-pacing" {
+    exit(runPacingSelftest(on: sendQueue) ? 0 : 1)
 }
 
 var udid: String?
@@ -57,7 +77,7 @@ let input = IndigoHIDInput(udid: udid, host: host)
 let stdoutHandle = FileHandle.standardOutput
 let ackQueue = DispatchQueue(label: "sim-input.ack")
 
-func writeAck(_ obj: [String: Any]) {
+@Sendable func writeAck(_ obj: [String: Any]) {
     ackQueue.sync {
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []) else {
             return
@@ -67,12 +87,18 @@ func writeAck(_ obj: [String: Any]) {
     }
 }
 
-func ackOk(_ id: Int) {
-    writeAck(["id": id, "ok": true])
+/// The ack plus the pacing of the gesture this command ran, if any.
+@Sendable func withPacing(_ obj: [String: Any]) -> [String: Any] {
+    guard let pacing = PacingRecorder.shared.take() else { return obj }
+    return obj.merging(pacing.ackFields) { current, _ in current }
 }
 
-func ackErr(_ id: Int, _ message: String) {
-    writeAck(["id": id, "ok": false, "error": message])
+@Sendable func ackOk(_ id: Int) {
+    writeAck(withPacing(["id": id, "ok": true]))
+}
+
+@Sendable func ackErr(_ id: Int, _ message: String) {
+    writeAck(withPacing(["id": id, "ok": false, "error": message]))
 }
 
 // MARK: - dispatch
@@ -82,19 +108,20 @@ func ackErr(_ id: Int, _ message: String) {
 /// 0..1. IndigoHIDInput will divide by these (1.0) and clamp.
 let defaultSize = Size(width: 1.0, height: 1.0)
 
-func sizeFrom(_ obj: [String: Any]) -> Size {
+@Sendable func sizeFrom(_ obj: [String: Any]) -> Size {
     let w = (obj["screenWidth"] as? Double) ?? (obj["screenWidth"] as? Int).map(Double.init) ?? 1.0
     let h = (obj["screenHeight"] as? Double) ?? (obj["screenHeight"] as? Int).map(Double.init) ?? 1.0
     return Size(width: w, height: h)
 }
 
-func double(_ obj: [String: Any], _ key: String) -> Double? {
+@Sendable func double(_ obj: [String: Any], _ key: String) -> Double? {
     if let d = obj[key] as? Double { return d }
     if let i = obj[key] as? Int { return Double(i) }
     return nil
 }
 
-func handle(_ obj: [String: Any]) {
+@Sendable func handle(_ obj: [String: Any]) {
+    PacingRecorder.shared.reset()
     let id = (obj["id"] as? Int) ?? -1
     guard let type = obj["type"] as? String else {
         ackErr(id, "missing type"); return
@@ -167,6 +194,20 @@ func handle(_ obj: [String: Any]) {
     }
 }
 
+/// Parse one stdin line and run it. Called on `sendQueue` only.
+@Sendable func handleLine(_ lineData: Data) {
+    do {
+        let parsed = try JSONSerialization.jsonObject(with: lineData, options: [])
+        guard let obj = parsed as? [String: Any] else {
+            logErr("ignoring non-object JSON line")
+            return
+        }
+        handle(obj)
+    } catch {
+        logErr("JSON parse error: \(error)")
+    }
+}
+
 // MARK: - stdin loop
 
 log("sim-input ready (udid=\(udid))")
@@ -182,17 +223,11 @@ while true {
         let lineData = buffer[..<nlIdx]
         buffer.removeSubrange(...nlIdx)
         if lineData.isEmpty { continue }
-        do {
-            let parsed = try JSONSerialization.jsonObject(with: lineData, options: [])
-            guard let obj = parsed as? [String: Any] else {
-                logErr("ignoring non-object JSON line")
-                continue
-            }
-            handle(obj)
-        } catch {
-            logErr("JSON parse error: \(error)")
-        }
+        let line = Data(lineData)
+        sendQueue.async { handleLine(line) }
     }
 }
 
+// Let the queued commands finish (and ack) before exiting.
+sendQueue.sync {}
 log("sim-input stdin closed; exiting")

@@ -49,5 +49,36 @@ Each stdin line is a JSON command; each writes one ack line to stdout. Coords ar
 
 Acks: `{"id":<int>,"ok":true}` or `{"id":<int>,"ok":false,"error":"..."}`.
 
+A tap / swipe ack also carries the gesture's pacing:
+`{"id":<int>,"ok":true,"scheduledMs":<f>,"actualMs":<f>,"overshootMs":<f>,"maxFrameLateMs":<f>}`.
+
 The host driver (`packages/tool-server/src/utils/ios-sim-input-service.ts`) spawns
 one long-lived process per UDID and matches acks by `id` with a FIFO fallback.
+`tapWithAck` / `swipeWithAck` / `sendWithAck` resolve with the pacing fields
+(`undefined` on an older binary); `tap` / `swipe` / `send` resolve `undefined`.
+
+## Timing
+
+The main thread only reads stdin; each line runs on one serial queue
+(`sim-input.send`, QoS user-interactive), one command at a time in arrival
+order. The process holds a `latencyCritical` + `userInitiated` activity for its
+whole life, so App Nap and timer coalescing do not stretch the waits.
+
+Gesture frames (tap hold, swipe moves, dwell, the final Up) are paced against
+absolute deadlines from the Down (`t0 + offset`), each waited on a `.strict`
+`DispatchSourceTimer` with zero leeway. A late frame does not shift the frames
+after it, as chained `usleep` did. The offsets are the recipe's own: tap hold
+50 ms; swipe of `durationMs` D uses 10 moves at `D / 12` ms and the Up one step
+later (220 ms for D = 250).
+
+Ack fields, in ms on sim-input's monotonic clock:
+
+- `scheduledMs`: the last deadline (Up) after the Down, the sum of the scheduled frames.
+- `actualMs`: Down to Up as measured.
+- `overshootMs`: `actualMs - scheduledMs`.
+- `maxFrameLateMs`: the worst frame wake past its deadline.
+
+`sim-input selftest-pacing` runs the pacer with no simulator and prints one JSON
+line: 12 frames at 20 ms (240-290 ms), 1 frame at 50 ms (50-60 ms), and 12
+frames at 20 ms with a 60 ms stall in frame 3 (still 240-290 ms). Exit 0 when
+every case is in range.

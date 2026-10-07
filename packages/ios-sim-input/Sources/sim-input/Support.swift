@@ -8,11 +8,194 @@
 // reference `Input`, `DeviceHost`, `Point`, `Size`, `GesturePhase`,
 // `DeviceEdge`, `KeyboardKey`, `KeyModifier`, `HIDUsage`, `DeviceButton`,
 // `CoreSimulators.developerDir()`, and the free functions `log`,
-// `logErr`, `dlerrorString`. This file provides those — and ONLY those —
-// so the two HID files can stay byte-for-byte verbatim.
+// `logErr`, `dlerrorString`. This file provides those, plus the gesture
+// frame pacer (`GesturePacer`, `PacingRecorder`, `LatencyActivity`; iOS-4
+// ticket 3) that IOHIDDigitizerDispatch's tap/swipe wait on instead of
+// chained `usleep`.
 
+import Darwin
 import Foundation
 import ObjectiveC
+
+// MARK: - Frame pacing (iOS-4 ticket 3)
+
+/// Keeps the process out of App Nap and timer coalescing for its whole life.
+/// Run 37610266991 measured a 50 ms tap hold as a 179.5 ms Down→Up gap and a
+/// swipe with 220 ms of scheduled sleeps at 1432 ms while each HID send cost
+/// ~0.1 ms: the time went into sleeps that overran in a background process.
+enum LatencyActivity {
+    nonisolated(unsafe) private static var token: NSObjectProtocol?
+
+    static func begin() {
+        guard token == nil else { return }
+        token = ProcessInfo.processInfo.beginActivity(
+            options: [.latencyCritical, .userInitiated],
+            reason: "sim-input HID pacing"
+        )
+    }
+}
+
+/// What one gesture's pacing measured; written onto its ack.
+struct GesturePacing: Sendable {
+    /// The last frame's deadline, ms after the Down (sum of the scheduled frames).
+    let scheduledMs: Double
+    /// Measured Down→Up: from just before the Down send to after the Up send.
+    let actualMs: Double
+    /// Worst frame: wake time minus its deadline.
+    let maxFrameLateMs: Double
+
+    var overshootMs: Double { actualMs - scheduledMs }
+
+    /// The four fields, rounded to µs. NSDecimalNumber so JSONSerialization
+    /// writes `50.011`, not `50.011000000000003`.
+    var ackFields: [String: Any] {
+        func r(_ v: Double) -> NSDecimalNumber { NSDecimalNumber(string: String(format: "%.3f", v)) }
+        return [
+            "scheduledMs": r(scheduledMs),
+            "actualMs": r(actualMs),
+            "overshootMs": r(overshootMs),
+            "maxFrameLateMs": r(maxFrameLateMs),
+        ]
+    }
+}
+
+/// Paces a gesture's frames against absolute deadlines `t0 + offset` on the
+/// monotonic clock (`DispatchTime`, i.e. `mach_absolute_time`): a frame that
+/// wakes late does not move the deadlines after it (chained `usleep(frameMs)`
+/// adds every overrun to the total).
+///
+/// Each wait is a one-shot `DispatchSourceTimer` with `.strict` and leeway 0.
+/// Measured on this host (24 frames at 20 ms, latencyCritical activity held):
+/// `mach_wait_until` woke p50 4.9 / max 7.4 ms late, and p50 75.6 / max 147 ms
+/// under `taskpolicy -c utility`; the strict timer woke p50 0.07 / max 0.14 ms,
+/// and p50 0.05 / max 0.52 ms under the same clamp.
+final class GesturePacer {
+    private static let timerQueue = DispatchQueue(label: "sim-input.pacer", qos: .userInteractive)
+
+    private let t0: UInt64
+    private var scheduledMs = 0.0
+    private var maxLateMs = 0.0
+
+    /// Starts the clock; call just before sending the Down.
+    init() { t0 = DispatchTime.now().uptimeNanoseconds }
+
+    /// Blocks until `offsetMs` after the Down; returns at once when the
+    /// deadline already passed (the lateness is recorded).
+    func wait(untilMs offsetMs: Double) {
+        scheduledMs = max(scheduledMs, offsetMs)
+        let deadline = DispatchTime(uptimeNanoseconds: t0 + UInt64(max(0, offsetMs) * 1_000_000))
+        if DispatchTime.now() < deadline {
+            let fired = DispatchSemaphore(value: 0)
+            let timer = DispatchSource.makeTimerSource(flags: .strict, queue: Self.timerQueue)
+            timer.schedule(deadline: deadline, leeway: .nanoseconds(0))
+            timer.setEventHandler { fired.signal() }
+            timer.resume()
+            fired.wait()
+            timer.cancel()
+        }
+        let woke = DispatchTime.now().uptimeNanoseconds
+        let lateNs = woke >= deadline.uptimeNanoseconds ? woke - deadline.uptimeNanoseconds : 0
+        maxLateMs = max(maxLateMs, Double(lateNs) / 1_000_000)
+    }
+
+    /// Stops the clock; call just after sending the Up.
+    func finish() -> GesturePacing {
+        GesturePacing(
+            scheduledMs: scheduledMs,
+            actualMs: Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000,
+            maxFrameLateMs: maxLateMs
+        )
+    }
+}
+
+/// The pacing of the gesture the current command ran. main.swift resets it
+/// when a command starts and takes it into the ack; the dispatch helpers
+/// record into it. Locked because the helpers are not actor-isolated.
+final class PacingRecorder: @unchecked Sendable {
+    static let shared = PacingRecorder()
+
+    private let lock = NSLock()
+    private var last: GesturePacing?
+
+    func reset() {
+        lock.lock()
+        last = nil
+        lock.unlock()
+    }
+
+    func record(_ pacing: GesturePacing) {
+        lock.lock()
+        last = pacing
+        lock.unlock()
+    }
+
+    func take() -> GesturePacing? {
+        lock.lock()
+        defer { lock.unlock() }
+        let out = last
+        last = nil
+        return out
+    }
+}
+
+/// `sim-input selftest-pacing`: paces synthetic frames (no simulator, no HID)
+/// on `queue` and prints one JSON line with what it measured. Returns true when
+/// every case lands in its range. `frames-12x20-stall60` stalls 60 ms inside
+/// frame 3: with deadlines the gesture still ends near 240 ms; with chained
+/// sleeps it would end near 300 ms.
+func runPacingSelftest(on queue: DispatchQueue) -> Bool {
+    struct Case {
+        let name: String
+        let frames: Int
+        let frameMs: Double
+        let stallAtFrame: Int?
+        let minMs: Double
+        let maxMs: Double
+        let minLateMs: Double
+    }
+    let cases = [
+        Case(name: "frames-12x20", frames: 12, frameMs: 20, stallAtFrame: nil,
+             minMs: 240, maxMs: 290, minLateMs: 0),
+        Case(name: "frames-1x50", frames: 1, frameMs: 50, stallAtFrame: nil,
+             minMs: 50, maxMs: 60, minLateMs: 0),
+        Case(name: "frames-12x20-stall60", frames: 12, frameMs: 20, stallAtFrame: 3,
+             minMs: 240, maxMs: 290, minLateMs: 30),
+    ]
+    var rows: [[String: Any]] = []
+    var allPass = true
+    for c in cases {
+        let pacing: GesturePacing = queue.sync {
+            let pacer = GesturePacer()
+            for i in 1...c.frames {
+                pacer.wait(untilMs: Double(i) * c.frameMs)
+                if i == c.stallAtFrame {
+                    // Busy stall: a sleep here would itself be stretched by a
+                    // QoS clamp (usleep(60 ms) measured ~190 ms under utility).
+                    let until = DispatchTime.now().uptimeNanoseconds + 60_000_000
+                    while DispatchTime.now().uptimeNanoseconds < until {}
+                }
+            }
+            return pacer.finish()
+        }
+        let pass = pacing.actualMs >= c.minMs && pacing.actualMs <= c.maxMs
+            && pacing.maxFrameLateMs >= c.minLateMs
+        allPass = allPass && pass
+        var row: [String: Any] = pacing.ackFields
+        row["name"] = c.name
+        row["frames"] = c.frames
+        row["frameMs"] = c.frameMs
+        row["minMs"] = c.minMs
+        row["maxMs"] = c.maxMs
+        row["pass"] = pass
+        rows.append(row)
+    }
+    let out: [String: Any] = ["ok": allPass, "cases": rows]
+    if let data = try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys]) {
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data([0x0A]))
+    }
+    return allPass
+}
 
 // MARK: - Coordinate / gesture types
 

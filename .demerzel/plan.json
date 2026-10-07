@@ -32,15 +32,75 @@
         }
       ],
       "commitMessage": "perf(ios-sim-input): latency-critical activity, deadline-paced frames, serial send queue with per-message timing",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:ios-siminput-send-queue:1",
-      "reviewRounds": 0,
+      "review": {
+        "at": "2026-10-07T17:16:47.038Z",
+        "verifyRuns": [
+          {
+            "cmd": "swift build --package-path packages/ios-sim-input",
+            "exitCode": 0,
+            "outputFile": "1-swift-build-package-path-packages-ios-si.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "3-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/ios-sim-input/Sources/sim-input/main.swift",
+            "note": "L80-102: plan (docs/plans/2026-10-07-beat-official.md L35) asks the Up ack to carry per-message recvAt/sendStart/sendEnd and keep the ticket-1 fields; the step ships only flat scheduledMs/actualMs/overshootMs/maxFrameLateMs. Ticket 1 is not on open/main (it lives in PR #23 as a nested `timing` block), so nothing was dropped, but merging #23 will leave two pacing vocabularies on the ack. Controller: decide whether the pacing fields move under `timing` or both stay, and record it in the plan."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/ios-sim-input/Sources/sim-input/Support.swift",
+            "note": "L31-34: `.userInitiated` includes NSActivityIdleSystemSleepDisabled, so the Mac cannot idle-sleep while any per-UDID sim-input process lives (it stays up for the tool-server's lifetime). `.userInitiatedAllowingIdleSystemSleep` + `.latencyCritical` still keeps App Nap and timer coalescing off. The plan names `.userInitiated` literally, so the controller decides; if kept, say so in README Timing."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/ios-sim-input/Sources/sim-input/Support.swift",
+            "note": "L146-198: selftest-pacing drives GesturePacer in its own copy of the frame loop and never runs IOHIDDigitizerDispatch.tap/swipe. Reverting swipe to usleep, or getting the dwell/Up offsets wrong (IOHIDDigitizerDispatch.swift L110-138), would still pass the test. Fix: move the offset schedule into a pure function (e.g. `swipeOffsets(steps:stepMs:dwellMs:)`) that both swipe and the selftest use, or inject the send closure so the selftest runs the real tap/swipe with a no-op sender."
+          },
+          {
+            "severity": "note",
+            "file": "packages/ios-sim-input/Sources/sim-input/IndigoHIDInput.swift",
+            "note": "L568-613: SimulatorKit/IndigoHID is now called from the `sim-input.send` GCD queue instead of the main thread. No main-thread signal found: no CFRunLoop or DispatchQueue.main, sendWithMessage passes completionQueue nil, ensureWarm is NSLock-guarded and its comment says gestures may come from several threads, and the old main thread never ran a run loop either. Cannot be checked from the diff: never run against a booted simulator. Check that tap/swipe land and acks return in a bench-ios CI run, and test the bench target (tap <= 75 ms, swipe <= 300 ms p50) there."
+          },
+          {
+            "severity": "note",
+            "file": "packages/ios-sim-input/Sources/sim-input/IndigoHIDInput.swift",
+            "note": "L217, L296: button/key holds still chain usleep (out of contract per implementer), so `text` (one key() per char) and press keep the background overshoot. Edge gestures and twoFingerPath reach IOHIDDigitizerDispatch.swipe and do get the pacer. Track as a follow-up if the bench measures typeText."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/test/ios-sim-input-service.test.ts",
+            "note": "L146-177: the selftest runs `swift build` inside vitest on any macOS dev run of `npm test` (warm 1.5 s here; cold builds are slower, and it writes .build/ in a worktree). Its 50-60 ms window for frames-1x50 gives 10 ms of slack and can flake under a loaded full-suite run. CI unit-tests is ubuntu-latest, so the test is skipped there. The file also sits beside the existing test/utils/ios-sim-input-service.test.ts instead of next to it."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/utils/ios-sim-input-service.ts",
+            "note": "L243-295: PR #23 (feat/ios4-instrument-siminput, 36a99f12) touches the same 6 files: main.swift ack writer, Support.swift, README, and this service's resolve type, which gets a nested `timing` ack. Expect textual and semantic conflicts. Rebase #23 on this step, or this step on #23, before either merges."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:ios-siminput-send-queue:1"
+      },
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T17:17:23.401Z"
     },
     {
       "id": "describe-retry-empty",
@@ -133,7 +193,8 @@
         }
       ],
       "commitMessage": "feat(mcp): per-session default device with use-device; device id optional and injected",
-      "status": "pending",
+      "status": "implementing",
+      "implementer": "agent:impl:mcp-use-device:1",
       "reviewRounds": 0,
       "waivers": [],
       "skills": [

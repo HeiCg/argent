@@ -9,7 +9,10 @@
  * `packages/ios-simulator/src/input-service.ts` (the driver that pairs with the
  * same Swift CLI). Behaviour is unchanged: the service stamps a monotonic `id`
  * onto every command, matches acks by `id` when present, and falls back to FIFO
- * (head of the per-UDID pending queue) otherwise. Only the default binary path
+ * (head of the per-UDID pending queue) otherwise. Since iOS-4 ticket 3 a
+ * tap / swipe ack also carries the gesture's pacing (see {@link SimInputAck});
+ * the `*WithAck` methods resolve with it, while `tap` / `swipe` / `send` keep
+ * resolving `undefined` for their existing callers. Only the default binary path
  * differs — it resolves the product this repo builds under
  * `packages/ios-sim-input/bin/sim-input`, overridable via
  * `IOS_SIM_INPUT_BINARY` (the bench sets it to the CI build output).
@@ -47,9 +50,29 @@ interface SwipeArgs {
   height?: number;
 }
 
+/**
+ * What a command resolves with on the `*WithAck` methods. The pacing fields
+ * (ms, sim-input's monotonic clock) are present on tap / swipe acks from a
+ * binary with the deadline pacer and `undefined` otherwise (older binary,
+ * non-gesture command, or a non-finite value on the wire).
+ */
+export interface SimInputAck {
+  id: number;
+  /** Last frame's deadline after the Down: the sum of the scheduled frames. */
+  scheduledMs?: number;
+  /** Down→Up as measured by sim-input. */
+  actualMs?: number;
+  /** `actualMs - scheduledMs`. */
+  overshootMs?: number;
+  /** Worst frame wake past its deadline. */
+  maxFrameLateMs?: number;
+}
+
+const PACING_FIELDS = ["scheduledMs", "actualMs", "overshootMs", "maxFrameLateMs"] as const;
+
 interface PendingAck {
   id: number;
-  resolve: () => void;
+  resolve: (ack: SimInputAck) => void;
   reject: (err: Error) => void;
 }
 
@@ -79,7 +102,12 @@ export class IosSimInputService {
   // ---- public surface ----
 
   tap(udid: string, args: TapArgs): Promise<void> {
-    return this.send(udid, {
+    return this.tapWithAck(udid, args).then(() => undefined);
+  }
+
+  /** `tap`, resolving with the ack (gesture pacing included). */
+  tapWithAck(udid: string, args: TapArgs): Promise<SimInputAck> {
+    return this.sendWithAck(udid, {
       type: "tap",
       x: args.x,
       y: args.y,
@@ -89,6 +117,11 @@ export class IosSimInputService {
   }
 
   swipe(udid: string, args: SwipeArgs): Promise<void> {
+    return this.swipeWithAck(udid, args).then(() => undefined);
+  }
+
+  /** `swipe`, resolving with the ack (gesture pacing included). */
+  swipeWithAck(udid: string, args: SwipeArgs): Promise<SimInputAck> {
     const env: Record<string, unknown> = {
       type: "swipe",
       fromX: args.fromX,
@@ -99,7 +132,7 @@ export class IosSimInputService {
     };
     if (args.width !== undefined) env.screenWidth = args.width;
     if (args.height !== undefined) env.screenHeight = args.height;
-    return this.send(udid, env);
+    return this.sendWithAck(udid, env);
   }
 
   typeText(udid: string, text: string): Promise<void> {
@@ -111,9 +144,14 @@ export class IosSimInputService {
    * the object before writing.
    */
   send(udid: string, envelope: object): Promise<void> {
+    return this.sendWithAck(udid, envelope).then(() => undefined);
+  }
+
+  /** `send`, resolving with the parsed ack. */
+  sendWithAck(udid: string, envelope: object): Promise<SimInputAck> {
     const entry = this.ensureProc(udid);
     const id = this.nextId++;
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<SimInputAck>((resolve, reject) => {
       const stamped = { id, ...envelope };
       const line = JSON.stringify(stamped) + "\n";
       entry.pending.push({ id, resolve, reject });
@@ -205,7 +243,7 @@ export class IosSimInputService {
   }
 
   private handleAckLine(entry: ProcEntry, line: string): void {
-    let obj: { id?: number; ok?: boolean; error?: string };
+    let obj: { id?: number; ok?: boolean; error?: string } & Record<string, unknown>;
     try {
       obj = JSON.parse(line);
     } catch {
@@ -214,6 +252,10 @@ export class IosSimInputService {
     }
     const ok = obj.ok === true;
     const err = obj.error ?? "sim-input reported failure";
+    const settle = (pending: PendingAck): void => {
+      if (ok) pending.resolve(parseAck(pending.id, obj));
+      else pending.reject(new Error(err));
+    };
 
     if (typeof obj.id === "number") {
       const idx = entry.pending.findIndex((p) => p.id === obj.id);
@@ -221,9 +263,7 @@ export class IosSimInputService {
         console.error("[sim-input] no pending entry for ack id=%d", obj.id);
         return;
       }
-      const pending = entry.pending.splice(idx, 1)[0]!;
-      if (ok) pending.resolve();
-      else pending.reject(new Error(err));
+      settle(entry.pending.splice(idx, 1)[0]!);
       return;
     }
 
@@ -233,8 +273,7 @@ export class IosSimInputService {
       console.error("[sim-input] received ack with empty pending queue");
       return;
     }
-    if (ok) pending.resolve();
-    else pending.reject(new Error(err));
+    settle(pending);
   }
 
   private rejectAll(entry: ProcEntry, err: Error): void {
@@ -243,4 +282,14 @@ export class IosSimInputService {
       p.reject(err);
     }
   }
+}
+
+/** The ack for the command `id`, keeping only finite numeric pacing fields. */
+function parseAck(id: number, raw: Record<string, unknown>): SimInputAck {
+  const ack: SimInputAck = { id };
+  for (const key of PACING_FIELDS) {
+    const v = raw[key];
+    if (typeof v === "number" && Number.isFinite(v)) ack[key] = v;
+  }
+  return ack;
 }

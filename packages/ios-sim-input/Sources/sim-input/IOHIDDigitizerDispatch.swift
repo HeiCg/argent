@@ -1,6 +1,9 @@
 // Ported VERBATIM from baguette (Apache-2.0). Upstream: https://github.com/tddworks/baguette
 // Original: Sources/Baguette/Infrastructure/Input/IOHIDDigitizerDispatch.swift
 // DO NOT modify byte layouts, timing constants, or HID event ordering — they are the iOS 26.4 recipe.
+// Local change (iOS-4 ticket 3): `tap` / `swipe` wait on `GesturePacer`
+// (absolute deadlines) instead of chained `usleep`, at the same offsets, and
+// record the gesture's pacing for the ack. Nothing else differs from the port.
 
 import Foundation
 
@@ -81,12 +84,15 @@ enum IOHIDDigitizerDispatch {
     static func tap(point: CGPoint, holdSeconds: Double,
                     edge: Edge = .none, identifier: UInt32,
                     on client: AnyObject) -> Bool {
+        let pacer = GesturePacer()
         guard send(point: point, identifier: identifier, phase: .down,
                    edge: edge, on: client) else { return false }
         let holdUs = UInt32(max(0.02, holdSeconds) * 1_000_000)
-        usleep(holdUs)
-        return send(point: point, identifier: identifier, phase: .up,
-                    edge: edge, on: client)
+        pacer.wait(untilMs: Double(holdUs) / 1000)
+        let up = send(point: point, identifier: identifier, phase: .up,
+                      edge: edge, on: client)
+        PacingRecorder.shared.record(pacer.finish())
+        return up
     }
 
     /// Continuous swipe from `start` to `end` over `steps`
@@ -98,11 +104,13 @@ enum IOHIDDigitizerDispatch {
                       dwellMs: UInt32 = 0,
                       edge: Edge = .none, identifier: UInt32,
                       on client: AnyObject) -> Bool {
+        let pacer = GesturePacer()
         guard send(point: start, identifier: identifier, phase: .down,
                    edge: edge, on: client) else { return false }
+        let step = Double(stepMs)
         var ok = 0
         for i in 1...steps {
-            usleep(stepMs * 1000)
+            pacer.wait(untilMs: Double(i) * step)
             let t = Double(i) / Double(steps)
             let p = CGPoint(x: start.x + (end.x - start.x) * t,
                             y: start.y + (end.y - start.y) * t)
@@ -113,17 +121,22 @@ enum IOHIDDigitizerDispatch {
         // drags from the bottom edge. Resending move events at the
         // same point keeps the touch alive across the recogniser's
         // decision window.
+        var at = Double(steps) * step
         if dwellMs > 0 {
             let pulses = max(1, Int(dwellMs / 50))
             for _ in 0..<pulses {
+                pacer.wait(untilMs: at)
                 _ = send(point: end, identifier: identifier, phase: .move,
                          edge: edge, on: client)
-                usleep(50_000)
+                at += 50
             }
         }
-        usleep(stepMs * 1000)
-        return send(point: end, identifier: identifier, phase: .up,
-                    edge: edge, on: client) && ok >= steps / 2
+        at += step
+        pacer.wait(untilMs: at)
+        let up = send(point: end, identifier: identifier, phase: .up,
+                      edge: edge, on: client)
+        PacingRecorder.shared.record(pacer.finish())
+        return up && ok >= steps / 2
     }
 
     // MARK: - core
