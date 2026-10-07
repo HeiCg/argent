@@ -38,11 +38,31 @@ const EMPTY_TREE_HINT =
   "(an app starting, closing or crashing). This is not evidence that the screen is " +
   "empty. Run `describe` again or take a `screenshot`.";
 
+// Appended to the describe hint when the open server returned a window root but
+// nothing survived the trim on every read (ABBA run 37609765062: a read right
+// after a navigating tap lands mid-transition).
+const EMPTY_ROOT_HINT =
+  "The device reported a root with no elements; the screen may be mid-transition — " +
+  "call `describe` again or use `await-screen-idle`.";
+
+// Re-reads of an immediate open-path read whose root has no elements, and the
+// pause before each. In run 37609765062 the next read (265-433 ms later) was
+// the destination in 26/26 cases.
+const EMPTY_ROOT_RETRIES = 2;
+const EMPTY_ROOT_RETRY_STEP_MS = 50;
+
 // Open-path describes that returned an empty tree in this process. Read by the
 // bench; each one is also logged at console.warn.
 let emptyTreeCount = 0;
 export function openServerEmptyTreeCount(): number {
   return emptyTreeCount;
+}
+
+// Extra immediate reads the open path made because a read had a root but no
+// elements after the trim. Exposed for the bench/telemetry; not read yet.
+let emptyRootRetryCount = 0;
+export function openServerEmptyRootRetryCount(): number {
+  return emptyRootRetryCount;
 }
 
 export const androidRequires: ToolDependency[] = ["adb"];
@@ -51,8 +71,9 @@ export const androidRequires: ToolDependency[] = ["adb"];
 // idle-gate cap (`waitTimeoutMs`). Default/`false` = an immediate read
 // (`waitTimeoutMs: 0`), matching the proprietary `android-devtools` `getHierarchy`,
 // which reads the tree with no quiescence wait — so the two describe backends
-// differ in policy, not speed. `true` = a 500 ms quiescence (the settled read,
-// the superior product feature), and a number is a custom cap in ms.
+// differ in policy, not speed. `true` = `uiDevice.waitForIdle(500)` on the device:
+// it waits for UiAutomator idle up to 500 ms (fixed cap; it does not confirm a
+// quiet screen), and a number is a custom cap in ms.
 const SETTLE_QUIESCENCE_MS = 500;
 export function settleToWaitTimeoutMs(settle: boolean | number | undefined): number {
   if (settle === true) return SETTLE_QUIESCENCE_MS;
@@ -86,7 +107,8 @@ export async function describeAndroid(
   isTv?: boolean,
   // Idle policy for the open path (ignored by the android-devtools / dump paths,
   // which always read immediately). Absent/`false` = immediate read (matches the
-  // proprietary getHierarchy); `true` = 500 ms quiescence; a number = custom cap.
+  // proprietary getHierarchy); `true` = wait for UiAutomator idle up to 500 ms
+  // (fixed cap; it does not confirm a quiet screen); a number = custom cap.
   settle?: boolean | number
 ): Promise<DescribeTreeData> {
   const hint = (isTv ?? (await isAndroidTv(serial))) ? ANDROID_TV_HINT : undefined;
@@ -95,8 +117,10 @@ export async function describeAndroid(
 
   // Preferred source when the `open-device-server` flag is on and the open-source
   // on-device server is reachable: it reads the accessibility tree directly from
-  // UiAutomation (no `uiautomator dump` round-trip, and it settles with
-  // waitForIdle first), fixing the ~40% busy-UI dump flakiness. An empty tree is
+  // UiAutomation (no `uiautomator dump` round-trip), fixing the ~40% busy-UI dump
+  // flakiness. By default it reads immediately, with no idle wait; only `settle`
+  // waits for UiAutomator idle, up to a fixed cap. A root with no elements is
+  // re-read (see below). An empty tree (no active window) is
   // returned as-is (`treeEmpty`). Any failure falls through to the android-devtools
   // helper, then the raw dump, and the result carries `backend:
   // "proprietary-fallback"`. While this server runs, the dump cannot connect to
@@ -120,10 +144,10 @@ export async function describeAndroid(
           // Idle policy (phase 3d): default `waitTimeoutMs: 0` = an immediate read,
           // matching the proprietary `android-devtools` `getHierarchy`, which reads
           // the tree with no quiescence wait — so the two backends are like-for-like
-          // in *policy*, not just speed. Under `settle` the describe waits out the
-          // in-flight navigation's `waitForIdle` (a 500 ms idle-quiescence window, or
-          // a custom one) for a fresh post-navigation tree — the superior product
-          // feature, available explicitly. `uiDevice.waitForIdle(0)` returns
+          // in *policy*, not just speed. Under `settle` the describe first waits for
+          // UiAutomator idle up to 500 ms (or a custom cap) — a fixed cap, it does
+          // not confirm a quiet screen (run 37609765062: 50/51 reads hit the
+          // cap). `uiDevice.waitForIdle(0)` returns
           // immediately (a 0 window short-circuits the idle loop — measured
           // waitedMs=0), so waitTimeoutMs:0 needs no server change. The await-* paths
           // keep their own (default) timeout — this is describe-only.
@@ -186,15 +210,40 @@ export async function describeAndroid(
       const firstReadAt = Date.now();
       let result = await readOnce();
       let lastReadAt = firstReadAt;
+      // An immediate read right after a navigating tap can land between the
+      // destination's first frame and the end of the transition: the window root
+      // is there but nothing survives the trim, and the server's `treeEmpty`
+      // (no active window) does not fire (run 37609765062: 35-45 % of the
+      // samples). Re-read it up to EMPTY_ROOT_RETRIES times and return the first
+      // read with elements. Only the immediate read: `settle` keeps one read.
+      const immediateRead = settleToWaitTimeoutMs(settle) === 0;
+      const isEmptyRoot = (r: typeof result) =>
+        r.emptyReason === undefined && r.node.children.length === 0;
+      let emptyRootRetries = 0;
+      while (immediateRead && isEmptyRoot(result) && emptyRootRetries < EMPTY_ROOT_RETRIES) {
+        await new Promise((r) => setTimeout(r, EMPTY_ROOT_RETRY_STEP_MS));
+        emptyRootRetries += 1;
+        lastReadAt = Date.now();
+        result = await readOnce();
+      }
+      emptyRootRetryCount += emptyRootRetries;
+      const emptyRoot = immediateRead && isEmptyRoot(result);
+      if (emptyRoot) {
+        console.warn(
+          `[describe.android] open-device-server returned a root with no elements on ` +
+            `${emptyRootRetries + 1} reads; returning it with a hint, no other backend`
+        );
+      }
       await awaitWebViewPublished(result.node, async () => {
         lastReadAt = Date.now();
         result = await readOnce();
         return result.node;
       });
-      // Count the wait: the discarded reads and the sleeps between them land in
-      // `waitedMs`, so waitedMs + captureMs still accounts for the device time.
-      // The other stage timings are the returned (last) read's own.
-      const webViewWaitMs = lastReadAt - firstReadAt;
+      // Count the wait: the discarded reads (empty-root re-reads, cold-WebView
+      // re-reads) and the sleeps between them land in `waitedMs`, so waitedMs +
+      // captureMs still accounts for the device time. The other stage timings
+      // are the returned (last) read's own.
+      const rereadWaitMs = lastReadAt - firstReadAt;
       if (result.emptyReason !== undefined) {
         emptyTreeCount += 1;
         const attempts = result.timings?.rootAttempts;
@@ -213,6 +262,7 @@ export async function describeAndroid(
           hint,
           result.truncated ? TRUNCATION_HINT : undefined,
           result.emptyReason !== undefined ? EMPTY_TREE_HINT : undefined,
+          emptyRoot ? EMPTY_ROOT_HINT : undefined,
         ]
           .filter(Boolean)
           .join(" ") || undefined;
@@ -229,7 +279,7 @@ export async function describeAndroid(
         source: "open-device-server",
         hint: openHint,
         ...(incidentLine !== undefined ? { incidentLine } : {}),
-        waitedMs: result.waitedMs + webViewWaitMs,
+        waitedMs: result.waitedMs + rereadWaitMs,
         captureMs: result.captureMs,
         ...(result.timings ? { timings: result.timings } : {}),
         ...(result.wireBytes !== undefined ? { wireBytes: result.wireBytes } : {}),

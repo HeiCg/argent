@@ -89,9 +89,8 @@ const zodSchema = z.object({
     .optional()
     .describe(
       "Android open-server only: default (or false) reads the tree immediately (matching the " +
-        "proprietary path); true waits for the screen to settle (a 500 ms idle-quiescence window) " +
-        "first, and a number sets a custom idle-quiescence window in ms — use it to read a settled " +
-        "tree right after a navigating tap."
+        "proprietary path); true waits for UiAutomator idle up to 500 ms (fixed cap; it does not " +
+        "confirm a quiet screen) before reading, and a number sets a custom cap in ms."
     ),
   tier: z
     .enum(["summary", "compact", "full", "index"])
@@ -209,8 +208,8 @@ function makeDescribeExecute(
         // back to the standard describe on any failure, so the default (no
         // `tier`) keeps the exact current behaviour.
         if (params.tier) return describeAndroidTiered(registry, device, params.tier);
-        // No `tier`: the phase-3 path, threading `settle` so a post-tap describe can
-        // read the settled tree.
+        // No `tier`: the phase-3 path, threading `settle` (a capped UiAutomator idle
+        // wait before the read; it does not confirm a quiet screen).
         return withDescription(
           await describeAndroid(registry, params.udid, params.bundleId, false, params.settle)
         );

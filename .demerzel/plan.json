@@ -23,7 +23,7 @@
           "expect": "exit0"
         },
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -54,7 +54,7 @@
       "dependsOn": [],
       "verify": [
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/android-describe-screen.test.ts test/android-describe-retry-empty.test.ts test/screen-graph-open-wiring-empty-tree.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/android-describe-screen.test.ts test/android-describe-retry-empty.test.ts test/screen-graph-open-wiring-empty-tree.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -63,15 +63,45 @@
         }
       ],
       "commitMessage": "fix(describe): retry a 0-element root on Android, hint the agent, document settle as a 500 ms cap",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:describe-retry-empty:1",
-      "reviewRounds": 0,
+      "review": {
+        "at": "2026-10-07T17:12:59.526Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/android-describe-screen.test.ts test/android-describe-retry-empty.test.ts test/screen-graph-open-wiring-empty-tree.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/docs/docs/reference/tools.mdx",
+            "note": "L87-91: 'A read with `settle` does not read again' is wrong for settle:0 (and fractional <1), which settleToWaitTimeoutMs (android/index.ts L78-84) maps to 0, so immediateRead is true and the re-read runs (test L149 confirms); also 'returns the empty tree with a hint' reads like the treeEmpty case above, but treeEmpty is not set here. Reword: 'A `settle` of true or more than 0 ms gives one read only' and 'returns the root with no elements and a hint, without `treeEmpty`'"
+          },
+          {
+            "severity": "note",
+            "file": "packages/docs/docs/reference/tools.mdx",
+            "note": "L89-90: 'The hint tells the agent that the screen can be mid-transition, and to run `describe` again or `await-screen-idle`' holds two ideas in one sentence (packages/docs/CLAUDE.md STE: one idea per sentence); split into two sentences"
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:describe-retry-empty:2"
+      },
+      "reviewRounds": 2,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T17:13:46.421Z"
     },
     {
       "id": "mcp-use-device",
@@ -90,7 +120,7 @@
       "dependsOn": [],
       "verify": [
         {
-          "cmd": "cd packages/argent-mcp && npx vitest run --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/argent-mcp && npx vitest run --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -128,7 +158,7 @@
       ],
       "verify": [
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -174,7 +204,7 @@
           "expect": "exit0"
         },
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/open-server-swipe-hold.test.ts test/open-server-scroll-container.test.ts test/screen-graph-navigate-template.test.ts test/tools/gesture-swipe.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/open-server-swipe-hold.test.ts test/open-server-scroll-container.test.ts test/screen-graph-navigate-template.test.ts test/tools/gesture-swipe.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -217,7 +247,7 @@
           "expect": "exit0"
         },
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/open-server-settle-on-action.test.ts test/tools/gesture-swipe.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/open-server-settle-on-action.test.ts test/tools/gesture-swipe.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -259,7 +289,7 @@
       ],
       "verify": [
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts test/ios-open-server-input-routing.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts test/ios-open-server-input-routing.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -343,7 +373,7 @@
       ],
       "verify": [
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -382,7 +412,7 @@
       ],
       "verify": [
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/tools/run-on-devices.test.ts test/tools/run-sequence.test.ts test/utils/device-mutex.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/tools/run-on-devices.test.ts test/tools/run-sequence.test.ts test/utils/device-mutex.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
@@ -426,7 +456,7 @@
       ],
       "verify": [
         {
-          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-bench-*.test.ts --poolOptions.threads.maxThreads=2",
+          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-bench-*.test.ts --maxWorkers=2",
           "expect": "exit0"
         },
         {
