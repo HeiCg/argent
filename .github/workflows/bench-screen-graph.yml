@@ -45,9 +45,9 @@ on:
         required: false
         default: "0.27.0"
       emulator_build:
-        description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
+        description: "Emulator build to pin (default 15004761 = 36.4.10; 37.2.12 leaks host memory, see docs/open-server/2026-10-04-bench-emulator-loss.md). Empty = latest (not recommended)"
         required: false
-        default: ""
+        default: "15004761"
       emulator_gpu:
         description: "Emulator -gpu mode"
         required: false
@@ -78,6 +78,9 @@ jobs:
       EMULATOR_BUILD: ${{ github.event.inputs.emulator_build }}
       EMULATOR_GPU: ${{ github.event.inputs.emulator_gpu || 'swiftshader_indirect' }}
       EMULATOR_MEMORY_MB: ${{ github.event.inputs.emulator_memory_mb || '4096' }}
+      # An unpinned emulator (emulator_build empty) fails the job unless this repository
+      # variable is 1.
+      BENCH_ALLOW_UNPINNED: ${{ vars.BENCH_ALLOW_UNPINNED }}
 
     steps:
       - name: Checkout
@@ -132,12 +135,22 @@ jobs:
           echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
 
       - name: Pin emulator build (optional) + record emulator environment
+        # pinnedBuild null (emulator_build empty) warns and fails the job unless
+        # BENCH_ALLOW_UNPINNED=1: 37.2.12 leaked host memory (run 37686158727).
         run: |
           set -e
           [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
           [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
           bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
           bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-34;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+          PINNED="$(node -e 'try{const e=require(process.argv[1]).emulator;process.stdout.write(e&&e.pinnedBuild?String(e.pinnedBuild):"")}catch{}' "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json")"
+          if [ -z "$PINNED" ]; then
+            echo "::warning::emulator build not pinned (pinnedBuild null): results are not comparable to pinned runs"
+            if [ "${BENCH_ALLOW_UNPINNED:-}" != "1" ]; then
+              echo "::error::emulator_build is empty: pin it (default 15004761) or set the repository variable BENCH_ALLOW_UNPINNED=1"
+              exit 1
+            fi
+          fi
 
       - name: Create AVD
         run: |

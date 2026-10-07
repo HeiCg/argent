@@ -156,3 +156,6 @@ When the runner itself is shut down, the post-mortem and upload steps do not run
 step-log heartbeat is the only evidence that survives. This change prints it every 60 s
 instead of every 2 min, adds the largest non-qemu process to it, and adds the memory
 guard above so the job fails before the runner dies.
+
+Update 2026-10-07: runs 37686036860/37686158727 on 37.2.12 (unpinned dispatch) reproduced the leak (5.8→14 GB in ~25 min); 37609765062 on 15004761 stayed flat.
+Default pinned since this commit.

@@ -30,8 +30,9 @@ name: bench-androidworld
 #
 # Emulator diagnostics (shared with bench-open-vs-proprietary.yml, see
 # .github/bench-ci/emulator-diagnostics.sh): ci-emulator-env.json, a 30 s host sampler
-# + liveness watchdog during the probe/harness step, a post-mortem. emulator_build /
-# emulator_gpu / emulator_memory_mb default to today's behaviour.
+# + liveness watchdog during the probe/harness step, a post-mortem. emulator_build
+# defaults to 15004761 (36.4.10; 37.2.12 leaks host memory) and an unpinned build
+# warns; emulator_gpu / emulator_memory_mb default to today's behaviour.
 
 on:
   workflow_dispatch:
@@ -76,9 +77,9 @@ on:
           - xhigh
           - max
       emulator_build:
-        description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
+        description: "Emulator build to pin (default 15004761 = 36.4.10; 37.2.12 leaks host memory, see docs/open-server/2026-10-04-bench-emulator-loss.md). Empty = latest (not recommended)"
         required: false
-        default: ""
+        default: "15004761"
       emulator_gpu:
         description: "Emulator -gpu mode"
         required: false
@@ -173,6 +174,11 @@ jobs:
           [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
           bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
           bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-33;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+          # Warn only (no latency numbers here): 37.2.12 leaked host memory (run 37686036860).
+          PINNED="$(node -e 'try{const e=require(process.argv[1]).emulator;process.stdout.write(e&&e.pinnedBuild?String(e.pinnedBuild):"")}catch{}' "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json")"
+          if [ -z "$PINNED" ]; then
+            echo "::warning::emulator build not pinned (pinnedBuild null): results are not comparable to pinned runs"
+          fi
 
       - name: Create AVD (Pixel 6, API 33, emulator_memory_mb / 2 vCPUs)
         run: |
@@ -393,6 +399,11 @@ jobs:
           [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
           bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
           bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-33;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+          # Warn only (no latency numbers here): 37.2.12 leaked host memory (run 37686036860).
+          PINNED="$(node -e 'try{const e=require(process.argv[1]).emulator;process.stdout.write(e&&e.pinnedBuild?String(e.pinnedBuild):"")}catch{}' "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json")"
+          if [ -z "$PINNED" ]; then
+            echo "::warning::emulator build not pinned (pinnedBuild null): results are not comparable to pinned runs"
+          fi
 
       - name: Create AVD (Pixel 6, API 33)
         run: |

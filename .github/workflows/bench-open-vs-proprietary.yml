@@ -19,8 +19,11 @@ name: bench-open-vs-proprietary
 # (ci-emulator-env.json), samples the host every 30 s during the bench step, runs a
 # liveness watchdog that terminates the bench when the emulator is lost (never
 # restarts it), and collects a post-mortem. emulator_build / emulator_gpu /
-# emulator_memory_mb are the levers to test an emulator-version regression; their
-# defaults keep today's behaviour.
+# emulator_memory_mb are the levers to test an emulator-version regression.
+# emulator_build defaults to 15004761 (36.4.10): runs 37686036860 / 37686158727 on the
+# unpinned 37.2.12 leaked host memory until qemu hit 14 GB. An unpinned build warns in
+# every job and fails the latency / screen-graph jobs unless the repository variable
+# BENCH_ALLOW_UNPINNED is 1.
 
 on:
   workflow_dispatch:
@@ -63,9 +66,9 @@ on:
           - matrix
           - capture
       emulator_build:
-        description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
+        description: "Emulator build to pin (default 15004761 = 36.4.10; 37.2.12 leaks host memory, see docs/open-server/2026-10-04-bench-emulator-loss.md). Empty = latest (not recommended)"
         required: false
-        default: ""
+        default: "15004761"
       emulator_gpu:
         description: "Emulator -gpu mode"
         required: false
@@ -117,6 +120,9 @@ jobs:
       EMULATOR_BUILD: ${{ github.event.inputs.emulator_build }}
       EMULATOR_GPU: ${{ github.event.inputs.emulator_gpu || 'swiftshader_indirect' }}
       EMULATOR_MEMORY_MB: ${{ github.event.inputs.emulator_memory_mb || '4096' }}
+      # An unpinned emulator (emulator_build empty) fails the job unless this repository
+      # variable is 1 (no dispatch input left: workflow_dispatch caps inputs at 10).
+      BENCH_ALLOW_UNPINNED: ${{ vars.BENCH_ALLOW_UNPINNED }}
 
     steps:
       - name: Checkout
@@ -177,12 +183,22 @@ jobs:
         # verify -version and `sdkmanager --list_installed`.
         # Then ci-emulator-env.json (emulator version/build, system-image revision, adb,
         # $ImageVersion, kernel, nproc, free -m): uploaded and embedded in the results.
+        # pinnedBuild null (emulator_build empty) warns and fails the job unless
+        # BENCH_ALLOW_UNPINNED=1: 37.2.12 leaked host memory (run 37686036860).
         run: |
           set -e
           [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
           [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
           bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
           bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-34;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+          PINNED="$(node -e 'try{const e=require(process.argv[1]).emulator;process.stdout.write(e&&e.pinnedBuild?String(e.pinnedBuild):"")}catch{}' "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json")"
+          if [ -z "$PINNED" ]; then
+            echo "::warning::emulator build not pinned (pinnedBuild null): results are not comparable to pinned runs"
+            if [ "${BENCH_ALLOW_UNPINNED:-}" != "1" ]; then
+              echo "::error::emulator_build is empty: pin it (default 15004761) or set the repository variable BENCH_ALLOW_UNPINNED=1"
+              exit 1
+            fi
+          fi
 
       - name: Create AVD (emulator_memory_mb, default 4 GB / 2 vCPUs)
         run: |
@@ -802,6 +818,13 @@ jobs:
       EMULATOR_BUILD: ${{ github.event.inputs.emulator_build }}
       EMULATOR_GPU: ${{ github.event.inputs.emulator_gpu || 'swiftshader_indirect' }}
       EMULATOR_MEMORY_MB: ${{ github.event.inputs.emulator_memory_mb || '4096' }}
+      BENCH_ALLOW_UNPINNED: ${{ vars.BENCH_ALLOW_UNPINNED }}
+      # The harness blocks (bench-screen-graph.ts: MATRIX, CHURN, MULTIHOP). `blocks` is
+      # passed through when it names MATRIX or MULTIHOP (contains() ignores case; run
+      # 37686158727 asked for MULTIHOP and ran MATRIX because this was missing). Else
+      # (the latency default, or only `churn`) MATRIX, and BENCH_CHURN below adds CHURN
+      # for `churn` as before.
+      BENCH_BLOCKS: ${{ (contains(github.event.inputs.blocks, 'MATRIX') || contains(github.event.inputs.blocks, 'MULTIHOP')) && github.event.inputs.blocks || 'MATRIX' }}
 
     steps:
       # feat/screen-graph-d is merged into open/main, so the screen-graph bench
@@ -853,12 +876,22 @@ jobs:
         # verify -version and `sdkmanager --list_installed`.
         # Then ci-emulator-env.json (emulator version/build, system-image revision, adb,
         # $ImageVersion, kernel, nproc, free -m): uploaded and embedded in the results.
+        # pinnedBuild null (emulator_build empty) warns and fails the job unless
+        # BENCH_ALLOW_UNPINNED=1: 37.2.12 leaked host memory (run 37686158727).
         run: |
           set -e
           [[ "$EMULATOR_MEMORY_MB" =~ ^[0-9]+$ ]] || { echo "::error::emulator_memory_mb '$EMULATOR_MEMORY_MB' is not a number"; exit 1; }
           [[ "$EMULATOR_GPU" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::emulator_gpu '$EMULATOR_GPU' is not a -gpu mode"; exit 1; }
           bash .github/bench-ci/emulator-diagnostics.sh install-emulator "$EMULATOR_BUILD"
           bash .github/bench-ci/emulator-diagnostics.sh env "system-images;android-34;google_apis;x86_64" "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json"
+          PINNED="$(node -e 'try{const e=require(process.argv[1]).emulator;process.stdout.write(e&&e.pinnedBuild?String(e.pinnedBuild):"")}catch{}' "$GITHUB_WORKSPACE/.bench-results/ci-emulator-env.json")"
+          if [ -z "$PINNED" ]; then
+            echo "::warning::emulator build not pinned (pinnedBuild null): results are not comparable to pinned runs"
+            if [ "${BENCH_ALLOW_UNPINNED:-}" != "1" ]; then
+              echo "::error::emulator_build is empty: pin it (default 15004761) or set the repository variable BENCH_ALLOW_UNPINNED=1"
+              exit 1
+            fi
+          fi
 
       - name: Create AVD
         run: |
@@ -904,8 +937,8 @@ jobs:
         if: ${{ contains(github.event.inputs.blocks, 'churn') }}
         # Reuses the android-device-server Gradle wrapper via `-p`, so no second
         # wrapper.jar. Gated on `blocks` containing `churn` (a new workflow_dispatch
-        # input would be rejected by the default-branch schema on a feature ref);
-        # `blocks` is ignored by the screen-graph job otherwise.
+        # input would be rejected by the default-branch schema on a feature ref).
+        # `blocks` also picks the harness blocks (job env BENCH_BLOCKS).
         run: |
           set -euo pipefail
           bash bench/churn-app/scripts/build.sh
@@ -934,6 +967,9 @@ jobs:
           echo "BENCH_PROPRIETARY_PROVENANCE=$RUNNER_TEMP/proprietary-provenance.json" >> "$GITHUB_ENV"
 
       - name: Pre-flight (needle gate + optional capture)
+        # The needle gate guards the MATRIX only (as in bench-screen-graph.yml): a
+        # MULTIHOP / CHURN-only run skips it.
+        if: ${{ github.event.inputs.sg_mode == 'capture' || contains(env.BENCH_BLOCKS, 'MATRIX') }}
         env:
           BENCH_SERIAL: emulator-5554
           # capture mode dumps launch+destination per task to capture.json (under
@@ -971,6 +1007,11 @@ jobs:
           BENCH_CHURN: ${{ contains(github.event.inputs.blocks, 'churn') && '1' || '' }}
           # C.4 work item F: 5 reps for a tighter Wilson interval above the noise floor.
           BENCH_REPS: "5"
+          # MULTIHOP samples per arm and task. This workflow already has the 10
+          # workflow_dispatch inputs GitHub allows, so there is no multihop_reps input
+          # here: it reuses `n` (default 20 = the harness default). bench-screen-graph.yml
+          # has its own multihop_reps input.
+          BENCH_MULTIHOP_REPS: ${{ github.event.inputs.n || '20' }}
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
           ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
@@ -998,6 +1039,8 @@ jobs:
           BENCH_EMULATOR_LOST_FILE: ${{ env.EMU_DIAG_DIR }}/emulator-lost.json
         run: |
           set -euo pipefail
+          [[ "$BENCH_MULTIHOP_REPS" =~ ^[0-9]+$ ]] || { echo "::error::n '$BENCH_MULTIHOP_REPS' is not a number (BENCH_MULTIHOP_REPS)"; exit 1; }
+          echo "[bench-sg] blocks=$BENCH_BLOCKS churn=${BENCH_CHURN:-} multihop_reps=$BENCH_MULTIHOP_REPS"
           # Host sampler (heartbeat every 60 s in this log) + liveness watchdog.
           bash .github/bench-ci/emulator-diagnostics.sh start emulator-5554 'bench-screen-graph\.ts'
           trap 'bash .github/bench-ci/emulator-diagnostics.sh stop' EXIT
