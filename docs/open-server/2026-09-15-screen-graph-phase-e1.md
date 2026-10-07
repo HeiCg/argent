@@ -74,6 +74,148 @@ is measured but the overlap stress is E-2).
 
 ## Result
 
+Current result: **run 4 (37584222236)**. Runs 1 to 3 are kept below for the
+record. Not yet adversarially reviewed.
+
+### Run 4 (37584222236), current
+
+Run **37584222236** (`HeiCg/argent`, `bench-open-vs-proprietary.yml`,
+`workflow_dispatch`, `suite=screen-graph`, `sg_mode=matrix`, `blocks=churn`),
+branch `feat/screen-graph-e1-templates` @ `c0851a9f`, 2026-10-07 (job started
+07:03:13Z). Emulator 36.4.10.0 (build 15004761, pinned), sysimg r14, gpu
+`swiftshader_indirect`, runner image 20260927.320.1; proprietary comparator
+`@swmansion/argent@0.27.0`. Job conclusion **success**; the harness exits with
+`process.exitCode`, so a gate FAIL would have turned it red. Outcomes are read
+from this run's artifact only (`churn-results.md`, `churn.json`,
+`results-ci.md`, `bench-sg-2026-10-07T07-03-18-485Z.json`, `sg-matrix.log`,
+`graph-store/`).
+
+Churn setup: `com.argent.churnapp`, items=50, sessions=5, taps/session=8,
+scrolls/session=10.
+
+Gates, verbatim from `churn-results.md`:
+
+| gate  | verdict     | detail                                                                                                                       |
+| ----- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| E1-G1 | PASS        | ON [k2: +0n/+0e, k3: +0n/+0e, k4: +0n/+0e, k5: +0n/+0e] (<= 2n/4e); OFF [k2: +9n/+9e, k3: +9n/+9e, k4: +9n/+9e, k5: +9n/+9e] |
+| E1-G2 | PASS        | ON 23299 B (<= 65536); OFF 203333 B                                                                                          |
+| E1-G3 | PASS        | present-only 40/40 (bar 38/40 = 38/40); raw 40/40; D.4.1 O5 baseline 59/60                                                   |
+| E1-G4 | PASS        | ON dupScreens=0 dupEdges=0 dangling=0 hygiene=0 nodes=3 edges=2; OFF dupEdgeTargets=9 (recorded, not gated)                  |
+| E1-G5 | DESCRIPTIVE | D.4.1 matrix (templates OFF) non-regression — see the run's settingsGraph + tokens                                           |
+| E1-G6 | DESCRIPTIVE | feed summary tokens/step p50: ON ~82 vs OFF ~111 (descriptive; topN=6 caps both)                                             |
+
+Every navigate-to target was present (40/40 by the app's row model), so the
+present-only grading added after run 3 and the raw count agree: 40/40 either
+way. Containment audit: row taps attributed to `#list` 80/80 (0 misattributed),
+carousel taps to `#carousel` 10/10.
+
+#### Per-attempt scroll distribution (navigate-to, churn100, n = 5 per target)
+
+min / median / max over the 5 sessions. `feed ready` is the harness wait until
+the feed shows `Story 0`. No attempt ended in a sweep (`swept` 0/40).
+
+| target   | scrolls    | reversals | gaps      | feed ready ms   |
+| -------- | ---------- | --------- | --------- | --------------- |
+| Story 32 | 3 / 4 / 5  | 0 / 0 / 0 | 0 / 1 / 2 | 290 / 345 / 492 |
+| Story 33 | 2 / 3 / 4  | 0 / 0 / 0 | 0 / 2 / 2 | 131 / 324 / 392 |
+| Story 34 | 2 / 3 / 5  | 0 / 0 / 0 | 1 / 2 / 2 | 246 / 422 / 483 |
+| Story 35 | 3 / 5 / 8  | 0 / 0 / 1 | 0 / 3 / 4 | 273 / 332 / 471 |
+| Story 36 | 4 / 4 / 20 | 0 / 0 / 2 | 1 / 2 / 8 | 220 / 454 / 517 |
+| Story 37 | 3 / 4 / 6  | 0 / 0 / 0 | 1 / 1 / 3 | 146 / 449 / 472 |
+| Story 38 | 3 / 7 / 20 | 0 / 0 / 2 | 2 / 4 / 5 | 275 / 364 / 445 |
+| Story 39 | 4 / 4 / 6  | 0 / 0 / 1 | 2 / 2 / 4 | 299 / 368 / 402 |
+| all 40   | 2 / 4 / 20 | 0 / 0 / 2 | 0 / 2 / 8 | 131 / 367 / 517 |
+
+Totals: 204 scrolls over 40 attempts; 90 gaps, in 37/40 attempts; reversals in
+5/40 attempts (s2 Story 39, s3 Story 35, s3 Story 38, s4 Story 38, s5 Story
+36). The two 20-scroll attempts (s3 Story 38, s5 Story 36) each reversed twice
+and still resolved.
+
+#### What changed between run 3 and run 4
+
+Run 3 ran at `93cbf758`: held, momentum-free swipe (19 steps, 120 ms hold),
+down-only search, end of list on two `changed:false` outcomes in a row, cap 30.
+Run 4 ran at `c0851a9f`, the only commit between the two runs. It keeps the
+held swipe and changes the search around it:
+
+- Bidirectional search: scroll down until the list stops moving, turn around,
+  keep going between the two ends until the item resolves, a gap-free end-to-end
+  pass (`swept`), or the 30-scroll cap.
+- Screen-based move detection: after each swipe the step reads the container's
+  visible texts until two consecutive reads agree (at most 5 reads, 150 ms
+  apart) and compares that window with the one before the swipe. A moved window
+  sharing no text with the previous one is a gap. The server's `changed` is a
+  fallback for a container with no readable text.
+- Feed-ready wait: the harness waits up to 6 s for `Story 0` before each nav
+  attempt (observed 131 to 517 ms).
+- Telemetry: `reversals`, `gaps`, `swept`, `targetPresent`, `feedReadyMs` per
+  attempt.
+
+Run 3 missed 10/40, all `selector unresolved`. Run 4 missed 0/40.
+
+#### E1-G5: templates-OFF matrix vs the D.4.1 baseline
+
+The harness does not grade E1-G5; the numbers below are read from
+`results-ci.md` and the run JSON (`env.settingsGraph`) and compared with the
+D.4.1 run 34801849653 and the pre-registered floors.
+
+| metric                       | run 37584222236                                    | D.4.1 (34801849653)          | pre-registered floor / published range                      |
+| ---------------------------- | -------------------------------------------------- | ---------------------------- | ----------------------------------------------------------- |
+| success (n=100 each)         | B1 100, B2 98, O1 100, O2 99, O3 100, O4 99, O5 99 | all 100                      | 5 pp noise floor; H4 none inferior vs B1 or B2              |
+| tokens o200k p50 B1 / B2     | 657 / 651                                          | 657 / 651                    | 657 / 645 to 651                                            |
+| tokens o200k p50 O1          | **136**                                            | 179                          | **138 to 179**                                              |
+| tokens o200k p50 O2 / O3     | 54 / 627                                           | 68 / 627                     | 54 to 68 / 598 to 627                                       |
+| tokens o200k p50 O4 / O5     | 20 / 20                                            | 21 / 21                      | 20 to 22                                                    |
+| H1 / H3                      | 0.209× / 0.032×                                    | 0.275× / 0.033×              | ≤ 0.5× / ≤ 0.2×                                             |
+| O5 one-step routed           | 60/60                                              | 59/60                        | ≥ 30                                                        |
+| settings store nodes / edges | 10 / 9 (max out-degree 8, mean 0.9)                | 11 / 10                      | 11/10 (D.4.1), 11/11 (D.4), 10/9 (34870686468, 34888577404) |
+| other stores                 | chrome 2/1, settings.intelligence 2/1              | chrome 1/1, intelligence 2/1 | —                                                           |
+| invariants                   | 0 duplicate screens, 0 multi-destination edges     | same                         | gate                                                        |
+| `skippedNoIdHash`            | 2                                                  | 0                            | 0 to 2 across published runs                                |
+
+Reading: success, B1/B2/O2/O3/O4/O5 tokens, H1 to H4, O5 routing and the
+invariants match D.4.1 within noise. The store shape 10/9 is one node and one
+edge under D.4.1 and equal to the 3n reference runs. **O1 is 136, 2 tokens
+below the pre-registered floor of 138**, in all 5 reps (136 per rep), so it is
+a run-level shift, not a rep outlier. By the letter of the pre-registered
+condition, E1-G5 misses on that one number; the floor itself spans 41 tokens
+(138 to 179) on identical code, templates are OFF in the matrix, and run 1 of
+this ticket measured O1 138 with the same template code, so this reads as
+noise. It is recorded as a miss, not rounded into a pass. The B2 2/100 and
+O2/O4 1/100 failures are all `settings-display`; the O5 1/100 is
+`chrome-open-page`, 4th rep.
+
+#### Open caveats
+
+- `gaps > 0` in 37/40 attempts: the held swipe still skips rows on the loaded
+  CI emulator. Run 4 passes because the search turns around and re-scans, not
+  because the swipe stopped flinging. The swipe cause (late frames collapsing
+  the 120 ms hold, run 3 diagnosis) is still unconfirmed on the device side.
+- Cost per scroll is at least 2 container reads plus 150 ms, on top of the
+  swipe itself, because the move decision waits for two agreeing reads. Median
+  4 scrolls per attempt; worst case 20.
+- E1-G3 grading was changed after run 3 to count present targets only. In this
+  run every target was present, so the raw and the present-only counts are the
+  same 40/40.
+- E1-G5: O1 136 is under the pre-registered floor by 2 (above).
+- OFF arm `dupEdgeTargets=9` is recorded, not gated (E-0 §F4).
+
+#### What this proves and does not prove
+
+On one app (the churn app), one emulator image (36.4.10.0, build 15004761,
+swiftshader) and N=5 sessions of 8 taps and 8 navigate-to attempts, template
+edges keep the ON store constant in content states (+0n/+0e per session against
++9n/+9e OFF, 23 299 B against 203 333 B at K=5), the store invariants hold, and
+the template navigate-to step reaches 40/40 off-screen rows with the
+bidirectional search. It does not show that this holds on a real app (E-2),
+on another emulator or a physical device, with nested overlapping scrollables,
+or with rows that are deleted or reordered; n=40 detects gross failure only.
+It does not show that the swipe is fixed: most attempts still recorded gaps,
+and the search compensates for them at a measurable cost per scroll. Nothing
+here claims a tokens/step win from templates.
+
+### Run 1 (34957934222)
+
 Run: **34957934222** (`HeiCg/argent`, `bench-open-vs-proprietary.yml`,
 `suite=screen-graph`, `sg_mode=matrix`, `blocks=churn`, branch
 `feat/screen-graph-e1-templates` @ 9de873b8), job **conclusion success**. The
@@ -85,7 +227,7 @@ blended with run 34801849653 (D.4.1) or 34870686468.
 HARNESS defects made E1-G3 fail 0/40. Both are fixed in commit ce4793b5; NOT
 re-run — the planner decides on a second CI run.**
 
-### First-run outcomes (run 34957934222)
+#### First-run outcomes (run 34957934222)
 
 - **E1-G1 PASS** — ON `churn=100` deltas k2..k5 = **+1 node / +0 edges** each
   (feed + one template node, then constant); OFF **+1n/+1e** each. (The OFF
@@ -215,7 +357,8 @@ down swipes that fling, an outcome that always says `changed:false`, and a
 screen that trails the list by two reads. All 50 rows resolve in each case. An
 absent row stops after one clean sweep (22 scrolls).
 
-Original pre-run gate table (outcomes appended from this run):
+Original pre-run gate table (outcomes appended from run 1; run 4's are in its
+section above):
 
 ### Pre-registered gates (written before the run grades anything)
 

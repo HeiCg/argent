@@ -125,6 +125,15 @@ int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on the image with **
   stores; **`skippedNoIdHash` 0** (34813849446: 0; 34853156073: 2; 34840929610: still
   unrecorded). Back at the reference. **Run with `input-manager` as the injector** — the open
   configs inject through the flipped default.
+- **Screen-graph E-1 (template edges), current E-1 result: run 37584222236** (`c0851a9f`,
+  2026-10-07, emulator build 15004761), **not yet adversarially reviewed**. Churn app, N=5
+  sessions: E1-G1 PASS (ON +0n/+0e per session vs OFF +9n/+9e), E1-G2 PASS (ON 23 299 B vs
+  OFF 203 333 B), E1-G3 PASS (navigate-to 40/40, raw 40/40, bar 38/40), E1-G4 PASS; G6
+  descriptive (feed tokens/step p50 ON ~82 vs OFF ~111). Templates-OFF matrix in the same
+  job: O1 tokens p50 **136**, 2 under the pre-registered 138 floor; other tokens, success,
+  H1 to H4 and invariants in-floor, settings store 10/9. Details:
+  `2026-09-15-screen-graph-phase-e1.md` § Run 4. Separate run; does not replace the
+  34870686468 reference.
 - **Process** — run 34870686468, attempt **1**, head `bb3fbddf`, `workflow_dispatch`,
   `suite=both`, `sg_mode=matrix`. Conclusion `failure`: the sole failing step is **#20
   `Enforce device-test result`** (the 3m.1 residual gate); step #14 reports success despite
