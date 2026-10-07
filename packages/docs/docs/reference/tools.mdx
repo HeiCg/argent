@@ -130,9 +130,62 @@ transition, use `await-screen-idle`.
 | `keyboard`               | Type text or press special keys                                  |
 | `paste`                  | Put text on the device clipboard and paste it (sim/emu only)     |
 | `run-sequence`           | Execute several interaction steps in a single call               |
+| `run-on-devices`         | Run the same interaction steps on several devices in parallel    |
 | `gesture-sequence`       | Run a burst of steps in one on-device call (Android open server) |
 | `screen-recording-start` | Start recording the screen to an h264 mp4                        |
 | `screen-recording-stop`  | Stop the recording and retrieve the video                        |
+
+### The same steps on several devices
+
+`run-on-devices` runs one list of steps on 2 to 8 devices in one call. The
+devices run in parallel. Each device runs the steps with the `run-sequence`
+rules. Use `run-sequence` for one device.
+
+| Argument             | Type                  | Meaning                                                                                                                               |
+| -------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `udids`              | string array          | The device ids from `list-devices`. 2 to 8 ids. Each id must occur one time.                                                          |
+| `steps`              | array                 | The steps. The shape and the allowed tools are the same as in `run-sequence`.                                                         |
+| `screenshots`        | `"none"` or `"final"` | Default `"none"`. `"final"` takes one screenshot on each device right after its last step. It does not wait for the screen to settle. |
+| `stopOnFirstFailure` | boolean               | Default `false`. `true` stops all devices after a failure on one device.                                                              |
+
+Argent refuses the call before a device runs a step when:
+
+- a device id occurs more than one time in `udids`,
+- a step names a tool that `run-sequence` does not allow.
+
+Argent adds the id of each device to the arguments of each step on that device.
+Do not put `udid` in the step arguments. A failure on a device stops the
+remaining steps on that device. An `await-ui-element` condition that is not met
+also stops them. With `stopOnFirstFailure` set to `false`, the other devices
+continue. With `true`, the other devices stop before their next step. A step
+that runs at that time completes.
+
+Two `run-on-devices` calls that use the same device do not mix their steps on
+that device. The second call waits on that device until the first call has
+finished its steps on that device.
+
+Coordinates are normalized (0 to 1) on each device. The point
+`{ x: 0.5, y: 0.9 }` is the bottom center of each screen. The element at that
+point can be different on two screen sizes or two platforms. Use
+`await-ui-element` to confirm a screen before a tap.
+
+The tool returns `{ results, okCount, failedCount }`. `results` has one entry
+for each device, in the order of `udids`:
+
+| Field             | Meaning                                                                   |
+| ----------------- | ------------------------------------------------------------------------- |
+| `udid`            | The device id.                                                            |
+| `ok`              | `true` when all steps completed on the device.                            |
+| `steps`           | The result of each step that ran, the same as in `run-sequence`.          |
+| `error`           | The step and the error that stopped the device. Absent when `ok` is true. |
+| `durationMs`      | The time in ms that the device used for the steps.                        |
+| `screenshot`      | The final screenshot of the device. Only with `screenshots: "final"`.     |
+| `screenshotError` | The error of the final screenshot, when the capture failed.               |
+
+The result contains each step result of each device, so the result can be
+large. With `screenshots: "none"`, the result has no image. With `"final"`, the
+result has one image for each device. When a step contains a `{{secret:...}}`
+placeholder, Argent does not take the final screenshots.
 
 ### Gesture bursts on the Android open server
 

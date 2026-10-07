@@ -35,6 +35,26 @@ export const ALLOWED_TOOLS = new Set([
   AWAIT_UI_ELEMENT_TOOL_ID,
 ]);
 
+/** One step of a sequence. Shared with `run-on-devices`, which runs the same steps on several devices. */
+export const sequenceStepSchema = z.object({
+  tool: z
+    .string()
+    .describe(
+      "Tool name — one of: gesture-tap, gesture-swipe, gesture-scroll, gesture-drag, gesture-custom, gesture-pinch, gesture-rotate, button, keyboard, paste, rotate, shake, fold, tv-remote, await-ui-element. On a TV target (Apple TV / Android TV / Vega) use tv-remote (remote presses) and keyboard (text)."
+    ),
+  args: z
+    .record(z.string(), z.unknown())
+    .describe("Tool arguments (excluding udid, which is injected automatically)"),
+  delayMs: z
+    .number()
+    .optional()
+    .describe(
+      `Wait time in ms after this step before the next (default ${DEFAULT_INTER_STEP_DELAY_MS})`
+    ),
+});
+
+export type SequenceStep = z.infer<typeof sequenceStepSchema>;
+
 const zodSchema = z.object({
   udid: z
     .string()
@@ -42,33 +62,16 @@ const zodSchema = z.object({
       "Target device id from `list-devices` (iOS UDID, Android serial, Vega serial, or Chromium id) — shared across all steps."
     ),
   steps: z
-    .array(
-      z.object({
-        tool: z
-          .string()
-          .describe(
-            "Tool name — one of: gesture-tap, gesture-swipe, gesture-scroll, gesture-drag, gesture-custom, gesture-pinch, gesture-rotate, button, keyboard, paste, rotate, shake, fold, tv-remote, await-ui-element. On a TV target (Apple TV / Android TV / Vega) use tv-remote (remote presses) and keyboard (text)."
-          ),
-        args: z
-          .record(z.string(), z.unknown())
-          .describe("Tool arguments (excluding udid, which is injected automatically)"),
-        delayMs: z
-          .number()
-          .optional()
-          .describe(
-            `Wait time in ms after this step before the next (default ${DEFAULT_INTER_STEP_DELAY_MS})`
-          ),
-      })
-    )
+    .array(sequenceStepSchema)
     .min(1)
     .describe("Ordered list of interaction steps to execute sequentially"),
 });
 
 type Params = z.infer<typeof zodSchema>;
 
-type StepResult = { tool: string; result: unknown } | { tool: string; error: string };
+export type StepResult = { tool: string; result: unknown } | { tool: string; error: string };
 
-type RunSequenceResult = {
+export type RunSequenceResult = {
   completed: number;
   total: number;
   steps: StepResult[];
@@ -170,80 +173,96 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
     // can't drive and hang on the ready timeout before any tv-remote step runs.
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
-      const { udid, steps } = params;
-      const device = resolveDevice(udid);
-      const results: StepResult[] = [];
-      // The HTTP layer aborts `signal` on client disconnect, and `longRunning`
-      // drops the MCP adapter's own fetch timeout — so honour the signal between
-      // steps and on the inter-step delay instead of running the rest of the
-      // sequence at the device.
-      const signal = ctx?.signal;
-
-      for (const step of steps) {
-        if (signal?.aborted) break;
-
-        if (!ALLOWED_TOOLS.has(step.tool)) {
-          results.push({
-            tool: step.tool,
-            error: `Tool "${step.tool}" is not allowed in run-sequence. Allowed: ${[...ALLOWED_TOOLS].join(", ")}`,
-          });
-          break;
-        }
-
-        // `Registry.invokeTool` does not call `assertSupported` (only the HTTP
-        // layer does), so pre-flight here: otherwise a mobile-only step like
-        // `button` on a Chromium device fails inside the simulator-server
-        // service factory instead of with a clean "not supported" error.
-        const subTool = registry.getTool(step.tool);
-        if (subTool?.capability) {
-          try {
-            assertSupported(step.tool, subTool.capability, device);
-          } catch (err) {
-            if (err instanceof UnsupportedOperationError) {
-              results.push({ tool: step.tool, error: err.message });
-              break;
-            }
-            throw err;
-          }
-        }
-
-        const toolArgs = { ...step.args, udid };
-
-        try {
-          const result = await invokeSubTool(registry, ctx, step.tool, toolArgs);
-          if (isUnmetUiWaitResult(step.tool, result)) {
-            const note = (result as { note?: string }).note;
-            results.push({
-              tool: step.tool,
-              error: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
-            });
-            break;
-          }
-          results.push({ tool: step.tool, result });
-        } catch (err) {
-          const reframed = describeNestedParamError(
-            registry,
-            err,
-            step.tool,
-            toolArgs,
-            step.args ?? {}
-          );
-          results.push({
-            tool: step.tool,
-            error: reframed ?? (err instanceof Error ? err.message : String(err)),
-          });
-          break;
-        }
-
-        const delay = step.delayMs ?? DEFAULT_INTER_STEP_DELAY_MS;
-        if (delay > 0 && !(await sleepOrAbort(delay, signal))) break;
-      }
-
-      return {
-        completed: results.filter((r) => "result" in r).length,
-        total: steps.length,
-        steps: results,
-      };
+      return runSequenceOnDevice(registry, ctx, params.udid, params.steps);
     },
+  };
+}
+
+/**
+ * The run-sequence loop for one device: run `steps` in order on `udid`, stop on
+ * the first error or unmet await-ui-element condition, and return the partial
+ * results. `run-on-devices` calls it once per device. `shouldStop` is checked
+ * before each step, next to the abort signal, so a caller can stop the sequence
+ * between steps without cancelling the step in flight.
+ */
+export async function runSequenceOnDevice(
+  registry: Registry,
+  ctx: ToolContext | undefined,
+  udid: string,
+  steps: SequenceStep[],
+  shouldStop?: () => boolean
+): Promise<RunSequenceResult> {
+  const device = resolveDevice(udid);
+  const results: StepResult[] = [];
+  // The HTTP layer aborts `signal` on client disconnect, and `longRunning`
+  // drops the MCP adapter's own fetch timeout — so honour the signal between
+  // steps and on the inter-step delay instead of running the rest of the
+  // sequence at the device.
+  const signal = ctx?.signal;
+
+  for (const step of steps) {
+    if (signal?.aborted || shouldStop?.()) break;
+
+    if (!ALLOWED_TOOLS.has(step.tool)) {
+      results.push({
+        tool: step.tool,
+        error: `Tool "${step.tool}" is not allowed in run-sequence. Allowed: ${[...ALLOWED_TOOLS].join(", ")}`,
+      });
+      break;
+    }
+
+    // `Registry.invokeTool` does not call `assertSupported` (only the HTTP
+    // layer does), so pre-flight here: otherwise a mobile-only step like
+    // `button` on a Chromium device fails inside the simulator-server
+    // service factory instead of with a clean "not supported" error.
+    const subTool = registry.getTool(step.tool);
+    if (subTool?.capability) {
+      try {
+        assertSupported(step.tool, subTool.capability, device);
+      } catch (err) {
+        if (err instanceof UnsupportedOperationError) {
+          results.push({ tool: step.tool, error: err.message });
+          break;
+        }
+        throw err;
+      }
+    }
+
+    const toolArgs = { ...step.args, udid };
+
+    try {
+      const result = await invokeSubTool(registry, ctx, step.tool, toolArgs);
+      if (isUnmetUiWaitResult(step.tool, result)) {
+        const note = (result as { note?: string }).note;
+        results.push({
+          tool: step.tool,
+          error: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
+        });
+        break;
+      }
+      results.push({ tool: step.tool, result });
+    } catch (err) {
+      const reframed = describeNestedParamError(
+        registry,
+        err,
+        step.tool,
+        toolArgs,
+        step.args ?? {}
+      );
+      results.push({
+        tool: step.tool,
+        error: reframed ?? (err instanceof Error ? err.message : String(err)),
+      });
+      break;
+    }
+
+    const delay = step.delayMs ?? DEFAULT_INTER_STEP_DELAY_MS;
+    if (delay > 0 && !(await sleepOrAbort(delay, signal))) break;
+  }
+
+  return {
+    completed: results.filter((r) => "result" in r).length,
+    total: steps.length,
+    steps: results,
   };
 }

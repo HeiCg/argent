@@ -312,7 +312,7 @@
       "commitMessage": "feat(open-server): accessibility scroll RPC for momentum-free swipes and template search",
       "status": "implementing",
       "implementer": "agent:impl:swipe-scroll-accessibility:1",
-      "reviewRounds": 0,
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
@@ -523,14 +523,72 @@
         }
       ],
       "commitMessage": "feat(tools): run-on-devices fan-out of a sequence across several devices",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "agent:impl:run-on-devices:1",
+      "review": {
+        "at": "2026-10-07T17:59:06.251Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/tools/run-on-devices.test.ts test/tools/run-sequence.test.ts test/utils/device-mutex.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          },
+          {
+            "cmd": "npx prettier --check packages/docs/docs/reference/tools.mdx packages/docs/docs/features/interacting-with-apps.mdx",
+            "exitCode": 0,
+            "outputFile": "3-npx-prettier-check-packages-docs-docs-re.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": ".demerzel/plan.json",
+            "note": "verify[0] of the run-on-devices ticket names test/tools/run-sequence.test.ts and test/utils/device-mutex.test.ts. Neither file exists, and vitest drops the unmatched filters without an error, so the verify ran only run-on-devices.test.ts (10 tests) and does not guard the runSequenceOnDevice extraction. Fix: point it at test/run-sequence.test.ts, test/run-sequence-observation-gate.test.ts and test/device-mutex.test.ts. With those paths the extended set passed 142/142.",
+            "cause": "The ticket test paths were guessed from the src layout. The real run-sequence and device-mutex tests live flat under packages/tool-server/test/."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/tools/run-on-devices/index.ts",
+            "note": "L168-170: the final screenshot fires right after the last step and its inter-step delay (DEFAULT_INTER_STEP_DELAY_MS = 100). There is no await-screen-idle, while the MCP auto-capture of run-sequence waits on idle up to 15000 ms. So a 'final' frame after a tap that navigates can land mid-transition. Fix: call await-screen-idle (capped, best effort) before the screenshot sub-invoke, or document that the capture does not wait for a settled screen.",
+            "cause": "The settle wait that run-sequence gets lives in the MCP layer (AUTO_SCREENSHOT_DELAY_MS_BY_TOOL). run-on-devices is not in AUTO_SCREENSHOT_TOOLS and takes its capture itself, so it has no settle wait."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/docs/docs/reference/tools.mdx",
+            "note": "L164: 'The second call waits on that device until the first call ends' is wrong. The lock is per device and is released when the first call's steps and final screenshot on THAT device end, not when the whole first call ends. Fix: 'until the first call completes its steps on that device'."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/tools/run-on-devices/index.ts",
+            "note": "L77: sequenceMutex serializes only run-on-devices against run-on-devices. A concurrent run-sequence or a single gesture on the same udid still interleaves at step granularity (only openDeviceServerMutex, per RPC). This matches today's behaviour for two parallel run-sequence calls, which take no sequence lock, and the docs (L163-164) claim only the run-on-devices case. Acceptable. Not a regression."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/tools/run-on-devices/index.ts",
+            "note": "L22-24/L80-90: distinctness is checked on the raw id strings. One device passed under two spellings (for example a case variant of an iOS UDID, or an alias that resolveDevice maps to the same device) passes the check and runs the sequence twice in parallel on one device under two sequenceMutex keys. Not verifiable from the diff: check whether resolveDevice/list-devices can return or accept two ids for one device, and if yes, dedupe on resolveDevice(udid).id."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/test/helpers/catalog.ts",
+            "note": "L6: EXPECTED_TOOL_COUNT 81->82 is correct and is the only tool-count constant (used by interaction-messages and tool-input-schema-contract, both green). It is outside the ticket files, and so is setup-registry.ts. The ticket lists packages/tool-server/src/tools/index.ts, which does not exist. The scope drift is required, but the plan file list is stale."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:run-on-devices:1"
+      },
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T18:00:23.556Z"
     },
     {
       "id": "sg-multihop-bench",

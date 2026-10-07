@@ -23,6 +23,8 @@ The agent uses the same tools on iOS, Android, TV and Chromium. Argent reads the
 
 The agent can drive more than one device in one session. The agent selects a default device once. Then each action goes to that device without the device id. To use another device for one action, the agent names that device in the action. When the agent boots a device, the booted device becomes the default. When the agent stops the default device, the session has no default until the agent selects or boots another device. Each agent session keeps its own default. Two agents on the same machine do not change the default of each other. The [tools reference](/docs/reference/tools#devices-and-apps) describes `use-device`.
 
+The agent can also do the same steps on several devices in one action. The devices do the steps at the same time. The result shows the outcome on each device. The [tools reference](/docs/reference/tools#the-same-steps-on-several-devices) describes `run-on-devices`.
+
 ## Discovery before interaction
 
 The agent does not read coordinates from a screenshot. Before a tap, the agent has the elements on the screen with their roles, labels and positions. Each interaction tool returns these elements together with the screenshot. The agent reads the screen separately only before the first action on a new screen. The source depends on the app:
