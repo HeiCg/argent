@@ -1,6 +1,10 @@
 import * as net from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
-import { IosOpenServerClient } from "../src/utils/ios-open-server-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AndroidOpenServerClient } from "../src/utils/android-open-server-client";
+import {
+  IOS_LAUNCH_APP_TIMEOUT_MS,
+  IosOpenServerClient,
+} from "../src/utils/ios-open-server-client";
 
 // A fake NDJSON JSON-RPC server on loopback: it asserts the client's on-the-wire
 // framing (one `\n`-terminated request line per call, id correlation) and lets
@@ -112,5 +116,48 @@ describe("IosOpenServerClient transport framing", () => {
     }));
     client = new IosOpenServerClient({ port: fake.port });
     await expect(client.getState()).rejects.toThrow(/not implemented in this phase/);
+  });
+});
+
+describe("IosOpenServerClient per-call timeouts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function spyTransport() {
+    return vi
+      .spyOn(AndroidOpenServerClient.prototype, "request")
+      .mockResolvedValue({ success: true, bundleId: "com.apple.Preferences" });
+  }
+
+  it("gives launchApp the long launch budget and leaves getInfo/ping on the default", async () => {
+    const request = spyTransport();
+    const client = new IosOpenServerClient({ port: 1 });
+
+    await client.launchApp("com.apple.Preferences");
+    await client.getInfo();
+    await client.ping();
+
+    expect(IOS_LAUNCH_APP_TIMEOUT_MS).toBe(90_000);
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "launchApp",
+      { bundleId: "com.apple.Preferences" },
+      { timeoutMs: IOS_LAUNCH_APP_TIMEOUT_MS }
+    );
+    // No override: the transport's client default (10 s) applies.
+    expect(request.mock.calls[1]).toEqual(["getInfo", undefined, undefined]);
+    expect(request.mock.calls[2]).toEqual(["ping", undefined, undefined]);
+    client.close();
+  });
+
+  it("never shortens launchApp below a larger client-wide timeout", async () => {
+    const request = spyTransport();
+    const client = new IosOpenServerClient({ port: 1, timeoutMs: 120_000 });
+
+    await client.launchApp("com.apple.Preferences");
+
+    expect(request.mock.calls[0]![2]).toEqual({ timeoutMs: 120_000 });
+    client.close();
   });
 });

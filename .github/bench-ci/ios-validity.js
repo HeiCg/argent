@@ -10,7 +10,12 @@
 //   - a measured sample carries no serving path at all;
 //   - its oracle self-test failed;
 //   - the runner connection errored (connectionErrors > 0);
-//   - simulator-server reported not ready (OFF).
+//   - simulator-server reported not ready (OFF);
+//   - a timed describe returned 0 elements (`emptyDescribes` per verb), on either
+//     arm: the same standard for both (run 37223296646 OFF-1 read an empty
+//     ax-service tree);
+//   - the tool layer fell back from the open path inside a timed verb
+//     (`fallbacks` per verb), on an ON block.
 // INVALID blocks' numbers are not rendered and do not enter G2/G4/fidelity.
 
 // Serving-path tokens a sample records (`servedBy`): the tree source for describe,
@@ -79,6 +84,23 @@ function unrecordedSamples(b) {
   return missing;
 }
 
+/** `{verb: n}` for the measured path verbs with a non-zero `key`. Blocks written
+ * before the counter existed carry none and read as `{}`. */
+function perVerbCounts(b, key) {
+  const out = {};
+  for (const v of pathVerbs(b)) {
+    const n = Number(v[key] || 0);
+    if (n > 0) out[v.verb] = n;
+  }
+  return out;
+}
+
+/** `verb=n, …` for a per-verb count, `0` when empty. */
+function perVerbText(counts) {
+  const xs = Object.entries(counts).map(([verb, n]) => `${verb}=${n}`);
+  return xs.length ? xs.join(", ") : "0";
+}
+
 function labelOf(set) {
   const xs = [...set].sort();
   if (xs.length === 0) return "unknown";
@@ -127,6 +149,18 @@ function blockValidity(b) {
   if (b.proprietaryReady && b.proprietaryReady.ready === false) {
     reasons.push(`simulator-server not ready: ${b.proprietaryReady.error || "no error recorded"}`);
   }
+  const perVerb = {
+    emptyDescribes: perVerbCounts(b, "emptyDescribes"),
+    fallbacks: perVerbCounts(b, "fallbacks"),
+  };
+  if (Object.keys(perVerb.emptyDescribes).length > 0) {
+    reasons.push(
+      `empty describe (0 elements) in timed verbs: ${perVerbText(perVerb.emptyDescribes)}`
+    );
+  }
+  if (b.config === "ON" && Object.keys(perVerb.fallbacks).length > 0) {
+    reasons.push(`fallback inside timed verbs: ${perVerbText(perVerb.fallbacks)}`);
+  }
   const observed = observedPaths(b);
   return {
     valid: reasons.length === 0,
@@ -137,6 +171,7 @@ function blockValidity(b) {
     servedBy: { crossed, total, unrecorded: missing },
     connectionErrors: ce.count,
     firstConnectionError: ce.first,
+    perVerb,
   };
 }
 
@@ -145,4 +180,4 @@ function validityLabel(v) {
   return v.valid ? "valid" : `INVALID (${v.reasons.join("; ")})`;
 }
 
-module.exports = { blockValidity, connectionErrorsOf, validityLabel };
+module.exports = { blockValidity, connectionErrorsOf, perVerbText, validityLabel };

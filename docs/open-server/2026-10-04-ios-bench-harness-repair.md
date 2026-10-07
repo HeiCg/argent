@@ -100,3 +100,47 @@ distribution, total job time against the 120 min timeout.
 ## Result
 
 TODO(run-id)
+
+## Run 37223296646 (`d3b88514`): three blocks INVALID on the runner lifetime
+
+ON-xcuitest valid (G0 pass, 81/81 samples on the open path). OFF-1, OFF-2 and ON-siminput
+INVALID.
+
+- **"restarted mid-block (starts=2, terminations=none)" was a failed first start.** Every
+  INVALID block carries the note `block setup failed: iOS open server did not become ready
+within 120000ms: connect ECONNREFUSED`, and `runner.readyMs` is null. The first start
+  (`prepare`) missed the 120 s ready ping, the registry left the node in ERROR, and the
+  oracle's next call (G0 `locate`) resolved the service again: a second `xcodebuild
+test-without-building`, which came up. No runner ever reached RUNNING and then died, so
+  `terminations=none`; the count was real, not double-counted. Start times on this host:
+  warm step 91 s (build included), ON-xcuitest 98 s, three starts over 120 s. With `prepare`
+  failed, OFF blocks also skipped the simulator-server check (`proprietaryReady` null).
+- **ON-siminput fallback.** Start 1 (`prepare`) timed out at ~19:08, start 2 (the first
+  product `describe`) timed out at 19:10:08 and fell back to ax-service (the 1/81 sample),
+  start 3 (the empty-tree describe retry) came up at 19:11:54 with no target set, since `prepare` had
+  thrown before `launch-app` and `ensureTarget`: `falling back to ax-service: no target
+app set`. PR #16 (`launch-app` sets the runner target) removes the second message for the
+  normal path, not the first; the first is the ready budget.
+- **OFF-1** also read an empty ax-service tree for its idle describe (`0el`), after
+  `simctl spawn … device is not booted / Bad or unknown session` at 18:24:21, the moment
+  start 1 was killed.
+
+Changes:
+
+- `ARGENT_IOS_RUNNER_READY_TIMEOUT_MS` (default 120000) sets the runner's ready budget;
+  the workflow sets 300000. `ARGENT_IOS_RUNNER_LOG_DIR` keeps each launch's xcodebuild
+  output (`build/runner-logs` in the artifact).
+- One ensure path per block (`RunnerLease`): `prepare` starts the runner, the oracle shares
+  that start, a failed start stays failed. The start's error is the block's first
+  connection error.
+- The oracle retries a connection-class RPC error on the same runner (2 retries, 500 ms;
+  untimed) instead of resolving the service again; `runner.oracleRetries` records them.
+- Each runner start and termination records the call in flight (`prepare`, `oracle:<op>`,
+  `tool:<name>`); a second start or a termination invalidates the block with that record.
+- The oracle sets the target as `launch-app` does: `getInfo`, then `launchApp` only when the
+  runner targets another app.
+- Fallback notes are read at `console.warn` (PR #16) as well as `console.debug`, plus the
+  result's `backend: "proprietary-fallback"`.
+- Same standard both arms: per-verb `emptyDescribes` (timed describe with 0 elements)
+  invalidates either arm; per-verb `fallbacks` inside a timed verb invalidates an ON block.
+  Both are printed per block by the merge and in the scoreboard validity table.

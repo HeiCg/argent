@@ -59,6 +59,22 @@
  *   - OFF blocks check that simulator-server comes up (`proprietaryReady`).
  *   - BENCH_WARM_RUNNER=1 builds + launches + reads the tool-layer runner once and
  *     shuts it down (the workflow's pre-block check); no block runs.
+ *
+ * Runner lifetime (run 37223296646, OFF-1 / ON-siminput / OFF-2 "restarted
+ * mid-block (starts=2, terminations=none)"): the block's first runner start
+ * missed the 120 s ready budget and the oracle's next call started a second one.
+ *   - ONE ensure path per block (`RunnerLease`): prepare starts the runner, the
+ *     oracle shares that start, and a failed start stays failed (the block is
+ *     INVALID with the start's error as its first connection error).
+ *   - The oracle retries a transient connection error on the same runner
+ *     (bounded) instead of resolving it again.
+ *   - Every runner start / termination records the call that triggered it
+ *     (`prepare`, `oracle:<op>`, `tool:<name>`); a second start or a termination
+ *     invalidates the block with that record as the reason.
+ *   - Same standard both arms: a timed describe with 0 elements (`emptyDescribes`)
+ *     invalidates the block on either arm; a fallback inside a timed verb
+ *     (`fallbacks`: a fallback note at console.debug / console.warn, or a result
+ *     marked `proprietary-fallback`) invalidates an ON block. Counts per verb.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -72,15 +88,18 @@ import { simulatorServerRef } from "../src/blueprints/simulator-server";
 import { IosSimInputService } from "../src/utils/ios-sim-input-service";
 import {
   FallbackNotes,
+  RunnerLease,
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
   gesturePath,
   isConnectionError,
+  isFallbackResult,
   sameFileBytes,
   toolLayerRunner,
   waitForStableFrame,
   watchRunnerLifecycle,
   type NPoint,
+  type RunnerStart,
   type StageSample,
 } from "./bench-ios-harness";
 import { estimateScrollPx } from "./optical-scroll";
@@ -371,6 +390,15 @@ interface DescribeSample {
   text: string;
   elements: number;
   bytes: number;
+  /** The tool layer fell back from the open path during this call. */
+  fallback: boolean;
+}
+
+/** The path that served one tap / swipe, and whether the tool layer fell back
+ * from the open path during it. */
+interface Served {
+  path: string;
+  fallback: boolean;
 }
 
 /** The tree backend a describe `source` names. */
@@ -406,10 +434,10 @@ interface Arm {
   /** Open-tree stage timings (G3), or null for the ax-service backend. */
   describeStages(): Promise<StageSample | null>;
   /** Tap a normalized point (host-timed by the caller); resolves to the path
-   * that served it (C.1). */
-  tap(p: NPoint): Promise<string>;
+   * that served it (C.1) and whether the tool layer fell back. */
+  tap(p: NPoint): Promise<Served>;
   /** Swipe between normalized points over ~250 ms; resolves to the serving path. */
-  swipe(from: NPoint, to: NPoint): Promise<string>;
+  swipe(from: NPoint, to: NPoint): Promise<Served>;
   /** Locate a label's center as a normalized point on the CURRENT screen — the
    * ONE shared oracle for every arm (IOS2-H3), untimed. */
   locate(label: string): Promise<NPoint | null>;
@@ -434,12 +462,7 @@ interface Arm {
   /** simulator-server readiness (OFF), null on ON blocks. */
   proprietaryReady(): ProprietaryReady | null;
   /** The tool-layer runner as the block saw it. */
-  runnerRecord(): {
-    source: string;
-    starts: number;
-    terminations: string[];
-    readyMs: number | null;
-  };
+  runnerRecord(): RunnerRecord;
   /** simctl relaunches the oracle saw (each one followed by a bundleId-scoped read). */
   oracleRelaunches(): number;
   dispose(): Promise<void>;
@@ -447,18 +470,21 @@ interface Arm {
 
 /* ---- shared registry driving (all arms pay the tool layer, IOS2-H1) -------- */
 
-async function invokeDescribe(reg: Reg): Promise<{ text: string; source: string }> {
+async function invokeDescribe(
+  reg: Reg
+): Promise<{ text: string; source: string; backend?: string }> {
   const r = (await reg.invokeTool("describe", { udid: UDID })) as {
     description?: string;
     source?: string;
+    backend?: string;
   };
-  return { text: r.description ?? "", source: r.source ?? "unknown" };
+  return { text: r.description ?? "", source: r.source ?? "unknown", backend: r.backend };
 }
-async function invokeTap(reg: Reg, p: NPoint): Promise<void> {
-  await reg.invokeTool("gesture-tap", { udid: UDID, x: p.x, y: p.y });
+function invokeTap(reg: Reg, p: NPoint): Promise<unknown> {
+  return reg.invokeTool("gesture-tap", { udid: UDID, x: p.x, y: p.y });
 }
-async function invokeSwipe(reg: Reg, from: NPoint, to: NPoint): Promise<void> {
-  await reg.invokeTool("gesture-swipe", {
+function invokeSwipe(reg: Reg, from: NPoint, to: NPoint): Promise<unknown> {
+  return reg.invokeTool("gesture-swipe", {
     udid: UDID,
     fromX: from.x,
     fromY: from.y,
@@ -471,6 +497,20 @@ async function invokeSwipe(reg: Reg, from: NPoint, to: NPoint): Promise<void> {
 
 const MAX_NOTES_KEPT = 8;
 
+/** The tool-layer runner as one block saw it. */
+interface RunnerRecord {
+  source: string;
+  starts: number;
+  terminations: string[];
+  readyMs: number | null;
+  /** Each start: the call that triggered it and how it ended. */
+  startLog: RunnerStart[];
+  /** The start error when the block's one start failed. */
+  startFailure: string | null;
+  /** Oracle RPCs that hit a connection error and succeeded on a retry. */
+  oracleRetries: number;
+}
+
 /**
  * What every arm shares: the block's registry (the flag set before it is created),
  * the oracle over the tool layer's runner, the serving-path record of each tool
@@ -481,7 +521,11 @@ abstract class ArmBase {
   abstract readonly config: "OFF" | "ON";
   protected readonly reg: Reg;
   protected readonly oracle: RunnerOracle;
+  /** The block's ONE ensure path for the tool layer's runner. */
+  private readonly lease: RunnerLease<Awaited<ReturnType<typeof toolLayerRunner>>>;
   private readonly lifecycle: ReturnType<typeof watchRunnerLifecycle>;
+  /** The call in flight, recorded against every runner start / termination. */
+  private callLabel = "prepare";
   private connErrors = 0;
   private firstConnError: string | null = null;
   private notesKept: string[] = [];
@@ -495,10 +539,14 @@ abstract class ArmBase {
     if (flagOn) setFlag("open-ios-device-server", true, "project");
     else unsetFlag("open-ios-device-server", "project");
     this.reg = createRegistry();
-    this.lifecycle = watchRunnerLifecycle(this.reg, UDID);
+    this.lifecycle = watchRunnerLifecycle(this.reg, UDID, { trigger: () => this.callLabel });
+    this.lease = new RunnerLease(() => toolLayerRunner(this.reg, UDID));
     this.oracle = new RunnerOracle({
-      runner: () => toolLayerRunner(this.reg, UDID),
+      runner: () => this.lease.ensure(),
       onConnectionError: (m) => this.recordConnectionError(`oracle: ${m}`),
+      onCall: (op) => {
+        this.callLabel = `oracle:${op}`;
+      },
     });
   }
 
@@ -515,14 +563,20 @@ abstract class ArmBase {
     }
   }
 
-  /** Run one tool call, recording its fallback notes and connection errors. */
-  protected async viaTool<T>(op: () => Promise<T>): Promise<{ value: T; notes: string[] }> {
+  /** Run one tool call, recording its fallback notes and connection errors.
+   * `fallback`: a fallback note was logged during the call, or the result is
+   * marked `proprietary-fallback`. */
+  protected async viaTool<T>(
+    tool: string,
+    op: () => Promise<T>
+  ): Promise<{ value: T; notes: string[]; fallback: boolean }> {
+    this.callLabel = `tool:${tool}`;
     NOTES.take();
     try {
       const value = await op();
       const notes = NOTES.take();
       this.absorb(notes);
-      return { value, notes };
+      return { value, notes, fallback: notes.length > 0 || isFallbackResult(value) };
     } catch (e) {
       this.absorb(NOTES.take());
       if (isConnectionError(e)) this.recordConnectionError(`tool: ${(e as Error).message}`);
@@ -531,9 +585,18 @@ abstract class ArmBase {
   }
 
   async prepare(): Promise<void> {
-    // 1. The tool layer's runner: the one runner on this simulator for the block.
+    // 1. The tool layer's runner: the one runner on this simulator for the block,
+    //    started through the lease the oracle shares. A failed start stays failed.
+    this.callLabel = "prepare";
     const t0 = Date.now();
-    await toolLayerRunner(this.reg, UDID);
+    try {
+      await this.lease.ensure();
+    } catch (e) {
+      this.recordConnectionError(
+        `tool-layer runner did not start (prepare, ${Date.now() - t0} ms): ${(e as Error).message}`
+      );
+      throw e;
+    }
     this.runnerReadyMs = Date.now() - t0;
     // 2. E: simulator-server must come up on an OFF block.
     if (this.config === "OFF") {
@@ -549,29 +612,36 @@ abstract class ArmBase {
     //    its native-devtools env setup is the same in all four), then the runner
     //    target (B) before the first tree read.
     await this.ensureRoot();
-    await this.viaTool(() => this.reg.invokeTool("launch-app", { udid: UDID, bundleId: SETTINGS }));
+    await this.viaTool("launch-app", () =>
+      this.reg.invokeTool("launch-app", { udid: UDID, bundleId: SETTINGS })
+    );
     await this.oracle.ensureTarget();
   }
 
   async describe(): Promise<DescribeSample> {
-    const { value } = await this.viaTool(() => invokeDescribe(this.reg));
+    const { value, fallback } = await this.viaTool("describe", () => invokeDescribe(this.reg));
     return {
       backend: treeOf(value.source),
       source: value.source,
       text: value.text,
       elements: describeBody(value.text).length,
       bytes: Buffer.byteLength(value.text, "utf8"),
+      fallback,
     };
   }
 
-  protected async toolTap(p: NPoint): Promise<string> {
-    const { notes } = await this.viaTool(() => invokeTap(this.reg, p));
-    return gesturePath(this.flagOn, notes);
+  protected async toolTap(p: NPoint): Promise<Served> {
+    const { value, notes, fallback } = await this.viaTool("gesture-tap", () =>
+      invokeTap(this.reg, p)
+    );
+    return { path: gesturePath(this.flagOn, notes, value), fallback };
   }
 
-  protected async toolSwipe(from: NPoint, to: NPoint): Promise<string> {
-    const { notes } = await this.viaTool(() => invokeSwipe(this.reg, from, to));
-    return gesturePath(this.flagOn, notes);
+  protected async toolSwipe(from: NPoint, to: NPoint): Promise<Served> {
+    const { value, notes, fallback } = await this.viaTool("gesture-swipe", () =>
+      invokeSwipe(this.reg, from, to)
+    );
+    return { path: gesturePath(this.flagOn, notes, value), fallback };
   }
 
   locate(label: string): Promise<NPoint | null> {
@@ -602,28 +672,25 @@ abstract class ArmBase {
   oracleRelaunches(): number {
     return this.oracle.relaunchesSeen();
   }
-  runnerRecord(): {
-    source: string;
-    starts: number;
-    terminations: string[];
-    readyMs: number | null;
-  } {
+  runnerRecord(): RunnerRecord {
     return {
       source: "tool-layer registry (one runner per simulator)",
       starts: this.lifecycle.starts(),
       terminations: this.lifecycle.terminations(),
       readyMs: this.runnerReadyMs,
+      startLog: this.lifecycle.startLog(),
+      startFailure: this.lease.startFailure(),
+      oracleRetries: this.oracle.transientRetries(),
     };
   }
   async dispose(): Promise<void> {
-    // A runner that restarted or terminated before the block's own dispose is a
-    // connection failure of the measured instrument.
-    const starts = this.lifecycle.starts();
-    const terms = this.lifecycle.terminations();
-    if (starts > 1 || terms.length > 0) {
-      this.recordConnectionError(
-        `tool-layer runner restarted mid-block (starts=${starts}, terminations=${terms.join(",") || "none"})`
-      );
+    // A second runner start or a termination before the block's own dispose is a
+    // connection failure of the measured instrument; the record names the call
+    // that triggered each start / termination.
+    const cause = this.lifecycle.restartCause();
+    if (cause) {
+      this.recordConnectionError(cause);
+      console.log(`[bench-ios][${this.name}] ${cause}`);
     }
     this.lifecycle.dispose();
     await this.reg.dispose().catch(() => undefined);
@@ -643,10 +710,10 @@ class OffArm extends ArmBase implements Arm {
   async describeStages(): Promise<StageSample | null> {
     return null; // ax-service does not surface snapshot/serialize/encode stages.
   }
-  tap(p: NPoint): Promise<string> {
+  tap(p: NPoint): Promise<Served> {
     return this.toolTap(p);
   }
-  swipe(from: NPoint, to: NPoint): Promise<string> {
+  swipe(from: NPoint, to: NPoint): Promise<Served> {
     return this.toolSwipe(from, to);
   }
   async awaitScreenIdle(): Promise<void> {
@@ -680,10 +747,10 @@ class XcuitestArm extends ArmBase implements Arm {
     // `timings`); labelled bench-local in the scoreboard. Same runner as the tool.
     return this.oracle.stages();
   }
-  tap(p: NPoint): Promise<string> {
+  tap(p: NPoint): Promise<Served> {
     return this.toolTap(p);
   }
-  swipe(from: NPoint, to: NPoint): Promise<string> {
+  swipe(from: NPoint, to: NPoint): Promise<Served> {
     return this.toolSwipe(from, to);
   }
   awaitScreenIdle(): Promise<void> {
@@ -732,12 +799,12 @@ class SimInputArm extends ArmBase implements Arm {
       clearTimeout(timer!);
     }
   }
-  async tap(p: NPoint): Promise<string> {
+  async tap(p: NPoint): Promise<Served> {
     const { w, h } = await this.size(); // cached, untimed
     await this.withAckTimeout(this.sim.tap(UDID, { x: p.x * w, y: p.y * h, width: w, height: h }));
-    return "sim-input";
+    return { path: "sim-input", fallback: false };
   }
-  async swipe(from: NPoint, to: NPoint): Promise<string> {
+  async swipe(from: NPoint, to: NPoint): Promise<Served> {
     const { w, h } = await this.size();
     await this.withAckTimeout(
       this.sim.swipe(UDID, {
@@ -750,7 +817,7 @@ class SimInputArm extends ArmBase implements Arm {
         height: h,
       })
     );
-    return "sim-input";
+    return { path: "sim-input", fallback: false };
   }
   awaitScreenIdle(): Promise<void> {
     throw new Error("await-screen-idle has no open iOS product (N/A)");
@@ -811,15 +878,30 @@ interface VerbResult {
   effectZero?: number;
   /** C.1: the path that served each measured attempt ("error" when it threw). */
   servedBy?: string[];
+  /** Measured attempts during which the tool layer fell back from the open path
+   * (invalidates an ON block). */
+  fallbacks?: number;
+  /** Measured describes that returned 0 elements (describe verbs only;
+   * invalidates the block on either arm). */
+  emptyDescribes?: number;
   extra?: Record<string, unknown>;
+}
+
+/** What one measured attempt reports: its serving path, whether the tool layer
+ * fell back during it, and (describe verbs) whether the tree was empty. */
+interface Attempt {
+  path: string;
+  fallback?: boolean;
+  empty?: boolean;
 }
 
 /** Generic timed verb loop with an optional untimed per-iteration setup. Counts a
  * setup that returns `false` as a locate failure (excluded, never a blind tap).
- * When `fn` resolves to a string it is the serving path of that attempt (C.1). */
+ * When `fn` resolves to an {@link Attempt} it names the serving path of that
+ * attempt (C.1) and is tallied into `fallbacks` / `emptyDescribes`. */
 async function timeCalls(
   label: string,
-  fn: (i: number) => Promise<string | void>,
+  fn: (i: number) => Promise<Attempt | void>,
   setup?: (i: number) => Promise<boolean>,
   extra?: () => Record<string, unknown>
 ): Promise<VerbResult> {
@@ -833,6 +915,9 @@ async function timeCalls(
   const errorSamples: string[] = [];
   const servedBy: string[] = [];
   let pathReported = false;
+  let fallbacks = 0;
+  let emptyDescribes = 0;
+  let emptyReported = false;
   for (let i = 0; i < N; i++) {
     if (setup) {
       const ok = await setup(i).catch(() => false);
@@ -843,11 +928,16 @@ async function timeCalls(
     }
     const t0 = Date.now();
     try {
-      const path = await fn(i);
+      const attempt = await fn(i);
       lat.push(Date.now() - t0);
-      if (typeof path === "string") {
+      if (attempt) {
         pathReported = true;
-        servedBy.push(path);
+        servedBy.push(attempt.path);
+        if (attempt.fallback) fallbacks++;
+        if (attempt.empty !== undefined) {
+          emptyReported = true;
+          if (attempt.empty) emptyDescribes++;
+        }
       }
     } catch (e) {
       errors++;
@@ -863,7 +953,8 @@ async function timeCalls(
     errors,
     locateFailed,
     errorSamples,
-    ...(pathReported ? { servedBy } : {}),
+    ...(pathReported ? { servedBy, fallbacks } : {}),
+    ...(emptyReported ? { emptyDescribes } : {}),
     extra: extra?.(),
   };
 }
@@ -888,6 +979,7 @@ interface TapRecord {
   landed: boolean;
   errored: boolean;
   servedBy: string; // C.1: the injector that served the tap ("error" when it threw)
+  fallback: boolean; // the tool layer fell back from the open path during the tap
 }
 interface TapEffectResult extends VerbResult {
   effectChecked: number;
@@ -936,8 +1028,9 @@ async function timeTapEffect(
     const t0 = Date.now();
     let tapErr: unknown;
     let servedBy = "error";
+    let fallback = false;
     try {
-      servedBy = await arm.tap(coord);
+      ({ path: servedBy, fallback } = await arm.tap(coord));
     } catch (e) {
       tapErr = e;
     }
@@ -978,6 +1071,7 @@ async function timeTapEffect(
         landed,
         errored: Boolean(tapErr),
         servedBy,
+        fallback,
       });
       if (tapErr) {
         errors++;
@@ -1030,6 +1124,7 @@ interface SwipeRecord {
   confidence: number;
   refused: boolean;
   servedBy: string; // C.1
+  fallback: boolean;
   /** D: the untimed wait for a stable "before" frame. */
   settleMs: number;
   settleStable: boolean;
@@ -1077,6 +1172,7 @@ async function timeSwipeOptical(
   const offsets: number[] = [];
   const records: SwipeRecord[] = [];
   const servedBy: string[] = [];
+  let fallbacks = 0;
   const settleWaits: number[] = [];
   let settleStable = 0;
   let settleUnstable = 0;
@@ -1110,8 +1206,9 @@ async function timeSwipeOptical(
     const t0 = Date.now();
     let err: unknown;
     let path = "error";
+    let fallback = false;
     try {
-      path = await arm.swipe(from, to);
+      ({ path, fallback } = await arm.swipe(from, to));
     } catch (e) {
       err = e;
     }
@@ -1147,11 +1244,13 @@ async function timeSwipeOptical(
         confidence: off.confidence,
         refused: off.refused,
         servedBy: path,
+        fallback,
         settleMs,
         settleStable: settle.stable,
         settleFrames: settle.frames,
       });
       servedBy.push(path);
+      if (fallback) fallbacks++;
       settleWaits.push(settleMs);
       if (settle.stable) settleStable++;
       else settleUnstable++;
@@ -1179,6 +1278,7 @@ async function timeSwipeOptical(
       errors,
       errorSamples,
       servedBy,
+      fallbacks,
     },
     scroll: {
       arm: arm.name,
@@ -1259,7 +1359,7 @@ interface BlockResult {
   fallbackNotes: string[];
   /** E: simulator-server readiness (OFF blocks). */
   proprietaryReady: ProprietaryReady | null;
-  runner: { source: string; starts: number; terminations: string[]; readyMs: number | null };
+  runner: RunnerRecord;
   degradedReasons: string[];
   fidelitySet: string[];
   gestureParams: BenchGestureParams;
@@ -1396,7 +1496,12 @@ async function runBlock(block: string): Promise<BlockResult> {
 
   // ---- verb: describe (idle) -------------------------------------------------
   await arm.ensureRoot();
-  verbs.push(await timeCalls("describe", async () => (await arm.describe()).source));
+  verbs.push(
+    await timeCalls("describe", async () => {
+      const d = await arm.describe();
+      return { path: d.source, fallback: d.fallback, empty: d.elements === 0 };
+    })
+  );
 
   // ---- G3 describe stages (ON only, direct socket) --------------------------
   let describeStages: BlockResult["describeStages"] = null;
@@ -1427,6 +1532,7 @@ async function runBlock(block: string): Promise<BlockResult> {
     effectChecked: tapVerb.effectChecked,
     effectZero: tapVerb.effectZero,
     servedBy: tapVerb.records.map((r) => r.servedBy),
+    fallbacks: tapVerb.records.filter((r) => r.fallback).length,
     extra: {
       inputPath: arm.inputIsProductTool
         ? "gesture-tap tool (invokeTool)"
@@ -1446,12 +1552,16 @@ async function runBlock(block: string): Promise<BlockResult> {
       async () => {
         const c = tapCoordForTd!;
         const a0 = Date.now();
-        const tapPath = await arm.tap(c);
+        const tap = await arm.tap(c);
         const a1 = Date.now();
         const d = await arm.describe();
         const a2 = Date.now();
         tdSub.push({ tapMs: a1 - a0, describeMs: a2 - a1 });
-        return `${tapPath}+${d.source}`;
+        return {
+          path: `${tap.path}+${d.source}`,
+          fallback: tap.fallback || d.fallback,
+          empty: d.elements === 0,
+        };
       },
       async () => {
         await arm.ensureRoot();
@@ -1596,6 +1706,12 @@ async function runBlock(block: string): Promise<BlockResult> {
 /* main                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/** `verb=n,…` for the verbs with a non-zero `key`, or `0`. */
+function perVerb(verbs: VerbResult[], key: "fallbacks" | "emptyDescribes"): string {
+  const hits = verbs.filter((v) => (v[key] ?? 0) > 0).map((v) => `${v.verb}=${v[key]}`);
+  return hits.length ? hits.join(",") : "0";
+}
+
 async function xcodebuildVersion(): Promise<string> {
   try {
     const { stdout } = await execFileAsync("xcodebuild", ["-version"], { timeout: 15_000 });
@@ -1701,6 +1817,8 @@ async function main(): Promise<void> {
         `ackTimeouts=${r.simInputAckTimeouts} connectionErrors=${r.connectionErrors}` +
         `${r.firstConnectionError ? ` (first: ${JSON.stringify(r.firstConnectionError)})` : ""} ` +
         `fallbackNotes=${r.fallbackNotes.length} runnerStarts=${r.runner.starts} ` +
+        `runnerReadyMs=${r.runner.readyMs ?? "n/a"} oracleRetries=${r.runner.oracleRetries} ` +
+        `timedFallbacks=${perVerb(r.verbs, "fallbacks")} timedEmptyDescribes=${perVerb(r.verbs, "emptyDescribes")} ` +
         `simulatorServerReady=${r.proprietaryReady ? r.proprietaryReady.ready : "n/a"} ` +
         `describeTokens=${r.describe.tokens}@${r.describe.elements}el ` +
         `stageMaxDelta=${r.describeStages ? r.describeStages.maxDelta : "n/a"} ` +

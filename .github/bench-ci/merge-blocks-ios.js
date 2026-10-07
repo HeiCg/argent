@@ -20,7 +20,7 @@
 // (no redir transport, no input-manager strategy arms).
 const fs = require("fs");
 const path = require("path");
-const { blockValidity, connectionErrorsOf, validityLabel } = require("./ios-validity");
+const { blockValidity, connectionErrorsOf, perVerbText, validityLabel } = require("./ios-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -115,7 +115,9 @@ for (const n of present) {
       `observedInput=${v.observedInput} oracleSelfTest=${b.oracle && b.oracle.selfTestPassed ? "pass" : "FAILED"} ` +
       `landing=${b.effectCheckedTotal - b.firstTapNoEffectTotal}/${b.effectCheckedTotal}` +
       `${land == null ? "" : ` (${land.toFixed(1)}%)`} ackTimeouts=${b.simInputAckTimeouts} connectionErrors=${v.connectionErrors} ` +
-      `stageMaxDelta=${b.describeStages ? b.describeStages.maxDelta : "n/a"}`
+      `stageMaxDelta=${b.describeStages ? b.describeStages.maxDelta : "n/a"} ` +
+      `timedEmptyDescribes=${perVerbText(v.perVerb.emptyDescribes)} ` +
+      `timedFallbacks=${perVerbText(v.perVerb.fallbacks)}`
   );
 }
 

@@ -14,8 +14,9 @@ import { IosOpenServerClient } from "./ios-open-server-client";
  * adapted from base B's `runner-build.ts` / runner-launch logic. Simulators only:
  * `build-for-testing` once per Xcode version (the cache key folds in
  * `xcodebuild -version`), then `test-without-building` detached against a
- * simulator destination; readiness is a `ping` within 120 s. Physical iPhones
- * use the upstream runner (`ios-device-runner`), never this one.
+ * simulator destination; readiness is a `ping` within 120 s
+ * (`ARGENT_IOS_RUNNER_READY_TIMEOUT_MS` overrides it). Physical iPhones use the
+ * upstream runner (`ios-device-runner`), never this one.
  */
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +25,33 @@ const RELATIVE_PROJECT = "ios-device-server/ArgentRunner/ArgentRunner.xcodeproj"
 const TEST_IDENTIFIER = "ArgentRunnerUITests/ArgentRunnerSession/testServeCommands";
 const BUILD_BUDGET_MS = 15 * 60 * 1000;
 const READY_TIMEOUT_MS = 120 * 1000;
+
+/**
+ * The ready budget for one runner launch. `ARGENT_IOS_RUNNER_READY_TIMEOUT_MS`
+ * overrides the 120 s default: a hosted CI simulator took 91-98 s to answer the
+ * first ping and missed 120 s on three of four launches (bench run 37223296646).
+ */
+export function iosRunnerReadyTimeoutMs(): number {
+  const raw = Number(process.env.ARGENT_IOS_RUNNER_READY_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : READY_TIMEOUT_MS;
+}
+
+/**
+ * stdio for the detached `test-without-building`: discarded, unless
+ * `ARGENT_IOS_RUNNER_LOG_DIR` names a directory, where each launch writes its
+ * own xcodebuild log (the only record of why a launch was slow or failed).
+ */
+function runnerStdio(udid: string): { stdio: "ignore" | ["ignore", number, number]; fd?: number } {
+  const dir = process.env.ARGENT_IOS_RUNNER_LOG_DIR;
+  if (!dir) return { stdio: "ignore" };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const fd = fs.openSync(path.join(dir, `xcodebuild-test-${udid}-${Date.now()}.log`), "a");
+    return { stdio: ["ignore", fd, fd], fd };
+  } catch {
+    return { stdio: "ignore" };
+  }
+}
 
 interface IosRunnerTarget {
   /** Simulator UDID (loopback socket, no signing). */
@@ -179,19 +207,22 @@ async function launchRunner(target: IosRunnerTarget, xctestrun: string): Promise
     "-test-timeouts-enabled",
     "NO",
   ];
+  const out = runnerStdio(target.udid);
   const proc = spawn("xcodebuild", args, {
     detached: true,
-    stdio: "ignore",
+    stdio: out.stdio,
     env: { ...process.env, TEST_RUNNER_ARGENT_RUNNER_PORT: String(port) },
   });
+  // The child holds its own copy of the log fd.
+  if (out.fd !== undefined) fs.closeSync(out.fd);
   proc.unref();
   return { proc, port };
 }
 
-/** Ping the runner until it answers or 120 s elapse. */
+/** Ping the runner until it answers or the ready budget elapses. */
 async function waitForReady(
   client: IosOpenServerClient,
-  timeoutMs = READY_TIMEOUT_MS
+  timeoutMs = iosRunnerReadyTimeoutMs()
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;

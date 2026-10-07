@@ -11,8 +11,10 @@ import {
   shouldUseIosOpenServer,
 } from "../src/utils/ios-open-server-input";
 import type { IosOpenServerNode, IosOpenServerState } from "../src/utils/ios-open-server-client";
+import { iosRunnerReadyTimeoutMs } from "../src/utils/ios-open-server-runner";
 import {
   FallbackNotes,
+  RunnerLease,
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
   gesturePath,
@@ -39,6 +41,10 @@ const h = vi.hoisted(() => ({
   /** JSON-RPC methods the fake runner received, in order. */
   rpc: [] as Array<{ method: string; params: Record<string, unknown> }>,
   servers: [] as net.Server[],
+  /** The next N runner launches never listen (a start that misses its ready budget). */
+  silentLaunches: 0,
+  /** `stdio` of every runner launch. */
+  stdio: [] as unknown[],
 }));
 
 vi.mock("@argent/configuration-core", async (importOriginal) => {
@@ -142,18 +148,28 @@ vi.mock("node:child_process", async (importOriginal) => {
     }
     cb(new Error(`unexpected xcodebuild ${args.join(" ")}`));
   };
-  const spawn = (cmd: string, args: string[], opts: { env?: Record<string, string> }) => {
+  const spawn = (
+    cmd: string,
+    args: string[],
+    opts: { env?: Record<string, string>; stdio?: unknown }
+  ) => {
     const proc = new Emitter() as InstanceType<typeof Emitter> & {
       kill: () => boolean;
       unref: () => void;
     };
     if (cmd === "xcodebuild" && args[0] === "test-without-building") {
       h.launches.push(args);
-      const server = startFakeRunner(Number(opts.env?.TEST_RUNNER_ARGENT_RUNNER_PORT));
-      proc.kill = () => {
-        server.close();
-        return true;
-      };
+      h.stdio.push(opts.stdio);
+      if (h.silentLaunches > 0) {
+        h.silentLaunches--;
+        proc.kill = () => true;
+      } else {
+        const server = startFakeRunner(Number(opts.env?.TEST_RUNNER_ARGENT_RUNNER_PORT));
+        proc.kill = () => {
+          server.close();
+          return true;
+        };
+      }
     } else {
       proc.kill = () => true;
     }
@@ -174,6 +190,8 @@ describe("one runner per simulator: the oracle reads the tool layer's runner", (
     vi.stubEnv("ARGENT_IOS_RUNNER_DERIVED", path.join(tmp, "derived"));
     h.launches.length = 0;
     h.rpc.length = 0;
+    h.stdio.length = 0;
+    h.silentLaunches = 0;
     reg = new Registry();
     reg.registerBlueprint(iosOpenServerBlueprint);
   });
@@ -224,19 +242,103 @@ describe("one runner per simulator: the oracle reads the tool layer's runner", (
     await toolLayerRunner(reg, UDID);
     expect(watch.starts()).toBe(1);
     expect(watch.terminations()).toEqual([]);
+    expect(watch.restartCause()).toBeNull();
     await reg.dispose();
     expect(watch.terminations()).toEqual(["RUNNING→TERMINATING"]);
+    expect(watch.restartCause()).toMatch(/terminations=RUNNING→TERMINATING during unattributed/);
     watch.dispose();
+  });
+
+  it("a start that misses its ready budget is sticky: the lease never starts a second runner, and the watcher names who did", async () => {
+    vi.stubEnv("ARGENT_IOS_RUNNER_READY_TIMEOUT_MS", "300");
+    h.silentLaunches = 1;
+    let trigger = "prepare";
+    const watch = watchRunnerLifecycle(reg, UDID, { trigger: () => trigger });
+    const lease = new RunnerLease(() => toolLayerRunner(reg, UDID));
+
+    await expect(lease.ensure()).rejects.toThrow(/did not become ready within 300ms/);
+    trigger = "oracle:locate";
+    await expect(lease.ensure()).rejects.toThrow(/did not become ready within 300ms/);
+    expect(h.launches).toHaveLength(1);
+    expect(lease.startFailure()).toMatch(/did not become ready within 300ms/);
+
+    // The product describe (flag on) still goes through the registry, which
+    // starts a second runner: the bench cannot prevent it, so it records it.
+    h.flagOn = true;
+    trigger = "tool:describe";
+    await describeIosViaOpenServer(reg, resolveDevice(UDID), SETTINGS_BUNDLE_ID);
+    expect(h.launches).toHaveLength(2);
+    expect(watch.starts()).toBe(2);
+    const cause = watch.restartCause()!;
+    expect(cause).toMatch(/2 starts in the block/);
+    expect(cause).toMatch(
+      /#1 by prepare: error after \d+ ms \(.*did not become ready within 300ms/
+    );
+    expect(cause).toMatch(/#2 by tool:describe: running after \d+ ms/);
+    expect(cause).toMatch(/terminations=none/);
+    expect(watch.startLog().map((s) => [s.trigger, s.outcome])).toEqual([
+      ["prepare", "error"],
+      ["tool:describe", "running"],
+    ]);
+    watch.dispose();
+  });
+
+  it("ARGENT_IOS_RUNNER_LOG_DIR sends the runner's xcodebuild output to a file", async () => {
+    const logDir = path.join(tmp, "runner-logs");
+    vi.stubEnv("ARGENT_IOS_RUNNER_LOG_DIR", logDir);
+    await toolLayerRunner(reg, UDID);
+    const files = fs.readdirSync(logDir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(new RegExp(`^xcodebuild-test-${UDID}-\\d+\\.log$`));
+    const stdio = h.stdio[0] as unknown[];
+    expect(stdio[0]).toBe("ignore");
+    expect(typeof stdio[1]).toBe("number");
+    expect(stdio[2]).toBe(stdio[1]);
+  });
+});
+
+describe("runner ready budget", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults to 120 s; ARGENT_IOS_RUNNER_READY_TIMEOUT_MS overrides it; junk keeps the default", () => {
+    vi.stubEnv("ARGENT_IOS_RUNNER_READY_TIMEOUT_MS", "");
+    expect(iosRunnerReadyTimeoutMs()).toBe(120_000);
+    vi.stubEnv("ARGENT_IOS_RUNNER_READY_TIMEOUT_MS", "300000");
+    expect(iosRunnerReadyTimeoutMs()).toBe(300_000);
+    vi.stubEnv("ARGENT_IOS_RUNNER_READY_TIMEOUT_MS", "soon");
+    expect(iosRunnerReadyTimeoutMs()).toBe(120_000);
+    vi.stubEnv("ARGENT_IOS_RUNNER_READY_TIMEOUT_MS", "-5");
+    expect(iosRunnerReadyTimeoutMs()).toBe(120_000);
+  });
+});
+
+describe("single ensure path (RunnerLease)", () => {
+  it("starts once for any number of callers, concurrent or not", async () => {
+    let starts = 0;
+    const lease = new RunnerLease(async () => {
+      starts++;
+      return { id: starts };
+    });
+    const [a, b] = await Promise.all([lease.ensure(), lease.ensure()]);
+    expect(a).toBe(b);
+    expect(await lease.ensure()).toBe(a);
+    expect(starts).toBe(1);
+    expect(lease.startFailure()).toBeNull();
   });
 });
 
 describe("target app before any tree read (B)", () => {
-  function fakeRunner(): OracleRunner & { calls: string[] } {
+  function fakeRunner(target = ""): OracleRunner & { calls: string[] } {
     const calls: string[] = [];
     return {
       calls,
+      getInfo: async () => {
+        calls.push("getInfo");
+        return { ...nestedState().info, bundleId: target, version: 1 };
+      },
       launchApp: async (bundleId: string) => {
         calls.push(`launchApp:${bundleId}`);
+        target = bundleId;
         return { success: true, bundleId };
       },
       getNestedState: async (opts?: { bundleId?: string }) => {
@@ -261,12 +363,66 @@ describe("target app before any tree read (B)", () => {
     await oracle.scrollRegion();
     await oracle.stages();
 
-    expect(runner.calls[0]).toBe(`launchApp:${SETTINGS_BUNDLE_ID}`);
+    expect(runner.calls.slice(0, 2)).toEqual(["getInfo", `launchApp:${SETTINGS_BUNDLE_ID}`]);
     expect(runner.calls.filter((c) => c.startsWith("launchApp"))).toHaveLength(1);
     const reads = runner.calls.filter((c) => c.startsWith("getNestedState"));
     expect(reads).toHaveLength(4);
     for (const r of reads) expect(r).toBe(`getNestedState:${SETTINGS_BUNDLE_ID}`);
     expect(oracle.relaunchesSeen()).toBe(2);
+  });
+
+  it("skips launchApp when the runner already targets the app (as the product launch-app does)", async () => {
+    const runner = fakeRunner(SETTINGS_BUNDLE_ID);
+    const oracle = new RunnerOracle({ runner: async () => runner });
+    await oracle.ensureTarget();
+    await oracle.locate("General");
+    expect(runner.calls).toEqual(["getInfo", `getNestedState:${SETTINGS_BUNDLE_ID}`]);
+  });
+
+  it("retries a transient connection error on the SAME runner, bounded, without re-resolving it", async () => {
+    const runner = fakeRunner(SETTINGS_BUNDLE_ID);
+    let failures = 1;
+    const read = runner.getNestedState;
+    runner.getNestedState = async (opts) => {
+      if (failures-- > 0) throw new Error("read ECONNRESET");
+      return read(opts);
+    };
+    let resolves = 0;
+    const seen: string[] = [];
+    const ops: string[] = [];
+    const oracle = new RunnerOracle({
+      runner: async () => {
+        resolves++;
+        return runner;
+      },
+      onConnectionError: (m) => seen.push(m),
+      onCall: (op) => ops.push(op),
+      sleep: async () => undefined,
+    });
+    expect(await oracle.locate("General")).not.toBeNull();
+    expect(oracle.transientRetries()).toBe(1);
+    expect(seen).toEqual([]);
+    expect(ops).toEqual(["getInfo", "locate"]);
+    expect(resolves).toBe(2); // one per oracle call, never per attempt
+
+    // Exhausted: 1 + 2 retries, then one report and the error.
+    let attempts = 0;
+    runner.getNestedState = async () => {
+      attempts++;
+      throw new Error("socket hang up");
+    };
+    await expect(oracle.locate("General")).rejects.toThrow(/socket hang up/);
+    expect(attempts).toBe(3);
+    expect(seen).toEqual(["socket hang up"]);
+
+    // A non-connection error is not retried.
+    attempts = 0;
+    runner.getNestedState = async () => {
+      attempts++;
+      throw new Error("no target app set; call launchApp first");
+    };
+    await expect(oracle.locate("General")).rejects.toThrow(/no target app set/);
+    expect(attempts).toBe(1);
   });
 
   it("reports a connection-class failure and rethrows it", async () => {
@@ -308,6 +464,36 @@ describe("serving path of a gesture (C.1)", () => {
     uninstall();
     sink.debug("[gesture-tap] ios open-device-server failed, falling back to simulator-server: y");
     expect(notes.take()).toEqual([]);
+  });
+
+  it("also records the console.warn fallback lines the tool layer logs since PR #16", () => {
+    const forwarded: unknown[][] = [];
+    const sink = {
+      debug: (...args: unknown[]) => forwarded.push(["debug", ...args]),
+      warn: (...args: unknown[]) => forwarded.push(["warn", ...args]),
+    };
+    const originalWarn = sink.warn;
+    const notes = new FallbackNotes();
+    const uninstall = notes.install(sink);
+    sink.warn(
+      "[gesture-tap] open ios-device-server failed, falling back to simulator-server: no target app set"
+    );
+    sink.warn("[launch-app] open ios-device-server failed, falling back to simctl launch only: x");
+    sink.warn("[metro] unrelated warning");
+    const taken = notes.take();
+    expect(taken).toEqual([
+      "[gesture-tap] open ios-device-server failed, falling back to simulator-server: no target app set",
+      "[launch-app] open ios-device-server failed, falling back to simctl launch only: x",
+    ]);
+    expect(gesturePath(true, taken)).toBe("simulator-server");
+    expect(forwarded).toHaveLength(3);
+    uninstall();
+    expect(sink.warn).toBe(originalWarn);
+  });
+
+  it("flag ON: a tool result marked proprietary-fallback is simulator-server even with no note", () => {
+    expect(gesturePath(true, [], { backend: "proprietary-fallback" })).toBe("simulator-server");
+    expect(gesturePath(true, [], {})).toBe("open-device-server");
   });
 });
 
