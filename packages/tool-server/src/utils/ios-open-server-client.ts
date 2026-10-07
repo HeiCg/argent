@@ -42,6 +42,15 @@ export const IOS_OPEN_SERVER_METHODS = [
 
 type IosOpenServerMethod = (typeof IOS_OPEN_SERVER_METHODS)[number];
 
+/**
+ * Per-call budget for `launchApp`. The runner's `launchApp` is
+ * `XCUIApplication.launch()`, which on a cold simulator (first launch of an app
+ * after boot, XCUITest attaching to it) takes well over the transport's 10 s
+ * default; a timeout there also destroys the socket. Every other method keeps the
+ * client default. A larger client-wide `timeoutMs` still wins.
+ */
+export const IOS_LAUNCH_APP_TIMEOUT_MS = 90_000;
+
 // ---- reply shapes (mirror RunnerProtocol.swift) ---------------------------
 
 export interface IosOpenServerInfo {
@@ -128,11 +137,13 @@ interface IosOpenServerClientOptions {
  */
 export class IosOpenServerClient {
   private readonly rpc: AndroidOpenServerClient;
+  private readonly launchTimeoutMs: number;
 
   constructor(opts: IosOpenServerClientOptions) {
     this.rpc = new AndroidOpenServerClient(opts.host ?? "127.0.0.1", opts.port, {
       timeoutMs: opts.timeoutMs,
     });
+    this.launchTimeoutMs = Math.max(opts.timeoutMs ?? 0, IOS_LAUNCH_APP_TIMEOUT_MS);
   }
 
   request<T = unknown>(
@@ -211,8 +222,9 @@ export class IosOpenServerClient {
     return this.request("screenshot", { ...opts });
   }
 
+  /** Uses {@link IOS_LAUNCH_APP_TIMEOUT_MS}, not the 10 s default (cold launch). */
   launchApp(bundleId: string): Promise<{ success: boolean; bundleId: string }> {
-    return this.request("launchApp", { bundleId });
+    return this.request("launchApp", { bundleId }, { timeoutMs: this.launchTimeoutMs });
   }
 
   terminateApp(bundleId?: string): Promise<{ success: boolean; bundleId: string }> {
