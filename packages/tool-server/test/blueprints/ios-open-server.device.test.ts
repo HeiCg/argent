@@ -211,15 +211,20 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
   it("geometry is the device type's point size, not the runner's compatibility-mode screen", async () => {
     // Run 37572773799: the runner reported its own UIScreen.main (480 pt tall on an
     // iPhone 17, 402×874 pt @3), so every normalized tap hit the wrong row.
+    // Run 37585976421: the point size was right but the scale was 1.6476, the
+    // runner's compatibility-mode nativeBounds (1440 px) over 874 pt. The scale
+    // now comes from the runner's screenshot, whose long side must be the panel.
     const expected = await simctlScreenPoints(UDID);
     const info = await client.getInfo();
-    const size = await client.getScreenSize();
+    const size = await timed("getScreenSize (after getInfo, cached)", () => client.getScreenSize());
     const state = await client.getNestedState();
+    const shot = await client.screenshot({ format: "png" });
     console.log(
       `[device] simctl profile ${expected.w}x${expected.h}@${expected.scale}; ` +
         `getInfo ${info.screenWidth}x${info.screenHeight}@${info.scale}; ` +
         `getScreenSize ${size.screenWidth}x${size.screenHeight}@${size.scale}; ` +
-        `getNestedState ${state.info.screenWidth}x${state.info.screenHeight}@${state.info.scale}`
+        `getNestedState ${state.info.screenWidth}x${state.info.screenHeight}@${state.info.scale}; ` +
+        `runner screenshot ${shot.width}x${shot.height} px`
     );
     // Portrait profile; the reply may be landscape, so compare short and long sides.
     const sides = (w: number, h: number): [number, number] => [Math.min(w, h), Math.max(w, h)];
@@ -230,6 +235,10 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
       expect(Math.abs(long - expLong)).toBeLessThanOrEqual(1);
       expect(Math.abs(g.scale - expected.scale)).toBeLessThanOrEqual(0.01);
     }
+    // 874 pt × 3 = 2622 px on an iPhone 17.
+    expect(
+      Math.abs(Math.max(shot.width, shot.height) - expLong * expected.scale)
+    ).toBeLessThanOrEqual(1);
   }, 60_000);
 
   it("getNestedState stage timings sum to captureMs", async () => {

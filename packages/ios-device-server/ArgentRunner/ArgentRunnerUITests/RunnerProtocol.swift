@@ -203,8 +203,8 @@ struct PingReply: Encodable {
 
 /// `getInfo`: the target app's bundle id, orientation, keyboard visibility, and
 /// the screen size in POINTS as the target app sees it (its frame) with the
-/// framebuffer px-per-point scale — never from a screenshot, never from the
-/// runner process's own `UIScreen.main.bounds` (see `screenGeometry`).
+/// framebuffer px-per-point scale — never from the runner process's own
+/// `UIScreen.main` (see `screenGeometry`).
 struct InfoReply: Encodable {
     let bundleId: String
     let orientation: String
@@ -216,7 +216,8 @@ struct InfoReply: Encodable {
     let version: Int
 }
 
-/// `getScreenSize`: cheap geometry with no accessibility read.
+/// `getScreenSize`: cheap geometry, served from the session cache (see
+/// `GeometryCache`); an accessibility read only on a miss.
 struct ScreenSizeReply: Encodable {
     let screenWidth: Double
     let screenHeight: Double

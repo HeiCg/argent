@@ -44,6 +44,10 @@ final class ArgentRunnerSession: XCTestCase {
     /// reported `version` advances only when the screen actually changes.
     private var versionCounter = 0
     private var lastHash: String?
+
+    /// Screen geometry for the `getScreenSize` hot path (see `GeometryCache`).
+    /// Protected by `stateLock`.
+    private var geometryCache = GeometryCache()
     private let stateLock = NSLock()
 
     override func setUp() {
@@ -276,6 +280,39 @@ final class ArgentRunnerSession: XCTestCase {
         stateLock.lock()
         defer { stateLock.unlock() }
         return versionCounter
+    }
+
+    // MARK: - Geometry cache (used by the extensions)
+
+    func cachedGeometry(for key: GeometryCache.Key) -> ScreenGeometry? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return geometryCache.geometry(for: key)
+    }
+
+    func storeGeometry(_ geometry: ScreenGeometry, for key: GeometryCache.Key) {
+        stateLock.lock()
+        geometryCache.store(geometry, for: key)
+        stateLock.unlock()
+    }
+
+    /// Drops the cached point size (target change); keeps the panel measurement.
+    func invalidateGeometry() {
+        stateLock.lock()
+        geometryCache.invalidate()
+        stateLock.unlock()
+    }
+
+    func cachedPanelLongSidePx() -> Double? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return geometryCache.panelLongSidePx
+    }
+
+    func setPanelLongSidePx(_ px: Double) {
+        stateLock.lock()
+        geometryCache.panelLongSidePx = px
+        stateLock.unlock()
     }
 
     // MARK: - Reply encoding

@@ -25,19 +25,26 @@ against the screen size from `getInfo` / `getScreenSize`. Node `bounds` are
 `{x1,y1,x2,y2}` in screen points.
 
 Geometry fields (`getInfo`, `getScreenSize`, `getState`/`getNestedState`
-`info`), never read from a screenshot:
+`info`):
 
 - `screenWidth`, `screenHeight`: the point size of the screen as the target app
   sees it: the target app's frame when it is in the foreground (on the state
   methods, the snapshot root's frame), else SpringBoard's. 402×874 on an
   iPhone 17 in portrait. `orientation` is `portrait` when width ≤ height.
-- `scale`: framebuffer pixels per point, the panel's long side in pixels
-  (`UIScreen.nativeBounds`) over the long side in points. 3 on an iPhone 17;
-  `screenHeight × scale` is the height of a `simctl io screenshot`.
+- `scale`: framebuffer pixels per point, rounded to 0.01: the panel's long side
+  in pixels over the long side in points. The panel size comes from one
+  `XCUIScreen` screenshot per session. 3 on an iPhone 17; `screenHeight × scale`
+  is the height of a `simctl io screenshot`.
 
-The runner does not use its own `UIScreen.main.bounds`: the test code runs in
-the XCTest runner app, which Xcode generates without a launch screen, so iOS
-runs it in compatibility mode and reports a 320×480-class size there.
+The runner does not use its own `UIScreen.main`: the test code runs in the
+XCTest runner app, which Xcode generates without a launch screen, so iOS runs it
+in compatibility mode. There `bounds` is a 320×480-class size and `nativeBounds`
+follows the same mode (1440 px tall on an iPhone 17, not 2622).
+
+`getScreenSize` answers from a per-session cache keyed by the target app and the
+device orientation, so the call the host makes before every gesture reads no
+accessibility state. `launchApp` and `terminateApp` clear the cached point size;
+`getInfo`, `getState` and `getNestedState` read it fresh and refresh the cache.
 
 ## Methods (iOS-1)
 
