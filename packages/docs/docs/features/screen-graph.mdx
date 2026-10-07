@@ -1,0 +1,83 @@
+---
+sidebar_position: 12
+sidebar_label: Screen graph
+title: Screen graph
+sidebar_custom_props:
+  icon: route
+---
+
+The screen graph is a map of an Android app that Argent builds while the agent uses the app.
+Each screen of the app is a node. Each action that moves from one screen to another is an edge.
+The agent reads the map to see where it can go. The agent then asks Argent to go to a screen
+in one call, instead of one tap at a time.
+
+The screen graph is an Android feature. It needs the
+[open device server](/docs/features/open-device-server).
+
+## Turn it on
+
+The feature is off by default. Turn it on with the `screen-graph` flag:
+
+```bash
+argent enable open-device-server
+argent enable screen-graph
+```
+
+## What Argent records
+
+Argent records the graph when the open device server drives the device. Argent records one
+edge after each tap, swipe and text entry.
+
+| Item             | Content                                                                          |
+| ---------------- | -------------------------------------------------------------------------------- |
+| Screen (node)    | An identity hash, a label, the visit count, and the last text view of the screen |
+| Action (edge)    | The action, the element that the agent touched, and the success count            |
+| List item (edge) | Optionally, one edge for all items of a list                                     |
+
+The identity hash of a screen stays the same when the screen scrolls or an element gets
+focus. Two different screens get two different hashes. The label comes from the activity name
+and the screen title, for example `SubSettings: Network & internet`.
+
+Argent keeps one graph for each app version on the host. A new app version starts with an
+empty graph.
+
+## Privacy
+
+- Argent does not store screenshots in the graph.
+- Argent stores the text view of a screen, so the file can contain text from the app.
+- Argent does not store the text view of a screen that shows a password field.
+- When Argent records list items as one edge, Argent stores the text of a tapped item as a
+  hash, not as text.
+
+## How the agent uses the graph
+
+1. The agent asks for the screen summary with `describe`. The summary shows the current
+   screen, its frequent actions, and the nearest screens that the agent can reach from it.
+   Each reachable screen shows a short id, a label and the number of actions to get there.
+2. The agent calls `navigate-to` with a label or a short id from that list. The agent can
+   also name an element, for example a row text, and Argent goes to the nearest screen that
+   shows it.
+3. Argent plans the shortest known route and does the actions. After each action, Argent
+   checks that the device shows the expected screen. Argent stops at the first screen that
+   does not agree with the route.
+4. Argent returns the route, the number of actions, and the tree of the final screen. The
+   agent does not need to describe the screen again after it arrives.
+
+When a label or an id matches more than one screen, Argent does no action. Argent returns the
+matching screens, so the agent can choose one.
+
+## List items
+
+Lists with many items, for example a news feed, can add one node for each item. Argent can
+record all items of one list as one edge instead. When the agent asks for an item by its
+text, Argent goes to the screen with the list. Argent then scrolls the list to the item and
+taps it.
+
+## Size
+
+The graph of one app version has a maximum size. When the graph is full, Argent removes the
+screens that the agent did not see for the longest time. Argent keeps the screens that the
+agent uses frequently.
+
+For the parameters, the replies, the errors, the file location and the limits, see the
+[tools reference](/docs/reference/tools#screen-graph-android-open-server).

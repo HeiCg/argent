@@ -72,6 +72,22 @@ describe("summary tier", () => {
     expect(summary.affordances.map((a) => a.count)).toEqual([12, 9, 7]);
   });
 
+  it("lists no reachable screens unless the caller passes the graph edges", () => {
+    const text = renderSummary(buildSummary(SETTINGS_ROOT, SETTINGS_EDGES, SETTINGS_NODES));
+    expect(text).not.toContain("reachable screens");
+  });
+
+  it("lists the Settings destinations, nearest first, within ~200 tokens", () => {
+    const text = renderSummary(
+      buildSummary(SETTINGS_ROOT, SETTINGS_EDGES, SETTINGS_NODES, { edges: SETTINGS_EDGES })
+    );
+    expect(text).toContain("reachable screens:");
+    // An unlabelled id prints its hash prefix; every edge here is one hop.
+    expect(text).toContain("- n_app  SubSettings: Apps  (1 hop)");
+    expect(text.split("\n").filter((l) => l.endsWith("(1 hop)"))).toHaveLength(6);
+    expect(tokens(text)).toBeLessThanOrEqual(200);
+  });
+
   it("uses hash8 when a screen has no label and reports changedSince", () => {
     const bare = node("abcdef0123456789", { visits: 1 });
     const summary = buildSummary(bare, [], {}, { changedSince: 3 });
@@ -116,6 +132,14 @@ describe("compact tier cache reconciliation", () => {
     expect(res).toEqual({ text: "REFRESHED TREE", mode: "refresh" });
     expect(d.refresh).toHaveBeenCalledTimes(1);
     expect(d.patch).not.toHaveBeenCalled();
+  });
+
+  it("never serves an empty cached compact (a volatile node persisted without it)", async () => {
+    const d = deps();
+    const emptied = node("h1", { compact: "", stateHash: "s1" });
+    const res = await resolveCompactTier(emptied, { hash: "h1", stateHash: "s1" }, d);
+    expect(res.mode).not.toBe("cache");
+    expect(res.text).toBe("PATCHED TREE");
   });
 
   it("refreshes a redacted node rather than serving stale secret text", async () => {

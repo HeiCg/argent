@@ -3,3 +3,6 @@
 {"digest":"sha256:0727b49cb4eb","text":"Plano beat-official-2026-10 aprovado (12 steps/5 ondas); operação: worktree por step (step/<id>, node_modules symlink), implementor+reviewer separados, merge --squash na raiz + step commit"}
 {"digest":"sha256:629cd22edbff","text":"Steps describe-retry-empty (54892794) e ios-siminput-send-queue (be8dc780) commitados. Pendências para siminput-registry-route: ack vs PR #23 timing, AllowingIdleSystemSleep, selftest no tap real, usleep em key/button/text"}
 {"digest":"sha256:fc2f5cfe45da","text":"ios-siminput-send-queue commitado (be8dc780). Pendências p/ siminput-registry-route: ack vs PR #23 timing, AllowingIdleSystemSleep, selftest no tap real, usleep em key/button/text"}
+{"digest":"sha256:977a49d8ad21","text":"sg-store-hygiene commitado (1dc15abe). Pendências p/ navigate-to-addressable: comentários obsoletos churn.ts/store-bounds.test, teste roundtrip v2, pins só expiram por load, store por app compartilhado entre devices (last write wins)"}
+{"digest":"sha256:c96979fc0c1f","text":"sg-store-hygiene commitado 1dc15abe; pendências p/ navigate-to-addressable: comentários obsoletos, roundtrip v2, pins só expiram por load, store por app compartilhado entre devices"}
+{"digest":"sha256:5d29d7beae07","text":"swipe-scroll-accessibility commitado a63b4952 (scroll opt-in; fling D1 fica p/ fling-d1-ci); sg-store-hygiene 1dc15abe"}

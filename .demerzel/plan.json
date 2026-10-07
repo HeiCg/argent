@@ -537,7 +537,8 @@
         }
       ],
       "commitMessage": "feat(ios): sim-input registry service and product input routing under the open-iOS flag",
-      "status": "pending",
+      "status": "implementing",
+      "implementer": "agent:impl:siminput-registry-route:1",
       "reviewRounds": 0,
       "waivers": [],
       "skills": [
@@ -581,7 +582,7 @@
       "commitMessage": "bench(android): P11 on wrong reads, ON-im-bg and OFF-devawait arms, per-thread qemu CPU, P5 decomposition",
       "status": "implementing",
       "implementer": "agent:impl:bench-harness-p11-arms:1",
-      "reviewRounds": 0,
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
@@ -622,14 +623,72 @@
         }
       ],
       "commitMessage": "feat(screen-graph): navigate-to by label or hash8, summary lists destinations, one read per hop; docs",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "agent:impl:navigate-to-addressable:1",
+      "review": {
+        "at": "2026-10-07T19:13:00.233Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          },
+          {
+            "cmd": "npx prettier --check packages/docs/docs/features/screen-graph.mdx packages/docs/docs/reference/tools.mdx",
+            "exitCode": 0,
+            "outputFile": "3-npx-prettier-check-packages-docs-docs-fe.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/screen-graph/describe-tiers.ts",
+            "note": "L87-112: the round-1 budget fix holds only when a screen has 8 or fewer 1-hop destinations. listedHop1 holds only the 8 listed screens, so edges to the other 1-hop screens stay as affordances (up to topN=6), and the action text is not cut to 40 characters. A probe of buildSummary/renderSummary with 16 one-hop destinations gave 6 affordances, 8 reachable lines, 1111 chars and about 278 tokens, which is over the 200 that the docs and the L362 test claim. Fix: when the reachable list is present, leave out an affordance to any 1-hop screen (listed or not), or cap affordances (for example 3) and cut the action text. Add the 16-destination case to the token test.",
+            "cause": "The affordance filter uses the capped reachable list as the set of covered destinations, and the token test fixture (exactly 8 one-hop destinations plus a self-loop) never goes past the cap."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/tools/navigate-to/index.ts",
+            "note": "L1117-1123: finalCompact returns node.compact when the stateHash matches, and the same applies to resolveCompactTier in describe-tiers.ts L202. A volatile node is persisted with compact \"\" but keeps its stateHash (store.ts L657-662), and hydrate (L704-723) keeps both. After a tool-server restart, a quiet landing whose stateHash repeats (up to 25% of visits on a volatile node) therefore returns `compact: \"\"` with no read. Fix: require `node.compact !== \"\"` in both cache checks, or delete stateHash in the volatile persist branch the same way the redacted branch does. Test: bounded store, volatile node, flush and load, landing at the same stateHash, and expect one getState and a non-empty compact.",
+            "cause": "The cache rule pairs stateHash with compact, but the volatile persist path breaks the pair by dropping compact while it keeps stateHash."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/tools/navigate-to/index.ts",
+            "note": "L1115-1125: the landing cache copies the cache condition of resolveCompactTier instead of calling it. The parity test (test/screen-graph-navigate-targets.test.ts L300-313) runs against the real describeAndroidTiered, but only on the refresh path (the INTERNET node has no stateHash). The cache path is tested only with a literal (L259-268). Suggestion: route the landing case through resolveCompactTier with a lazy getState in refresh, so there is one rule, and add a parity case where describe also serves from the cache."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/screen-graph/describe-tiers.ts",
+            "note": "L101-103: removing an affordance whose destination is listed at 1 hop drops the action (which element to tap) and the success count for that screen. That is fine for navigate-to by label, but an agent that drives gesture-tap by hand, or that falls back after a divergence, no longer sees the tap target. The count is not actionable. Optional: put the action in the 1-hop reachable line when the budget allows, for example `(1 hop, tap \"Network & internet\")`."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/screen-graph/plan.ts",
+            "note": "L287-304: this round-1 note is still open. reachableScreens uses BFS hops over non-template edges and sorts ties by label, but navigate-to plans with a weighted Dijkstra, so the reply `hops`/`path` can differ from the `(N hops)` in the summary. Within the cap of 8, alphabetical ties can also push out the most used 1-hop screens. Not verifiable from the diff whether this matters on real graphs."
+          },
+          {
+            "severity": "note",
+            "file": ".demerzel/plan.json",
+            "note": "step navigate-to-addressable `files`: still lists the nonexistent src/tools/describe/platforms/android/describe-tiers.ts. It leaves out files that the diff changes: src/screen-graph/describe-tiers.ts, tiered.ts, bench/churn.ts, test/screen-graph-store-bounds.test.ts, test/screen-graph-store-migration.test.ts, docs SidebarIcon/index.tsx and features/slim-ios-simulators.mdx. `verify` has no docusaurus build. The controller must fix the ticket, or the scope check will flag these files."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:navigate-to-addressable:2"
+      },
+      "reviewRounds": 2,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T19:17:05.803Z"
     },
     {
       "id": "run-on-devices",

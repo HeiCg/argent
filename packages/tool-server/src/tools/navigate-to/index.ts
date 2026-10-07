@@ -14,9 +14,12 @@ import {
   openDeviceServerRef,
   scrollNodeId,
   type OpenDeviceServerApi,
+  type OpenServerActionOutcome,
   type OpenServerSelector,
+  type OpenServerStateResult,
 } from "../../blueprints/android-open-server";
 import {
+  buildScreenPayload,
   resolveStoreForCurrentApp,
   screenGraphTemplatesEnabled,
 } from "../../utils/screen-graph-open-wiring";
@@ -34,8 +37,11 @@ import {
   planToSelectorStable,
   planToTemplate,
   renderSummary,
+  resolveCompactTier,
   resolveContainer,
+  resolveScreenTarget,
   runNavigation,
+  screenAddress,
   selectorKeys,
   stripId,
   type CanonicalAction,
@@ -92,17 +98,35 @@ const zodSchema = z.object({
   udid: z.string().min(1).describe("Android serial from `list-devices`."),
   target: z
     .object({
-      screen: z.string().optional().describe("Target screen hash (a graph node id)."),
+      screen: z
+        .string()
+        .optional()
+        .describe(
+          "Target screen: its hash, or a hash prefix of 8+ hex characters (the id `describe tier=summary` prints)."
+        ),
+      label: z
+        .string()
+        .optional()
+        .describe(
+          "Target screen label as `describe tier=summary` prints it (case-insensitive). The part after `Activity: ` also matches."
+        ),
       selector: selectorSchema
         .optional()
         .describe("Reach the nearest screen whose index holds this resource-id / text."),
     })
-    .refine((t) => t.screen !== undefined || t.selector !== undefined, {
-      message: "target needs a screen or a selector",
+    .refine((t) => t.screen !== undefined || t.label !== undefined || t.selector !== undefined, {
+      message: "target needs a screen, a label or a selector",
     }),
 });
 
 type Params = z.infer<typeof zodSchema>;
+
+/** One screen of a route or of an ambiguity report, as the agent addresses it. */
+interface ScreenRef {
+  /** The hash8 (longer only when two known screens share those 8 characters). */
+  hash8: string;
+  label?: string;
+}
 
 interface NavigateToResult {
   reached: boolean;
@@ -110,8 +134,26 @@ interface NavigateToResult {
   finalScreen: string;
   completedSteps: number;
   totalSteps: number;
+  /** Planned route, the start screen first (hops + 1 entries). Absent with no plan. */
+  path?: ScreenRef[];
+  /** Planned actions on the route (0 when already there). */
+  hops?: number;
+  /**
+   * Hops whose arrival was confirmed by the action's own `after` H_id, so no
+   * extra screen read followed. A hop that reported another H_id reads the
+   * screen once for the resource-id fallback.
+   */
+  readsSkipped?: number;
+  /** The screens an ambiguous target matched; the call stops without acting. */
+  candidates?: ScreenRef[];
   /** Rendered summary of the final screen, when it is a known node. */
   summary?: string;
+  /**
+   * The final screen's tree in the `compact` describe tier (the same text
+   * `describe tier=compact` returns for that state). Present when a route was
+   * planned (0 hops included); absent on a refusal.
+   */
+  compact?: string;
   /** Present when a step landed on an unexpected screen. */
   divergence?: { reachedStep: number; expected: string; actual: string };
   /** Present when no plan could be produced. */
@@ -134,7 +176,8 @@ interface NavigateToResult {
   /**
    * Measured count of device RPCs this navigate-to issued (phase D.2 HIGH-2):
    * the initial getState + getInfo, plus per planned step a query (resolveTapPoint)
-   * + a tap + a getState. Replaces the modelled "1 navigate + 1 verify".
+   * + a tap, and a getState only when the tap's `after` H_id is not the planned
+   * screen. Replaces the modelled "1 navigate + 1 verify".
    */
   rpcCount?: number;
 }
@@ -200,7 +243,27 @@ function idOf(state: { idHash?: string; hash?: string }): string {
   return state.idHash ?? state.hash ?? "";
 }
 
-/** Execute one canonical action on the device, returning the resulting H_id. */
+/**
+ * Where one canonical action landed: the resulting H_id (else the raw hash),
+ * plus, when the action returned an outcome, its settle status and state hash.
+ * A landing read with `getState` (a divergence, a text step with nothing to
+ * type) has no `settled`.
+ */
+interface ActionLanding {
+  hash: string;
+  settled?: OpenServerActionOutcome["settled"];
+  stateHash?: string;
+}
+
+function landingOf(res: OpenServerActionOutcome): ActionLanding {
+  return {
+    hash: res.after.idHash ?? res.after.hash,
+    settled: res.settled,
+    stateHash: res.after.stateHash,
+  };
+}
+
+/** Execute one canonical action on the device, returning where it landed. */
 async function executeCanonicalAction(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
@@ -208,7 +271,7 @@ async function executeCanonicalAction(
   fromIndex?: ScreenNode["index"],
   selector?: EdgeSelector,
   onDiverge?: (reason?: string) => void
-): Promise<string> {
+): Promise<ActionLanding> {
   switch (action.kind) {
     case "tap":
     case "longPress": {
@@ -219,35 +282,33 @@ async function executeCanonicalAction(
         // taken"). Surface the reason and report the current H_id so runNavigation
         // records a divergence.
         onDiverge?.(point.reason);
-        return idOf(await server.getState({ includeScreenshot: false, fingerprints: true }));
+        return {
+          hash: idOf(await server.getState({ includeScreenshot: false, fingerprints: true })),
+        };
       }
       const { cx, cy } = point;
       const res =
         action.kind === "tap"
           ? await server.tapWithOutcome(cx, cy)
           : await server.longPressWithOutcome(cx, cy);
-      return res.after.idHash ?? res.after.hash;
+      return landingOf(res);
     }
     case "swipe": {
       const { sx, sy, ex, ey } = swipeVector(size, action.dir);
-      const res = await server.swipeWithOutcome(sx, sy, ex, ey, 10);
-      return res.after.idHash ?? res.after.hash;
+      return landingOf(await server.swipeWithOutcome(sx, sy, ex, ey, 10));
     }
-    case "back": {
-      const res = await server.keyWithOutcome("KEYCODE_BACK");
-      return res.after.idHash ?? res.after.hash;
-    }
-    case "key": {
-      const res = await server.keyWithOutcome(action.key ?? "KEYCODE_ENTER");
-      return res.after.idHash ?? res.after.hash;
-    }
+    case "back":
+      return landingOf(await server.keyWithOutcome("KEYCODE_BACK"));
+    case "key":
+      return landingOf(await server.keyWithOutcome(action.key ?? "KEYCODE_ENTER"));
     case "typeText": {
       if (action.target?.text) {
-        const res = await server.typeTextWithOutcome(action.target.text);
-        return res.after.idHash ?? res.after.hash;
+        return landingOf(await server.typeTextWithOutcome(action.target.text));
       }
       // Nothing to type without stored text — read the current H_id instead.
-      return idOf(await server.getState({ includeScreenshot: false, fingerprints: true }));
+      return {
+        hash: idOf(await server.getState({ includeScreenshot: false, fingerprints: true })),
+      };
     }
   }
 }
@@ -992,6 +1053,84 @@ function swipeVector(
   }
 }
 
+/** How the agent addresses `hash`: its unique prefix and label (see `screenAddress`). */
+function screenRef(graph: PlanGraph, hash: string): ScreenRef {
+  const label = graph.nodes[hash]?.label;
+  return { hash8: screenAddress(graph, hash), ...(label !== undefined ? { label } : {}) };
+}
+
+/**
+ * The `compact` describe tier of a screen read with `getState`, rendered the way
+ * `describe tier=compact` renders it (`tiered.ts`): the node's cached rendering
+ * when its `stateHash` still matches, else a fresh render of the tree in hand.
+ * Unlike `describe`, it does not write the node back (no label refresh, no
+ * extra `getInfo`); the rendered text is the same.
+ */
+async function compactOfState(
+  store: ScreenGraphStore,
+  state: OpenServerStateResult
+): Promise<string> {
+  const id = idOf(state);
+  const stateHash = state.stateHash ?? "";
+  const fresh = async (): Promise<string> =>
+    buildScreenPayload(
+      state.tree,
+      state.info.screenWidth,
+      state.info.screenHeight,
+      undefined,
+      stateHash,
+      state.version
+    ).compact;
+  const node = id ? store.getNode(id) : undefined;
+  if (!node) return fresh();
+  const { text } = await resolveCompactTier(
+    node,
+    { hash: id, stateHash },
+    { patch: fresh, refresh: fresh }
+  );
+  return text;
+}
+
+/**
+ * The latest observation of the screen a navigation is on: a full read, an
+ * action outcome confirmed without a read, or nothing in hand (a template step
+ * reads internally).
+ */
+type LastSeen =
+  | { kind: "state"; state: OpenServerStateResult }
+  | { kind: "landing"; hash: string; stateHash?: string }
+  | { kind: "none" };
+
+/**
+ * The final screen's compact tree, so the agent needs no `describe` after
+ * navigating. A hop confirmed from its outcome is served from the node cache
+ * when the outcome's state hash still matches it and the cached text is not
+ * empty (the cache rule of the compact tier); otherwise the screen is read once.
+ */
+async function finalCompact(
+  store: ScreenGraphStore,
+  server: OpenDeviceServerApi,
+  seen: LastSeen
+): Promise<string> {
+  if (seen.kind === "landing") {
+    const node = store.getNode(seen.hash);
+    if (
+      node !== undefined &&
+      !node.redacted &&
+      node.stateHash !== undefined &&
+      node.stateHash === seen.stateHash &&
+      node.compact !== ""
+    ) {
+      return node.compact;
+    }
+  }
+  const state =
+    seen.kind === "state"
+      ? seen.state
+      : await server.getState({ includeScreenshot: false, fingerprints: true });
+  return compactOfState(store, state);
+}
+
 function finalSummary(store: ScreenGraphStore, hash: string): { name: string; summary?: string } {
   const node = store.getNode(hash);
   if (!node) return { name: hash8(hash) };
@@ -1057,42 +1196,71 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       const liveResourceIds = resourceIdsOf(state.tree);
 
       const graph = { edges: store.edges, nodes: store.nodes };
+      const refuse = (error: string, candidates?: string[]): NavigateToResult => {
+        const { name, summary } = finalSummary(store, currentHash);
+        return {
+          reached: false,
+          finalScreen: name,
+          completedSteps: 0,
+          totalSteps: 0,
+          error,
+          ...(candidates ? { candidates: candidates.map((h) => screenRef(graph, h)) } : {}),
+          fromVia: currentHash && graph.nodes[currentHash] ? "exact" : "none",
+          rpcCount,
+          ...(summary ? { summary } : {}),
+        };
+      };
+
+      // A screen address (precedence: screen, then label, then selector). A full
+      // hash or a unique 8+ hex prefix / label names one node; an ambiguous one
+      // stops before any action and lists the candidates. An unknown `screen`
+      // stays raw (the plan then reports no path); an unknown `label` is refused.
+      const { screen, label } = params.target;
+      let targetScreen: string | undefined;
+      if (screen !== undefined || label !== undefined) {
+        const addr = screen !== undefined ? { screen } : { label: label! };
+        const r = resolveScreenTarget(graph, addr);
+        if (r.kind === "ambiguous") {
+          return refuse(
+            screen !== undefined
+              ? `ambiguous target: ${r.hashes.length} screens match the prefix ${screen.trim()}`
+              : `ambiguous target: ${r.hashes.length} screens have the label "${label!.trim()}"`,
+            r.hashes
+          );
+        }
+        if (r.kind === "node") targetScreen = r.hash;
+        else if (screen !== undefined) targetScreen = screen;
+        else return refuse(`no known screen has the label "${label!.trim()}"`);
+      }
 
       // Phase D §3: route only when the target is UNAMBIGUOUS — a selector that
       // several distinct screens index cannot identify one destination, so refuse
       // rather than route to an arbitrary one.
-      if (params.target.selector) {
+      if (targetScreen === undefined && params.target.selector) {
         const keys = selectorKeys(params.target.selector);
         const holders = Object.values(graph.nodes).filter((n) => keys.some((k) => k in n.index));
         if (holders.length > 1) {
-          const { name, summary } = finalSummary(store, currentHash);
-          return {
-            reached: false,
-            finalScreen: name,
-            completedSteps: 0,
-            totalSteps: 0,
-            error: `ambiguous target: ${holders.length} screens index this selector`,
-            fromVia: currentHash && graph.nodes[currentHash] ? "exact" : "none",
-            rpcCount,
-            ...(summary ? { summary } : {}),
-          };
+          return refuse(
+            `ambiguous target: ${holders.length} screens index this selector`,
+            holders.map((n) => n.hash).sort()
+          );
         }
       }
 
       // Localize the FROM screen through a resource-id Jaccard fallback (retained
       // as a safety net; with H_id it should hit exactly). Screen-hash targets
       // plan exactly.
-      const stablePlan = params.target.selector
-        ? planToSelectorStable(graph, currentHash, liveResourceIds, params.target.selector)
-        : null;
+      const stablePlan =
+        targetScreen === undefined && params.target.selector
+          ? planToSelectorStable(graph, currentHash, liveResourceIds, params.target.selector)
+          : null;
       // Phase E (design D1): when the target selector names an ITEM that no node
       // indexes (per R5 item text is not indexed), fall back to a TEMPLATE route —
       // plan to the container's template node, and resolve the concrete item on the
       // live tree at execute time. Only used when a plain plan does not exist.
-      const wantedItemText = params.target.selector?.text;
-      let planned: PlanResult | null = params.target.screen
-        ? plan(graph, currentHash, params.target.screen)
-        : stablePlan;
+      const wantedItemText = targetScreen === undefined ? params.target.selector?.text : undefined;
+      let planned: PlanResult | null =
+        targetScreen !== undefined ? plan(graph, currentHash, targetScreen) : stablePlan;
       if (!planned && wantedItemText) {
         const tpl = planTemplateRoute(
           graph,
@@ -1128,6 +1296,9 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
       // only advances when the observed hash matched it).
       let stepFrom = currentHash;
       let divergeReason: string | undefined;
+      let readsSkipped = 0;
+      // The latest observation of the current screen, for the final compact tree.
+      let lastSeen = { kind: "state", state } as LastSeen;
       const nav = await runNavigation(currentHash, planned.steps, {
         execute: async (action, step: PlanStep) => {
           // Phase E (design D1): a TEMPLATE step resolves the concrete item on the
@@ -1148,15 +1319,41 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
               store.observe(stepFrom, action, step.to, { success: false });
             }
             stepFrom = step.to;
+            lastSeen = { kind: "none" };
             return { afterHash: out.afterHash, afterResourceIds: out.afterResourceIds };
           }
           const fromIndex = store.getNode(stepFrom)?.index;
-          await executeCanonicalAction(server, size, action, fromIndex, step.selector, (reason) => {
-            if (reason) divergeReason = reason;
-          });
-          // Re-read the landed screen for its H_id and resource-id multiset.
-          const after = await server.getState({ includeScreenshot: false, fingerprints: true });
+          let diverged = false;
+          const landed = await executeCanonicalAction(
+            server,
+            size,
+            action,
+            fromIndex,
+            step.selector,
+            (reason) => {
+              diverged = true;
+              if (reason) divergeReason = reason;
+            }
+          );
           stepFrom = step.to;
+          // One read per hop: the action's `after` H_id already names the landed
+          // screen. When it is the planned one AND the server saw the UI go quiet
+          // (`settled:"quiet"`), the hop is confirmed without a second read. On a
+          // `timeout` settle the UI was still moving, so the read below (which
+          // waits for idle) keeps the next hop from querying a moving tree.
+          if (!diverged && landed.settled === "quiet" && landed.hash === step.to) {
+            readsSkipped += 1;
+            lastSeen = {
+              kind: "landing",
+              hash: landed.hash,
+              ...(landed.stateHash !== undefined ? { stateHash: landed.stateHash } : {}),
+            };
+            return { afterHash: landed.hash };
+          }
+          // Otherwise re-read the landed screen for its H_id and resource-id
+          // multiset (the Jaccard fallback in `matches`).
+          const after = await server.getState({ includeScreenshot: false, fingerprints: true });
+          lastSeen = { kind: "state", state: after };
           return { afterHash: idOf(after), afterResourceIds: resourceIdsOf(after.tree) };
         },
         // Arrival is verified by H_id equality (phase D §3): H_id is stable across
@@ -1174,18 +1371,25 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         },
       });
 
+      const compact = await finalCompact(store, server, lastSeen);
+
       const { name, summary } = finalSummary(store, nav.finalHash);
+      const route = [currentHash, ...planned.steps.map((s) => s.to)];
       return {
         reached: nav.ok,
         finalScreen: name,
         completedSteps: nav.completedSteps,
         totalSteps: planned.steps.length,
+        path: route.map((h) => screenRef(graph, h)),
+        hops: planned.steps.length,
+        readsSkipped,
         fromVia,
         ...(fromScore !== undefined ? { fromScore } : {}),
         ...(nav.divergence ? { divergence: nav.divergence } : {}),
         ...(divergeReason ? { divergeReason } : {}),
         rpcCount,
         ...(summary ? { summary } : {}),
+        compact,
       };
     });
   }
@@ -1201,9 +1405,15 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
     description: `Replay a known action path to a target screen using the app's screen graph.
 
 Plans a route over the recorded screen graph (edges weighted by success and recency) from the CURRENT
-screen to either a target screen hash or the nearest screen whose index holds a given resource-id / text,
-then executes it step by step, verifying the device's structural hash after each step. On divergence it
-stops and reports { reachedStep, expected, actual }. Returns the final screen summary.
+screen to a target, then executes it step by step, verifying the screen identity after each step.
+Address the target with ONE of:
+- target.label: a screen label from \`describe tier=summary\` ("reachable screens"), case-insensitive;
+- target.screen: the screen id from that list (hash8) or a full hash;
+- target.selector: { id | text }, the nearest screen whose index holds it.
+An ambiguous label, id prefix or selector stops before any action and lists the candidates.
+On divergence it stops and reports { reachedStep, expected, actual }. Returns the final screen summary,
+the final screen's compact tree (the \`describe tier=compact\` text, so no describe is needed after it),
+the route as path [{ hash8, label }], hops, and readsSkipped (hops confirmed without an extra read).
 
 Android + open-device-server only; requires the \`screen-graph\` flag.`,
     searchHint: "navigate screen graph route plan path replay android",

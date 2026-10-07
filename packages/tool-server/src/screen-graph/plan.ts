@@ -177,6 +177,138 @@ export function planToSelector(
   return dijkstra(graph, from, targets, now);
 }
 
+/** How a `navigate-to` screen address (`label` or hash prefix) resolved. */
+export type ScreenTargetResolution =
+  | { kind: "node"; hash: string }
+  | { kind: "ambiguous"; hashes: string[] }
+  | { kind: "none" };
+
+/** Shortest hash prefix accepted as a screen address (the `hash8` the agent sees). */
+export const MIN_SCREEN_PREFIX = 8;
+
+const HEX_PREFIX = /^[0-9a-f]+$/;
+
+/**
+ * An activity short name as `deriveLabel` prefixes it (`SubSettings`,
+ * `Settings$WifiSettingsActivity`): a Java identifier, so no spaces.
+ */
+const ACTIVITY_PREFIX = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * The title half of an `Activity: title` label (see `deriveLabel`), or
+ * undefined when the label has no activity part. A title-only label that holds
+ * `": "` itself (`Step 1: Details`) is not cut.
+ */
+function labelTitle(label: string): string | undefined {
+  const at = label.indexOf(": ");
+  if (at < 0 || !ACTIVITY_PREFIX.test(label.slice(0, at))) return undefined;
+  return label.slice(at + 2);
+}
+
+/**
+ * Resolve a `navigate-to` screen address to one graph node.
+ *  - `screen`: a full node hash, else a hex prefix of at least
+ *    {@link MIN_SCREEN_PREFIX} characters (case-insensitive) that one node holds;
+ *  - `label`: a node label, trimmed and case-insensitive; when no full label
+ *    matches, the title half of an `Activity: title` label (only when the part
+ *    before `": "` is an activity name).
+ * Template nodes are not addresses (they stand for "any item"). `ambiguous` lists
+ * every matching node; `none` means no node matched.
+ */
+export function resolveScreenTarget(
+  graph: PlanGraph,
+  target: { screen?: string; label?: string }
+): ScreenTargetResolution {
+  const nodes = Object.values(graph.nodes).filter((n) => !n.template);
+  const pick = (hits: ScreenNode[]): ScreenTargetResolution =>
+    hits.length === 1
+      ? { kind: "node", hash: hits[0]!.hash }
+      : hits.length > 1
+        ? { kind: "ambiguous", hashes: hits.map((n) => n.hash).sort() }
+        : { kind: "none" };
+  if (target.screen !== undefined) {
+    const raw = target.screen.trim();
+    if (graph.nodes[raw]) return { kind: "node", hash: raw };
+    const want = raw.toLowerCase();
+    if (want.length < MIN_SCREEN_PREFIX || !HEX_PREFIX.test(want)) return { kind: "none" };
+    return pick(nodes.filter((n) => n.hash.toLowerCase().startsWith(want)));
+  }
+  if (target.label !== undefined) {
+    const want = target.label.trim().toLowerCase();
+    if (want === "") return { kind: "none" };
+    const full = nodes.filter((n) => (n.label ?? "").trim().toLowerCase() === want);
+    if (full.length > 0) return pick(full);
+    return pick(nodes.filter((n) => n.label && labelTitle(n.label)?.trim().toLowerCase() === want));
+  }
+  return { kind: "none" };
+}
+
+/**
+ * The shortest prefix of `hash` (at least {@link MIN_SCREEN_PREFIX} characters)
+ * that no other non-template node of `graph` shares, so the agent can pass it
+ * back as `target.screen`. Usually the hash8.
+ */
+export function screenAddress(graph: PlanGraph, hash: string): string {
+  let len = MIN_SCREEN_PREFIX;
+  for (const n of Object.values(graph.nodes)) {
+    if (n.template || n.hash === hash) continue;
+    let common = 0;
+    while (common < hash.length && hash[common] === n.hash[common]) common++;
+    len = Math.max(len, common + 1);
+  }
+  return hash.slice(0, len);
+}
+
+/** A screen reachable from the current one, with its hop count. */
+export interface ReachableScreen {
+  hash: string;
+  label?: string;
+  hops: number;
+}
+
+/**
+ * Cap on the destinations the summary lists: with labels cut to 40 characters,
+ * 8 lines keep the summary tier within ~200 tokens.
+ */
+export const MAX_REACHABLE_SCREENS = 8;
+
+/**
+ * Screens reachable from `from` over known edges, by breadth-first hop count
+ * (not the plan weight): nearest first, then by label (a node without one sorts
+ * by its hash), then by hash. The start screen, template edges and template
+ * nodes are left out: a template stands for "any item" and needs the item's text
+ * (`selector.text`), so it is not an address. At most `limit` entries.
+ */
+export function reachableScreens(
+  graph: PlanGraph,
+  from: string,
+  limit: number = MAX_REACHABLE_SCREENS
+): ReachableScreen[] {
+  const adj = buildAdjacency(graph.edges.filter((e) => !e.template));
+  const hops = new Map<string, number>([[from, 0]]);
+  let frontier = [from];
+  for (let depth = 1; frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const h of frontier) {
+      for (const e of adj[h] ?? []) {
+        if (hops.has(e.to) || graph.nodes[e.to]?.template) continue;
+        hops.set(e.to, depth);
+        next.push(e.to);
+      }
+    }
+    frontier = next;
+  }
+  hops.delete(from);
+  const sortKey = (h: string): string => (graph.nodes[h]?.label ?? h).toLowerCase();
+  return [...hops.entries()]
+    .sort(([a, ha], [b, hb]) => ha - hb || sortKey(a).localeCompare(sortKey(b)) || (a < b ? -1 : 1))
+    .slice(0, limit)
+    .map(([hash, n]) => {
+      const label = graph.nodes[hash]?.label;
+      return { hash, hops: n, ...(label !== undefined ? { label } : {}) };
+    });
+}
+
 /**
  * Review E-1 finding 8b (R5): how a template edge remembers a tapped item — the
  * 64-bit FNV-1a hex of the trimmed, lower-cased text — so the persisted store

@@ -132,6 +132,7 @@ transition, use `await-screen-idle`.
 | `run-sequence`           | Execute several interaction steps in a single call               |
 | `run-on-devices`         | Run the same interaction steps on several devices in parallel    |
 | `gesture-sequence`       | Run a burst of steps in one on-device call (Android open server) |
+| `navigate-to`            | Go to a known screen over the screen graph (Android open server) |
 | `screen-recording-start` | Start recording the screen to an h264 mp4                        |
 | `screen-recording-stop`  | Stop the recording and retrieve the video                        |
 
@@ -318,6 +319,138 @@ server measures them. `heldMs` is the time at rest before the finger lifts.
 The device server also logs `releaseVelocityLsqPxPerS` in logcat: the speed of
 the finger along the swipe in the last 100 ms before it lifts, from a
 least-squares line through the planned samples. The tool reply does not carry it.
+
+### Screen graph (Android open server)
+
+The screen graph needs the `open-device-server` and `screen-graph` flags. See
+[Screen graph](/docs/features/screen-graph) for the concept.
+
+#### Storage and limits
+
+Argent keeps one graph file for each app version:
+`~/.argent/screen-graph/<package>/<versionCode>.json`.
+
+| Limit           | Value |
+| --------------- | ----- |
+| Screens (nodes) | 300   |
+| Actions (edges) | 600   |
+| File size       | 2 MB  |
+
+When the graph is over a limit, Argent removes the screen with the oldest last visit,
+with its actions. Argent keeps a screen with 5 or more visits. Argent also keeps a
+screen at either end of an action with 3 or more successes. This protection stops
+after 10 sessions without a visit to the screen.
+
+Argent removes an action that fails in more than 80% of 5 or more attempts. Argent
+also removes an action that the agent did not use for 30 days.
+
+#### List templates
+
+Set the `ARGENT_SG_TEMPLATES=1` environment variable for the tool server to turn on
+list templates. Argent then records the taps on the items of one list as one
+template edge. The edge keeps the hashes of the last 8 tapped item texts, not the
+texts. The label of a template node ends with `:*`.
+
+#### `describe` tiers
+
+On Android with the open device server active, `describe` takes a `tier`:
+
+| `tier`    | Output                                                                               |
+| --------- | ------------------------------------------------------------------------------------ |
+| `summary` | The screen label, the visit count, the frequent actions and the reachable screens    |
+| `compact` | The pruned tree. This is the default. Argent serves it from the graph when unchanged |
+| `full`    | The full tree                                                                        |
+| `index`   | One line for each interactive element. See [Element-index taps](#element-index-taps) |
+
+`summary` and the `compact` cache need the `screen-graph` flag. The `summary` output
+ends with a `reachable screens:` list when the graph has a route from the current
+screen. With that list, `affordances:` does not show an action to another screen.
+These screens are 1 hop away, and the list or `navigate-to` reaches them:
+
+```
+screen: Settings  visits: 4
+affordances:
+- swipe up -> Settings (3)
+reachable screens:
+- 2f4c9a1e  SubSettings: Network & internet  (1 hop)
+- 7b03d2c8  SubSettings: Internet  (2 hops)
+```
+
+Each line has the screen id, the label and the smallest number of actions that
+reach the screen. The id is the first 8 characters of the screen hash. When two known screens
+start with the same 8 characters, the id is longer. A label longer than 40
+characters is cut and ends with `…`. Use the id of such a screen. The list has a
+maximum of 8 screens. Argent sorts the list by the number of actions, then by label. The list
+does not show the current screen. The list does not show list items that only a
+list template reaches. When the graph has no route from the current screen, the
+`summary` has no `reachable screens:` list.
+
+#### `navigate-to`
+
+`navigate-to` plans the shortest known route from the current screen to a target.
+Argent then does the actions in the route.
+
+| Argument          | Type   | Meaning                                                                                  |
+| ----------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `udid`            | string | The Android serial from `list-devices`.                                                  |
+| `target.label`    | string | A screen label. The match ignores case. The title after an activity prefix also matches. |
+| `target.screen`   | string | A screen id from `reachable screens:`, a hash prefix of 8 or more characters, or a hash. |
+| `target.selector` | object | `{ id }` or `{ text }`. Argent goes to the nearest screen that shows the element.        |
+
+Give one target field. When you give more than one, Argent uses `screen`, then
+`label`, then `selector`.
+
+With list templates on (`ARGENT_SG_TEMPLATES=1`), a `selector.text` that no
+screen shows can name a list item. Argent then goes to the screen with the list,
+scrolls the list to the item, and taps it.
+
+After each action, Argent compares the screen hash in the action reply with the
+next screen of the route. When the two hashes are equal and the server saw the
+screen become quiet, Argent does not read the screen again. In all other cases,
+Argent reads the screen one time. When the hash of that read is not the expected
+hash, Argent accepts the screen when its resource ids agree with the expected
+screen. Argent stops at the first action that ends on a different screen.
+
+The reply has these fields:
+
+| Field            | Meaning                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| `reached`        | `true` when the device shows the target screen.                                        |
+| `finalScreen`    | The label or the id of the screen at the end.                                          |
+| `compact`        | The `compact` tier of the screen at the end: the same text as `describe tier=compact`. |
+| `summary`        | The `summary` tier of the screen at the end, without the reachable screens.            |
+| `path`           | The planned route as `[{ hash8, label }]`. The first entry is the start screen.        |
+| `hops`           | The number of actions in the planned route. `0` when the device shows the target.      |
+| `totalSteps`     | The number of actions in the planned route, the same as `hops`.                        |
+| `completedSteps` | The number of actions that ended on the expected screen.                               |
+| `readsSkipped`   | The number of actions that Argent confirmed from the action reply, with no extra read. |
+| `divergence`     | `{ reachedStep, expected, actual }` when an action ended on a different screen.        |
+| `divergeReason`  | Why an action stopped with no tap, for example `selector unresolved on live tree`.     |
+| `fromVia`        | How Argent found the start screen in the graph: `exact`, `jaccard` or `none`.          |
+| `fromScore`      | The resource-id similarity of the start screen, with `fromVia: "jaccard"`.             |
+| `candidates`     | The screens that an ambiguous target matched, as `[{ hash8, label }]`.                 |
+| `error`          | Why Argent did no action.                                                              |
+| `rpcCount`       | The number of device calls that the navigation used.                                   |
+
+Argent does no action and returns `reached: false` with an `error` in these cases:
+
+| `error`                                                   | Cause                                                 |
+| --------------------------------------------------------- | ----------------------------------------------------- |
+| `ambiguous target: <n> screens have the label "<label>"`  | More than one screen has the label. See `candidates`. |
+| `ambiguous target: <n> screens match the prefix <prefix>` | More than one screen hash starts with the prefix.     |
+| `ambiguous target: <n> screens index this selector`       | More than one screen shows the element.               |
+| `no known screen has the label "<label>"`                 | No screen in the graph has the label.                 |
+| `no known path from the current screen to the target`     | The graph has no route from the current screen.       |
+
+In `candidates`, each `hash8` is long enough to name one screen. Give one of them
+as `target.screen`. A candidate with a label that ends with `:*` is a list
+template. A template is not a `target.screen`. Name the list item with
+`selector.text` instead.
+
+The `compact` field is present when Argent planned a route, also a route of 0
+actions. When the action reply
+confirmed the final screen and the graph holds its tree for the same state, Argent
+returns that tree with no read. Otherwise, Argent reads the final screen one time.
 
 ## JavaScript runtime debugging
 

@@ -12,6 +12,9 @@ import {
   planToSelector,
   planToSelectorStable,
   planToTemplate,
+  reachableScreens,
+  resolveScreenTarget,
+  screenAddress,
   type PlanGraph,
 } from "../src/screen-graph/plan";
 import { fnv1aHex } from "../src/screen-graph/template";
@@ -365,5 +368,72 @@ describe("planToTemplate matches item hashes (review E-1 finding 8b, R5)", () =>
     expect(planToTemplate(graph, "FEED", NOW, { itemText: "Story 99" })?.templateNode).toBe(
       "TPL_BIG"
     );
+  });
+});
+
+describe("screen addresses (navigate-to target.screen / target.label)", () => {
+  const tplNode = (hash: string): ScreenNode => ({ ...node(hash), template: true });
+  const graph: PlanGraph = {
+    nodes: {
+      "0000000aaaaaaaa1": node("0000000aaaaaaaa1"),
+      "abcdef0011112222": node("abcdef0011112222"),
+      "abcdef0099998888": node("abcdef0099998888"),
+      "f00000000000feed": tplNode("f00000000000feed"),
+      "dee00000000beef1": node("dee00000000beef1"),
+    },
+    edges: [
+      edge("0000000aaaaaaaa1", "abcdef0011112222"),
+      edge("abcdef0011112222", "dee00000000beef1"),
+      edge("0000000aaaaaaaa1", "f00000000000feed", {
+        template: { containerKey: "CK", itemTemplate: "IT", instances: 3 },
+      }),
+      edge("f00000000000feed", "abcdef0099998888"),
+    ],
+  };
+
+  it("screenAddress is the hash8 unless another screen shares it", () => {
+    expect(screenAddress(graph, "dee00000000beef1")).toBe("dee00000");
+    expect(screenAddress(graph, "abcdef0011112222")).toBe("abcdef001");
+    expect(screenAddress(graph, "abcdef0099998888")).toBe("abcdef009");
+  });
+
+  it("the address screenAddress prints resolves back to its screen", () => {
+    for (const h of ["dee00000000beef1", "abcdef0011112222", "abcdef0099998888"]) {
+      expect(resolveScreenTarget(graph, { screen: screenAddress(graph, h) })).toEqual({
+        kind: "node",
+        hash: h,
+      });
+    }
+  });
+
+  it("the title fallback cuts only an activity prefix, not any `: `", () => {
+    const g: PlanGraph = {
+      edges: [],
+      nodes: {
+        aaaaaaaa00000001: { ...node("aaaaaaaa00000001"), label: "Step 1: Details" },
+        aaaaaaaa00000002: { ...node("aaaaaaaa00000002"), label: "SubSettings: Details" },
+      },
+    };
+    // Only the activity-prefixed label answers to its title half.
+    expect(resolveScreenTarget(g, { label: "details" })).toEqual({
+      kind: "node",
+      hash: "aaaaaaaa00000002",
+    });
+    expect(resolveScreenTarget(g, { label: "step 1: details" })).toEqual({
+      kind: "node",
+      hash: "aaaaaaaa00000001",
+    });
+  });
+
+  it("a template node is never an address", () => {
+    expect(resolveScreenTarget(graph, { screen: "f0000000" })).toEqual({ kind: "none" });
+  });
+
+  it("reachableScreens counts hops, not plan weight, and skips template edges", () => {
+    // abcdef0099998888 is only behind the template edge: not listed.
+    expect(reachableScreens(graph, "0000000aaaaaaaa1")).toEqual([
+      { hash: "abcdef0011112222", hops: 1 },
+      { hash: "dee00000000beef1", hops: 2 },
+    ]);
   });
 });

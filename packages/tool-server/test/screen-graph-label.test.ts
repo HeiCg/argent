@@ -5,6 +5,7 @@ import {
   titleText,
   type LabelNode,
 } from "../src/screen-graph/label";
+import { resolveScreenTarget } from "../src/screen-graph/plan";
 
 const b = (y1: number, y2: number): LabelNode["bounds"] => ({ x1: 0, y1, x2: 1000, y2 });
 
@@ -74,5 +75,34 @@ describe("deriveLabel", () => {
 
   it("is undefined when neither half is available", () => {
     expect(deriveLabel({ nodes: [] })).toBeUndefined();
+  });
+});
+
+describe("a derived label is a navigate-to address", () => {
+  it("resolves by the full label and by its title half", () => {
+    const label = deriveLabel({
+      activity: "com.android.settings.SubSettings",
+      nodes: [
+        { id: "android:id/action_bar_title", text: "Network & internet", bounds: b(40, 120) },
+      ],
+      screenHeight: 1920,
+    })!;
+    const graph = {
+      edges: [],
+      nodes: {
+        "0123456789abcdef": {
+          hash: "0123456789abcdef",
+          firstSeen: 0,
+          lastSeen: 0,
+          visits: 1,
+          compact: "",
+          index: {},
+          label,
+        },
+      },
+    };
+    const hit = { kind: "node", hash: "0123456789abcdef" };
+    expect(resolveScreenTarget(graph, { label })).toEqual(hit);
+    expect(resolveScreenTarget(graph, { label: "network & INTERNET" })).toEqual(hit);
   });
 });
