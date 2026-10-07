@@ -19,6 +19,10 @@ Argent gives the agent control of the device. The agent taps, swipes, pinches an
 
 The agent uses the same tools on iOS, Android, TV and Chromium. Argent reads the device id and sends each action to the correct platform. Coordinates are fractions of the screen, from `0.0` to `1.0`. Thus the same instruction works on screens of different sizes.
 
+## Working with several devices
+
+The agent can drive more than one device in one session. The agent selects a default device once. Then each action goes to that device without the device id. To use another device for one action, the agent names that device in the action. When the agent boots a device, the booted device becomes the default. When the agent stops the default device, the session has no default until the agent selects or boots another device. Each agent session keeps its own default. Two agents on the same machine do not change the default of each other. The [tools reference](/docs/reference/tools#devices-and-apps) describes `use-device`.
+
 ## Discovery before interaction
 
 The agent does not read coordinates from a screenshot. Before a tap, the agent has the elements on the screen with their roles, labels and positions. Each interaction tool returns these elements together with the screenshot. The agent reads the screen separately only before the first action on a new screen. The source depends on the app:

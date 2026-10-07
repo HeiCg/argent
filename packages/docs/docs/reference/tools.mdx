@@ -16,6 +16,7 @@ Run `argent tools` to list them from the terminal, `argent tools describe <name>
 | ---------------------------- | --------------------------------------------------------------------------------------------- |
 | `list-devices`               | List iOS simulators, Android emulators and devices, Chromium apps, and Vega (Fire TV) devices |
 | `boot-device`                | Boot a simulator, emulator, or Vega Virtual Device, or spawn an Electron app                  |
+| `use-device`                 | Set the default device for this agent session                                                 |
 | `launch-app`                 | Open an app by bundle id (iOS) or package name (Android)                                      |
 | `restart-app`                | Terminate then relaunch an app                                                                |
 | `reinstall-app`              | Install or reinstall an app, clearing app data and runtime permissions                        |
@@ -29,6 +30,25 @@ Run `argent tools` to list them from the terminal, `argent tools describe <name>
 | `stop-simulator-server`      | Stop the transport session for one device and free its resources                              |
 | `stop-all-simulator-servers` | Stop every service a device owns: simulator servers, native devtools, TV daemons              |
 | `stop-metro`                 | Stop the Metro bundler listening on a given port                                              |
+
+`use-device` sets the default device of the agent session. The Argent MCP server answers this tool. The tool server does not receive it.
+
+- `use-device { udid }` sets the default. Get the id from `list-devices`.
+- `use-device { clear: true }` removes the default.
+
+A device tool called without its required device id (`udid`, `device_id` or `device`) uses the default. An id in the call always has priority over the default. The tool schemas show a required device id as optional for this reason. Argent does not fill an optional device id. For example, `flow-execute` without `device` still selects the device automatically, and `boot-device` without `udid` boots the device that its other arguments name.
+
+The last of these events sets the default:
+
+- a `use-device { udid }` call,
+- a successful `boot-device` call, which sets the booted device,
+- a successful call with an explicit `udid` or `serial`. A `stop-` tool is not such a call.
+
+A successful `stop-` tool clears the default when the tool names the default device. An unscoped `stop-all-simulator-servers` also clears it.
+
+The last line of the `list-devices` result names the default device and the event that set it, for example `Default device: emulator-5554 (boot-device)`. If the device is not in the list, the line ends with `— not in this list`. Each agent session has its own default. Two sessions on the same tool server do not share it.
+
+If there is no default and the tool requires a device id, the call fails with this error: `No device selected. Call use-device {udid} or pass udid explicitly; list-devices shows the ids.`
 
 Argent drives a foldable iOS simulator, for example the iPhone Duo. `list-devices` marks it with `foldable: true`. `fold` moves the hinge to a posture (`closed`, `half-open` or `open`) or to an angle from 0 to 180 degrees.
 

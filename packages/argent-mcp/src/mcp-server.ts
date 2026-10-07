@@ -36,11 +36,18 @@ import {
   getUdidFromArgs,
   shouldAutoScreenshot,
   getAutoScreenshotDelayMs,
+  normalizeToolName,
   autoDescribeEnabled,
   shouldAutoDescribe,
   AUTO_DESCRIBE_HEADER,
 } from "./auto-capture.js";
-import { toMcpTool } from "./tool-mapping.js";
+import { toMcpToolList } from "./tool-mapping.js";
+import {
+  SessionDevice,
+  USE_DEVICE_TOOL_NAME,
+  defaultDeviceLine,
+  runUseDevice,
+} from "./session-device.js";
 import { getInstalledVersion } from "./installed-version.js";
 
 const MAX_RETRIES = 4;
@@ -86,6 +93,242 @@ export async function fetchWithReconnect(
     }
   }
   throw lastError;
+}
+
+export interface ToolCallOutcome {
+  result: unknown;
+  outputHint?: string;
+  note?: string;
+}
+
+export interface CallToolDeps {
+  /** Per-session default device; one instance per `argent mcp` process. */
+  session: SessionDevice;
+  fetchTools: () => Promise<ToolMeta[]>;
+  callTool: (name: string, args: unknown, tools?: ToolMeta[]) => Promise<ToolCallOutcome>;
+  spyLog: (entry: Record<string, unknown>) => Promise<void>;
+  contentContext: () => { toolsUrl: string; authToken: string };
+  autoScreenshotOn: boolean;
+  autoDescribeOn: boolean;
+}
+
+export interface CallToolParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+
+// A type alias, not an interface: the SDK's result type has an index signature.
+export type CallToolResponse = {
+  content: ContentBlock[];
+  isError?: boolean;
+};
+
+/**
+ * The MCP `tools/call` handler, outside `startMcpServer` so that tests can
+ * drive it with a fake tool-server.
+ */
+export function createCallToolHandler(
+  deps: CallToolDeps
+): (params: CallToolParams) => Promise<CallToolResponse> {
+  return async (params) => {
+    const t0 = Date.now();
+    await deps.spyLog({
+      ts: new Date().toISOString(),
+      event: "tool_called",
+      name: params.name,
+      args: params.arguments,
+    });
+    try {
+      // use-device is answered here: the default is per MCP process, and the
+      // tool-server is shared by every session.
+      if (normalizeToolName(params.name) === USE_DEVICE_TOOL_NAME) {
+        const { text, isError } = runUseDevice(deps.session, params.arguments);
+        await deps.spyLog({
+          ts: new Date().toISOString(),
+          event: "tool_result",
+          name: params.name,
+          durationMs: Date.now() - t0,
+          isError: isError ?? false,
+          result: text,
+        });
+        return { ...(isError ? { isError: true } : {}), content: [{ type: "text", text }] };
+      }
+
+      const tools = await deps.fetchTools();
+      const inputSchema = tools.find((t) => t.name === params.name)?.inputSchema;
+      const injected = deps.session.injectIfMissing(params.name, params.arguments, inputSchema);
+      if (!injected.ok) throw new Error(injected.error);
+      // From here on, `args` (with the session device filled in) drives the
+      // call, the artifact directory and the auto-capture.
+      const args = injected.args;
+
+      const { result, outputHint, note } = await deps.callTool(params.name, args, tools);
+      if (normalizeToolName(params.name).startsWith("stop-")) {
+        // A stop never teaches the default: learning its udid first would make
+        // the stopped device the default, then forget it, losing a live one.
+        // The injected args: a stop called without udid stopped the default.
+        deps.session.forgetIfStopped(params.name, args);
+      } else {
+        deps.session.learnFromArgs(params.name, params.arguments, inputSchema);
+        deps.session.learnFromResult(params.name, result);
+      }
+
+      await deps.spyLog({
+        ts: new Date().toISOString(),
+        event: "tool_result",
+        name: params.name,
+        durationMs: Date.now() - t0,
+        isError: false,
+        result,
+      });
+
+      const ctx: ContentContext = {
+        ...deps.contentContext(),
+        deviceId: getDeviceIdFromArgs(args),
+      };
+
+      let content: ContentBlock[];
+      if (
+        params.name === "flow-execute" &&
+        result &&
+        typeof result === "object" &&
+        "flow" in result &&
+        "steps" in result
+      ) {
+        content = await flowRunToMcpContent(result as FlowExecuteResult, ctx);
+      } else if (params.name === "screenshot-diff" && isScreenshotDiffResult(result)) {
+        content = await screenshotDiffToMcpContent(result, ctx);
+      } else {
+        content = await toMcpContent(result, outputHint, ctx, args);
+      }
+
+      if (normalizeToolName(params.name) === "list-devices") {
+        const line = defaultDeviceLine(result, deps.session.get());
+        if (line) content = [...content, { type: "text" as const, text: line }];
+      }
+
+      const udid = getUdidFromArgs(args);
+      const wantScreenshot = deps.autoScreenshotOn && shouldAutoScreenshot(params.name);
+      const wantTree = deps.autoDescribeOn && shouldAutoDescribe(params.name);
+      if (udid && (wantScreenshot || wantTree) && containsSecretPlaceholder(args)) {
+        // The tool-server typed the *resolved* secret; a screenshot of a
+        // non-secure-entry field would hand the plaintext back to the model as
+        // pixels, and the element tree would hand it back as text. Every
+        // instruction in the note must be safe to follow AFTER the typing,
+        // since this branch only fires on a call that already typed it: hence
+        // it forbids re-sending the typing step (a rebuilt `run-sequence`
+        // would type the secret a second time on top of the first) and states
+        // that only this call is skipped, the decision being per call's args.
+        content = [
+          ...content,
+          {
+            type: "text" as const,
+            text: "Auto-screenshot and element tree skipped: the input contains a {{secret:…}} placeholder, and a capture of this screen could reveal the typed secret. The secret is already typed — do not send the typing step again, or the field will hold two copies of it. Submit or navigate away, then verify the resulting screen as usual. Only this call is covered: the next call is captured normally, and shows the secret if the field is still on screen. To cover the submit as well, put the typing and the submit in ONE `run-sequence` the next time you type a secret.",
+          },
+        ];
+      } else if (udid && (wantScreenshot || wantTree)) {
+        // Let the screen settle before capturing, bounded by the per-tool
+        // budget: `await-screen-idle` polls the tree server-side and usually
+        // returns well under the cap. If the call fails (e.g. a tool-server
+        // without that tool), fall back to sleeping the full budget.
+        const maxWaitMs = getAutoScreenshotDelayMs(params.name);
+        if (maxWaitMs > 0) {
+          try {
+            const idle = await deps.callTool("await-screen-idle", { udid, timeoutMs: maxWaitMs });
+            await deps.spyLog({
+              ts: new Date().toISOString(),
+              event: "auto_screenshot_readiness",
+              name: params.name,
+              maxWaitMs,
+              ...(idle.result as Record<string, unknown>),
+            });
+          } catch {
+            await new Promise((r) => setTimeout(r, maxWaitMs));
+          }
+        }
+
+        if (wantScreenshot) {
+          try {
+            const screenshotResult = await deps.callTool("screenshot", { udid });
+            const screenshotContent = await toMcpContent(screenshotResult.result, "image", {
+              ...deps.contentContext(),
+              deviceId: udid,
+            });
+            const hasImage = screenshotContent.some((b) => b.type === "image");
+            if (hasImage) {
+              content = [
+                ...content,
+                {
+                  type: "text" as const,
+                  text: "--- Screen after action ---",
+                },
+                ...screenshotContent,
+              ];
+            }
+          } catch {
+            /* best-effort */
+          }
+        }
+
+        // Append the element tree the agent would otherwise have to fetch with
+        // a `describe` round-trip before its next tap. Measured on Sonnet over
+        // 70 runs: −21% turns, −23% wall time, −17% cost at equal task success
+        // (see PR #958). The tree is a few hundred tokens per action.
+        if (wantTree) {
+          const t1 = Date.now();
+          try {
+            const d = await deps.callTool("describe", { udid });
+            const desc = (d.result as { description?: unknown } | null)?.description;
+            if (typeof desc === "string" && desc.length > 0) {
+              content = [
+                ...content,
+                { type: "text" as const, text: `${AUTO_DESCRIBE_HEADER}\n${desc}` },
+              ];
+            }
+            await deps.spyLog({
+              ts: new Date().toISOString(),
+              event: "auto_describe",
+              name: params.name,
+              durationMs: Date.now() - t1,
+              chars: typeof desc === "string" ? desc.length : 0,
+            });
+          } catch (e) {
+            await deps.spyLog({
+              ts: new Date().toISOString(),
+              event: "auto_describe",
+              name: params.name,
+              durationMs: Date.now() - t1,
+              error: String(e instanceof Error ? e.message : e),
+            });
+          }
+        }
+      }
+
+      if (note) {
+        content = [{ type: "text" as const, text: note }, ...content];
+      }
+
+      return { content };
+    } catch (err) {
+      await deps.spyLog({
+        ts: new Date().toISOString(),
+        event: "tool_result",
+        name: params.name,
+        durationMs: Date.now() - t0,
+        isError: true,
+        error: String(err instanceof Error ? err.message : err),
+      });
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: String(err instanceof Error ? err.message : err),
+          },
+        ],
+      };
+    }
+  };
 }
 
 export interface StartMcpServerOptions {
@@ -195,9 +438,10 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
 
   async function callTool(
     name: string,
-    args: unknown
-  ): Promise<{ result: unknown; outputHint?: string; note?: string }> {
-    const tools = await fetchTools();
+    args: unknown,
+    prefetched?: ToolMeta[]
+  ): Promise<ToolCallOutcome> {
+    const tools = prefetched ?? (await fetchTools());
     const meta = tools.find((t) => t.name === name);
 
     // File boundary, outbound: wrap declared file-path args so the tool-server
@@ -239,6 +483,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
       instructions:
         "Argent — iOS Simulator, Android Emulator, and Chromium app control for interacting, testing, profiling and debugging mobile and Chromium applications. " +
         "Interaction tools return the screen after the action: a screenshot plus the accessibility element tree with normalized tap frames. Take coordinates from that tree; call describe (or debugger-component-tree) only when no fresh tree is available — never guess coordinates from pixels. " +
+        "Call use-device {udid} once to pick this session's device; device tools called without their required udid then act on it (an explicit udid always wins). " +
         "On session end: call stop-all-simulator-servers with devices: [...] naming the devices this session used, and perform any necessary cleanup. " +
         "One tool-server is shared by every agent using this argent install, so an unscoped call tears down their devices too — reserve it for a deliberate machine-wide cleanup. " +
         "Full guidance is in the argent rule loaded from .claude/rules/argent.md.",
@@ -253,7 +498,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
         event: "list_tools",
         count: tools.length,
       });
-      return { tools: tools.map(toMcpTool) };
+      return { tools: toMcpToolList(tools) };
     } catch (err) {
       process.stderr.write(
         `[argent] Failed to list tools: ${err instanceof Error ? err.message : err}\n`
@@ -262,170 +507,17 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
     }
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-    const t0 = Date.now();
-    await spyLog({
-      ts: new Date().toISOString(),
-      event: "tool_called",
-      name: params.name,
-      args: params.arguments,
-    });
-    try {
-      const { result, outputHint, note } = await callTool(params.name, params.arguments);
-
-      await spyLog({
-        ts: new Date().toISOString(),
-        event: "tool_result",
-        name: params.name,
-        durationMs: Date.now() - t0,
-        isError: false,
-        result,
-      });
-
-      const ctx: ContentContext = {
-        toolsUrl: TOOLS_URL,
-        authToken: AUTH_TOKEN,
-        deviceId: getDeviceIdFromArgs(params.arguments),
-      };
-
-      let content: ContentBlock[];
-      if (
-        params.name === "flow-execute" &&
-        result &&
-        typeof result === "object" &&
-        "flow" in result &&
-        "steps" in result
-      ) {
-        content = await flowRunToMcpContent(result as FlowExecuteResult, ctx);
-      } else if (params.name === "screenshot-diff" && isScreenshotDiffResult(result)) {
-        content = await screenshotDiffToMcpContent(result, ctx);
-      } else {
-        content = await toMcpContent(result, outputHint, ctx, params.arguments);
-      }
-
-      const udid = getUdidFromArgs(params.arguments);
-      const wantScreenshot = autoScreenshotOn && shouldAutoScreenshot(params.name);
-      const wantTree = autoDescribeOn && shouldAutoDescribe(params.name);
-      if (udid && (wantScreenshot || wantTree) && containsSecretPlaceholder(params.arguments)) {
-        // The tool-server typed the *resolved* secret; a screenshot of a
-        // non-secure-entry field would hand the plaintext back to the model as
-        // pixels, and the element tree would hand it back as text. Every
-        // instruction in the note must be safe to follow AFTER the typing,
-        // since this branch only fires on a call that already typed it: hence
-        // it forbids re-sending the typing step (a rebuilt `run-sequence`
-        // would type the secret a second time on top of the first) and states
-        // that only this call is skipped, the decision being per call's args.
-        content = [
-          ...content,
-          {
-            type: "text" as const,
-            text: "Auto-screenshot and element tree skipped: the input contains a {{secret:…}} placeholder, and a capture of this screen could reveal the typed secret. The secret is already typed — do not send the typing step again, or the field will hold two copies of it. Submit or navigate away, then verify the resulting screen as usual. Only this call is covered: the next call is captured normally, and shows the secret if the field is still on screen. To cover the submit as well, put the typing and the submit in ONE `run-sequence` the next time you type a secret.",
-          },
-        ];
-      } else if (udid && (wantScreenshot || wantTree)) {
-        // Let the screen settle before capturing, bounded by the per-tool
-        // budget: `await-screen-idle` polls the tree server-side and usually
-        // returns well under the cap. If the call fails (e.g. a tool-server
-        // without that tool), fall back to sleeping the full budget.
-        const maxWaitMs = getAutoScreenshotDelayMs(params.name);
-        if (maxWaitMs > 0) {
-          try {
-            const idle = await callTool("await-screen-idle", { udid, timeoutMs: maxWaitMs });
-            await spyLog({
-              ts: new Date().toISOString(),
-              event: "auto_screenshot_readiness",
-              name: params.name,
-              maxWaitMs,
-              ...(idle.result as Record<string, unknown>),
-            });
-          } catch {
-            await new Promise((r) => setTimeout(r, maxWaitMs));
-          }
-        }
-
-        if (wantScreenshot) {
-          try {
-            const screenshotResult = await callTool("screenshot", { udid });
-            const screenshotContent = await toMcpContent(screenshotResult.result, "image", {
-              toolsUrl: TOOLS_URL,
-              authToken: AUTH_TOKEN,
-              deviceId: udid,
-            });
-            const hasImage = screenshotContent.some((b) => b.type === "image");
-            if (hasImage) {
-              content = [
-                ...content,
-                {
-                  type: "text" as const,
-                  text: "--- Screen after action ---",
-                },
-                ...screenshotContent,
-              ];
-            }
-          } catch {
-            /* best-effort */
-          }
-        }
-
-        // Append the element tree the agent would otherwise have to fetch with
-        // a `describe` round-trip before its next tap. Measured on Sonnet over
-        // 70 runs: −21% turns, −23% wall time, −17% cost at equal task success
-        // (see PR #958). The tree is a few hundred tokens per action.
-        if (wantTree) {
-          const t1 = Date.now();
-          try {
-            const d = await callTool("describe", { udid });
-            const desc = (d.result as { description?: unknown } | null)?.description;
-            if (typeof desc === "string" && desc.length > 0) {
-              content = [
-                ...content,
-                { type: "text" as const, text: `${AUTO_DESCRIBE_HEADER}\n${desc}` },
-              ];
-            }
-            await spyLog({
-              ts: new Date().toISOString(),
-              event: "auto_describe",
-              name: params.name,
-              durationMs: Date.now() - t1,
-              chars: typeof desc === "string" ? desc.length : 0,
-            });
-          } catch (e) {
-            await spyLog({
-              ts: new Date().toISOString(),
-              event: "auto_describe",
-              name: params.name,
-              durationMs: Date.now() - t1,
-              error: String(e instanceof Error ? e.message : e),
-            });
-          }
-        }
-      }
-
-      if (note) {
-        content = [{ type: "text" as const, text: note }, ...content];
-      }
-
-      return { content };
-    } catch (err) {
-      await spyLog({
-        ts: new Date().toISOString(),
-        event: "tool_result",
-        name: params.name,
-        durationMs: Date.now() - t0,
-        isError: true,
-        error: String(err instanceof Error ? err.message : err),
-      });
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: String(err instanceof Error ? err.message : err),
-          },
-        ],
-      };
-    }
+  const handleCallTool = createCallToolHandler({
+    session: new SessionDevice(),
+    fetchTools,
+    callTool,
+    spyLog,
+    contentContext: () => ({ toolsUrl: TOOLS_URL, authToken: AUTH_TOKEN }),
+    autoScreenshotOn,
+    autoDescribeOn,
   });
+
+  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => handleCallTool(params));
 
   await server.connect(new StdioServerTransport());
 

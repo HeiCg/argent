@@ -334,3 +334,48 @@ describe("containsSecretPlaceholder", () => {
     expect(shouldAutoScreenshot("run-sequence")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Auto-capture after an injected device id
+// Breaks if: the MCP handler reads the capture udid from the original args
+// instead of the args with the session default injected.
+// ---------------------------------------------------------------------------
+describe("auto-capture with the session default device", () => {
+  it("captures the screen and the tree of the injected device", async () => {
+    const { createCallToolHandler } = await import("../src/mcp-server.js");
+    const { SessionDevice } = await import("../src/session-device.js");
+    const session = new SessionDevice();
+    session.set("SIM-INJECTED");
+    const calls: [string, unknown][] = [];
+    const handle = createCallToolHandler({
+      session,
+      fetchTools: async () => [
+        {
+          name: "gesture-tap",
+          description: "Tap",
+          inputSchema: {
+            type: "object",
+            properties: { udid: { type: "string" }, x: { type: "number" }, y: { type: "number" } },
+            required: ["udid", "x", "y"],
+          },
+        },
+      ],
+      callTool: async (name, args) => {
+        calls.push([name, args]);
+        if (name === "describe") return { result: { description: "tree" } };
+        return { result: { ok: true } };
+      },
+      spyLog: async () => {},
+      contentContext: () => ({ toolsUrl: "http://127.0.0.1:1", authToken: "" }),
+      autoScreenshotOn: true,
+      autoDescribeOn: true,
+    });
+
+    const res = await handle({ name: "gesture-tap", arguments: { x: 0.5, y: 0.5 } });
+
+    expect(res.isError).toBeFalsy();
+    expect(calls).toContainEqual(["await-screen-idle", { udid: "SIM-INJECTED", timeoutMs: 1500 }]);
+    expect(calls).toContainEqual(["screenshot", { udid: "SIM-INJECTED" }]);
+    expect(calls).toContainEqual(["describe", { udid: "SIM-INJECTED" }]);
+  });
+});

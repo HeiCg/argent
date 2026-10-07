@@ -53,3 +53,62 @@ describe("toMcpTool — MCP _meta forwarding", () => {
     });
   });
 });
+
+// Breaks if: toMcpTool stops relaxing the device key of the exposed schema.
+describe("toMcpTool — device keys optional in the exposed schema", () => {
+  const tap = {
+    name: "gesture-tap",
+    description: "Tap",
+    inputSchema: {
+      type: "object",
+      properties: {
+        udid: { type: "string", description: "Target device id from `list-devices`." },
+        x: { type: "number" },
+      },
+      required: ["udid", "x"],
+    },
+  };
+
+  it.each([
+    ["udid", "gesture-tap"],
+    ["device_id", "view-network-logs"],
+  ])("removes %s from required and adds the session-device hint", (key, name) => {
+    const result = toMcpTool({
+      name,
+      description: "d",
+      inputSchema: {
+        properties: { [key]: { type: "string", description: "Device id." }, x: { type: "number" } },
+        required: [key, "x"],
+      },
+    });
+    expect(result.inputSchema.required).toEqual(["x"]);
+    const prop = (result.inputSchema.properties as Record<string, { description: string }>)[key]!;
+    expect(prop.description).toContain("Device id.");
+    expect(prop.description).toContain("defaults to the session device set by use-device");
+  });
+
+  // Breaks if: the hint is put on an optional key that the MCP layer never fills.
+  it("leaves an optional flow `device` untouched: it is never filled", () => {
+    const flow = {
+      name: "flow-execute",
+      description: "d",
+      inputSchema: { properties: { device: { type: "string", description: "Device id." } } },
+    };
+    expect(toMcpTool(flow).inputSchema).toEqual({ type: "object", ...flow.inputSchema });
+  });
+
+  it("does not mutate the tool-server schema it maps", () => {
+    const before = JSON.parse(JSON.stringify(tap));
+    toMcpTool(tap);
+    expect(tap).toEqual(before);
+  });
+
+  it("leaves boot-device untouched: its udid selects what to boot", () => {
+    const boot = {
+      name: "boot-device",
+      description: "Boot",
+      inputSchema: { properties: { udid: { type: "string", description: "UDID." } } },
+    };
+    expect(toMcpTool(boot).inputSchema).toEqual({ type: "object", ...boot.inputSchema });
+  });
+});

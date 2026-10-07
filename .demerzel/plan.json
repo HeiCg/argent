@@ -193,15 +193,51 @@
         }
       ],
       "commitMessage": "feat(mcp): per-session default device with use-device; device id optional and injected",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:mcp-use-device:1",
-      "reviewRounds": 0,
+      "review": {
+        "at": "2026-10-07T17:35:21.273Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/argent-mcp && npx vitest run --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-argent-mcp-npx-vitest-run-ma.log"
+          },
+          {
+            "cmd": "cd packages/argent-mcp && npx tsc --noEmit",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-argent-mcp-npx-tsc-noemit.log"
+          },
+          {
+            "cmd": "npx prettier --check packages/docs/docs/reference/tools.mdx packages/docs/docs/features/interacting-with-apps.mdx",
+            "exitCode": 0,
+            "outputFile": "3-npx-prettier-check-packages-docs-docs-re.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "note",
+            "file": "packages/docs/docs/reference/tools.mdx",
+            "note": "L46 (third 'sets the default' bullet): the docs say a successful call with an explicit `udid` sets the default, but session-device.ts L44 LEARN_KEYS also learns `serial`. Name `serial` in the bullet, or drop it from LEARN_KEYS if that is not intended."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:mcp-use-device:3"
+      },
+      "reviewRounds": 3,
+      "adjudication": {
+        "decision": "accept",
+        "reason": "Round 3 passed with one docs note (serial), fixed inline; rounds 1-2 each found one real major (optional-key injection, learn-before-forget on stop) and both are fixed and covered by handler tests; verify green, docs build green.",
+        "by": "fable:coordinator",
+        "at": "2026-10-07T17:36:40.177Z"
+      },
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T17:36:40.620Z"
     },
     {
       "id": "sg-store-hygiene",
@@ -274,7 +310,8 @@
         }
       ],
       "commitMessage": "feat(open-server): accessibility scroll RPC for momentum-free swipes and template search",
-      "status": "pending",
+      "status": "implementing",
+      "implementer": "agent:impl:swipe-scroll-accessibility:1",
       "reviewRounds": 0,
       "waivers": [],
       "skills": [
