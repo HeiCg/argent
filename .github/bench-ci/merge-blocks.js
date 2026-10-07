@@ -34,6 +34,7 @@ const {
   provenanceDiff,
 } = require("./proprietary-provenance");
 const { readValidity, entryReasons } = require("./block-validity");
+const { median, round1 } = require("./stats");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // Phase 3n: the block universe now includes the three Kotlin injection-strategy
@@ -544,9 +545,10 @@ if (files["OFF-1"] && firstOnName) {
 }
 
 // OFF-legacy as its own arm: per-verb p50/p95 vs the CURRENT OFF arm (OFF-1/OFF-2
-// pooled as the mean of their p50s/p95s, the same pooling the scoreboard grades the
-// open arms against). The bootstrap CI is computed by the scoreboard from the
-// per-sample arrays these blocks carry.
+// pooled). Review 2026-10-07 finding 4: the pooled p50 is the true median of the
+// pooled OFF-1+OFF-2 samples (stats.js), the same point estimate the scoreboard's
+// bootstrap resamples; blocks without per-sample arrays (old artifacts) fall back to
+// the mean of the block p50s. p95 stays the mean of the block p95s (report only).
 let legacyArm = null;
 if (files[LEGACY_OFF] || invalid[LEGACY_OFF]) {
   const lb = files[LEGACY_OFF] ? files[LEGACY_OFF].block : { verbs: [] };
@@ -555,13 +557,23 @@ if (files[LEGACY_OFF] || invalid[LEGACY_OFF]) {
     xs.length ? Number((xs.reduce((s, x) => s + x, 0) / xs.length).toFixed(1)) : null;
   const deltaVsCurrent = (lb.verbs || []).map((v) => {
     const cv = cur.map((b) => (b.verbs || []).find((x) => x.verb === v.verb)).filter(Boolean);
-    const curP50 = cv.length === cur.length ? mean(cv.map((x) => x.latency.p50)) : null;
+    const allSamples = cv.length === cur.length && cv.every((x) => Array.isArray(x.latencySamples));
+    const curP50 =
+      cv.length !== cur.length
+        ? null
+        : allSamples && Array.isArray(v.latencySamples)
+          ? round1(median(cv.flatMap((x) => x.latencySamples)))
+          : mean(cv.map((x) => x.latency.p50));
+    const legP50 =
+      allSamples && Array.isArray(v.latencySamples)
+        ? round1(median(v.latencySamples))
+        : v.latency.p50;
     const curP95 = cv.length === cur.length ? mean(cv.map((x) => x.latency.p95)) : null;
     return {
       verb: v.verb,
       legacy: { p50: v.latency.p50, p95: v.latency.p95 },
       current: { p50: curP50, p95: curP95, blocks: currentOffPresent },
-      delta: curP50 == null ? null : Number((v.latency.p50 - curP50).toFixed(1)),
+      delta: curP50 == null ? null : Number((legP50 - curP50).toFixed(1)),
     };
   });
   legacyArm = {

@@ -501,13 +501,16 @@ test("scoreboard: renders 'Proprietary baseline: <legacy> vs <current>' with p50
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
   assert.match(r.stdout, /### Proprietary baseline: 0\.22\.1 vs 0\.27\.0/);
-  // tap: legacy 60/68, OFF-1 53/61, OFF-2 53/61, floor 0, Δ +7, CI, reading.
-  assert.match(r.stdout, /\| gesture-tap \| 60\/68 \| 53\/61 \| 53\/61 \| ±0 \| 7 \| \[-?\d/);
+  // tap: legacy 60/68, OFF-1 53/61, OFF-2 53/61, bootstrap margin, Δ +7, CI, reading.
+  assert.match(
+    r.stdout,
+    /\| gesture-tap \| 60\/68 \| 53\/61 \| 53\/61 \| ±[\d.]+ \| 7 \| \[-?[\d.]+, -?[\d.]+\] \| (win|loss|parity|inconclusive) \|/
+  );
   // Provenance is rendered per OFF block.
   assert.match(r.stdout, /### Proprietary provenance/);
   assert.match(r.stdout, /OFF-legacy \| @swmansion\/argent@0\.22\.1/);
   // The P-gates still grade against the CURRENT OFF blocks, never OFF-legacy.
-  assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
+  assert.match(r.stdout, /\| gesture-tap \| 86 \| 55 \| 53 \| 53 \| 0 \| ±[\d.]+ \|/);
 });
 
 test("scoreboard: no legacy block → no baseline section, provenance reads unknown", () => {
@@ -520,27 +523,24 @@ test("scoreboard: no legacy block → no baseline section, provenance reads unkn
   assert.match(r.stdout, /OFF-1 \| unknown/);
 });
 
-test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap FAILs the inequality by 2, swipe/pinch win) vs proprietary", () => {
+test("scoreboard: RUN2 gates — drift row + bootstrap margin; tap +2 ms is INCONCLUSIVE, not 'FAIL by 2'", () => {
   const out = freshOut();
   writeBlocks(out, RUN2());
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  // Measured floors (P1), never a constant ±2: tap |53−53|=0, swipe |307−300|=7,
-  // pinch |351−356|=5, headline |445−548|=103.
-  assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
-  assert.match(r.stdout, /gesture-swipe \| 291 \| 268 \| 307 \| 300 \| ±7 \|/);
-  assert.match(r.stdout, /gesture-pinch \| 340 \| 323 \| 351 \| 356 \| ±5 \|/);
-  // Phase 3n.2 (review 3N1-H2): the DECISION RULE is the pre-registered point
-  // inequality, not the retired `CI lo ≤ floor` rule. tap 55 vs max(OFF) 53 at floor
-  // 0 → 55 > 53 → the inequality FAILS by 2 (the CI is reported, not the gate). This
-  // is the honest verdict the review demanded; a planner's acceptance of the sub-floor
-  // miss is a scoreboard note, never a PASS. swipe & pinch still WIN vs proprietary.
-  assert.match(r.stdout, /\*\*P2\*\* — tap RPC non-inferior.*: \*\*FAIL by 2/);
-  assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*PASS/);
-  assert.match(r.stdout, /\*\*P4\*\* — pinch RPC non-inferior.*: \*\*PASS/);
-  // Headline ratio ≤ 1.15 vs each OFF (400/445, 400/548, 400/496.5) → P5 PASS.
-  assert.match(r.stdout, /\*\*P5\*\*.*: \*\*PASS/);
+  // Drift (OFF-1 − OFF-2 p50) stays published; the margin is the bootstrap, never 0.
+  assert.match(r.stdout, /\| gesture-tap \| 86 \| 55 \| 53 \| 53 \| 0 \| ±[1-9][\d.]* \|/);
+  assert.match(r.stdout, /\| gesture-swipe \| 291 \| 268 \| 307 \| 300 \| 7 \| ±[\d.]+ \|/);
+  assert.match(r.stdout, /\| gesture-pinch \| 340 \| 323 \| 351 \| 356 \| -5 \| ±[\d.]+ \|/);
+  // Review 2026-10-07 finding 5: one rule. tap Δ +2 with a CI spanning the margin is
+  // INCONCLUSIVE (not a pass, not a fail); swipe/pinch are clear wins vs pooled OFF.
+  assert.match(r.stdout, /\*\*P2\*\* — tap .*: \*\*INCONCLUSIVE\*\*/);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe .*: \*\*PASS\*\*/);
+  assert.match(r.stdout, /\*\*P4\*\* — pinch .*: \*\*PASS\*\*/);
+  assert.doesNotMatch(r.stdout, /min\(OFF\)|max\(OFF\)/);
+  // P5 states the ratio AND the CI reading of the headline row.
+  assert.match(r.stdout, /\*\*P5\*\*.*ratio PASS.*CI reading (win|parity|inconclusive|loss)/);
 });
 
 test("scoreboard: P1 — a verb with no OFF comparator floors as N/A, never ±2", () => {
@@ -584,7 +584,8 @@ test("scoreboard: 3n.1 gate FAILS when input-manager is distinguishably slower b
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*FAIL/);
+  assert.match(r.stdout, /\| gesture-swipe \|.*\| loss \|/);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe .*: \*\*FAIL\*\*/);
 });
 
 test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", () => {
@@ -1179,4 +1180,343 @@ test("run-bench.js: no strategy-arm self-orchestration (no hidden block before O
   // No child bench block is spawned from the loader (only the FLING harness is).
   assert.doesNotMatch(src, /ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=/);
   assert.doesNotMatch(src, /proceeding \(the child effect gate is authoritative\)/);
+});
+
+/* ------------------- stats (review 2026-10-07 findings 4, 5) ------------------- */
+// Literal require so knip traces the test-only exports.
+const stats = require("./stats");
+const BENCH_TS = path.join(
+  HERE,
+  "..",
+  "..",
+  "packages",
+  "tool-server",
+  "scripts",
+  "bench-open-vs-proprietary.ts"
+);
+// n samples evenly spread over [center - spread, center + spread] (median == center).
+const spreadAround = (center, spread, n = 41) =>
+  Array.from({ length: n }, (_, i) => center - spread + (2 * spread * i) / (n - 1));
+
+test("stats: one median definition — true median (mean of the two middle values for even n)", () => {
+  const { median, summarize } = stats;
+  assert.strictEqual(median([3, 1, 2]), 2);
+  // The old bench pct() returned the lower-middle value (2) here.
+  assert.strictEqual(median([4, 1, 3, 2]), 2.5);
+  // Finding 4's tap+describe case: bimodal even-n samples, lower-middle 382 vs true 396.5.
+  assert.strictEqual(median([380, 381, 382, 411, 412, 413]), 396.5);
+  // p95 uses the same linear-interpolation quantile (h = (n − 1) · 0.95).
+  assert.strictEqual(
+    summarize([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]).p95,
+    19.05
+  );
+  const s = summarize([0.25, 1.5, 2.75, 10.125]);
+  assert.strictEqual(s.p50, 2.125);
+  assert.strictEqual(s.p50, median([0.25, 1.5, 2.75, 10.125]));
+  assert.strictEqual(s.n, 4);
+});
+
+test("stats: the bench script takes its quantiles from stats.js, with sub-ms timing", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const has = (rx) => rx.test(src);
+  assert.ok(has(/from "\.\.\/\.\.\/\.\.\/\.github\/bench-ci\/stats(\.js)?"/), "no stats.js import");
+  assert.ok(!has(/function pct\(/), "local pct() still defined");
+  assert.ok(!has(/function summarize\(/), "local summarize() still defined");
+  // Every timed window is performance.now(); Date.now() survives only for deadlines.
+  assert.ok(!has(/const t[0-2] = Date\.now\(\)/), "a timed window still uses Date.now()");
+  assert.ok(!has(/\.push\(Date\.now\(\) - t0\)/), "a sample still uses Date.now()");
+});
+
+test("stats: readCI — the four readings against ±margin", () => {
+  const { readCI } = stats;
+  assert.strictEqual(readCI([-20, -8], 5), "win");
+  assert.strictEqual(readCI([6, 30], 5), "loss");
+  assert.strictEqual(readCI([-4, 5], 5), "parity");
+  // A wide CI that spans the margin is no longer parity.
+  assert.strictEqual(readCI([-152, 128.5], 29), "inconclusive");
+  assert.strictEqual(readCI([-6, 2], 5), "inconclusive");
+  assert.strictEqual(readCI(null, 5), "N/A");
+  assert.strictEqual(readCI([-1, 1], null), "N/A");
+});
+
+test("stats: gradeFamily produces win / loss / parity / inconclusive from samples", () => {
+  const { gradeFamily } = stats;
+  const fam = gradeFamily([
+    { key: "win", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 },
+    { key: "loss", a: spreadAround(150, 4), b: spreadAround(100, 4), margin: 5 },
+    { key: "parity", a: spreadAround(100, 2), b: spreadAround(100, 2), margin: 10 },
+    { key: "inconclusive", a: spreadAround(104, 60), b: spreadAround(100, 60), margin: 5 },
+  ]);
+  const by = Object.fromEntries(fam.map((r) => [r.key, r]));
+  assert.strictEqual(by.win.reading, "win");
+  assert.strictEqual(by.win.gate, "PASS");
+  assert.strictEqual(by.loss.reading, "loss");
+  assert.strictEqual(by.loss.gate, "FAIL");
+  assert.strictEqual(by.parity.reading, "parity");
+  assert.strictEqual(by.parity.gate, "PASS");
+  assert.strictEqual(by.inconclusive.reading, "inconclusive");
+  assert.strictEqual(by.inconclusive.gate, "INCONCLUSIVE");
+  assert.strictEqual(by.win.delta, -50);
+  for (const r of fam) assert.strictEqual(r.m, 4);
+  // Deterministic: the same input grades to the same numbers.
+  assert.deepStrictEqual(
+    gradeFamily([{ key: "x", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 }]),
+    gradeFamily([{ key: "x", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 }])
+  );
+});
+
+test("stats: Holm — per-verb adjusted alpha by rank, CI widened to 1 - alpha_k", () => {
+  const { gradeFamily, compareOnce } = stats;
+  const fam = gradeFamily([
+    { key: "tight", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 },
+    { key: "mid", a: spreadAround(100, 10), b: spreadAround(130, 10), margin: 5 },
+    { key: "wide", a: spreadAround(104, 60), b: spreadAround(100, 60), margin: 5 },
+    { key: "wider", a: spreadAround(110, 90), b: spreadAround(100, 90), margin: 5 },
+  ]);
+  // Ranked by the CI rule's bootstrap p (ascending); rank k gets 0.05 / (m − k + 1).
+  const byRank = fam.slice().sort((x, y) => x.rank - y.rank);
+  assert.deepStrictEqual(
+    byRank.map((r) => r.rank),
+    [1, 2, 3, 4]
+  );
+  for (let k = 1; k < byRank.length; k++) assert.ok(byRank[k - 1].p <= byRank[k].p, "p ascending");
+  assert.deepStrictEqual(
+    byRank.map((r) => r.alpha),
+    [0.0125, 0.05 / 3, 0.025, 0.05]
+  );
+  for (const r of fam) assert.strictEqual(r.level, 1 - r.alpha);
+  assert.strictEqual(fam.find((r) => r.key === "tight").rank, 1);
+  // A wider level gives a CI that contains the 95% one.
+  const c95 = compareOnce(spreadAround(104, 60), spreadAround(100, 60), { level: 0.95 }).ci;
+  const c99 = compareOnce(spreadAround(104, 60), spreadAround(100, 60), { level: 0.99 }).ci;
+  assert.ok(c99[0] <= c95[0] && c99[1] >= c95[1], `${c99} must contain ${c95}`);
+});
+
+test("stats: Holm step-down — after the first inconclusive verb every later verb is retained", () => {
+  const { gradeFamily, readCI, compareOnce } = stats;
+  // A (p 0.0274) is rank 1 at alpha 0.025: its 97.5% CI is not decisive. B (p 0.0486)
+  // would read win on its own 95% CI, but Holm stops at A, so B is retained.
+  const base = spreadAround(100, 20);
+  const fam = gradeFamily([
+    { key: "A", a: spreadAround(88.5, 20), b: base, margin: 2 },
+    { key: "B", a: spreadAround(89.5, 20), b: base, margin: 2 },
+  ]);
+  const [a, b] = fam;
+  assert.deepStrictEqual(
+    [a.rank, a.alpha, a.reading, a.holmStop],
+    [1, 0.025, "inconclusive", false]
+  );
+  assert.deepStrictEqual([b.rank, b.alpha, b.reading, b.holmStop], [2, 0.05, "inconclusive", true]);
+  assert.strictEqual(readCI(b.ci, 2), "win", "B's own CI is decisive; only Holm retains it");
+  assert.strictEqual(b.gate, "INCONCLUSIVE");
+  assert.deepStrictEqual(compareOnce(spreadAround(89.5, 20), base).ci, b.ci);
+});
+
+test("stats: drift margin is the bootstrap 95th percentile of |Δp50|, not one point difference", () => {
+  const { driftMargin, pooledNullMargin, median } = stats;
+  // Identical blocks: the point difference is 0, the bootstrap margin is not.
+  const a = spreadAround(53, 8, 40);
+  const b = spreadAround(53, 8, 40);
+  assert.strictEqual(median(a) - median(b), 0);
+  const m = driftMargin(a, b);
+  assert.ok(m > 0, `margin ${m} must be > 0 for noisy identical blocks`);
+  // A real block shift widens it.
+  assert.ok(driftMargin(a, spreadAround(63, 8, 40)) > m);
+  // P6's null margin pools the two arms recentred on their own medians: the shift under
+  // test does not inflate it (same margin for a 10 ms and a 30 ms shift, same noise).
+  assert.ok(pooledNullMargin(a, spreadAround(63, 8, 40)) < driftMargin(a, spreadAround(63, 8, 40)));
+  assert.strictEqual(
+    pooledNullMargin(a, spreadAround(63, 8, 40)),
+    pooledNullMargin(a, spreadAround(83, 8, 40))
+  );
+  assert.strictEqual(driftMargin([1], b), null);
+});
+
+/* ------------- scoreboard: one rule for table + P lines (finding 5) ------------- */
+// A verb with explicit per-sample arrays (n=40, evenly spread ± spread around p50).
+const vS = (verb, p50, spread = 8, n = 40) => ({
+  verb,
+  latency: { p50, p95: p50 + spread },
+  latencySamples: spreadAround(p50, spread, n),
+  errors: 0,
+  fallbacks: 0,
+});
+// Fixed merged input: tap win, swipe loss, pinch parity, headline inconclusive.
+const FAMILY = () => [
+  block("OFF-1", {
+    verbs: [
+      vS("gesture-tap", 60, 2),
+      vS("gesture-swipe", 300, 2),
+      vS("gesture-pinch", 350, 1),
+      vS("tap+describe", 400, 80),
+    ],
+  }),
+  block("ON-uiautomation", {
+    verbs: [
+      vS("gesture-tap", 60, 2),
+      vS("gesture-swipe", 300, 2),
+      vS("gesture-pinch", 350, 1),
+      vS("tap+describe(settle:false)", 400, 80),
+    ],
+  }),
+  block("ON-input-manager", {
+    verbs: [
+      vS("gesture-tap", 40, 2),
+      vS("gesture-swipe", 330, 2),
+      vS("gesture-pinch", 350, 1),
+      vS("tap+describe(settle:false)", 412, 80),
+    ],
+  }),
+  block("OFF-2", {
+    verbs: [
+      vS("gesture-tap", 60, 2),
+      vS("gesture-swipe", 300, 2),
+      vS("gesture-pinch", 350, 1),
+      vS("tap+describe", 400, 80),
+    ],
+  }),
+];
+const scoreboardOf = (bs, env = ALLENV) => {
+  const out = freshOut();
+  writeBlocks(out, bs);
+  const m = run(MERGE_BLOCKS, out, env);
+  assert.strictEqual(m.code, 0, m.stderr);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  return r.stdout;
+};
+// Gate table rows: | verb | uia | im | OFF-1 | OFF-2 | drift | margin | Δ | Holm α | CI | reading |
+const gateRows = (md) => {
+  const sec = md.slice(md.indexOf("### Promotion gates"), md.indexOf("- **P2**"));
+  const rows = {};
+  for (const line of sec.split("\n")) {
+    const c = line.split("|").map((x) => x.trim());
+    if (c.length === 13 && /^(gesture-|tap\+)/.test(c[1]))
+      rows[c[1]] = { margin: c[7], delta: c[8], holm: c[9], ci: c[10], reading: c[11] };
+  }
+  return rows;
+};
+const pLine = (md, id) => {
+  const l = md.split("\n").find((x) => x.startsWith(`- **${id}**`));
+  assert.ok(l, `no ${id} line`);
+  return l;
+};
+
+test("scoreboard: table reading and P2/P3/P4 come from the same rule and the same numbers", () => {
+  const md = scoreboardOf(FAMILY());
+  const rows = gateRows(md);
+  assert.deepStrictEqual(Object.keys(rows).sort(), [
+    "gesture-pinch",
+    "gesture-swipe",
+    "gesture-tap",
+    "tap+describe(settle:false)",
+  ]);
+  assert.strictEqual(rows["gesture-tap"].reading, "win");
+  assert.strictEqual(rows["gesture-swipe"].reading, "loss");
+  assert.strictEqual(rows["gesture-pinch"].reading, "parity");
+  assert.match(rows["tap+describe(settle:false)"].reading, /^inconclusive/);
+  const { gateOf } = stats;
+  for (const [id, vn] of [
+    ["P2", "gesture-tap"],
+    ["P3", "gesture-swipe"],
+    ["P4", "gesture-pinch"],
+  ]) {
+    const l = pLine(md, id);
+    const row = rows[vn];
+    // Same Δ, margin, CI and reading as the table row; verdict = gateOf(reading).
+    assert.ok(l.includes(`Δ ${row.delta}`), `${id} Δ: ${l}`);
+    assert.ok(l.includes(`CI ${row.ci}`), `${id} CI: ${l}`);
+    assert.ok(l.includes(`vs ${row.margin}`), `${id} margin: ${l}`);
+    assert.ok(l.includes(`reading ${row.reading}`), `${id} reading: ${l}`);
+    assert.ok(l.endsWith(`**${gateOf(row.reading.split(" ")[0])}**`), `${id} verdict: ${l}`);
+  }
+  assert.match(pLine(md, "P2"), /\*\*PASS\*\*$/);
+  assert.match(pLine(md, "P3"), /\*\*FAIL\*\*$/);
+  assert.match(pLine(md, "P4"), /\*\*PASS\*\*$/);
+  // P5: ratio 412/400 = 1.03 passes, the headline row's CI reading is inconclusive.
+  const p5 = pLine(md, "P5");
+  assert.match(p5, /1\.03 \/ 1\.03 \/ 1\.03/);
+  assert.ok(
+    p5.includes(`CI reading ${rows["tap+describe(settle:false)"].reading.split(" ")[0]}`),
+    p5
+  );
+  assert.match(p5, /\*\*INCONCLUSIVE\*\*$/);
+});
+
+test("scoreboard: Holm alpha per verb is printed in the table and documented in the footer", () => {
+  const md = scoreboardOf(FAMILY());
+  const rows = gateRows(md);
+  const alphas = Object.values(rows)
+    .map((r) => r.holm.match(/α=([\d.]+) \(rank (\d)\/4\)/))
+    .map((m) => {
+      assert.ok(m, "Holm cell");
+      return { a: Number(m[1]), rank: Number(m[2]) };
+    })
+    .sort((x, y) => x.rank - y.rank);
+  assert.deepStrictEqual(
+    alphas.map((x) => x.rank),
+    [1, 2, 3, 4]
+  );
+  assert.deepStrictEqual(
+    alphas.map((x) => x.a),
+    [0.0125, 0.0167, 0.025, 0.05]
+  );
+  assert.match(md, /Holm/);
+  assert.match(md, /α_k = 0\.05 \/ \(m − k \+ 1\)/);
+  assert.match(md, /block-level variance is not captured/i);
+  assert.match(md, /ABBA/);
+});
+
+test("scoreboard: p95 Δ with CI is a report-only row, not gated", () => {
+  const md = scoreboardOf(FAMILY());
+  assert.match(md, /p95 Δ.*report only, not gated/i);
+  assert.match(md, /\| gesture-tap \| [-\d.]+ \| \[-?[\d.]+, -?[\d.]+\] \|/);
+});
+
+test("scoreboard: P6 grades ON-input-manager vs ON-uiautomation at the pair's own null margin", () => {
+  const md = scoreboardOf(FAMILY());
+  // im tap 40 vs uia 60 → win; swipe 330 vs 300 → loss → P6 FAIL naming swipe.
+  const p6 = pLine(md, "P6");
+  assert.match(p6, /null margin/);
+  assert.match(p6, /gesture-swipe/);
+  assert.match(p6, /\*\*FAIL\*\*$/);
+  // RUN2: input-manager is faster than the control on every verb → PASS.
+  const md2 = scoreboardOf(RUN2(), RUN2ENV);
+  assert.match(pLine(md2, "P6"), /\*\*PASS\*\*$/);
+});
+
+test("scoreboard: await-* rows are labelled host-algorithm differences (finding 9)", () => {
+  const bs = FOUR();
+  for (const b of bs)
+    b.block.verbs.push(vS("await-screen-idle", b.block.block.startsWith("OFF") ? 504 : 309, 20));
+  const md = scoreboardOf(bs);
+  assert.match(md, /\| await-screen-idle \(host algorithm\) \|/);
+  assert.match(md, /host-algorithm difference/i);
+});
+
+test("scoreboard: build provenance (git SHA, Node, js-tiktoken, installed APK sha256) per block", () => {
+  const bs = FOUR();
+  for (const b of bs)
+    b.block.buildProvenance = {
+      gitSha: "a1de2cd2aaaabbbbccccddddeeeeffff00001111",
+      node: "v20.19.0",
+      jsTiktoken: "1.0.21",
+      installedApk: {
+        package:
+          b.block.config === "ON" ? "com.argent.devicecontrol" : "com.argent.androiddevtools",
+        files: [
+          {
+            path: "/data/app/x/base.apk",
+            sha256: `${b.block.config === "ON" ? "ab" : "cd"}`.repeat(32),
+          },
+        ],
+      },
+    };
+  const md = scoreboardOf(bs);
+  assert.match(md, /### Build provenance/);
+  assert.match(
+    md,
+    /\| ON-input-manager \| `a1de2cd2aaaa` \| v20\.19\.0 \| 1\.0\.21 \| com\.argent\.devicecontrol \| `(ab){32}` \|/
+  );
+  assert.match(md, /\| OFF-1 \| .* \| com\.argent\.androiddevtools \| `(cd){32}` \|/);
 });

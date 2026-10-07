@@ -46,8 +46,9 @@
  * BENCH_COLD (3), BENCH_OUT (default <cwd>/.bench-results).
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, mkdirSync, writeFileSync, statSync, readdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createRegistry } from "../src/utils/setup-registry";
 import { setFlag, unsetFlag } from "@argent/configuration-core";
@@ -74,9 +75,10 @@ import {
   type BenchGestureParams,
   type InjectedTapTimeline,
 } from "../src/utils/bench-gesture-parity";
+import { summarize } from "../../../.github/bench-ci/stats.js";
 
 /* -------------------------------------------------------------------------- */
-/* Config + guards                                                            */
+/* Config + guards                                                           */
 /* -------------------------------------------------------------------------- */
 
 const SERIAL = process.env.BENCH_SERIAL ?? "emulator-5554";
@@ -152,30 +154,12 @@ function fallbackCountSince(mark: number): { count: number; samples: string[] } 
 /* stats + estimators                                                          */
 /* -------------------------------------------------------------------------- */
 
-function pct(sorted: number[], p: number): number {
-  if (sorted.length === 0) return NaN;
-  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-  return sorted[Math.max(0, idx)]!;
-}
-function summarize(xs: number[]): {
-  n: number;
-  p50: number;
-  p95: number;
-  max: number;
-  min: number;
-  mean: number;
-} {
-  const s = xs.slice().sort((a, b) => a - b);
-  const mean = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN;
-  return {
-    n: xs.length,
-    p50: pct(s, 50),
-    p95: pct(s, 95),
-    max: s.length ? s[s.length - 1]! : NaN,
-    min: s.length ? s[0]! : NaN,
-    mean: Number(mean.toFixed(1)),
-  };
-}
+// Review 2026-10-07 finding 4: p50/p95 come from the SAME quantile the merge and the
+// scoreboard bootstrap use (.github/bench-ci/stats.js, linear interpolation; p50 is the
+// true median, the old local pct() returned the lower-middle value). Every timed window
+// is performance.now(), kept as float ms rounded to 1 µs (`elapsedMs`); Date.now()
+// remains only for poll deadlines.
+const elapsedMs = (t0: number): number => Number((performance.now() - t0).toFixed(3));
 // Token estimator (F22): js-tiktoken o200k_base is the primary count for BOTH
 // configs, with chars/4 kept as a secondary sanity figure. The encoder is loaded
 // once; if it ever fails to load we fall back to chars/4 and say so.
@@ -486,14 +470,13 @@ async function timeGestureDrained(
   const errorSamples: string[] = [];
   for (let i = 0; i < N; i++) {
     if (setup) await setup(i).catch(() => undefined);
-    const t0 = Date.now();
+    const t0 = performance.now();
     try {
       await gesture(i);
-      const t1 = Date.now();
+      const gestureMs = elapsedMs(t0);
       await drain();
-      const t2 = Date.now();
-      lat.push(t2 - t0);
-      noDrain.push(t1 - t0);
+      lat.push(elapsedMs(t0));
+      noDrain.push(gestureMs);
     } catch (e) {
       errors++;
       if (errorSamples.length < 5)
@@ -533,10 +516,10 @@ async function timeCalls(
   const errorSamples: string[] = [];
   for (let i = 0; i < N; i++) {
     if (setup) await setup(i).catch(() => undefined);
-    const t0 = Date.now();
+    const t0 = performance.now();
     try {
       await fn(i);
-      lat.push(Date.now() - t0);
+      lat.push(elapsedMs(t0));
     } catch (e) {
       errors++;
       if (errorSamples.length < 5)
@@ -675,11 +658,11 @@ async function timeTapEffect(
     }
     const originFp = origin;
     // 3. TIMED window: the coordinate tap [+describe] through the backend under test.
-    const t0 = Date.now();
+    const t0 = performance.now();
     let dt: number;
     try {
       await timedTapAt(loc.x, loc.y, i);
-      dt = Date.now() - t0;
+      dt = elapsedMs(t0);
     } catch (e) {
       errors++;
       if (errorSamples.length < 5)
@@ -1095,10 +1078,10 @@ async function describeIdleLatencyWithStages(
   let errors = 0;
   const errorSamples: string[] = [];
   for (let i = 0; i < n; i++) {
-    const t0 = Date.now();
+    const t0 = performance.now();
     try {
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta;
-      lat.push(Date.now() - t0);
+      lat.push(elapsedMs(t0));
       collectSplit(acc, d);
     } catch (e) {
       errors++;
@@ -1928,9 +1911,109 @@ async function deriveNavTarget(
   return null;
 }
 
+// Review 2026-10-07 finding 11: what each block actually ran, recorded on both arms.
+// gitSha = the checkout the harness and the open server were built from; node = the
+// host runtime; jsTiktoken = the tokenizer package version behind `tokens`;
+// installedApk = sha256 of every APK file `pm path` reports for the block's device-side
+// package AS INSTALLED (open: com.argent.devicecontrol, proprietary: the helper APK
+// com.argent.androiddevtools), pulled with `adb exec-out cat`; hostApks = sha256 of the
+// open APK(s) the tool-server installs from packages/android-device-server/bin (ON only;
+// the OFF host files are hashed by proprietary-provenance.js).
+interface BuildProvenance {
+  gitSha: string | null;
+  node: string;
+  jsTiktoken: string | null;
+  installedApk: {
+    package: string;
+    files: Array<{ path: string; sha256: string }>;
+    error?: string;
+  };
+  hostApks?: Record<string, string>;
+}
+
+function gitSha(): string | null {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (sha) return sha;
+  } catch {
+    /* no git checkout: fall through */
+  }
+  return process.env.GITHUB_SHA ?? null;
+}
+
+// js-tiktoken does not export ./package.json, so walk up from its resolved entry.
+function installedPackageVersion(name: string): string | null {
+  try {
+    let dir = dirname(require.resolve(name));
+    for (let i = 0; i < 6; i++) {
+      const pj = join(dir, "package.json");
+      if (existsSync(pj)) {
+        const meta = JSON.parse(readFileSync(pj, "utf8")) as { name?: string; version?: string };
+        if (meta.name === name) return meta.version ?? null;
+      }
+      dir = dirname(dir);
+    }
+  } catch {
+    /* unresolved */
+  }
+  return null;
+}
+
+function installedApkSha256(pkg: string): BuildProvenance["installedApk"] {
+  try {
+    const paths = adbShell(`pm path ${pkg}`)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("package:"))
+      .map((l) => l.slice("package:".length));
+    if (!paths.length) return { package: pkg, files: [], error: "pm path: not installed" };
+    const files = paths.map((p) => {
+      const bytes = execFileSync("adb", ["-s", SERIAL, "exec-out", "cat", p], {
+        timeout: 60_000,
+        maxBuffer: 512 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { path: p, sha256: createHash("sha256").update(bytes).digest("hex") };
+    });
+    return { package: pkg, files };
+  } catch (e) {
+    return { package: pkg, files: [], error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function hostOpenApks(): Record<string, string> {
+  const dir = join(process.cwd(), "packages", "android-device-server", "bin");
+  const out: Record<string, string> = {};
+  try {
+    for (const f of readdirSync(dir)
+      .filter((x) => x.endsWith(".apk"))
+      .sort())
+      out[f] = createHash("sha256")
+        .update(readFileSync(join(dir, f)))
+        .digest("hex");
+  } catch {
+    /* no build output: recorded as {} */
+  }
+  return out;
+}
+
+function buildProvenance(config: "OFF" | "ON"): BuildProvenance {
+  return {
+    gitSha: gitSha(),
+    node: process.version,
+    jsTiktoken: installedPackageVersion("js-tiktoken"),
+    installedApk: installedApkSha256(config === "ON" ? OPEN_PKG : ADT_PKG),
+    ...(config === "ON" ? { hostApks: hostOpenApks() } : {}),
+  };
+}
+
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
+  buildProvenance?: BuildProvenance;
   // Phase 3n: the on-device injection strategy this ON block requested (uia-sync /
   // uia-async / input-manager), or undefined for the DEFAULT / OFF arms.
   injectStrategy?: OpenInjectStrategy | "default";
@@ -2051,13 +2134,13 @@ async function coldStart(_config: "OFF" | "ON"): Promise<number[]> {
   for (let k = 0; k < COLD; k++) {
     await teardownBackend();
     const reg = createRegistry();
-    const t0 = Date.now();
+    const t0 = performance.now();
     let ok = false;
     for (let attempt = 0; attempt < 3 && !ok; attempt++) {
       try {
         const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { source: string };
         ok = true;
-        out.push(Date.now() - t0);
+        out.push(elapsedMs(t0));
         void d;
       } catch {
         await sleep(500);
@@ -2932,6 +3015,9 @@ async function main(): Promise<void> {
         `${injectStrategy ? `, inject=${injectStrategy}` : ""}) ===`
     );
     const r = await runBlock(block, config, injectStrategy);
+    // Finding 11: hashed after the block, while its device-side APK is still installed.
+    r.buildProvenance = buildProvenance(config);
+    realDebug(`[bench][${block}] buildProvenance ${JSON.stringify(r.buildProvenance)}`);
     blocks.push(r);
     // Per-block summary: the open-server fallback lines over the timed verbs and over
     // the whole block (finding 3; input-manager→uia-async is reported on-device via

@@ -13,6 +13,10 @@
     "moduleResolution": "bundler",
     "customConditions": ["node"],
     "resolveJsonModule": true,
+    // bench-open-vs-proprietary.ts imports the shared quantile/bootstrap module
+    // .github/bench-ci/stats.js (one median definition for the bench, the merge and
+    // the scoreboard; review 2026-10-07 finding 4). Its types come from its JSDoc.
+    "allowJs": true,
     "types": ["node"],
     "skipLibCheck": true
   },
