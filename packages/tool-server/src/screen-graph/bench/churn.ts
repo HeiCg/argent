@@ -172,7 +172,7 @@ interface PresenceSweep {
 }
 
 /** The matrix numbers E1-G5 is graded on (read by the bench script after the matrix). */
-export interface G5Input {
+interface G5Input {
   settingsNodes?: number;
   settingsEdges?: number;
   o1TokP50?: number;

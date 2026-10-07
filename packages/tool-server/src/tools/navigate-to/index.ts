@@ -750,7 +750,7 @@ export async function executeTemplateStep(
 }
 
 /** A full sweep of a container (review E-1 finding 5): what rows are actually there. */
-export interface SweepOutcome {
+interface SweepOutcome {
   /** Every label seen inside the container during the sweep. */
   labels: Set<string>;
   scrolls: number;
