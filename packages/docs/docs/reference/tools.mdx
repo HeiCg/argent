@@ -76,6 +76,14 @@ After three failures in a row the line adds `consider a different approach`.
 The next successful gesture clears the line. Argent keeps this state in memory
 only. It does not survive a tool-server restart and it adds no device call.
 
+### Empty tree and fallback (Android open server)
+
+When no window is active, the open device server reads the screen again for up to
+500 ms. If no window becomes active, `describe` returns an empty tree with
+`treeEmpty: true` and `treeEmptyReason`. When the open device server fails,
+`describe` uses another backend and returns `backend: "proprietary-fallback"` and
+`fallbackReason`.
+
 ## Interacting
 
 | Tool                     | Description                                                      |

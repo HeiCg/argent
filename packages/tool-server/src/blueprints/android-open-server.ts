@@ -135,6 +135,11 @@ export interface OpenServerTimings {
   // interactive-windows snapshot (fast, coherent mid-transition), "activeWindow" =
   // `rootInActiveWindow` fallback. Absent on servers before versionCode 22.
   rootSource?: "windows" | "activeWindow";
+  // Reads of the active root this capture made (1 = no retry) and the ms the
+  // re-reads took (part of `rootMs`). The server re-reads for up to ~500 ms when
+  // no window is active. Absent on servers before versionCode 27.
+  rootAttempts?: number;
+  rootRetryMs?: number;
   // Server-side request timeline of the PREVIOUS same-method request (phase 3i),
   // piggybacked because a response cannot carry the cost of writing itself. All ms:
   // `prevServerHandleMs` = handler entry → response string ready (capture + JSON
@@ -398,6 +403,13 @@ export interface OpenDeviceServerApi {
     captureMs: number;
     /** Per-stage capture split (phase 3g); absent on older servers. */
     timings?: OpenServerTimings;
+    /**
+     * `true` when the server found no active window root after its re-reads, so
+     * `tree` is empty for that reason; `treeEmptyReason` says which
+     * (`"no_active_window"`). Absent otherwise and on servers before versionCode 27.
+     */
+    treeEmpty?: boolean;
+    treeEmptyReason?: string;
     /** Which host↔device transport carried this reply (phase 3j). */
     transport?: "adb-forward" | "redir";
     /**
@@ -1033,6 +1045,8 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           waitedMs: number;
           captureMs: number;
           timings?: OpenServerTimings;
+          treeEmpty?: boolean;
+          treeEmptyReason?: string;
           hash?: string;
           stateHash?: string;
           idHash?: string;

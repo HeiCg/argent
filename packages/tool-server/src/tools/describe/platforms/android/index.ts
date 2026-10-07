@@ -32,6 +32,19 @@ const TRUNCATION_HINT =
   "Note: the accessibility tree was truncated at the server's element cap, so some " +
   "elements may be missing — narrow the screen or scroll to see the rest.";
 
+// Appended to the describe hint when the open server returned no tree.
+const EMPTY_TREE_HINT =
+  "The device reported no accessibility tree: no window was active when it was read " +
+  "(an app starting, closing or crashing). This is not evidence that the screen is " +
+  "empty. Run `describe` again or take a `screenshot`.";
+
+// Open-path describes that returned an empty tree in this process. Read by the
+// bench; each one is also logged at console.warn.
+let emptyTreeCount = 0;
+export function openServerEmptyTreeCount(): number {
+  return emptyTreeCount;
+}
+
 export const androidRequires: ToolDependency[] = ["adb"];
 
 // The open describe's idle policy, mapped to the open server's `getNestedState`
@@ -77,13 +90,17 @@ export async function describeAndroid(
   settle?: boolean | number
 ): Promise<DescribeTreeData> {
   const hint = (isTv ?? (await isAndroidTv(serial))) ? ANDROID_TV_HINT : undefined;
+  // Set when the open path failed and a later backend serves the call.
+  let fallback: { backend: "proprietary-fallback"; fallbackReason: string } | undefined;
 
   // Preferred source when the `open-device-server` flag is on and the open-source
   // on-device server is reachable: it reads the accessibility tree directly from
   // UiAutomation (no `uiautomator dump` round-trip, and it settles with
-  // waitForIdle first), fixing the ~40% busy-UI dump flakiness. Any failure falls
-  // through to the android-devtools helper, then the raw dump — same one-way
-  // recovery the two legacy sources already have.
+  // waitForIdle first), fixing the ~40% busy-UI dump flakiness. An empty tree is
+  // returned as-is (`treeEmpty`). Any failure falls through to the android-devtools
+  // helper, then the raw dump, and the result carries `backend:
+  // "proprietary-fallback"`. While this server runs, the dump cannot connect to
+  // UiAutomation, so only android-devtools can serve that fallback.
   if (registry && isFlagEnabled("open-device-server")) {
     try {
       const device = resolveDevice(serial);
@@ -120,14 +137,14 @@ export async function describeAndroid(
           // the FULL tree and runs the proven host v2 trim, which is byte-identical to
           // the dump path. compact stays available for the bench A/B via explicit opt-in.
           const state = await server.getNestedState({ waitTimeoutMs, compact: false });
-          if (state.tree.length === 0) {
-            throw new FailureError("open-device-server returned an empty accessibility tree", {
-              error_code: FAILURE_CODES.ANDROID_UIAUTOMATOR_CAPTURE_FAILED,
-              failure_stage: "android_open_device_server_tree",
-              failure_area: "tool_server",
-              error_kind: "subprocess",
-            });
-          }
+          // An empty tree is the device's answer, not an open-path failure: the
+          // server already re-read the active root for up to ~500 ms (versionCode
+          // 27+) before reporting it. Falling back here (bench run 37561512651)
+          // reached `uiautomator dump`, which cannot connect while this server
+          // holds UiAutomation, so the call errored instead. It is returned below
+          // with a `treeEmpty` marker.
+          const emptyReason =
+            state.tree.length === 0 ? (state.treeEmptyReason ?? "empty_tree") : undefined;
           // Run the SAME v2 interactables-only trim the android-devtools XML path
           // runs, so the compact describe (dropped layout containers, concatenated
           // row labels, package-qualified ids) matches the proprietary token count
@@ -148,6 +165,7 @@ export async function describeAndroid(
           const hostRenderMs = performance.now() - renderT0;
           return {
             node,
+            emptyReason,
             truncated: nestedTreeTruncated(state.tree),
             waitedMs: state.waitedMs,
             captureMs: state.captureMs,
@@ -177,8 +195,27 @@ export async function describeAndroid(
       // `waitedMs`, so waitedMs + captureMs still accounts for the device time.
       // The other stage timings are the returned (last) read's own.
       const webViewWaitMs = lastReadAt - firstReadAt;
-      // Surface the runaway-guard hit as a hint (F13), alongside any TV hint.
-      const openHint = result.truncated ? [hint, TRUNCATION_HINT].filter(Boolean).join(" ") : hint;
+      if (result.emptyReason !== undefined) {
+        emptyTreeCount += 1;
+        const attempts = result.timings?.rootAttempts;
+        const retryMs = result.timings?.rootRetryMs;
+        console.warn(
+          `[describe.android] open-device-server returned an empty accessibility tree ` +
+            `(reason=${result.emptyReason}` +
+            (attempts !== undefined ? `, rootAttempts=${attempts}, rootRetryMs=${retryMs}` : "") +
+            `); returning it with treeEmpty, no other backend`
+        );
+      }
+      // Surface the runaway-guard hit as a hint (F13), alongside any TV hint, and
+      // say why the tree is empty when it is.
+      const openHint =
+        [
+          hint,
+          result.truncated ? TRUNCATION_HINT : undefined,
+          result.emptyReason !== undefined ? EMPTY_TREE_HINT : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined;
       // Ticket A1 (part B): prepend the execution-incident line while one is
       // active on this device (a prior verify refusal / no-effect / timeout), so
       // the agent sees the failure IN CONTEXT on its next read. Host state only —
@@ -208,13 +245,16 @@ export async function describeAndroid(
           ? { hostRoundTripMs: result.hostRoundTripMs }
           : {}),
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
+        ...(result.emptyReason !== undefined
+          ? { treeEmpty: true as const, treeEmptyReason: result.emptyReason }
+          : {}),
       };
     } catch (serverErr) {
-      console.debug(
-        `[describe.android] open-device-server failed, falling back: ${
-          serverErr instanceof Error ? serverErr.message : String(serverErr)
-        }`
-      );
+      // Any other open-path failure (server unreachable, RPC error) still falls
+      // back, and the result says so (same marker as the open iOS path).
+      const reason = serverErr instanceof Error ? serverErr.message : String(serverErr);
+      console.warn(`[describe.android] open-device-server failed, falling back: ${reason}`);
+      fallback = { backend: "proprietary-fallback", fallbackReason: reason };
     }
   }
 
@@ -232,7 +272,7 @@ export async function describeAndroid(
         async () =>
           parseUiAutomatorDump((await devtools.getHierarchy()).xml, size.width, size.height)
       );
-      return { tree, source: "android-devtools", hint };
+      return { tree, source: "android-devtools", hint, ...fallback };
     } catch (serviceErr) {
       // Debug level: the legacy path below is expected to recover, so this
       // shouldn't leak into the per-call result.
@@ -249,7 +289,7 @@ export async function describeAndroid(
   const tree = await awaitWebViewPublished(parseDump(raw, size), async () =>
     parseDump(await uiautomatorDump(serial), size)
   );
-  return { tree, source: "uiautomator", hint };
+  return { tree, source: "uiautomator", hint, ...fallback };
 }
 
 /**
