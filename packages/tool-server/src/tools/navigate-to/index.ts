@@ -15,7 +15,10 @@ import {
   type OpenDeviceServerApi,
   type OpenServerSelector,
 } from "../../blueprints/android-open-server";
-import { resolveStoreForCurrentApp } from "../../utils/screen-graph-open-wiring";
+import {
+  resolveStoreForCurrentApp,
+  screenGraphTemplatesEnabled,
+} from "../../utils/screen-graph-open-wiring";
 import {
   DEFAULT_STABLE_MATCH_THRESHOLD,
   GRID,
@@ -30,11 +33,14 @@ import {
   planToSelectorStable,
   planToTemplate,
   renderSummary,
+  resolveContainer,
   runNavigation,
   selectorKeys,
+  stripId,
   type CanonicalAction,
   type EdgeSelector,
   type GraphSelector,
+  type PlanGraph,
   type PlanResult,
   type PlanStep,
   type ScreenGraphStore,
@@ -394,10 +400,23 @@ const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
 
 type Box = { x1: number; y1: number; x2: number; y2: number };
 
+/** A live flat-tree element as the template step reads it (text for matching). */
+export type LiveElement = TemplateElement & { text?: string; contentDesc?: string };
+
 /** One read of the scroll container: where it is and what it shows. */
 interface ContainerRead {
-  /** The largest live scrollable's bounds; null when the tree has none. */
+  /** The container's bounds; null when the tree has none (or not the requested one). */
   bounds: Box | null;
+  /**
+   * The container element (review E-1 2026-10-07 finding 3): the template's own
+   * container when the step names one (`containerId`), else the largest live
+   * scrollable. Exact matches count only when this is the SMALLEST scrollable
+   * holding their centre, so a carousel card or a title-bar text never resolves
+   * a list item.
+   */
+  container: LiveElement | null;
+  /** Every live scrollable (the smallest-container test's input). */
+  scrollables: LiveElement[];
   /**
    * The visible texts inside the container with their top edge, in tree order.
    * Empty when nothing readable is inside (the step then falls back to the
@@ -406,28 +425,73 @@ interface ContainerRead {
   sig: string;
   /** Texts that appear once in the window (the overlap test's keys). */
   texts: Set<string>;
+  /** Every label inside the container in this window (the presence sweep's input). */
+  labels: string[];
 }
 
-async function readContainer(server: OpenDeviceServerApi): Promise<ContainerRead> {
-  let tree: OpenServerElement[] = [];
-  try {
-    const st = await server.getState({ includeScreenshot: false });
-    tree = (st?.tree ?? []) as OpenServerElement[];
-  } catch {
-    return { bounds: null, sig: "", texts: new Set() };
-  }
-  let bounds: Box | null = null;
+const EMPTY_READ: ContainerRead = {
+  bounds: null,
+  container: null,
+  scrollables: [],
+  sig: "",
+  texts: new Set(),
+  labels: [],
+};
+
+function boxArea(b: Box): number {
+  return Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+}
+
+/**
+ * The container a template step searches: the largest live scrollable whose
+ * stripped resource id is `containerId` when one is named, else the largest live
+ * scrollable (the pre-review behaviour, kept for a graph-free search).
+ */
+function pickContainer(scrollables: LiveElement[], containerId?: string): LiveElement | null {
+  const pool =
+    containerId === undefined
+      ? scrollables
+      : scrollables.filter((el) => stripId(el.resourceId) === containerId);
+  let best: LiveElement | null = null;
   let bestArea = -1;
-  for (const el of tree) {
-    if (!isScrollingElement(el)) continue;
-    const b = el.bounds;
-    const a = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+  for (const el of pool) {
+    const a = boxArea(el.bounds);
     if (a > bestArea) {
       bestArea = a;
-      bounds = b;
+      best = el;
     }
   }
-  if (!bounds) return { bounds: null, sig: "", texts: new Set() };
+  return best;
+}
+
+/** Whether a point belongs to the read's container (it is the smallest scrollable there). */
+function ownedByContainer(read: ContainerRead, x: number, y: number): boolean {
+  if (!read.container) return true;
+  return resolveContainer(read.scrollables, x, y) === read.container;
+}
+
+async function readContainer(
+  server: OpenDeviceServerApi,
+  containerId?: string
+): Promise<ContainerRead> {
+  let tree: LiveElement[];
+  try {
+    const st = await server.getState({ includeScreenshot: false });
+    tree = (st?.tree ?? []) as unknown as LiveElement[];
+  } catch {
+    return EMPTY_READ;
+  }
+  const scrollables = tree.filter((el) => isScrollingElement(el));
+  const container = pickContainer(scrollables, containerId);
+  if (!container) return { ...EMPTY_READ, scrollables };
+  const read: ContainerRead = {
+    bounds: container.bounds,
+    container,
+    scrollables,
+    sig: "",
+    texts: new Set(),
+    labels: [],
+  };
   const parts: string[] = [];
   const counts = new Map<string, number>();
   for (const el of tree) {
@@ -435,55 +499,93 @@ async function readContainer(server: OpenDeviceServerApi): Promise<ContainerRead
     if (!label) continue;
     const cx = (el.bounds.x1 + el.bounds.x2) / 2;
     const cy = (el.bounds.y1 + el.bounds.y2) / 2;
-    if (cx < bounds.x1 || cx > bounds.x2 || cy < bounds.y1 || cy > bounds.y2) continue;
+    if (!ownedByContainer(read, cx, cy)) continue;
     parts.push(`${label}@${el.bounds.y1}`);
+    read.labels.push(label);
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  const texts = new Set<string>();
-  for (const [t, n] of counts) if (n === 1) texts.add(t);
-  return { bounds, sig: parts.join("|"), texts };
+  for (const [t, n] of counts) if (n === 1) read.texts.add(t);
+  read.sig = parts.join("|");
+  return read;
 }
 
 /**
  * Read the container until two consecutive reads agree (the list is no longer
  * animating), bounded by TEMPLATE_SETTLE_MAX_READS; returns the last read.
  */
-async function stableRead(server: OpenDeviceServerApi, pauseMs: number): Promise<ContainerRead> {
-  let prev = await readContainer(server);
+async function stableRead(
+  server: OpenDeviceServerApi,
+  pauseMs: number,
+  containerId?: string
+): Promise<ContainerRead> {
+  let prev = await readContainer(server, containerId);
   for (let i = 1; i < TEMPLATE_SETTLE_MAX_READS; i++) {
     if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
-    const cur = await readContainer(server);
+    const cur = await readContainer(server, containerId);
     if (cur.sig === prev.sig) return cur;
     prev = cur;
   }
   return prev;
 }
 
+/** One container swipe's outcome and timing (review E-1 finding 4). */
+interface SwipeTiming {
+  /** The server's `changed` outcome (undefined when it gave none). */
+  changed: boolean | undefined;
+  /** Host wall time of the swipe RPC, ms. */
+  ms: number;
+  /** Device-measured DOWN-to-UP span (APK >= 0.1.24); undefined when not reported. */
+  deliveredMs: number | undefined;
+}
+
 /**
  * Swipe the container held (momentum-free) inside its bounds (else the screen).
- * `down` reveals later items (the finger moves up); `up` reveals earlier ones.
- * Returns the server's `changed` outcome (undefined when it gave none).
+ * `down` reveals later items; `up` reveals earlier ones. A container wider than
+ * tall (a carousel) is swiped horizontally, so a carousel template never scrolls
+ * the vertical list (review E-1 finding 3).
  */
 async function scrollContainer(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
   bounds: Box | null,
   dir: "down" | "up"
-): Promise<boolean | undefined> {
+): Promise<SwipeTiming> {
   const b = bounds ?? { x1: 0, y1: 0, x2: size.width, y2: size.height };
-  const sx = Math.round((b.x1 + b.x2) / 2);
-  const low = Math.round(b.y1 + (b.y2 - b.y1) * 0.72);
-  const high = Math.round(b.y1 + (b.y2 - b.y1) * 0.28);
-  const [sy, ey] = dir === "down" ? [low, high] : [high, low];
+  const horizontal = b.x2 - b.x1 > b.y2 - b.y1;
+  let sx: number;
+  let sy: number;
+  let ex: number;
+  let ey: number;
+  if (horizontal) {
+    const cy = Math.round((b.y1 + b.y2) / 2);
+    const right = Math.round(b.x1 + (b.x2 - b.x1) * 0.72);
+    const left = Math.round(b.x1 + (b.x2 - b.x1) * 0.28);
+    [sx, ex] = dir === "down" ? [right, left] : [left, right];
+    sy = cy;
+    ey = cy;
+  } else {
+    const cx = Math.round((b.x1 + b.x2) / 2);
+    const low = Math.round(b.y1 + (b.y2 - b.y1) * 0.72);
+    const high = Math.round(b.y1 + (b.y2 - b.y1) * 0.28);
+    [sy, ey] = dir === "down" ? [low, high] : [high, low];
+    sx = cx;
+    ex = cx;
+  }
+  const t0 = Date.now();
   const out = await server.swipeWithOutcome(
     sx,
     sy,
-    sx,
+    ex,
     ey,
     TEMPLATE_SCROLL_STEPS,
     TEMPLATE_SCROLL_HOLD_MS
   );
-  return out?.changed;
+  const delivered = out?.deliveredMs;
+  return {
+    changed: out?.changed,
+    ms: Date.now() - t0,
+    deliveredMs: typeof delivered === "number" && delivered >= 0 ? delivered : undefined,
+  };
 }
 
 /** The result of resolving a template step's concrete item on the live tree. */
@@ -505,25 +607,38 @@ interface TemplateStepOutcome {
    * not see the item: on an unresolved outcome, the item is not in the list.
    */
   swept: boolean;
+  /** Wall time of the whole step (search + tap + landed read), ms (review E-1 finding 4). */
+  wallMs: number;
+  /** Host wall time of each swipe RPC, ms, in order. */
+  swipeMs: number[];
+  /** Device-reported DOWN-to-UP span of each swipe that reported one, ms. */
+  deliveredMs: number[];
   reason?: string;
 }
 
 export interface TemplateStepOptions {
   /** Pause between the settle reads after a swipe (tests pass 0). */
   settlePauseMs?: number;
+  /**
+   * The template's container (stripped resource id, `PlanStep.template.containerId`).
+   * When set, the step searches and matches ONLY inside it, and fails closed when
+   * it is not on the live tree. Unset: the largest live scrollable (graph-free).
+   */
+  containerId?: string;
 }
 
 /**
  * Phase E (design D1): resolve the concrete item for a template step. Query the
- * live tree for `wantedText`, requiring exactly one EXACT match (the same
- * uniqueness discipline as D.1 Fix A); when it is not yet on screen, scroll the
- * container (momentum-free, less than a viewport) and re-query. The search is
- * bidirectional: it scrolls toward the end first and, when the list stops moving
- * (TEMPLATE_END_UNCHANGED settled reads in a row equal the one before the
- * swipe), turns around, so an item ABOVE the starting window, or one a flung
- * swipe skipped, is still reached. It stops when the item resolves, after one
- * gap-free pass from end to end (`swept`), or at TEMPLATE_MAX_SCROLLS; it fails
- * closed (never taps) on an ambiguous or unresolved item.
+ * live tree for `wantedText`, requiring exactly one EXACT match inside the
+ * template's container (the same uniqueness discipline as D.1 Fix A); when it is
+ * not yet on screen, scroll the container (momentum-free, less than a viewport)
+ * and re-query. The search is bidirectional: it scrolls toward the end first and,
+ * when the list stops moving (TEMPLATE_END_UNCHANGED settled reads in a row equal
+ * the one before the swipe), turns around, so an item ABOVE the starting window,
+ * or one a flung swipe skipped, is still reached. It stops when the item
+ * resolves, after one gap-free pass from end to end (`swept`), or at
+ * TEMPLATE_MAX_SCROLLS; it fails closed (never taps) on an ambiguous or
+ * unresolved item, or when the named container is not on screen.
  */
 export async function executeTemplateStep(
   server: OpenDeviceServerApi,
@@ -531,7 +646,9 @@ export async function executeTemplateStep(
   wantedText: string,
   opts: TemplateStepOptions = {}
 ): Promise<TemplateStepOutcome> {
+  const t0 = Date.now();
   const pauseMs = opts.settlePauseMs ?? TEMPLATE_SETTLE_PAUSE_MS;
+  const containerId = opts.containerId;
   const want = norm(wantedText);
   let scrolls = 0;
   let unchanged = 0;
@@ -539,17 +656,44 @@ export async function executeTemplateStep(
   let gaps = 0;
   let swept = false;
   let dir: "down" | "up" = "down";
+  const swipeMs: number[] = [];
+  const deliveredMs: number[] = [];
   // A pass is clean when it started at an end and no scroll in it left a gap.
   let passFromEnd = false;
   let passGap = false;
-  let prev = await stableRead(server, pauseMs);
-  const telemetry = () => ({ scrolls, reversals, gaps, swept });
+  let prev = await stableRead(server, pauseMs, containerId);
+  const telemetry = () => ({
+    scrolls,
+    reversals,
+    gaps,
+    swept,
+    wallMs: Date.now() - t0,
+    swipeMs,
+    deliveredMs,
+  });
+  const giveUp = async (reason: string): Promise<TemplateStepOutcome> => {
+    const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
+    return {
+      tapped: false,
+      afterHash: idOf(cur),
+      afterResourceIds: resourceIdsOf(cur.tree),
+      ...telemetry(),
+      reason,
+    };
+  };
+  if (containerId !== undefined && !prev.container) {
+    return giveUp("template container not on live tree");
+  }
   for (;;) {
     const q = await server.query(
       { text: { contains: wantedText, caseInsensitive: true }, visible: true },
       { limit: 20 }
     );
-    const exact = q.nodes.filter((n) => norm(n.text) === want || norm(n.cd) === want);
+    const exact = q.nodes.filter((n) => {
+      if (norm(n.text) !== want && norm(n.cd) !== want) return false;
+      const b = n.bounds;
+      return ownedByContainer(prev, (b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2);
+    });
     if (exact.length === 1) {
       const b = exact[0]!.bounds;
       const cx = Math.round((b.x1 + b.x2) / 2);
@@ -567,24 +711,17 @@ export async function executeTemplateStep(
         ...telemetry(),
       };
     }
-    if (exact.length > 1) {
-      const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
-      return {
-        tapped: false,
-        afterHash: idOf(cur),
-        afterResourceIds: resourceIdsOf(cur.tree),
-        ...telemetry(),
-        reason: "selector ambiguous on live tree",
-      };
-    }
+    if (exact.length > 1) return giveUp("selector ambiguous on live tree");
     if (swept || scrolls >= TEMPLATE_MAX_SCROLLS) break;
-    const reported = await scrollContainer(server, size, prev.bounds, dir);
+    const sw = await scrollContainer(server, size, prev.bounds, dir);
     scrolls += 1;
-    const cur = await stableRead(server, pauseMs);
+    swipeMs.push(sw.ms);
+    if (sw.deliveredMs !== undefined) deliveredMs.push(sw.deliveredMs);
+    const cur = await stableRead(server, pauseMs, containerId);
     // Trust the settled window when the container shows readable content;
     // without it, fall back to the server's outcome (unknown counts as moved).
     const readable = prev.sig !== "" || cur.sig !== "";
-    const moved = readable ? cur.sig !== prev.sig : reported !== false;
+    const moved = readable ? cur.sig !== prev.sig : sw.changed !== false;
     if (moved) {
       unchanged = 0;
       const overlap = readable && [...cur.texts].some((t) => prev.texts.has(t));
@@ -609,14 +746,125 @@ export async function executeTemplateStep(
       passGap = false;
     }
   }
-  const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
-  return {
-    tapped: false,
-    afterHash: idOf(cur),
-    afterResourceIds: resourceIdsOf(cur.tree),
-    ...telemetry(),
-    reason: "selector unresolved on live tree",
-  };
+  return giveUp("selector unresolved on live tree");
+}
+
+/** A full sweep of a container (review E-1 finding 5): what rows are actually there. */
+export interface SweepOutcome {
+  /** Every label seen inside the container during the sweep. */
+  labels: Set<string>;
+  scrolls: number;
+  gaps: number;
+  /** Both ends reached and the return pass (bottom to top) had no gap. */
+  complete: boolean;
+  wallMs: number;
+  swipeMs: number[];
+  deliveredMs: number[];
+  reason?: string;
+}
+
+/**
+ * Sweep a container end to end with the template step's own held swipe and
+ * settled reads, collecting every label inside it: down until the list stops
+ * moving, then back up to the top. A bench instrument (observed presence for
+ * the churn experiment), not a navigation step: it never taps.
+ */
+export async function sweepContainer(
+  server: OpenDeviceServerApi,
+  size: { width: number; height: number },
+  opts: TemplateStepOptions & { maxScrolls?: number } = {}
+): Promise<SweepOutcome> {
+  const t0 = Date.now();
+  const pauseMs = opts.settlePauseMs ?? TEMPLATE_SETTLE_PAUSE_MS;
+  const maxScrolls = opts.maxScrolls ?? 2 * TEMPLATE_MAX_SCROLLS;
+  const labels = new Set<string>();
+  const swipeMs: number[] = [];
+  const deliveredMs: number[] = [];
+  let prev = await stableRead(server, pauseMs, opts.containerId);
+  for (const l of prev.labels) labels.add(l);
+  const done = (complete: boolean, gaps: number, scrolls: number, reason?: string) => ({
+    labels,
+    scrolls,
+    gaps,
+    complete,
+    wallMs: Date.now() - t0,
+    swipeMs,
+    deliveredMs,
+    ...(reason ? { reason } : {}),
+  });
+  if (opts.containerId !== undefined && !prev.container) {
+    return done(false, 0, 0, "template container not on live tree");
+  }
+  let dir: "down" | "up" = "down";
+  let scrolls = 0;
+  let gaps = 0;
+  let upGaps = 0;
+  let unchanged = 0;
+  while (scrolls < maxScrolls) {
+    const sw = await scrollContainer(server, size, prev.bounds, dir);
+    scrolls += 1;
+    swipeMs.push(sw.ms);
+    if (sw.deliveredMs !== undefined) deliveredMs.push(sw.deliveredMs);
+    const cur = await stableRead(server, pauseMs, opts.containerId);
+    for (const l of cur.labels) labels.add(l);
+    const readable = prev.sig !== "" || cur.sig !== "";
+    const moved = readable ? cur.sig !== prev.sig : sw.changed !== false;
+    if (moved) {
+      unchanged = 0;
+      if (readable && ![...cur.texts].some((t) => prev.texts.has(t))) {
+        gaps += 1;
+        if (dir === "up") upGaps += 1;
+      }
+    } else {
+      unchanged += 1;
+    }
+    prev = cur;
+    if (unchanged >= TEMPLATE_END_UNCHANGED) {
+      if (dir === "up") return done(upGaps === 0, gaps, scrolls);
+      dir = "up";
+      unchanged = 0;
+    }
+  }
+  return done(false, gaps, scrolls, "scroll cap reached");
+}
+
+/**
+ * The requested item's container on the live tree (review E-1 finding 3): when
+ * exactly one element shows `wantedText` exactly, the stripped resource id of the
+ * smallest scrollable holding it; otherwise (not on screen, ambiguous, outside
+ * every scrollable, no resource id) undefined.
+ */
+export function requestedContainerId(
+  tree: readonly LiveElement[],
+  wantedText: string
+): string | undefined {
+  const want = norm(wantedText);
+  const hits = tree.filter((el) => norm(el.text) === want || norm(el.contentDesc) === want);
+  if (hits.length !== 1) return undefined;
+  const b = hits[0]!.bounds;
+  const c = resolveContainer(tree, (b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2);
+  return stripId(c?.resourceId) || undefined;
+}
+
+/**
+ * Phase E (design D1) template route for an item no node indexes: only when
+ * template mode is on (`ARGENT_SG_TEMPLATES=1`, review E-1 finding 8), routed by
+ * the requested item's container (see `planToTemplate`).
+ */
+export function planTemplateRoute(
+  graph: PlanGraph,
+  from: string,
+  wantedText: string,
+  liveTree: readonly LiveElement[],
+  templatesOn: boolean,
+  now: number = Date.now()
+): (PlanResult & { templateNode: string }) | null {
+  if (!templatesOn) return null;
+  const containerId = requestedContainerId(liveTree, wantedText);
+  return planToTemplate(graph, from, now, {
+    itemText: wantedText,
+    ...(containerId !== undefined ? { containerId } : {}),
+  });
 }
 
 function swipeVector(
@@ -742,7 +990,13 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
         ? plan(graph, currentHash, params.target.screen)
         : stablePlan;
       if (!planned && wantedItemText) {
-        const tpl = planToTemplate(graph, currentHash);
+        const tpl = planTemplateRoute(
+          graph,
+          currentHash,
+          wantedItemText,
+          state.tree as unknown as LiveElement[],
+          screenGraphTemplatesEnabled()
+        );
         if (tpl) planned = tpl;
       }
       const fromVia =
@@ -777,7 +1031,14 @@ export function createNavigateToTool(registry: Registry): ToolDefinition<Params,
           // coordinate. On failure it records the miss on the template edge so its
           // weight decays (design D1 step 5), then diverges.
           if (step.template && wantedItemText) {
-            const out = await executeTemplateStep(server, size, wantedItemText);
+            const out = await executeTemplateStep(
+              server,
+              size,
+              wantedItemText,
+              step.template.containerId !== undefined
+                ? { containerId: step.template.containerId }
+                : {}
+            );
             if (!out.tapped) {
               if (out.reason) divergeReason = out.reason;
               store.observe(stepFrom, action, step.to, { success: false });

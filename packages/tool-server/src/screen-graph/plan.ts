@@ -181,19 +181,59 @@ export function planToSelector(
  * destination of a template edge — so `navigate-to` can route to "an item in a
  * scrollable container" and resolve the concrete item on the live tree. The last
  * step of the returned plan carries `template`. `null` when no template edge is
- * reachable. When several are reachable, Dijkstra returns the cheapest.
+ * reachable.
+ *
+ * Routed by the REQUESTED item (review E-1 2026-10-07 finding 3), never to the
+ * nearest template of any container, so a carousel item is not searched for by
+ * scrolling the vertical list:
+ *  - `want.containerId` (the item's container, resolved on the live tree when the
+ *    item is on screen): only that container's template edges; `null` when it
+ *    has none (fail closed);
+ *  - else `want.itemText` among a template edge's recently tapped item texts;
+ *  - else (item never seen) the container with the most recorded distinct items,
+ *    then the next one, until one is reachable.
  */
 export function planToTemplate(
   graph: PlanGraph,
   from: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  want: { containerId?: string; itemText?: string } = {}
 ): (PlanResult & { templateNode: string }) | null {
-  const templateNodes = new Set<string>();
-  for (const e of graph.edges) if (e.template) templateNodes.add(e.to);
-  if (templateNodes.size === 0) return null;
-  const res = dijkstra(graph, from, templateNodes, now);
-  if (!res || res.steps.length === 0) return null;
-  return { ...res, templateNode: res.target };
+  const all = graph.edges.filter((e) => e.template);
+  if (all.length === 0) return null;
+  const run = (edges: Edge[]): (PlanResult & { templateNode: string }) | null => {
+    const templateNodes = new Set(edges.map((e) => e.to));
+    if (templateNodes.size === 0) return null;
+    const res = dijkstra(graph, from, templateNodes, now);
+    if (!res || res.steps.length === 0) return null;
+    return { ...res, templateNode: res.target };
+  };
+  if (want.containerId !== undefined) {
+    return run(all.filter((e) => e.template!.containerId === want.containerId));
+  }
+  const text = (want.itemText ?? "").trim().toLowerCase();
+  if (text !== "") {
+    const seen = all.filter((e) =>
+      (e.template!.lastItemTexts ?? []).some((t) => t.trim().toLowerCase() === text)
+    );
+    const res = seen.length ? run(seen) : null;
+    if (res) return res;
+  }
+  // Unknown item: group by container, most recorded distinct items first.
+  const groups = new Map<string, { edges: Edge[]; instances: number }>();
+  for (const e of all) {
+    const key = e.template!.containerKey;
+    const g = groups.get(key) ?? { edges: [], instances: 0 };
+    g.edges.push(e);
+    g.instances += e.template!.instances;
+    groups.set(key, g);
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.instances - a.instances);
+  for (const g of ranked) {
+    const res = run(g.edges);
+    if (res) return res;
+  }
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */

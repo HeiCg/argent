@@ -53,7 +53,7 @@ const SCREEN_GRAPH_FLAG = "screen-graph";
  * same job (non-regression gate E1-G5) and the churn OFF/control arm behaves
  * exactly like today (E-0 §F4). Recording must also be enabled.
  */
-function screenGraphTemplatesEnabled(): boolean {
+export function screenGraphTemplatesEnabled(): boolean {
   return screenGraphRecordingEnabled() && process.env.ARGENT_SG_TEMPLATES === "1";
 }
 

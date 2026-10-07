@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { executeTemplateStep } from "../src/tools/navigate-to";
+import {
+  executeTemplateStep,
+  planTemplateRoute,
+  requestedContainerId,
+  sweepContainer,
+} from "../src/tools/navigate-to";
 import { multisetJaccard, planToTemplate } from "../src/screen-graph/plan";
 import { nonScrollRids, type TemplateElement } from "../src/screen-graph/template";
 import type { Edge, ScreenNode } from "../src/screen-graph/types";
@@ -243,9 +248,10 @@ describe("template-step scroll reaches every row of a 50-row list (run 2 geometr
       scrolls.push(out.scrolls);
     }
     expect(missed).toEqual([]);
-    // Story 39 (the run 2 tail) needs 7 held scrolls; the last row needs 9.
-    expect(scrolls[39]).toBe(7);
-    expect(Math.max(...scrolls)).toBe(9);
+    // Review E-1 finding 9: no pinned per-row counts (CI flings, the model does
+    // not). The property: every row is reached within one down pass of the list
+    // (9 moving + TEMPLATE_END_UNCHANGED still scrolls), far under the 30 cap.
+    expect(Math.max(...scrolls)).toBeLessThanOrEqual(11);
   });
 });
 
@@ -404,10 +410,10 @@ describe("template-step search is bidirectional and robust to a lying outcome (r
     expect(out.reason).toBe("selector unresolved on live tree");
     expect(out.swept).toBe(true);
     expect(out.reversals).toBe(1);
-    // Down 9 moving + 2 still, up 9 moving + 2 still: well under the 30 cap.
-    expect(stats.down).toBe(11);
-    expect(stats.up).toBe(11);
-    expect(out.scrolls).toBe(22);
+    // One pass down and one back up (symmetric on a held swipe), under the cap.
+    expect(stats.down).toBe(stats.up);
+    expect(out.scrolls).toBe(stats.down + stats.up);
+    expect(out.scrolls).toBeLessThan(30);
   });
 
   it("does not claim a clean sweep when a pass had a gap between windows", async () => {
@@ -457,5 +463,235 @@ describe("planToTemplate routes to the container's template node (design D1)", (
       FEED: { hash: "FEED", firstSeen: 0, lastSeen: 0, visits: 1, compact: "", index: {} },
     };
     expect(planToTemplate({ nodes, edges: [] }, "FEED", 0)).toBeNull();
+  });
+});
+
+/**
+ * Review E-1 2026-10-07 finding 3 / 9: the churn feed's shape — a fixed title bar,
+ * a horizontal carousel (`#carousel`) above a vertical list (`#list`). An exact
+ * text match outside the template's container must never be tapped, and a
+ * carousel item must never send the step scrolling the vertical list.
+ */
+const TOOLBAR = { x1: 0, y1: 0, x2: 1080, y2: 200 };
+const CAROUSEL = { x1: 0, y1: 200, x2: 1080, y2: 366 };
+const LIST = { x1: 0, y1: 366, x2: 1080, y2: 2274 };
+
+function feedTree(): any[] {
+  return [
+    {
+      className: "android.widget.LinearLayout",
+      resourceId: "x:id/feed_toolbar",
+      index: 1,
+      bounds: TOOLBAR,
+    },
+    {
+      className: "android.widget.HorizontalScrollView",
+      resourceId: "x:id/carousel",
+      index: 2,
+      bounds: CAROUSEL,
+    },
+    {
+      className: "android.widget.TextView",
+      resourceId: "x:id/carousel_item",
+      text: "Card 3",
+      index: 3,
+      bounds: { x1: 600, y1: 220, x2: 800, y2: 346 },
+    },
+    { className: "android.widget.ListView", resourceId: "x:id/list", index: 4, bounds: LIST },
+    {
+      className: "android.widget.TextView",
+      resourceId: "x:id/row_title",
+      text: "Story 3",
+      index: 5,
+      bounds: { x1: 32, y1: 900, x2: 1048, y2: 955 },
+    },
+  ];
+}
+
+function feedServer(queryNodes: (call: number) => Array<{ text: string; bounds: any }>) {
+  const calls = { query: 0, tap: 0, swipes: [] as number[][] };
+  const server: any = {
+    query: async () => {
+      const nodes = queryNodes(calls.query);
+      calls.query += 1;
+      return { nodes };
+    },
+    tapWithOutcome: async () => {
+      calls.tap += 1;
+      return {};
+    },
+    swipeWithOutcome: async (...args: number[]) => {
+      calls.swipes.push(args);
+      return { changed: false, deliveredMs: 281 };
+    },
+    getState: async () => ({ idHash: "feed", tree: feedTree() }),
+  };
+  return { server, calls };
+}
+
+describe("template step is scoped to the template's container (review E-1 finding 3)", () => {
+  it("never taps an exact match that lies outside the template's container", async () => {
+    // `Card 3` is an exact match, but it lives in the carousel; the step targets #list.
+    const { server, calls } = feedServer(() => [
+      { text: "Card 3", bounds: { x1: 600, y1: 220, x2: 800, y2: 346 } },
+    ]);
+    const out = await executeTemplateStep(server, size, "Card 3", {
+      settlePauseMs: 0,
+      containerId: "list",
+    });
+    expect(out.tapped).toBe(false);
+    expect(calls.tap).toBe(0);
+    expect(out.reason).toBe("selector unresolved on live tree");
+    // Every swipe ran vertically inside the list, never in the carousel.
+    for (const [sx, sy, ex, ey] of calls.swipes) {
+      expect(sx).toBe(ex);
+      expect(sy!).toBeGreaterThan(LIST.y1);
+      expect(ey!).toBeGreaterThan(LIST.y1);
+    }
+  });
+
+  it("never taps an exact match outside every scrollable (title bar) when a container exists", async () => {
+    const { server, calls } = feedServer(() => [
+      { text: "Story 5", bounds: { x1: 32, y1: 60, x2: 400, y2: 140 } },
+    ]);
+    const out = await executeTemplateStep(server, size, "Story 5", { settlePauseMs: 0 });
+    expect(out.tapped).toBe(false);
+    expect(calls.tap).toBe(0);
+  });
+
+  it("scrolls a carousel template horizontally inside the carousel, not the list", async () => {
+    const card7 = { text: "Card 7", bounds: { x1: 300, y1: 220, x2: 500, y2: 346 } };
+    const { server, calls } = feedServer((n) => (n >= 1 ? [card7] : []));
+    const out = await executeTemplateStep(server, size, "Card 7", {
+      settlePauseMs: 0,
+      containerId: "carousel",
+    });
+    expect(out.tapped).toBe(true);
+    expect(calls.swipes).toHaveLength(1);
+    const [sx, sy, ex, ey] = calls.swipes[0]!;
+    expect(sy).toBe(ey); // horizontal
+    expect(sx).not.toBe(ex);
+    expect(sy!).toBeGreaterThanOrEqual(CAROUSEL.y1);
+    expect(sy!).toBeLessThanOrEqual(CAROUSEL.y2);
+  });
+
+  it("fails closed without scrolling when the template's container is not on screen", async () => {
+    const { server, calls } = feedServer(() => []);
+    const out = await executeTemplateStep(server, size, "Story 3", {
+      settlePauseMs: 0,
+      containerId: "gone",
+    });
+    expect(out.tapped).toBe(false);
+    expect(out.reason).toBe("template container not on live tree");
+    expect(calls.swipes).toHaveLength(0);
+    expect(calls.tap).toBe(0);
+  });
+});
+
+describe("template step timing telemetry (review E-1 finding 4)", () => {
+  it("records wall time, per-swipe host time and the device-reported DOWN-to-UP span", async () => {
+    const { server, calls } = feedServer(() => []);
+    const out = await executeTemplateStep(server, size, "Story 99", {
+      settlePauseMs: 0,
+      containerId: "list",
+    });
+    expect(out.scrolls).toBe(calls.swipes.length);
+    expect(out.swipeMs).toHaveLength(out.scrolls);
+    expect(out.deliveredMs).toEqual(Array(out.scrolls).fill(281));
+    expect(out.wallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("omits deliveredMs for a server that does not report it", async () => {
+    const { server } = fakeServer([]);
+    const out = await executeTemplateStep(server, size, "Item 37", { settlePauseMs: 0 });
+    expect(out.deliveredMs).toEqual([]);
+    expect(out.swipeMs).toHaveLength(out.scrolls);
+  });
+});
+
+describe("sweepContainer lists the rows actually on screen (review E-1 finding 5)", () => {
+  it("collects every row of the 50-row list in one sweep", async () => {
+    const { server } = replayServer(-1);
+    const sw = await sweepContainer(server, size, { settlePauseMs: 0, containerId: "list" });
+    const stories = [...sw.labels].filter((l) => l.startsWith("Story "));
+    expect(stories).toHaveLength(50);
+    expect(sw.gaps).toBe(0);
+    expect(sw.complete).toBe(true);
+  });
+
+  it("is not complete when a pass skipped rows", async () => {
+    const { server } = replayServer(-1, { flingDown: true });
+    const sw = await sweepContainer(server, size, { settlePauseMs: 0, containerId: "list" });
+    expect(sw.gaps).toBeGreaterThan(0);
+  });
+});
+
+describe("planToTemplate routes by the requested item's container (review E-1 finding 3)", () => {
+  const node = (hash: string, template = false): ScreenNode => ({
+    hash,
+    firstSeen: 0,
+    lastSeen: 0,
+    visits: 1,
+    compact: "",
+    index: {},
+    ...(template ? { template: true } : {}),
+  });
+  const tplEdge = (
+    to: string,
+    containerId: string,
+    instances: number,
+    lastItemTexts?: string[]
+  ): Edge => ({
+    from: "FEED",
+    action: { kind: "tap", template: { containerKey: `CK_${containerId}`, itemTemplate: "IT" } },
+    to,
+    count: instances,
+    successes: instances,
+    lastSeen: 0,
+    template: {
+      containerKey: `CK_${containerId}`,
+      itemTemplate: "IT",
+      instances,
+      containerId,
+      ...(lastItemTexts ? { lastItemTexts } : {}),
+    },
+  });
+  const graph = {
+    nodes: { FEED: node("FEED"), TPL_L: node("TPL_L", true), TPL_C: node("TPL_C", true) },
+    edges: [tplEdge("TPL_L", "list", 40, ["Story 7"]), tplEdge("TPL_C", "carousel", 1, ["Card 0"])],
+  };
+
+  it("routes a carousel item to the carousel template, never the list", () => {
+    const res = planToTemplate(graph, "FEED", 0, { containerId: "carousel" });
+    expect(res?.templateNode).toBe("TPL_C");
+    expect(res?.steps.at(-1)?.template?.containerId).toBe("carousel");
+  });
+
+  it("routes by a recorded item text when the item is not on screen", () => {
+    expect(planToTemplate(graph, "FEED", 0, { itemText: "card 0" })?.templateNode).toBe("TPL_C");
+  });
+
+  it("routes an unknown item to the container with the most recorded items", () => {
+    expect(planToTemplate(graph, "FEED", 0, { itemText: "Story 40" })?.templateNode).toBe("TPL_L");
+  });
+
+  it("returns null when the item's container has no template edge", () => {
+    expect(planToTemplate(graph, "FEED", 0, { containerId: "other" })).toBeNull();
+  });
+
+  it("resolves the requested item's container from the live tree", () => {
+    const tree = feedTree();
+    expect(requestedContainerId(tree, "Card 3")).toBe("carousel");
+    expect(requestedContainerId(tree, "story 3")).toBe("list");
+    expect(requestedContainerId(tree, "Story 40")).toBeUndefined();
+  });
+
+  it("plans a carousel item on the live feed to the carousel template", () => {
+    const res = planTemplateRoute(graph, "FEED", "Card 3", feedTree(), true);
+    expect(res?.templateNode).toBe("TPL_C");
+  });
+
+  it("takes no template route when ARGENT_SG_TEMPLATES is off (review E-1 finding 8)", () => {
+    expect(planTemplateRoute(graph, "FEED", "Card 3", feedTree(), false)).toBeNull();
   });
 });
