@@ -12,6 +12,7 @@ import { resolveDevice } from "../../utils/device-info";
 import { openDeviceServerMutex } from "../../utils/device-mutex";
 import {
   openDeviceServerRef,
+  scrollNodeId,
   type OpenDeviceServerApi,
   type OpenServerSelector,
 } from "../../blueprints/android-open-server";
@@ -528,14 +529,18 @@ async function stableRead(
   return prev;
 }
 
-/** One container swipe's outcome and timing (review E-1 finding 4). */
+/** One container scroll's outcome and timing (review E-1 finding 4). */
 interface SwipeTiming {
   /** The server's `changed` outcome (undefined when it gave none). */
   changed: boolean | undefined;
-  /** Host wall time of the swipe RPC, ms. */
+  /** Host wall time of the scroll RPC, ms. */
   ms: number;
   /** Device-measured DOWN-to-UP span (APK >= 0.1.24); undefined when not reported. */
   deliveredMs: number | undefined;
+  /** Device-measured hold before the UP (APK >= 0.1.24); undefined when not reported. */
+  heldMs: number | undefined;
+  /** `"scroll-action"` for an accessibility scroll, `"motion"` for a held swipe. */
+  method: "scroll-action" | "motion";
 }
 
 /**
@@ -581,10 +586,45 @@ async function scrollContainer(
     TEMPLATE_SCROLL_HOLD_MS
   );
   const delivered = out?.deliveredMs;
+  const held = out?.heldMs;
   return {
     changed: out?.changed,
     ms: Date.now() - t0,
     deliveredMs: typeof delivered === "number" && delivered >= 0 ? delivered : undefined,
+    heldMs: typeof held === "number" && held >= 0 ? held : undefined,
+    method: "motion",
+  };
+}
+
+/**
+ * Scroll the template's container by one accessibility scroll action (APK
+ * 0.1.25+) instead of a held swipe: no touch, so no fling, and the server settles
+ * before it replies, so one read follows instead of a settled-read loop. `down`
+ * (later items) is `forward`. Returns the scroll's timing when the server took
+ * the action, `"refused"` when it answered `accepted:false` (the list end, or a
+ * node that does not take the action), and throws when the RPC failed (an older
+ * APK, a node the server could not resolve).
+ */
+async function scrollContainerByAction(
+  server: OpenDeviceServerApi,
+  container: LiveElement,
+  dir: "down" | "up"
+): Promise<SwipeTiming | "refused"> {
+  const rid = stripId(container.resourceId);
+  const t0 = Date.now();
+  const res = await server.scrollContainer({
+    nodeId: scrollNodeId(container.bounds),
+    ...(rid ? { resourceId: rid } : {}),
+    direction: dir === "down" ? "forward" : "backward",
+    count: 1,
+  });
+  if (res?.accepted !== true) return "refused";
+  return {
+    changed: res.performed > 0,
+    ms: Date.now() - t0,
+    deliveredMs: undefined,
+    heldMs: undefined,
+    method: "scroll-action",
   };
 }
 
@@ -613,6 +653,17 @@ interface TemplateStepOutcome {
   swipeMs: number[];
   /** Device-reported DOWN-to-UP span of each swipe that reported one, ms. */
   deliveredMs: number[];
+  /** Device-reported hold before the UP of each held swipe that reported one, ms. */
+  heldMs: number[];
+  /** Scrolls done by accessibility action (`scrollContainer`), not by a swipe. */
+  scrollActions: number;
+  /**
+   * Action scrolls whose window shared no text with the window before it. Not
+   * counted in `gaps` (a page step is expected to be contiguous), but measured so
+   * that assumption is checked, not asserted (a sticky header or a custom page
+   * step can still skip rows).
+   */
+  actionNoOverlap: number;
   reason?: string;
 }
 
@@ -639,6 +690,13 @@ export interface TemplateStepOptions {
  * resolves, after one gap-free pass from end to end (`swept`), or at
  * TEMPLATE_MAX_SCROLLS; it fails closed (never taps) on an ambiguous or
  * unresolved item, or when the named container is not on screen.
+ *
+ * When the server offers `scrollContainer` (APK 0.1.25+) each scroll is one
+ * accessibility scroll action on the container instead of a held swipe plus a
+ * settled-read loop. A refused action counts as "the list did not move" once an
+ * action has moved this container; before that it may mean the node does not
+ * take the action, so that scroll is a held swipe. An RPC failure (older APK)
+ * switches the rest of the step to the held swipe.
  */
 export async function executeTemplateStep(
   server: OpenDeviceServerApi,
@@ -658,6 +716,13 @@ export async function executeTemplateStep(
   let dir: "down" | "up" = "down";
   const swipeMs: number[] = [];
   const deliveredMs: number[] = [];
+  const heldMs: number[] = [];
+  let scrollActions = 0;
+  let actionNoOverlap = 0;
+  // Accessibility scroll: offered by the server, not yet failed, and whether an
+  // action has moved this container (a refusal before that is not trusted).
+  let actionScroll = typeof server.scrollContainer === "function";
+  let actionMoved = false;
   // A pass is clean when it started at an end and no scroll in it left a gap.
   let passFromEnd = false;
   let passGap = false;
@@ -670,6 +735,9 @@ export async function executeTemplateStep(
     wallMs: Date.now() - t0,
     swipeMs,
     deliveredMs,
+    heldMs,
+    scrollActions,
+    actionNoOverlap,
   });
   const giveUp = async (reason: string): Promise<TemplateStepOutcome> => {
     const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
@@ -713,11 +781,40 @@ export async function executeTemplateStep(
     }
     if (exact.length > 1) return giveUp("selector ambiguous on live tree");
     if (swept || scrolls >= TEMPLATE_MAX_SCROLLS) break;
-    const sw = await scrollContainer(server, size, prev.bounds, dir);
+    let sw: SwipeTiming | null = null;
+    let cur: ContainerRead | null = null;
+    if (actionScroll && prev.container) {
+      try {
+        const r = await scrollContainerByAction(server, prev.container, dir);
+        if (r !== "refused") {
+          sw = r;
+          actionMoved = true;
+          // The server settled before replying: one read is the final window.
+          cur = await readContainer(server, containerId);
+        } else if (actionMoved) {
+          // The container took actions before: a refusal is its end.
+          sw = {
+            changed: false,
+            ms: 0,
+            deliveredMs: undefined,
+            heldMs: undefined,
+            method: "scroll-action",
+          };
+          cur = prev;
+        }
+      } catch {
+        actionScroll = false;
+      }
+    }
+    if (!sw || !cur) {
+      sw = await scrollContainer(server, size, prev.bounds, dir);
+      cur = await stableRead(server, pauseMs, containerId);
+    }
     scrolls += 1;
+    if (sw.method === "scroll-action") scrollActions += 1;
     swipeMs.push(sw.ms);
     if (sw.deliveredMs !== undefined) deliveredMs.push(sw.deliveredMs);
-    const cur = await stableRead(server, pauseMs, containerId);
+    if (sw.heldMs !== undefined) heldMs.push(sw.heldMs);
     // Trust the settled window when the container shows readable content;
     // without it, fall back to the server's outcome (unknown counts as moved).
     const readable = prev.sig !== "" || cur.sig !== "";
@@ -725,7 +822,14 @@ export async function executeTemplateStep(
     if (moved) {
       unchanged = 0;
       const overlap = readable && [...cur.texts].some((t) => prev.texts.has(t));
-      if (!overlap) {
+      // An accessibility scroll moves the container by its own page step, the
+      // window right after the previous one, so it is expected to skip no row
+      // even when the two windows share no text: only a swipe (which can still
+      // fling) counts a gap. The action case is counted on its own
+      // (`actionNoOverlap`) so the assumption is measured.
+      if (!overlap && sw.method === "scroll-action") {
+        actionNoOverlap += 1;
+      } else if (!overlap) {
         gaps += 1;
         passGap = true;
       }

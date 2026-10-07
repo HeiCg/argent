@@ -24,6 +24,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   androidOpenServerBlueprint,
   openDeviceServerRef,
+  scrollNodeId,
   type OpenDeviceServerApi,
   type OpenServerInfo,
 } from "../../src/blueprints/android-open-server";
@@ -479,6 +480,7 @@ suite("android open-device-server on-device", () => {
     );
   }, 90_000);
 
+  // red until the fling fix lands with CI evidence (plan step fling-d1-ci)
   it("3d gesture-swipe — momentum:false scrolls less than default fling", async () => {
     // Returns the anchor's on-screen displacement in px, or { offscreen:true } when
     // the anchor scrolled OUT of the tree. Review A6/fix e: an off-screen anchor is
@@ -549,6 +551,56 @@ suite("android open-device-server on-device", () => {
       );
     }
   }, 120_000);
+
+  it("3g scrollContainer forward moves the list", async () => {
+    // The accessibility-action scroll (APK 0.1.25): ACTION_SCROLL_FORWARD on the
+    // Settings list, no touch. The anchor row must move up (or leave the screen)
+    // and the server must report the action as performed.
+    const info = await freshSettings();
+    const before = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+    const scrollables = before.filter((e) => e.scrollable === true);
+    const area = (e: Element): number => (e.bounds.x2 - e.bounds.x1) * (e.bounds.y2 - e.bounds.y1);
+    const list = scrollables.slice().sort((a, b) => area(b) - area(a))[0];
+    if (!list) throw new Error("no scrollable container on Settings");
+    const inList = (e: Element): boolean => {
+      const c = center(e);
+      return (
+        c.x >= list.bounds.x1 &&
+        c.x <= list.bounds.x2 &&
+        c.y >= list.bounds.y1 &&
+        c.y <= list.bounds.y2
+      );
+    };
+    const labelled = before.filter((e) => label(e).length > 0 && inList(e));
+    const target = info.screenHeight * 0.6;
+    const anchor = labelled
+      .slice()
+      .sort((a, b) => Math.abs(a.bounds.y1 - target) - Math.abs(b.bounds.y1 - target))[0];
+    if (!anchor) throw new Error("no anchor row inside the Settings list");
+    const anchorLabel = label(anchor);
+    const res = await api.scrollContainer({
+      nodeId: scrollNodeId(list.bounds),
+      ...(list.resourceId ? { resourceId: list.resourceId } : {}),
+      direction: "forward",
+    });
+    const after = (await api.getAccessibilityTree({ maxElements: 200 })).tree;
+    const found = after.find((e) => label(e) === anchorLabel);
+    const moved = found ? anchor.bounds.y1 - found.bounds.y1 : Number.POSITIVE_INFINITY;
+    console.log(
+      `  scrollContainer list=${list.resourceId ?? "(no id)"} accepted=${res.accepted} ` +
+        `performed=${res.performed} settledMs=${res.settledMs} anchor="${anchorLabel}" ` +
+        `moved=${found ? moved : "offscreen"}`
+    );
+    expect(res.accepted).toBe(true);
+    expect(res.performed).toBe(1);
+    expect(moved).toBeGreaterThan(0);
+    record(
+      "3g scrollContainer",
+      "PASS",
+      `forward on ${list.resourceId ?? "(no id)"}: performed=${res.performed}, settledMs=${res.settledMs}, ` +
+        `anchor "${anchorLabel}" moved ${found ? `${moved}px` : "off-screen"}`
+    );
+  }, 90_000);
 
   it("3k pacing — UiAutomation delivered swipe duration from logcat MotionEvents", async () => {
     // Phase 3k measurement (option i), UiAutomation arm (the default open path here).

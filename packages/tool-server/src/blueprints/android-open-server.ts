@@ -66,6 +66,49 @@ export interface OpenInjectReport {
 export interface OpenSwipeTiming {
   deliveredMs?: number;
   heldMs?: number;
+  /** The injected DOWN-to-UP span (same clock as `deliveredMs`); APK 0.1.25+. */
+  injectMs?: number;
+  /**
+   * APK 0.1.25+: least-squares speed along the swipe over the MOVE samples of the
+   * last 100 ms before the UP, hold frames included (the window the OS
+   * VelocityTracker fits), px/s; negative = backward. Scheduled timeline.
+   */
+  releaseVelocityLsqPxPerS?: number;
+}
+
+/**
+ * Direction of an accessibility scroll: `forward` reveals later content (down in
+ * a vertical list, right in a horizontal one), `backward` earlier content.
+ */
+export type OpenScrollDirection = "forward" | "backward";
+
+/**
+ * Reply of the `scrollContainer` RPC (APK 0.1.25+). `performed` is how many
+ * ACTION_SCROLL_* moved the content (the state fingerprint changed); the server
+ * stops at the first refusal or unchanged action (the list end); `accepted` is
+ * `performed > 0`. `stableHash` is the state fingerprint
+ * after the last settle, `settledMs` the time spent waiting for the AX clock to go
+ * quiet after the actions.
+ */
+export interface OpenScrollContainerResult {
+  accepted: boolean;
+  performed: number;
+  stableHash: string;
+  settledMs: number;
+  /**
+   * Why the loop stopped early: `"refused"` (the node refused the action, no
+   * content that way) or `"no-change"` (the action ran but the state fingerprint
+   * did not change). Absent when every requested action moved the content.
+   */
+  reason?: "refused" | "no-change";
+}
+
+/**
+ * The `nodeId` the `scrollContainer` RPC resolves: a node's screen bounds as
+ * `"x1,y1,x2,y2"`, the same bounds `getState` / describe report for it.
+ */
+export function scrollNodeId(bounds: { x1: number; y1: number; x2: number; y2: number }): string {
+  return `${bounds.x1},${bounds.y1},${bounds.x2},${bounds.y2}`;
 }
 
 type OpenDeviceServerFactoryOptions = Record<string, unknown> & {
@@ -495,7 +538,22 @@ export interface OpenDeviceServerApi {
     // `strategy:"unavailable"` and fall back to `uia-async`, so the fallback is
     // exercised on swipe (not tap only) on a device where the API resolves.
     opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
-  ): Promise<{ success: boolean } & OpenInjectReport>;
+  ): Promise<{ success: boolean } & OpenInjectReport & OpenSwipeTiming>;
+  /**
+   * Scroll a container by accessibility action instead of a touch swipe (APK
+   * 0.1.25+): the server resolves the node by `nodeId` (its bounds, see
+   * {@link scrollNodeId}) and/or `resourceId`, performs ACTION_SCROLL_FORWARD or
+   * ACTION_SCROLL_BACKWARD `count` times (default 1) and waits for the AX clock to
+   * go quiet after each one. No touch reaches the screen, so no fling follows.
+   * Rejects when no node matches or the node is not scrollable; an older APK
+   * rejects with "Method not found".
+   */
+  scrollContainer(opts: {
+    nodeId?: string;
+    resourceId?: string;
+    direction: OpenScrollDirection;
+    count?: number;
+  }): Promise<OpenScrollContainerResult>;
   /** Inject a synchronized multi-pointer gesture (pinch / rotate / custom). */
   gesture(
     pointers: GesturePointerPath[],
@@ -1110,7 +1168,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       longPress: (x, y, durationMs) =>
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
       swipe: (startX, startY, endX, endY, steps, holdEndMs, swipeOpts) =>
-        client.request<{ success: boolean } & OpenInjectReport>("swipe", {
+        client.request<{ success: boolean } & OpenInjectReport & OpenSwipeTiming>("swipe", {
           startX,
           startY,
           endX,
@@ -1120,6 +1178,21 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(swipeOpts?.inject !== undefined ? { inject: swipeOpts.inject } : {}),
           ...(swipeOpts?._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
+      scrollContainer: (scrollOpts) => {
+        const count = scrollOpts.count ?? 1;
+        return client.request<OpenScrollContainerResult>(
+          "scrollContainer",
+          {
+            ...(scrollOpts.nodeId !== undefined ? { nodeId: scrollOpts.nodeId } : {}),
+            ...(scrollOpts.resourceId !== undefined ? { resourceId: scrollOpts.resourceId } : {}),
+            direction: scrollOpts.direction,
+            count,
+          },
+          // Each action settles on-device (first AX event <= 600 ms, then quiet
+          // <= 1500 ms), so give the socket that budget per action plus a margin.
+          { timeoutMs: 5_000 + count * 2_500 }
+        );
+      },
       gesture: (pointers, gestureOpts) =>
         client.request<{ success: boolean } & OpenInjectReport>("gesture", {
           pointers,

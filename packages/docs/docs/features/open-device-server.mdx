@@ -59,6 +59,14 @@ These behaviors apply only when the open device server drives the device. For th
 parameters, the selector fields and the error codes, see the
 [tools reference](../reference/tools.mdx).
 
+## Scroll actions
+
+A momentum-free swipe holds the finger still before it lifts. On some lists the
+content still flings after the finger lifts; this defect is open. The agent can also ask for a scroll action instead of a touch. The open server
+then scrolls the list under the start point with an accessibility scroll action.
+The list moves by one page on its own axis and does not fling. For the parameter
+and the replies, see the [tools reference](../reference/tools.mdx).
+
 ## Automatic fallback
 
 Every path degrades safely. If the server is not installed, cannot start, or

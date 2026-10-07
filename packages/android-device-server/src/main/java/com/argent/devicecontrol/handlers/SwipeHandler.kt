@@ -6,6 +6,7 @@ import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.input.InjectOutcome
 import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
+import java.util.Locale
 import org.json.JSONObject
 
 class SwipeHandler(
@@ -53,25 +54,34 @@ class SwipeHandler(
         // final UP). Shared by both the momentum and held paths.
         val strategy = InjectStrategy.fromWire(params.optString("inject", ""))
 
-        val outcome = if (holdEndMs > 0) {
+        val (outcome, path) = if (holdEndMs > 0) {
             injectHeldSwipe(startX, startY, endX, endY, steps, holdEndMs, strategy)
         } else {
             injectMomentumSwipe(startX, startY, endX, endY, steps, strategy)
         }
         // Review E-1 2026-10-07 finding 4: the delivered DOWN-to-UP span (and, for a
         // held swipe, the delivered hold) on the device clock, logged per swipe and
-        // returned so the host can record what the OS actually received.
-        if (holdEndMs > 0) {
-            Log.i(
-                TAG,
-                "held swipe steps=$steps holdEndMs=$holdEndMs deliveredMs=${outcome.deliveredMs} heldMs=${outcome.heldMs}"
-            )
-        }
+        // returned so the host can record what the OS actually received. `injectMs`
+        // is the DOWN-to-UP span under the name the host reads (0.1.25).
+        // `releaseVelocityLsqPxPerS` is the least-squares speed along the swipe over
+        // the MOVE samples of the last 100 ms before the UP, hold frames included:
+        // the window the OS VelocityTracker fits. Computed on the SCHEDULED
+        // timeline, so it says what the gesture asks for, not what was delivered.
+        val releaseLsq = ReleaseVelocity.lsqPxPerS(path, startX, startY, endX, endY)
+        Log.i(
+            TAG,
+            "swipe steps=$steps holdEndMs=$holdEndMs deliveredMs=${outcome.deliveredMs} " +
+                "heldMs=${outcome.heldMs} releaseVelocityLsqPxPerS=${String.format(Locale.US, "%.1f", releaseLsq)}"
+        )
         return JSONObject().apply {
             put("success", !outcome.dropped)
             if (outcome.dropped) put("dropped", true)
-            if (outcome.deliveredMs >= 0) put("deliveredMs", outcome.deliveredMs)
+            if (outcome.deliveredMs >= 0) {
+                put("deliveredMs", outcome.deliveredMs)
+                put("injectMs", outcome.deliveredMs)
+            }
             if (outcome.heldMs >= 0) put("heldMs", outcome.heldMs)
+            put("releaseVelocityLsqPxPerS", Math.round(releaseLsq * 10) / 10.0)
             put("strategy", outcome.strategy)
             outcome.fellBackTo?.let { put("fellBackTo", it) }
             outcome.error?.let { put("injectError", it) }
@@ -95,7 +105,7 @@ class SwipeHandler(
         endY: Int,
         steps: Int,
         strategy: InjectStrategy
-    ): InjectOutcome {
+    ): Pair<InjectOutcome, List<MotionInjector.Point>> {
         val requested = maxOf(1, steps)
         // Total wall-clock the finger stays down = the requested duration (matches
         // the proprietary path, so the fling reads the same release velocity).
@@ -126,7 +136,7 @@ class SwipeHandler(
         // returns only once the finger is actually up, matching the proprietary
         // path's blocking Up. Intermediate frames stay async, paced by the injector's
         // wall clock. The explicit strategies override the final-UP mode.
-        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path), strategy)
+        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path), strategy) to path
     }
 
     private fun injectHeldSwipe(
@@ -137,7 +147,7 @@ class SwipeHandler(
         steps: Int,
         holdEndMs: Long,
         strategy: InjectStrategy
-    ): InjectOutcome {
+    ): Pair<InjectOutcome, List<MotionInjector.Point>> {
         val travelSteps = maxOf(1, steps)
         val path = ArrayList<MotionInjector.Point>(travelSteps + 3)
 
@@ -165,6 +175,61 @@ class SwipeHandler(
             listOf(path),
             strategy,
             holdAnchorFrame = travelSteps
-        )
+        ) to path
+    }
+}
+
+/**
+ * Release velocity as the OS reads it, for telemetry (review round 2): a
+ * least-squares line (degree 1) through the MOVE samples of the last
+ * [HORIZON_MS] before the UP, stationary hold frames included, in px/s along the
+ * swipe direction (negative = backward). Android's VelocityTracker fits the same
+ * horizon (degree 2 by default; degree 1 is enough to tell "at rest" from "still
+ * travelling"). Pure, so it is unit-tested on the JVM.
+ */
+object ReleaseVelocity {
+
+    /** The VelocityTracker's fit horizon. */
+    const val HORIZON_MS = 100L
+
+    /**
+     * [path] is the injected timeline: frame 0 the DOWN, the last frame the UP,
+     * everything between a MOVE. Returns 0 with fewer than two MOVEs in the
+     * horizon, or for a zero-length swipe.
+     */
+    fun lsqPxPerS(
+        path: List<MotionInjector.Point>,
+        startX: Int,
+        startY: Int,
+        endX: Int,
+        endY: Int
+    ): Double {
+        if (path.size < 3) return 0.0
+        val dx = (endX - startX).toDouble()
+        val dy = (endY - startY).toDouble()
+        val len = Math.hypot(dx, dy)
+        if (len == 0.0) return 0.0
+        val ux = dx / len
+        val uy = dy / len
+        val upT = path.last().tMs
+        val ts = ArrayList<Double>()
+        val ss = ArrayList<Double>()
+        for (i in 1 until path.size - 1) {
+            val p = path[i]
+            if (upT - p.tMs > HORIZON_MS) continue
+            ts.add(p.tMs / 1000.0)
+            ss.add((p.x - startX) * ux + (p.y - startY) * uy)
+        }
+        val n = ts.size
+        if (n < 2) return 0.0
+        val mt = ts.average()
+        val ms = ss.average()
+        var num = 0.0
+        var den = 0.0
+        for (k in 0 until n) {
+            num += (ts[k] - mt) * (ss[k] - ms)
+            den += (ts[k] - mt) * (ts[k] - mt)
+        }
+        return if (den == 0.0) 0.0 else num / den
     }
 }

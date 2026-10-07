@@ -310,15 +310,86 @@
         }
       ],
       "commitMessage": "feat(open-server): accessibility scroll RPC for momentum-free swipes and template search",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:swipe-scroll-accessibility:1",
-      "reviewRounds": 1,
+      "review": {
+        "at": "2026-10-07T18:27:53.970Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-android-device-server-gradle.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/open-server-swipe-hold.test.ts test/open-server-scroll-container.test.ts test/screen-graph-navigate-template.test.ts test/tools/gesture-swipe.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "3-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/docs/docs/reference/tools.mdx",
+            "note": "L315-319: the gesture-swipe reply paragraph lists releaseVelocityLsqPxPerS with heldMs/injectMs, but the tool never returns it: swipeTimingOf (open-server-input.ts L604-606) keeps only deliveredMs/heldMs/injectMs and timingFields (gesture-swipe) only heldMs/injectMs. It exists only in the raw swipe RPC reply and the device logcat line. Fix: either add it to swipeTimingOf/timingFields/Result, or say in the doc that it is in the device server reply and logcat only"
+          },
+          {
+            "severity": "minor",
+            "file": "packages/docs/docs/features/open-device-server.mdx",
+            "note": "L64: 'A momentum-free swipe holds the finger still before it lifts, to stop the fling.' is new in this step and reads as a promise. Device test 3d is red (held 491 px vs fling 384 px) and the D1 fix moved to fling-d1-ci. Fix: say the held swipe can still fling on Android (D1 is open) and present the scroll action as the momentum-free option"
+          },
+          {
+            "severity": "minor",
+            "file": "packages/android-device-server/src/test/java/com/argent/devicecontrol/handlers/ReleaseVelocityTest.kt",
+            "note": "L18-31: both fixtures pass (gradle testDebugUnitTest 2/2), but in the hold fixture the 100 ms window holds only stationary frames, and in the no-hold fixture it holds only constant travel. A mixed window (travel tail plus 1-3 hold frames, the case fling-d1-ci reads) and the negative sign go untested. Add a mixed fixture with a hand-computed slope and a reversed-tail fixture that asserts a negative value"
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/tools/gesture-swipe/index.ts",
+            "note": "L256-259: scrollDirectionFor(0,0) returns 'backward', so scrollAction with from==to silently scrolls backward. Under scrollAction, refuse a zero-length vector with a validation error"
+          },
+          {
+            "severity": "note",
+            "file": "packages/android-device-server/src/main/java/com/argent/devicecontrol/handlers/SwipeHandler.kt",
+            "note": "L190-232: the LSQ1 is correct. It projects onto the start->end unit vector, so backward is negative. The window is inclusive at 100 ms before the UP and includes hold MOVEs. It returns 0 for a zero-length swipe or fewer than 2 samples. It skips the DOWN sample, but AOSP VelocityTracker also fits the DOWN position when the DOWN is inside the horizon (momentum swipes under 100 ms). It also uses degree 1, while AOSP uses LSQ2 by default. Both are documented as a proxy on the scheduled timeline, so this is telemetry only. Mention the DOWN exclusion in the KDoc"
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/test/open-server-scroll-container.test.ts",
+            "note": "L270-298: the scroll-action outcome test asserts result.outcome before/after/changed/settled, but not that recordOpenServerObservation wrote the swipe edge to the graph. The code path is there (gesture-swipe openServerScrollAction). Consider asserting the recorded edge or spying on recordOpenServerObservation"
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/utils/open-server-input.ts",
+            "note": "Scope: the staged diff touches files not in the step's declared files (open-server-input.ts, assets/manifest.json, docs/reference/tools.mdx, ReleaseVelocityTest.kt, ScrollTargetTest.kt). The declared test/open-server-swipe-hold.test.ts is unchanged. The controller should align plan.json files before approve"
+          },
+          {
+            "severity": "note",
+            "file": "packages/android-device-server/src/main/java/com/argent/devicecontrol/handlers/SwipeHandler.kt",
+            "note": "Round-2 closure under the reduced scope (plan Amendments L154-166). I checked git diff --cached open/main line by line. The motion path is byte-identical in behavior: the travel loop i*STEP_MS, holdFrames=max(2,ceil(holdEndMs/STEP_MS)), baseT, holdAnchorFrame=travelSteps and the momentum offsets/head/tail are unchanged. Only the return type changed (Pair with path), plus the Log line (now for every swipe), the injectMs alias of deliveredMs and releaseVelocityLsqPxPerS. HeldSwipePath/HeldSwipePathTest are gone. containerAxis is gone: direction comes from the vector only (dominant component, up/left=forward). verify+scrollAction is refused with a test (scroll-container L218). The outcome is returned and recorded (L270). The 3d device test carries the red comment (device.test L483). The r2 majors on physics, axis and 3d evidence leave the scope with fling-d1-ci. Verify: gradle compileDebugKotlin testDebugUnitTest exit 0 (ReleaseVelocityTest 2/2, ScrollTargetTest 9/9), vitest 7 files 111/111, tsc exit 0, manifest.test 6/6, prettier clean, docusaurus build SUCCESS"
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:swipe-scroll-accessibility:3"
+      },
+      "reviewRounds": 3,
+      "adjudication": {
+        "decision": "accept",
+        "reason": "Round 3 passed with reduced scope recorded in the plan Amendments: scrollContainer RPC, opt-in scrollAction, template search by action, swipe telemetry, versionCode 29; the fling fix moved to step fling-d1-ci with CI evidence. Rounds 1-2 majors (implicit semantics change, unverified ease-out physics, axis heuristic) were all reverted or removed.",
+        "by": "fable:coordinator",
+        "at": "2026-10-07T18:28:48.421Z"
+      },
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T18:28:48.976Z"
     },
     {
       "id": "settle-on-action",
@@ -442,7 +513,8 @@
         }
       ],
       "commitMessage": "bench(android): P11 on wrong reads, ON-im-bg and OFF-devawait arms, per-thread qemu CPU, P5 decomposition",
-      "status": "pending",
+      "status": "implementing",
+      "implementer": "agent:impl:bench-harness-p11-arms:1",
       "reviewRounds": 0,
       "waivers": [],
       "skills": [

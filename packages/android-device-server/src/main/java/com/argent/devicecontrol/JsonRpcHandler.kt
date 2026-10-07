@@ -16,6 +16,7 @@ import com.argent.devicecontrol.handlers.LongPressHandler
 import com.argent.devicecontrol.handlers.OpenAppHandler
 import com.argent.devicecontrol.handlers.QueryHandler
 import com.argent.devicecontrol.handlers.ScreenshotHandler
+import com.argent.devicecontrol.handlers.ScrollHandler
 import com.argent.devicecontrol.handlers.StateHandler
 import com.argent.devicecontrol.handlers.SwipeHandler
 import com.argent.devicecontrol.handlers.TapHandler
@@ -50,6 +51,7 @@ class JsonRpcHandler(
 
     private val tapHandler = TapHandler(uiAutomation)
     private val swipeHandler = SwipeHandler(uiDevice, uiAutomation)
+    private val scrollHandler = ScrollHandler(uiAutomation)
     private val gestureHandler = GestureHandler(uiAutomation)
     private val flushInputHandler = FlushInputHandler(uiAutomation)
     private val typeHandler = TypeHandler(instrumentation, uiDevice)
@@ -144,6 +146,9 @@ class JsonRpcHandler(
                 "longPress" -> runAction(params) { longPressHandler.execute(params) }
                 "swipe" -> runAction(params) { withForcedInjectUnavail { swipeHandler.execute(params) } }
                 "gesture" -> runAction(params) { withForcedInjectUnavail { gestureHandler.execute(params) } }
+                // Accessibility-action scroll: no touch, so no fling. Settles on its own
+                // after each action, so it is not wrapped in runAction.
+                "scrollContainer" -> scrollHandler.execute(params)
                 "flushInput" -> runAction(params) { flushInputHandler.execute(params) }
                 "typeText" -> runAction(params) { typeHandler.execute(params) }
                 "setClipboard" -> clipboardHandler.execute(params)

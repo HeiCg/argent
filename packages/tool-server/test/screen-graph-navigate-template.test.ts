@@ -272,7 +272,17 @@ describe("template-step scroll reaches every row of a 50-row list (run 2 geometr
  */
 function replayServer(
   target: number,
-  opts: { startOffset?: number; flingDown?: boolean; lateAx?: boolean; lag?: number } = {}
+  opts: {
+    startOffset?: number;
+    flingDown?: boolean;
+    lateAx?: boolean;
+    lag?: number;
+    /**
+     * Offer the `scrollContainer` RPC: `"page"` scrolls one viewport per action
+     * (ACTION_SCROLL_* on a RecyclerView), `"reject"` throws like an older APK.
+     */
+    scrollAction?: "page" | "reject";
+  } = {}
 ) {
   const ROWS = 50;
   const ROW_H = 179;
@@ -297,8 +307,42 @@ function replayServer(
     }
     return out;
   };
-  const stats = { swipes: 0, down: 0, up: 0 };
+  const stats = {
+    swipes: 0,
+    down: 0,
+    up: 0,
+    actions: 0,
+    actionArgs: [] as Array<{ nodeId?: string; resourceId?: string; direction: string }>,
+  };
   const server: any = {
+    ...(opts.scrollAction
+      ? {
+          scrollContainer: async (a: {
+            nodeId?: string;
+            resourceId?: string;
+            direction: "forward" | "backward";
+            count?: number;
+          }) => {
+            stats.actions += 1;
+            stats.actionArgs.push({
+              nodeId: a.nodeId,
+              resourceId: a.resourceId,
+              direction: a.direction,
+            });
+            if (opts.scrollAction === "reject") {
+              throw new Error("Method not found: scrollContainer");
+            }
+            const prev = offset;
+            const step = a.direction === "forward" ? viewport : -viewport;
+            const next = Math.min(maxOffset, Math.max(0, offset + step));
+            offset = next;
+            // The server settles before it replies: the next read is the final window.
+            display.splice(0, display.length, next);
+            const performed = next !== prev ? 1 : 0;
+            return { accepted: performed > 0, performed, stableHash: `o${next}`, settledMs: 90 };
+          },
+        }
+      : {}),
     query: async () => {
       const off = shown();
       const rows = target >= 0 && target < ROWS ? visibleRows(off).filter((i) => i === target) : [];
@@ -606,6 +650,86 @@ describe("template step timing telemetry (review E-1 finding 4)", () => {
     const out = await executeTemplateStep(server, size, "Item 37", { settlePauseMs: 0 });
     expect(out.deliveredMs).toEqual([]);
     expect(out.swipeMs).toHaveLength(out.scrolls);
+  });
+});
+
+describe("template step scrolls by accessibility action when the server offers it", () => {
+  it("finds every row with scrollContainer and never swipes", async () => {
+    const missed: number[] = [];
+    let swipes = 0;
+    for (const i of [0, 9, 10, 11, 25, 37, 49]) {
+      const { server, stats } = replayServer(i, { scrollAction: "page" });
+      const out = await executeTemplateStep(server, size, `Story ${i}`, {
+        ...fast,
+        containerId: "list",
+      });
+      if (!out.tapped) missed.push(i);
+      swipes += stats.swipes;
+      expect(out.scrollActions).toBe(out.scrolls);
+      for (const a of stats.actionArgs) {
+        expect(a.resourceId).toBe("list");
+        expect(a.nodeId).toBe("0,366,1080,2274");
+      }
+    }
+    expect(missed).toEqual([]);
+    expect(swipes).toBe(0);
+  });
+
+  it("scrolls forward toward the end, then backward after the end", async () => {
+    const { server, stats } = replayServer(0, { scrollAction: "page", startOffset: 1e9 });
+    const out = await executeTemplateStep(server, size, "Story 0", fast);
+    expect(out.tapped).toBe(true);
+    expect(stats.actionArgs[0]!.direction).toBe("forward");
+    expect(stats.actionArgs.at(-1)!.direction).toBe("backward");
+    expect(out.reversals).toBe(1);
+    // A refusal before any action moved the list may mean the node does not take
+    // the action at all, so those scrolls are held swipes (both still at the end).
+    expect(stats.swipes).toBe(2);
+    expect(out.scrollActions).toBe(out.scrolls - 2);
+  });
+
+  it("sweeps an absent item end to end with actions only and reports it as swept", async () => {
+    const { server, stats } = replayServer(-1, { scrollAction: "page" });
+    const out = await executeTemplateStep(server, size, "Story 99", {
+      ...fast,
+      containerId: "list",
+    });
+    expect(out.tapped).toBe(false);
+    expect(out.swept).toBe(true);
+    expect(out.gaps).toBe(0);
+    // The fake pages exactly one viewport, so consecutive windows share no fully
+    // visible title: measured on its own counter, never hidden.
+    expect(out.actionNoOverlap).toBeGreaterThan(0);
+    expect(out.actionNoOverlap).toBeLessThanOrEqual(out.scrollActions);
+    expect(stats.swipes).toBe(0);
+  });
+
+  it("falls back to the held swipe when the server rejects scrollContainer", async () => {
+    const { server, stats } = replayServer(37, { scrollAction: "reject" });
+    const out = await executeTemplateStep(server, size, "Story 37", fast);
+    expect(out.tapped).toBe(true);
+    expect(stats.actions).toBe(1); // tried once, then the swipe for the rest of the step
+    expect(stats.swipes).toBeGreaterThan(0);
+    expect(out.scrollActions).toBe(0);
+  });
+
+  it("uses the held swipe when the server has no scrollContainer", async () => {
+    const { server, stats } = replayServer(37);
+    const out = await executeTemplateStep(server, size, "Story 37", fast);
+    expect(out.tapped).toBe(true);
+    expect(stats.swipes).toBeGreaterThan(0);
+    expect(out.scrollActions).toBe(0);
+    expect(out.actionNoOverlap).toBe(0);
+  });
+
+  it("records the device-reported hold of each held swipe", async () => {
+    const { server } = feedServer(() => []);
+    server.swipeWithOutcome = async () => ({ changed: false, deliveredMs: 281, heldMs: 122 });
+    const out = await executeTemplateStep(server, size, "Story 99", {
+      ...fast,
+      containerId: "list",
+    });
+    expect(out.heldMs).toEqual(Array(out.scrolls).fill(122));
   });
 });
 

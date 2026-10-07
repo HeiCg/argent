@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type {
+  DeviceInfo,
   Registry,
   ServiceRef,
   ToolCapability,
@@ -15,7 +16,7 @@ import { sendCommand } from "../../utils/simulator-client";
 import {
   shouldUseOpenServer,
   openServerSwipe,
-  openServerSwipeWithOutcome,
+  openServerSwipeWithOutcomeTimed,
   openServerVerifiedSwipe,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
@@ -29,8 +30,20 @@ import {
   iosOpenServerFallback,
   type IosOpenServerFallbackMarker,
 } from "../../utils/ios-open-server-input";
-import { screenGraphRecordingEnabled } from "../../utils/screen-graph-open-wiring";
-import type { OpenServerActionOutcome } from "../../blueprints/android-open-server";
+import {
+  recordOpenServerObservation,
+  screenGraphRecordingEnabled,
+} from "../../utils/screen-graph-open-wiring";
+import { FAILURE_CODES, FailureError } from "@argent/registry";
+import {
+  openDeviceServerRef,
+  scrollNodeId,
+  type OpenDeviceServerApi,
+  type OpenScrollDirection,
+  type OpenServerActionOutcome,
+  type OpenSwipeTiming,
+} from "../../blueprints/android-open-server";
+import { openDeviceServerMutex } from "../../utils/device-mutex";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -109,6 +122,17 @@ const zodSchema = z
       .describe(
         "Retired: renamed to `momentum` with the opposite sense. Pass `momentum: false` for what `settle: true` meant; `settle: false` was the default, so drop the key."
       ),
+    scrollAction: z
+      .boolean()
+      .optional()
+      .describe(
+        "Android open-device-server only (refused elsewhere): instead of a touch swipe, scroll the " +
+          "smallest scrollable container under the start point ONCE by accessibility scroll action. " +
+          "The container moves by about one page (its own page step) on its OWN axis, with no " +
+          "fling; it does NOT land where the finger would lift. Only the swipe's sense counts: " +
+          "the dominant component of the vector, finger up or left = forward (later content), " +
+          "down or right = backward. Not combinable with verify. Default false: a touch swipe."
+      ),
     verify: verifyParamSchema
       .optional()
       .describe(
@@ -162,6 +186,27 @@ interface Result {
   requestedPx?: { x: number; y: number };
   mismatchLabel?: string;
   /**
+   * Android open-device-server only: how the swipe reached the app.
+   * `"scroll-action"` = `scrollAction: true`: one accessibility scroll action on
+   * the container under the start point (no touch, so no fling; the container
+   * moves by its own page step). `"motion"` = an injected touch swipe.
+   */
+  method?: "scroll-action" | "motion";
+  /**
+   * `scrollAction: true` only: whether the container moved, how many actions
+   * moved it, and why it did not (`"refused"` = no content in that direction,
+   * `"no-change"` = the action ran but the content did not change).
+   */
+  scroll?: { accepted: boolean; performed: number; reason?: string };
+  /**
+   * Android open-device-server motion swipe: the device-clock stationary span
+   * between the last travel MOVE and the UP (held swipes only), and the injected
+   * DOWN-to-UP span. Present only when the server reports them (APK 0.1.24+ /
+   * 0.1.25+).
+   */
+  heldMs?: number;
+  injectMs?: number;
+  /**
    * Physical iOS only: the target app was backgrounded and the runner
    * re-fronted it to run this swipe, so the foreground screen changed as a
    * side effect. Set only when true.
@@ -195,7 +240,169 @@ function swipeResultMessage(params: Params, result: Result): string {
   if (result.verified === false && result.verifyCode) {
     return `Verify refused (${result.verifyCode}); no swipe issued`;
   }
+  if (result.method === "scroll-action") {
+    return result.scroll?.accepted
+      ? "Scrolled the container by accessibility action"
+      : `Scroll action did not move the container (${result.scroll?.reason ?? "refused"})`;
+  }
   return swipeDescription(params, "past");
+}
+
+/**
+ * The accessibility scroll direction a swipe vector means: a finger moving up
+ * (or left, when the swipe is mostly horizontal) reveals later content, so
+ * `forward`; down (or right) is `backward`.
+ */
+export function scrollDirectionFor(dx: number, dy: number): OpenScrollDirection {
+  if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? "forward" : "backward";
+  return dy < 0 ? "forward" : "backward";
+}
+
+type Bounds = { x1: number; y1: number; x2: number; y2: number };
+
+type ScrollableEl = {
+  className?: string;
+  scrollable?: boolean;
+  bounds: Bounds;
+  resourceId?: string;
+};
+
+/**
+ * The smallest element flagged `scrollable` whose bounds contain the point, or
+ * null: the container a finger pressed there would drag.
+ */
+function smallestScrollableAt(
+  tree: ReadonlyArray<ScrollableEl>,
+  x: number,
+  y: number
+): ScrollableEl | null {
+  let best: ScrollableEl | null = null;
+  let bestArea = Infinity;
+  for (const el of tree) {
+    if (el.scrollable !== true) continue;
+    const b = el.bounds;
+    if (x < b.x1 || x > b.x2 || y < b.y1 || y > b.y2) continue;
+    const area = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+    if (area < bestArea) {
+      bestArea = area;
+      best = el;
+    }
+  }
+  return best;
+}
+
+function scrollActionError(message: string, stage: string): FailureError {
+  return new FailureError(message, {
+    error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+    failure_stage: stage,
+    failure_area: "tool_server",
+    error_kind: "validation",
+  });
+}
+
+/** A fingerprint read for the scroll-action outcome (version/hash default when absent). */
+function fingerprintOf(st: {
+  version?: number;
+  hash?: string;
+  stateHash?: string;
+  idHash?: string;
+}): OpenServerActionOutcome["before"] {
+  return {
+    version: st.version ?? 0,
+    hash: st.hash ?? "",
+    stateHash: st.stateHash ?? "",
+    ...(st.idHash !== undefined ? { idHash: st.idHash } : {}),
+  };
+}
+
+/**
+ * `scrollAction: true` on the Android open path: scroll the smallest scrollable
+ * under the start point once by accessibility action (`scrollContainer`). No
+ * fallback: the call fails when the start is in no scrollable or when the RPC
+ * fails (an APK older than 0.1.25). The action scrolls the container on its own
+ * axis; the swipe vector gives only the sense ({@link scrollDirectionFor}). With screen-graph recording on it reads the fingerprints before
+ * and after and records the scroll as a swipe observation, like the motion path.
+ */
+async function openServerScrollAction(
+  registry: Registry,
+  device: DeviceInfo,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number
+): Promise<Pick<Result, "scroll" | "outcome">> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const recording = screenGraphRecordingEnabled();
+    const s = await server.getScreenSize();
+    const size = { width: s.screenWidth, height: s.screenHeight };
+    const toPx = (x: number, y: number) => ({
+      x: Math.round(Math.max(0, Math.min(1, x)) * size.width),
+      y: Math.round(Math.max(0, Math.min(1, y)) * size.height),
+    });
+    const from = toPx(fromX, fromY);
+    const to = toPx(toX, toY);
+    const before = await server.getState({
+      includeScreenshot: false,
+      ...(recording ? { fingerprints: true } : {}),
+    });
+    const container = smallestScrollableAt(
+      (before?.tree ?? []) as unknown as ScrollableEl[],
+      from.x,
+      from.y
+    );
+    if (!container) {
+      throw scrollActionError(
+        "scrollAction: the start point is in no scrollable container; start the swipe inside the list, or drop scrollAction for a touch swipe.",
+        "gesture_swipe_scroll_target"
+      );
+    }
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const res = await server.scrollContainer({
+      nodeId: scrollNodeId(container.bounds),
+      ...(container.resourceId ? { resourceId: container.resourceId } : {}),
+      direction: scrollDirectionFor(dx, dy),
+      count: 1,
+    });
+    const reason = res.reason;
+    const scroll = {
+      accepted: res.accepted === true,
+      performed: res.performed ?? 0,
+      ...(reason ? { reason } : {}),
+    };
+    if (!recording) return { scroll };
+    const after = await server.getState({ includeScreenshot: false, fingerprints: true });
+    const b = fingerprintOf(before);
+    const a = fingerprintOf(after);
+    const outcome: OpenServerActionOutcome = {
+      before: b,
+      after: a,
+      changed: b.hash !== a.hash || b.stateHash !== a.stateHash,
+      newScreen: b.hash !== a.hash,
+      // The server settled before replying; it reports no first-event time.
+      settled: scroll.accepted ? "quiet" : "no-event",
+      firstEventMs: scroll.accepted ? 0 : -1,
+      idleMs: res.settledMs ?? 0,
+    };
+    await recordOpenServerObservation(
+      device,
+      server,
+      size,
+      { kind: "swipe", startX: from.x, startY: from.y, endX: to.x, endY: to.y },
+      outcome
+    );
+    return { scroll, outcome };
+  });
+}
+
+/** The swipe timing fields for the tool result (only the ones reported). */
+function timingFields(t: OpenSwipeTiming): Pick<Result, "heldMs" | "injectMs"> {
+  return {
+    ...(t.heldMs !== undefined ? { heldMs: t.heldMs } : {}),
+    ...(t.injectMs !== undefined ? { injectMs: t.injectMs } : {}),
+  };
 }
 
 // Touch platforms only: on a desktop renderer a mouse drag selects text instead
@@ -221,7 +428,7 @@ Generates interpolated Move events for a natural feel (~60fps).
 Swipe up (fromY > toY) to scroll content down.
 Use when you need to scroll a list, dismiss a modal, drag an element, or navigate between pages. Not supported on Chromium — use gesture-scroll there instead.
 Physical iOS: an edge gesture (back-swipe) needs fromX 0 exactly; durationMs sets drag speed, not time; momentum:false only rests 300ms at the end and does not damp.
-Pass momentum:false for a momentum-free swipe that lands where the finger lifts (little to no fling at the 300 default), when you need a deterministic scroll distance; it needs durationMs >= 150 and is rejected below that, a shorter ease-out leaving the OS too little wall clock to read the deceleration as a stop. At 150 it lands short of the lift point instead, and 2 of 47 runs still flung backwards. A plain swipe takes any duration up to 10000ms and is delivered as close to the speed it was authored as a 16ms frame allows: below ~32ms the whole travel lands in one or two frames, which the OS flings as hard as it flings anything. Returns { swiped: true, timestampMs }. On physical iOS, reactivated: true = app was re-fronted; re-describe. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
+Pass momentum:false for a momentum-free swipe that lands where the finger lifts (little to no fling at the 300 default), when you need a deterministic scroll distance; it needs durationMs >= 150 and is rejected below that, a shorter ease-out leaving the OS too little wall clock to read the deceleration as a stop. At 150 it lands short of the lift point instead, and 2 of 47 runs still flung backwards. Android open device server only: pass scrollAction:true to scroll the scrollable container under the start point once by accessibility action instead of a touch (about one page on the container's own axis, no fling, not the finger's distance; only the swipe's sense counts: up or left = forward, down or right = backward); the result then has method "scroll-action" and scroll { accepted, performed, reason? }. Every other swipe there returns method "motion". A plain swipe takes any duration up to 10000ms and is delivered as close to the speed it was authored as a 16ms frame allows: below ~32ms the whole travel lands in one or two frames, which the OS flings as hard as it flings anything. Returns { swiped: true, timestampMs }. On physical iOS, reactivated: true = app was re-fronted; re-describe. Fails if the simulator-server / emulator backend is not reachable for the given device.`,
     alwaysLoad: true,
     searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
     zodSchema,
@@ -241,6 +448,36 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       const momentumFree = params.momentum === false;
       const timestampMs = Date.now();
       const device = resolveDevice(params.udid);
+
+      if (params.scrollAction === true) {
+        if (!shouldUseOpenServer(device)) {
+          throw scrollActionError(
+            "scrollAction is Android open-server only (the `open-device-server` flag on an Android device).",
+            "gesture_swipe_scroll_platform"
+          );
+        }
+        if (params.verify) {
+          throw scrollActionError(
+            "scrollAction cannot be combined with verify.",
+            "gesture_swipe_scroll_verify"
+          );
+        }
+        const r = await openServerScrollAction(
+          registry,
+          device,
+          params.fromX ?? 0,
+          params.fromY ?? 0,
+          params.toX,
+          params.toY
+        );
+        clearIncident(device.id);
+        return {
+          swiped: r.scroll?.accepted === true,
+          timestampMs,
+          method: "scroll-action",
+          ...r,
+        };
+      }
 
       // A1-M5: `verify` is only honored on the Android open path; refuse elsewhere
       // rather than issue an unverified swipe.
@@ -379,7 +616,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
           // (`screenGraphRecordingEnabled()`: the `screen-graph` flag or the
           // bench's `ARGENT_SG_RECORD` record-only mode). `outcome` stays optional.
           if (!screenGraphRecordingEnabled()) {
-            await openServerSwipe(
+            const timing = await openServerSwipe(
               registry,
               device,
               fromX,
@@ -390,9 +627,9 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
               momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
             );
             clearIncident(device.id);
-            return { swiped: true, timestampMs };
+            return { swiped: true, timestampMs, method: "motion", ...timingFields(timing) };
           }
-          const outcome = await openServerSwipeWithOutcome(
+          const { outcome, timing } = await openServerSwipeWithOutcomeTimed(
             registry,
             device,
             fromX,
@@ -403,7 +640,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
           clearIncident(device.id);
-          return { swiped: true, timestampMs, outcome };
+          return { swiped: true, timestampMs, outcome, method: "motion", ...timingFields(timing) };
         } catch (err) {
           console.debug(
             `[gesture-swipe] open-device-server failed, falling back to simulator-server: ${
