@@ -10,6 +10,12 @@
 // so the scoreboard step fails the job; OFF-legacy validity only marks its own
 // section. No merged JSON at all also exits 1 (a latency run that merged nothing is
 // never a result).
+//
+// Review run 37609765062: P11 on wrong reads (empty + pre-transition/mixed; the empty rate
+// is report only), the diagnostic arms ON-im-bg / ON-hostawait in their own report-only
+// tables ("Stream causality", "Await algorithm"; an invalid arm marks only its table), qemu
+// CPU per thread and host idle / steal / iowait in "CPU per phase", and the P5
+// decomposition per arm.
 const fs = require("fs");
 const path = require("path");
 const {
@@ -32,7 +38,8 @@ const {
   TD_GATED_VARIANT,
   CLASS_LABEL,
 } = require("./tap-describe-destination");
-const { isCurrentOff, isOnIm, isOnUia } = require("./block-arms");
+const { isCurrentOff, isOnIm, isOnUia, isOnImBg, isOnHostawait } = require("./block-arms");
+const { VCPU_COMM } = require("./load-sampler");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const latest = (glob) => {
@@ -381,28 +388,13 @@ function p12Line() {
   );
 }
 
-// Run 37571460849: empty describes as a quality metric. One row per (block, verb) whose
-// timed window reads a describe: empty windows / windows, the rate, its Wilson 95 % CI
-// and the P11 grade (≤ 25 %). Rendered from merged.emptyRates / merged.p11 (absent on
-// older merged JSONs).
+// Review run 37609765062 Part B finding 1: P11 grades WRONG reads per tap+describe variant
+// per block (merged.wrongReadRates: empty + pre-transition/mixed out of the classified
+// reads). The empty rate per timed verb (merged.emptyRates) is published, report only.
+// Older merged JSONs (P11 on the empty rate) carry no `metric` and render their old line.
 const emptyRates = merged.emptyRates || [];
-if (emptyRates.length || merged.p11) {
-  L.push("### Empty describes in timed verbs — quality metric (P11)");
-  L.push("");
-  L.push(
-    "A timed window whose describe came back empty is excluded from that verb's latency on both " +
-      "arms (the p50/p95 above are over the non-empty windows). Its rate is published here: " +
-      "empty / windows that read a describe, with a Wilson 95 % CI."
-  );
-  L.push("");
-  L.push("| verb | block | empty / windows | rate | Wilson 95% CI | P11 (≤ 25 %) |");
-  L.push("| --- | --- | --- | --- | --- | --- |");
-  for (const r of emptyRates)
-    L.push(
-      `| ${r.verb} | ${r.block} | ${r.empty}/${r.n} | ${pctCell(r.rate)} | ` +
-        `${r.ci ? `[${pctCell(r.ci[0])}, ${pctCell(r.ci[1])}]` : "no denominator"} | ${r.gate} |`
-    );
-  L.push("");
+const wrongRows = merged.wrongReadRates || [];
+if (wrongRows.length || emptyRates.length || merged.p11) {
   const p11 = merged.p11 || { verdict: "N/A", fails: [], inconclusive: [] };
   const detail = [
     p11.fails && p11.fails.length ? `FAIL: ${p11.fails.join(", ")}` : "",
@@ -412,10 +404,44 @@ if (emptyRates.length || merged.p11) {
   ]
     .filter(Boolean)
     .join("; ");
+  const ciCellOf = (r) => (r.ci ? `[${pctCell(r.ci[0])}, ${pctCell(r.ci[1])}]` : "no denominator");
+  L.push("### Wrong reads in tap+describe and describe — quality metric (P11)");
+  L.push("");
   L.push(
-    "- **P11** — empty rate ≤ 25 % per timed verb per block (pre-registered; Wilson 95 % CI: PASS " +
-      "if the upper bound ≤ 25 %, FAIL if the lower bound > 25 %, INCONCLUSIVE if it straddles " +
-      "25 %; a FAIL on either arm fails it; empties with no denominator FAIL)" +
+    "A tap+describe read is wrong when it is empty (no elements: the describe landed inside " +
+      `the transition) or ${PT} (a root-only marker: it showed the screen as it was before the ` +
+      "tap), from the destination check below; a plain describe read is wrong when it is empty. " +
+      "Both are wrong answers to an agent; the first is visible, the second silent. P11 gates " +
+      "tap+await-idle+describe and plain describe per block; the settle variants keep their " +
+      "rate here, report only."
+  );
+  L.push("");
+  L.push(
+    `| variant | block | wrong (empty + ${PT}) / reads | empty | ${PT} | rate | Wilson 95% CI | P11 (≤ 25 %) |`
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const r of wrongRows)
+    L.push(
+      `| ${r.verb} | ${r.block} | ${r.wrong}/${r.n} | ${r.empty} | ${r.preTransition ?? "-"} | ` +
+        `${pctCell(r.rate)} | ${ciCellOf(r)} | ${r.gated === false ? r.reportOnly : r.gate} |`
+    );
+  L.push("");
+  L.push(
+    (p11.metric
+      ? `- **P11** — wrong reads (empty + ${PT}) ≤ 25 % per block, gated on ` +
+        "tap+await-idle+describe and plain describe (empty = wrong) (pre-registered threshold, " +
+        "re-graded per review 2026-10-07 run 37609765062 Part B finding 1: an empty read and a " +
+        "pre-transition read are both wrong, and grading empties alone penalised the arm whose " +
+        "describe lands inside the transition instead of before it; Wilson 95 % CI: PASS if the " +
+        "upper bound ≤ 25 %, FAIL if the lower bound > 25 %, INCONCLUSIVE if it straddles 25 %; " +
+        "a FAIL on any main arm fails it; a gated read with no classified read FAILs; " +
+        "settle:false / settle:true variants: report only, both arms fail them back to back " +
+        "(run 37609765062: 15-20 of 20 wrong per block) so the gate does not discriminate, and " +
+        "their oracle is correct-at-first-read in the destination check (P12); empty rate: " +
+        "report only)"
+      : "- **P11** — empty rate ≤ 25 % per timed verb per block (pre-registered; Wilson 95 % CI: PASS " +
+        "if the upper bound ≤ 25 %, FAIL if the lower bound > 25 %, INCONCLUSIVE if it straddles " +
+        "25 %; a FAIL on either arm fails it; empties with no denominator FAIL)") +
       (detail ? ` (${detail})` : "") +
       `: **${p11.verdict}**`
   );
@@ -423,7 +449,27 @@ if (emptyRates.length || merged.p11) {
   if (p12Rows.length) L.push(p12Line());
   if (p11.legacyVerdict)
     L.push(`- **P11 (OFF-legacy, own arm)** — same rule: **${p11.legacyVerdict}**`);
+  for (const [n, v] of Object.entries(p11.diagnosticVerdicts || {}))
+    L.push(`- **P11 (${n}, diagnostic arm, report only)** — same rule: **${v}**`);
   L.push("");
+  if (emptyRates.length) {
+    L.push("### Empty describes in timed verbs — report only");
+    L.push("");
+    L.push(
+      "A timed window whose describe came back empty is excluded from that verb's latency on both " +
+        "arms (the p50/p95 above are over the non-empty windows). Its rate is published here: " +
+        "empty / windows that read a describe, with a Wilson 95 % CI. Report only since review run " +
+        "37609765062 (P11 grades the wrong reads above)."
+    );
+    L.push("");
+    L.push("| verb | block | empty / windows | rate | Wilson 95% CI |");
+    L.push("| --- | --- | --- | --- | --- |");
+    for (const r of emptyRates)
+      L.push(
+        `| ${r.verb} | ${r.block} | ${r.empty}/${r.n} | ${pctCell(r.rate)} | ${ciCellOf(r)} |`
+      );
+    L.push("");
+  }
   // Time to a non-empty describe after an empty one inside tap+describe: the first
   // non-empty read of the untimed time-to-correct loop (50 ms apart; up to 2 s before run
   // 37578606526, up to 3 s since) after an empty timed window, on every arm. "from tap" is
@@ -742,13 +788,27 @@ if (la && la.invalid) {
   // Review run 37609765062 findings 2 and 6: state only what the run proves. The stream
   // is on without a client; the OFF guest is more loaded; the cause is not isolated.
   if (pb && pb.stream && pb.stream !== "not-seen") {
+    // Review run 37609765062: say which isolating arm ran (its table below) and which did not.
+    const ranBg = blocks.some((b) => isOnImBg(b.block));
+    const ranDa = blocks.some((b) => isOnHostawait(b.block));
+    const ran = [
+      ranBg ? "ON-im-bg (ON-im + simulator-server idle, spawned, no calls): Stream causality" : "",
+      ranDa ? "ON-hostawait (ON-im with the host await algorithm): Await algorithm" : "",
+    ].filter(Boolean);
+    const missing = [
+      ranBg ? "" : "`ON-im + simulator-server idle` (spawned, no calls)",
+      ranDa ? "" : "a crossed-await arm",
+    ].filter(Boolean);
     L.push(
       "- The stream opens at spawn with no client, so an upstream headless agent runs with it. " +
         "The guest is more loaded in OFF: read the CPU per phase table and the transition " +
-        "timeline below, which is the under-load timeline of each arm. This run does not isolate " +
-        "the cause (the stream, the on-device helper `com.argent.androiddevtools` or another " +
-        "component of the proprietary stack). The arms that would isolate it, not run here: " +
-        "`ON-im + simulator-server idle` (spawned, no calls) and a crossed-await arm."
+        "timeline below, which is the under-load timeline of each arm. The probe alone does not " +
+        "isolate the cause (the stream, the on-device helper `com.argent.androiddevtools` or " +
+        "another component of the proprietary stack)." +
+        (ran.length ? ` Isolating arms in this run (report only): ${ran.join("; ")} tables.` : "") +
+        (missing.length
+          ? ` The arms that would isolate it, not run here: ${missing.join(" and ")}.`
+          : "")
     );
   }
   L.push("");
@@ -760,13 +820,18 @@ if (la && la.invalid) {
     L.push(
       "qemu = the emulator process on the host; simulator-server = the proprietary host process " +
         "(0 when not running); com.argent.* = the on-device agents (open server, proprietary helper). " +
-        "100 % = one core; p50 over the intervals that started and ended in the phase."
+        "100 % = one core; p50 over the intervals that started and ended in the phase. " +
+        `qemu vCPU threads = the qemu threads whose comm matches \`/${VCPU_COMM.source}/\` ` +
+        "(unnamed threads inherit qemu-system-…, so the main loop counts here), qemu other " +
+        "threads = the rest (GPU, gRPC, audio …), from /proc/<qemu>/task/*/stat. host idle / " +
+        "steal / iowait = share of all host CPU time from /proc/stat (review run 37609765062 " +
+        'Part A findings 3 and 6). "-" = not sampled (older run, or no /proc).'
     );
     L.push("");
     L.push(
-      "| block | phase | intervals | qemu CPU % p50 | simulator-server CPU % p50 (alive) | com.argent.* CPU % p50 | by process p50 |"
+      "| block | phase | intervals | qemu CPU % p50 | simulator-server CPU % p50 (alive) | com.argent.* CPU % p50 | by process p50 | qemu vCPU threads % p50 | qemu other threads % p50 | host idle % p50 | host steal % p50 | host iowait % p50 |"
     );
-    L.push("| --- | --- | --- | --- | --- | --- | --- |");
+    L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const b of Object.keys(load)) {
       for (const [ph, r] of Object.entries(load[b])) {
         const p = (x) => (x ? fmt(x.p50) : "-");
@@ -775,7 +840,9 @@ if (la && la.invalid) {
           .join(", ");
         L.push(
           `| ${b} | ${ph} | ${r.intervals} | ${p(r.qemuCpuPct)} | ${p(r.simServerCpuPct)} ` +
-            `(${r.simServerAliveIntervals}/${r.intervals}) | ${p(r.argentCpuPct)} | ${by || "-"} |`
+            `(${r.simServerAliveIntervals}/${r.intervals}) | ${p(r.argentCpuPct)} | ${by || "-"} | ` +
+            `${p(r.qemuVcpuCpuPct)} | ${p(r.qemuOtherCpuPct)} | ${p(r.hostIdlePct)} | ` +
+            `${p(r.hostStealPct)} | ${p(r.hostIowaitPct)} |`
         );
       }
     }
@@ -1306,6 +1373,157 @@ if (onIm && offBlocks.length) {
   L.push("");
   if (!blockLevel) {
     L.push(`_${EQUIV_FOOTER} (run 37561512651, Review 2026-10-07)._`);
+    L.push("");
+  }
+}
+
+// Review run 37609765062 (Part A findings 5 and 6; "Follow-ups" 1): the diagnostic arms,
+// each one block, report only, compared with the block of the reference arm nearest in
+// the run order (block start times; the merged block order otherwise). Δ = arm p50 −
+// reference p50 with a seeded within-block bootstrap CI (no between-block variance).
+{
+  const diag = merged.diagnosticArms || {};
+  const tlAll = merged.transitionTimeline || {};
+  const startedAt = merged.blockStartedAt || {};
+  const ranOrder = merged.blocksRan || blocks.map((b) => b.block);
+  const pos = (n) => {
+    const useTimes = ranOrder.every((x) => startedAt[x]);
+    return useTimes ? Date.parse(startedAt[n]) : ranOrder.indexOf(n);
+  };
+  const nearestOf = (name, cands) =>
+    cands
+      .map((b) => b.block)
+      .sort(
+        (x, y) => Math.abs(pos(x) - pos(name)) - Math.abs(pos(y) - pos(name)) || pos(x) - pos(y)
+      )[0] || null;
+  const tlSamples = (n, key) =>
+    Object.values(tlAll[n] || {}).flatMap((r) =>
+      ((key === "ff" ? r.firstFrameSamples : r.finishedSamples) || []).map((x) => x.ms)
+    );
+  const ttcOfBlock = (n) => {
+    const v = verbOf(
+      blocks.find((b) => b.block === n),
+      TD_GATED_VARIANT
+    );
+    const g = v ? ttcGateSamples(v.timeToCorrect) : null;
+    return g ? g.samples : null;
+  };
+  const METRICS = {
+    ff: ["tap → first frame (logcat)", (n) => tlSamples(n, "ff")],
+    fin: ["tap → transition finished (logcat)", (n) => tlSamples(n, "fin")],
+    ttc: [`time-to-correct (${TD_GATED_VARIANT})`, ttcOfBlock],
+    floor: [
+      "await floor (await-screen-idle, still screen)",
+      (n) =>
+        samplesOf(
+          blocks.find((b) => b.block === n),
+          "await-screen-idle"
+        ),
+    ],
+  };
+  const section = (title, armName, refArm, refBlocks, metricKeys, intro) => {
+    if (!blocks.some((b) => b.block === armName) && !diag[armName]) return;
+    const d = diag[armName] || { invalid: false, invalidReasons: [] };
+    if (d.invalid) {
+      L.push(`### ${title} — INVALID`);
+      L.push("");
+      L.push(
+        `${armName} is not a valid arm this run (its table only; the main arms are unaffected):`
+      );
+      L.push("");
+      for (const why of d.invalidReasons || []) L.push(`- ${why}`);
+      L.push("");
+      return;
+    }
+    const ref = nearestOf(armName, refBlocks);
+    L.push(`### ${title} — 1 block each; report only`);
+    L.push("");
+    L.push(
+      intro +
+        (d.simServerAlive ? ` simulator-server alive in ${d.simServerAlive} load samples.` : "")
+    );
+    L.push("");
+    if (!ref) {
+      L.push(`_No ${refArm} block in this run: nothing to compare._`);
+      L.push("");
+      return;
+    }
+    L.push(
+      "| metric | reference block | reference p50 (n) | arm block | arm p50 (n) | Δ (arm − reference) | 95% CI (within-block bootstrap) |"
+    );
+    L.push("| --- | --- | --- | --- | --- | --- | --- |");
+    const cell = (xs) => (xs && xs.length ? `${fmt(median(xs))} (${xs.length})` : "-");
+    for (const k of metricKeys) {
+      const [label, get] = METRICS[k];
+      const a = get(armName);
+      const r = get(ref);
+      const c = compareOnce(a && a.length ? a : null, r && r.length ? r : null);
+      L.push(
+        `| ${label} | ${ref} | ${cell(r)} | ${armName} | ${cell(a)} | ${fmt(c.delta)} | ${ciStr(c.ci)} |`
+      );
+    }
+    L.push("");
+  };
+  section(
+    "Stream causality (ON-im vs ON-im-bg)",
+    "ON-im-bg",
+    "ON-im",
+    blocks.filter((b) => isOnIm(b.block)),
+    ["ff", "fin", "ttc"],
+    "ON-im-bg = an ON-im block (open server, input-manager) with the proprietary " +
+      "`simulator-server android --id <serial>` spawned idle for the whole block (the PROBE-BG " +
+      "window B spawn, no calls; its screen stream opens at spawn) and killed at the end. " +
+      "Reference = the ON-im block nearest in the run order. If tap → first frame moves from the " +
+      "ON-im level (~370 ms in run 37609765062) towards the OFF level (~700 ms), the stream causes " +
+      "the slower guest under the proprietary stack (review run 37609765062 Part A finding 6). " +
+      "Changes: one host process (simulator-server, with its emulator gRPC screen stream). Does " +
+      "not change: the open server, input-manager input, describe and the device await; the " +
+      "on-device helper com.argent.androiddevtools is NOT started, so this arm cannot implicate it."
+  );
+  section(
+    "Await algorithm (ON-im vs ON-hostawait)",
+    "ON-hostawait",
+    "ON-im",
+    blocks.filter((b) => isOnIm(b.block)),
+    ["ttc", "floor"],
+    "ON-hostawait = an ON-im block whose await in " +
+      `${TD_GATED_VARIANT} and whose await-screen-idle verb run the tool's HOST algorithm (poll ` +
+      "every 200 ms, 250 ms stable window, the tool's timeout and tree-equality rule) over " +
+      "open-server state reads, after the same uncached Android-TV probe the tool pays, instead " +
+      "of the on-device AX-event await. Reference = the ON-im block nearest in the run order. " +
+      "Changes: only the await algorithm (and its reads: one getState per poll instead of " +
+      "awaitChange). Does not change: the stack (open server, input-manager input, describe, no " +
+      "proprietary process), so Δ is the algorithm's share of P5 on the ON stack (review run " +
+      "37609765062 Part A finding 5); it does not say how the host algorithm behaves on the " +
+      "proprietary stack. It replaced OFF-devawait (review round 1: two UiAutomation clients)."
+  );
+
+  // P5 decomposition (merged.p5Decomposition): time-to-correct p50 by term, per arm.
+  const dec = merged.p5Decomposition || null;
+  if (dec && (dec.arms || []).length) {
+    L.push("### P5 decomposition — time-to-correct p50 by term (report only, no gate)");
+    L.push("");
+    L.push(
+      `${dec.variant}: time-to-correct p50 = tap → transition finished (logcat, device clock) + ` +
+        "await floor (await-screen-idle on a still screen) + describe p50 (idle) + rest. Each term " +
+        "is the mean of the arm's block values; rest closes the sum (it mixes the host and device " +
+        "clocks and holds what the await waits after the transition). Share of time-to-correct in " +
+        "brackets (review run 37609765062 Part A finding 5)."
+    );
+    L.push("");
+    L.push(
+      "| arm | blocks | time-to-correct p50 | tap → transition finished (logcat) | await floor (await-screen-idle, still screen) | describe p50 | rest |"
+    );
+    L.push("| --- | --- | --- | --- | --- | --- | --- |");
+    const termCell = (x, f) =>
+      x == null ? "-" : `${fmt(x)} (${f == null ? "-" : `${Number((f * 100).toFixed(1))}%`})`;
+    for (const a of dec.arms)
+      L.push(
+        `| ${a.arm} | ${a.blocks.join(", ")} | ${fmt(a.timeToCorrectMs)} | ` +
+          `${termCell(a.transitionFinishedMs, a.fractions.transitionFinished)} | ` +
+          `${termCell(a.awaitFloorMs, a.fractions.awaitFloor)} | ` +
+          `${termCell(a.describeMs, a.fractions.describe)} | ${termCell(a.restMs, a.fractions.rest)} |`
+      );
     L.push("");
   }
 }

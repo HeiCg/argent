@@ -56,6 +56,25 @@
 //    phase) from load-samples.jsonl (load-sampler.js).
 //  - `propBackground`: the Part A probe (prop-background.json): what the proprietary
 //    stack runs in the background.
+//
+// Review run 37609765062:
+//  - P11 grades WRONG reads (Part B finding 1): empty + pre-transition/mixed out of the
+//    classified tap+describe reads, per variant per block (`wrongReadRates`), same Wilson
+//    rule (PASS if the CI upper bound ≤ 25 %, FAIL if the lower bound > 25 %, else
+//    INCONCLUSIVE; a FAIL on any main arm fails it; no classified read FAILs). The empty
+//    rate (`emptyRates`) is report only.
+//  - Diagnostic arms ON-im-bg and ON-hostawait (block-arms.js): one block each, report
+//    only, never pooled into ON-im / OFF and never in P2-P6. Like OFF-legacy, a failed gate
+//    on them marks only their own section (`diagnosticArms[name].invalid`); their validity
+//    rules (on-device injectStrategyCounts total > 0; simulator-server alive in ≥ 90 % of
+//    the load samples with CPU > 0; the host-algorithm await ran and never failed) are
+//    block-arms.js diagnosticArmReasons. ON-hostawait replaced OFF-devawait in review
+//    round 1 (two UiAutomation clients on one emulator).
+//  - ON-uia left the default: P0 (the control is mandatory) applies to the pre-ABBA names
+//    only; an ABBA run without ON-uia reads P6 N/A.
+//  - `p5Decomposition`: per arm, the time-to-correct p50 of the gated variant split into
+//    tap → transition finished (logcat) + await floor (await-screen-idle on a still screen)
+//    + describe p50 + rest (Part A finding 5). Report only.
 const fs = require("fs");
 const path = require("path");
 const {
@@ -65,8 +84,12 @@ const {
   provenanceDiff,
 } = require("./proprietary-provenance");
 const { readValidity, entryReasons } = require("./block-validity");
-const { median, round1, p11Gate, p11Verdict, P11_THRESHOLD } = require("./stats");
-const { destinationRates: destinationRatesOf } = require("./tap-describe-destination");
+const { median, round1, p11Gate, p11Verdict, P11_THRESHOLD, wilsonCI } = require("./stats");
+const {
+  destinationRates: destinationRatesOf,
+  ttcGateSamples,
+  TD_GATED_VARIANT,
+} = require("./tap-describe-destination");
 const { timelineOfFile, residualAfterFinish, markerVerbKey } = require("./logcat-timeline");
 const { readSamples, aggregate: aggregateLoad } = require("./load-sampler");
 
@@ -82,9 +105,12 @@ const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // its own arm — never pooled with OFF-1/OFF-2, never part of the drift floor.
 // Run 37591260027: the ABBA names join the universe; canonical order = the pre-registered
 // run order (pre-ABBA names keep their old relative order).
+// Review run 37609765062: the diagnostic arms ON-im-bg / ON-hostawait sit in the default
+// run order (OFF-1, ON-im-1, ON-im-bg, OFF-2, ON-im-2, ON-hostawait, OFF-3, ON-im-3).
 const ALL = [
   "OFF-1",
   "ON-im-1",
+  "ON-im-bg",
   "ON-uia",
   "ON-uiautomation",
   "ON-uia-sync",
@@ -92,12 +118,24 @@ const ALL = [
   "ON-input-manager",
   "OFF-2",
   "ON-im-2",
+  "ON-hostawait",
   "OFF-3",
   "ON-im-3",
   "OFF-legacy",
 ];
 const LEGACY_OFF = "OFF-legacy";
-const { isCurrentOff, isOnIm, isOnUia, isAbbaName } = require("./block-arms");
+const {
+  isCurrentOff,
+  isOnIm,
+  isOnUia,
+  isAbbaName,
+  isDiagnosticArm,
+  armOf,
+  diagnosticArmReasons,
+  simServerAliveOf,
+} = require("./block-arms");
+// Side arms: graded on their own, a failure marks only their section (never the main run).
+const isSide = (n) => n === LEGACY_OFF || isDiagnosticArm(n);
 // The CURRENT proprietary arm: the blocks the gates, fidelity and drift floor use.
 const CURRENT_OFF = ALL.filter(isCurrentOff);
 
@@ -155,7 +193,7 @@ const unaccountedReasons = (process.env.BENCH_BLOCKS && requireAccounting ? requ
   );
 const mainInvalidBlocks = () =>
   Object.keys(invalid)
-    .filter((n) => n !== LEGACY_OFF)
+    .filter((n) => !isSide(n))
     .map((n) => ({ block: n, reasons: invalid[n] }));
 
 if (present.length === 0) {
@@ -196,8 +234,16 @@ const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
   .filter(Boolean);
 // A requested ON block the workflow recorded as failed (validity.json) is reported as
 // INVALID below instead of throwing here, so the scoreboard can say so.
+// A diagnostic ON arm the workflow recorded as not run (no proprietary binary to spawn)
+// is accounted for, not missing.
+const notRunNames = new Set(notRun.map((x) => x.block));
 const missingOn = requested.filter(
-  (n) => n.startsWith("ON") && ALL.includes(n) && !files[n] && !invalid[n]
+  (n) =>
+    n.startsWith("ON") &&
+    ALL.includes(n) &&
+    !files[n] &&
+    !invalid[n] &&
+    !(isDiagnosticArm(n) && notRunNames.has(n))
 );
 const imPresent = ALL.filter((n) => files[n] && isOnIm(n));
 const uiaPresent = ALL.filter((n) => files[n] && isOnUia(n));
@@ -208,8 +254,11 @@ if (missingOn.length && !partial) {
 // P0 (phase 3n.1): the ON-uiautomation control arm is mandatory whenever the
 // input-manager candidate ran — without the current default as a same-run control,
 // no "no regression of the default" (P6) or default-path claim is possible. A 3n.1
-// run with ON-input-manager but no ON-uiautomation is VOID.
+// run with ON-input-manager but no ON-uiautomation is VOID. Review run 37609765062:
+// ON-uia left the default ABBA list; an ABBA run without it reads P6 N/A instead.
+const abbaDesign = present.some(isAbbaName) || requested.some(isAbbaName);
 if (
+  !abbaDesign &&
   imPresent.length &&
   !uiaPresent.length &&
   !partial &&
@@ -277,22 +326,21 @@ const legMismatch = versionMismatch(
 if (legMismatch) markInvalid(LEGACY_OFF, legMismatch);
 
 const blocks = present.map((n) => files[n].block);
-// The fatal quality gates below grade the main arms (OFF-1/OFF-2 + ON). OFF-legacy
-// runs the same checks but a failure there only invalidates the legacy section.
-const mainPresent = present.filter((n) => n !== LEGACY_OFF);
+// The fatal quality gates below grade the main arms (OFF-1/OFF-2 + ON). OFF-legacy and
+// the diagnostic arms (ON-im-bg, ON-hostawait) run the same checks but a failure there
+// only invalidates their own section.
+const mainPresent = present.filter((n) => !isSide(n));
+const sidePresent = present.filter(isSide);
 const mainBlocks = mainPresent.map((n) => files[n].block);
-const legacyBlock = files[LEGACY_OFF] ? files[LEGACY_OFF].block : null;
 
 // Gesture-param drift gate across the blocks that ran.
 const gp = mainBlocks.map((b) => JSON.stringify(b.gestureParams));
 if (new Set(gp).size > 1) {
   throw new Error("gesture params drifted across blocks: " + gp.join(" | "));
 }
-if (legacyBlock && gp.length && JSON.stringify(legacyBlock.gestureParams) !== gp[0]) {
-  markInvalid(
-    LEGACY_OFF,
-    `gesture params drifted: ${JSON.stringify(legacyBlock.gestureParams)} vs ${gp[0]}`
-  );
+for (const n of sidePresent) {
+  const own = JSON.stringify(files[n].block.gestureParams);
+  if (gp.length && own !== gp[0]) markInvalid(n, `gesture params drifted: ${own} vs ${gp[0]}`);
 }
 
 // Tap-timeline parity gate (phase 3h). The bench records the ACTUAL injected tap
@@ -312,7 +360,7 @@ if (tls.length) {
             `DOWN→UP (frameCount=${tl.frameCount}, hasMoveFrame=${tl.hasMoveFrame})`
           : null;
     if (!why) continue;
-    if (block === LEGACY_OFF) markInvalid(LEGACY_OFF, why);
+    if (isSide(block)) markInvalid(block, why);
     else throw new Error(why);
   }
 }
@@ -343,9 +391,10 @@ console.log("tap first-attempt landing per block — " + effectLine);
 // rows — a DISTINCT verdict from "a tap did not land" and from "degraded arm". Fatal
 // on any block (ON or OFF) that ran the check.
 // Each fatal gate below grades `mainPresent`; `legacyGate` applies the same predicate
-// to OFF-legacy and records the reason instead of throwing (finding 6).
+// to the side arms (OFF-legacy, finding 6; the diagnostic arms, review run 37609765062)
+// and records the reason instead of throwing.
 const legacyGate = (pred, why) => {
-  if (legacyBlock && pred(LEGACY_OFF)) markInvalid(LEGACY_OFF, why(LEGACY_OFF));
+  for (const n of sidePresent) if (pred(n)) markInvalid(n, why(n));
 };
 legacyGate(
   (n) => files[n].block.oracleSelfTestPassed === false,
@@ -432,6 +481,8 @@ if (degraded.length) {
 // a quality row graded by P11: empty rate ≤ 25 %, Wilson 95 % CI (stats.p11Gate). Empties
 // with no denominator FAIL (fail closed). The verdict covers the main arms; OFF-legacy
 // is graded on its own line.
+// Review run 37609765062 Part B finding 1: the empty rate is report only (P11 grades the
+// wrong reads below). Rows keep the rate and its Wilson CI, without a gate.
 const emptyRates = [];
 for (const n of present) {
   const b = files[n].block;
@@ -443,7 +494,11 @@ for (const n of present) {
       block: n,
       config: b.config,
       verb: v.verb,
-      ...p11Gate(empty, windows),
+      empty,
+      n: windows,
+      rate: windows > 0 ? Number((empty / windows).toFixed(4)) : null,
+      ci: wilsonCI(empty, windows),
+      reportOnly: true,
       ...(v.timeToNonEmpty ? { timeToNonEmpty: v.timeToNonEmpty } : {}),
     });
   }
@@ -491,14 +546,73 @@ const p12 = {
     ci: r.rates.preTransition.ci,
   })),
 };
-const p11Main = emptyRates.filter((r) => r.block !== LEGACY_OFF);
-const p11Legacy = emptyRates.filter((r) => r.block === LEGACY_OFF);
+// Review run 37609765062 Part B finding 1: P11 grades WRONG reads, empty + pre-transition/
+// mixed out of the classified tap+describe reads. An empty read (the describe landed
+// inside the transition) and a pre-transition read (it landed before the destination's
+// first frame and showed the old screen) are both wrong; grading empties alone penalised
+// the arm whose transition starts earlier. Same Wilson rule, threshold and fail-closed
+// denominator as before (stats.p11Gate).
+// Gated reads (contract fix, same review): tap+await-idle+describe and plain describe (an
+// empty read is wrong there; it has no pre-transition class). The settle:false /
+// settle:true variants read back to back fail on both arms (run 37609765062: 15-20 of 20
+// wrong per block), so the gate does not discriminate there; their right oracle is
+// correct-at-first-read (the destination check, P12). Their rates stay, report only, until
+// settle moves to the action (step settle-on-action).
+const P11_GATED_VERBS = [TD_GATED_VARIANT, "describe"];
+const SETTLE_REPORT_ONLY = "report only (settle moves to the action in step settle-on-action)";
+const reportOnlyLabel = (verb) => (/settle/.test(verb) ? SETTLE_REPORT_ONLY : "report only");
+const wrongRow = (r, wrong, empty, preTransition, n) => {
+  const g = p11Gate(wrong, n);
+  const gated = P11_GATED_VERBS.includes(r.verb);
+  return {
+    block: r.block,
+    config: r.config,
+    verb: r.verb,
+    wrong,
+    empty,
+    preTransition,
+    n: g.n,
+    rate: g.rate,
+    ci: g.ci,
+    gate: g.gate,
+    gated,
+    ...(gated ? {} : { reportOnly: reportOnlyLabel(r.verb) }),
+  };
+};
+const wrongReadRates = [
+  ...destinationRates.map((r) =>
+    wrongRow(
+      r,
+      r.counts.empty + r.counts.preTransition,
+      r.counts.empty,
+      r.counts.preTransition,
+      r.n
+    )
+  ),
+  // Plain describe on the idle root: its empty windows are its wrong reads.
+  ...emptyRates
+    .filter((r) => r.verb === "describe")
+    .map((r) => wrongRow(r, r.empty, r.empty, null, r.n)),
+];
+const p11Main = wrongReadRates.filter((r) => r.gated && !isSide(r.block));
+const p11Legacy = wrongReadRates.filter((r) => r.gated && r.block === LEGACY_OFF);
 const p11 = {
   threshold: P11_THRESHOLD,
+  metric: "wrong reads (empty + pre-transition/mixed) per gated read per block",
+  gatedVerbs: P11_GATED_VERBS,
+  settleVariants: SETTLE_REPORT_ONLY,
   verdict: p11Verdict(p11Main),
   legacyVerdict: p11Legacy.length ? p11Verdict(p11Legacy) : null,
+  // The diagnostic arms are graded on their own lines, report only.
+  diagnosticVerdicts: Object.fromEntries(
+    ALL.filter(isDiagnosticArm)
+      .map((n) => [n, wrongReadRates.filter((r) => r.gated && r.block === n)])
+      .filter(([, rows]) => rows.length)
+      .map(([n, rows]) => [n, p11Verdict(rows)])
+  ),
   fails: p11Main.filter((r) => r.gate === "FAIL").map((r) => `${r.block} ${r.verb}`),
   inconclusive: p11Main.filter((r) => r.gate === "INCONCLUSIVE").map((r) => `${r.block} ${r.verb}`),
+  emptyRateReportOnly: true,
 };
 
 // Open-server fallback gate (review 2026-10-07 finding 3). gesture-tap/swipe/pinch,
@@ -509,9 +623,14 @@ const p11 = {
 // it, so an ON number can never be a proprietary number in disguise. Since PR #20 the
 // host logs the describe fallback at console.warn; the bench hooks console.debug,
 // console.warn and console.error (run 37561512651, Review 2026-10-07).
-const fellBack = present
+const fellBackOf = (n) => ((files[n].block.openServerFallbacks || {}).count || 0) > 0;
+legacyGate(
+  (n) => n.startsWith("ON") && fellBackOf(n),
+  (n) => `open-server fallback: ${files[n].block.openServerFallbacks.count} "falling back" line(s)`
+);
+const fellBack = mainPresent
   .filter((n) => n.startsWith("ON"))
-  .filter((n) => ((files[n].block.openServerFallbacks || {}).count || 0) > 0)
+  .filter(fellBackOf)
   .map((n) => {
     const f = files[n].block.openServerFallbacks;
     return `${n}=${f.count}${f.samples && f.samples.length ? ` (first: ${f.samples[0]})` : ""}`;
@@ -531,9 +650,10 @@ if (fellBack.length) {
 // silent fallback (leaked console token, unbound 0.0.0.0 listener, redir ping
 // failure) can never be scored as a clean emulator run. Physical devices would be
 // loopback+adb-forward, but CI is always an emulator serial.
-const redirBad = present
-  .filter((n) => n.startsWith("ON"))
-  .filter((n) => (files[n].block.transport || "") !== "redir")
+const notRedir = (n) => n.startsWith("ON") && (files[n].block.transport || "") !== "redir";
+legacyGate(notRedir, (n) => `transport ${files[n].block.transport || "(none)"}, not redir`);
+const redirBad = mainPresent
+  .filter(notRedir)
   .map((n) => `${n}=${files[n].block.transport || "(none)"}`);
 if (redirBad.length) {
   throw new Error(
@@ -625,7 +745,12 @@ for (const n of present.filter((x) => x.startsWith("ON") && !isOnIm(x))) {
   if (b.expectedInjectRpcs == null || !b.injectStrategyCounts) continue;
   const key = b.injectStrategy && b.injectStrategy !== "default" ? b.injectStrategy : "default";
   const got = b.injectStrategyCounts[key] || 0;
-  if (got !== b.expectedInjectRpcs) {
+  if (got !== b.expectedInjectRpcs && isSide(n)) {
+    markInvalid(
+      n,
+      `Q4: on-device injectStrategyCounts["${key}"]=${got} but expected ${b.expectedInjectRpcs}`
+    );
+  } else if (got !== b.expectedInjectRpcs) {
     throw new Error(
       `Q4: ${n} on-device injectStrategyCounts["${key}"]=${got} but expected ` +
         `${b.expectedInjectRpcs} injections (gesture tool calls the bench issued). Counts: ` +
@@ -645,8 +770,7 @@ const startOfBlock = (n) =>
   null;
 const onPresent = mainPresent.filter((n) => n.startsWith("ON"));
 const bracketing = CURRENT_OFF.filter((n) => files[n]);
-const abba = present.some(isAbbaName) || requested.some(isAbbaName);
-if (abba) {
+if (abbaDesign) {
   // Run 37591260027 (ABBA): the pre-registered order is BENCH_BLOCKS (else the canonical
   // order); every present main block must start after the one listed before it.
   const order = (process.env.BENCH_BLOCKS ? requested : ALL).filter((n) => mainPresent.includes(n));
@@ -685,6 +809,24 @@ if (abba) {
       }
     }
   }
+}
+// Per-phase CPU (load-sampler.js): also the ON-im-bg liveness record below.
+const loadSamples = readSamples(path.join(OUT, "load-samples.jsonl"));
+// Review run 37609765062: the diagnostic arms, each graded on its own (block-arms.js).
+const diagnosticArms = {};
+for (const n of ALL.filter((x) => isDiagnosticArm(x) && (files[x] || validity[x]))) {
+  if (files[n])
+    for (const why of diagnosticArmReasons(n, files[n].block, loadSamples)) markInvalid(n, why);
+  const alive = simServerAliveOf(n, loadSamples);
+  diagnosticArms[n] = {
+    arm: armOf(n),
+    ran: Boolean(files[n]),
+    invalid: Boolean(invalid[n]) || !files[n],
+    invalidReasons: invalid[n] || (files[n] ? [] : ["no block file (did not run or failed)"]),
+    simServerAlive: n === "ON-im-bg" && alive ? `${alive.alive}/${alive.n}` : null,
+    simServerTicks: n === "ON-im-bg" && alive ? alive.ticks : null,
+    hostAwait: files[n] ? files[n].block.hostAwait || null : null,
+  };
 }
 const invalidBlocks = mainInvalidBlocks();
 const valid = invalidBlocks.length === 0 && runInvalidReasons.length === 0;
@@ -797,11 +939,73 @@ if (rawTimeline) {
     }
   }
 }
-// Run 37591260027 finding 1: per-phase CPU (load-sampler.js) and the Part A probe.
-const loadSamples = readSamples(path.join(OUT, "load-samples.jsonl"));
+// Run 37591260027 finding 1: per-phase CPU (load-sampler.js, read above) and the Part A probe.
 const loadByBlock = loadSamples.length ? aggregateLoad(loadSamples) : null;
 const propBackgroundFile = readJson(path.join(OUT, "prop-background.json"));
 const propBackground = propBackgroundFile ? propBackgroundFile.probe || null : null;
+
+// Review run 37609765062 Part A finding 5: per arm, time-to-correct p50 of the gated variant
+// = tap → transition finished (logcat, device clock) + await floor (await-screen-idle on a
+// still screen) + describe p50 (idle) + rest. Each term is the mean of the arm's block
+// values (the review's "mean of block p50s"); rest closes the sum. Report only.
+const ARM_ORDER = ["OFF", "ON-im", "ON-uia", "ON-im-bg", "ON-hostawait", "OFF-legacy"];
+const verbIn = (b, vn) => (b.verbs || []).find((v) => v.verb === vn) || null;
+const p50OfVerb = (v) =>
+  !v
+    ? null
+    : Array.isArray(v.latencySamples) && v.latencySamples.length
+      ? median(v.latencySamples)
+      : v.latency && v.latency.p50 != null
+        ? v.latency.p50
+        : null;
+function p5TermsOf(n) {
+  const b = files[n].block;
+  const g = ttcGateSamples((verbIn(b, TD_GATED_VARIANT) || {}).timeToCorrect || null);
+  const tl = transitionTimeline && transitionTimeline[n] && transitionTimeline[n][TD_GATED_VARIANT];
+  return {
+    ttc: g && g.samples.length ? median(g.samples) : null,
+    fin: tl && tl.finishedMs ? tl.finishedMs.p50 : null,
+    floor: p50OfVerb(verbIn(b, "await-screen-idle")),
+    describe: p50OfVerb(verbIn(b, "describe")),
+  };
+}
+const meanOf = (xs) => {
+  const v = xs.filter((x) => x != null && Number.isFinite(x));
+  return v.length ? round1(v.reduce((a, c) => a + c, 0) / v.length) : null;
+};
+const p5Arms = [];
+for (const arm of ARM_ORDER) {
+  const names = present.filter((n) => armOf(n) === arm && (!isDiagnosticArm(n) || !invalid[n]));
+  const terms = names
+    .map((n) => ({ n, ...p5TermsOf(n) }))
+    .filter((t) => t.ttc != null && t.floor != null && t.describe != null);
+  if (!terms.length) continue;
+  const T = meanOf(terms.map((t) => t.ttc));
+  const A = meanOf(terms.map((t) => t.fin));
+  const B = meanOf(terms.map((t) => t.floor));
+  const D = meanOf(terms.map((t) => t.describe));
+  const R = round1(T - (A ?? 0) - B - D);
+  const frac = (x) => (x == null || !T ? null : Number((x / T).toFixed(3)));
+  p5Arms.push({
+    arm,
+    blocks: terms.map((t) => t.n),
+    timeToCorrectMs: T,
+    transitionFinishedMs: A,
+    awaitFloorMs: B,
+    describeMs: D,
+    restMs: R,
+    transitionMissing: A == null,
+    fractions: {
+      transitionFinished: frac(A),
+      awaitFloor: frac(B),
+      describe: frac(D),
+      rest: frac(R),
+    },
+  });
+}
+const p5Decomposition = p5Arms.length
+  ? { variant: TD_GATED_VARIANT, reportOnly: true, arms: p5Arms }
+  : null;
 
 const result = {
   // Emulator lost mid-run: only `blocksRan` completed; `missingBlocks` never produced
@@ -819,6 +1023,7 @@ const result = {
   // describe quality rows + P11 verdict.
   notRun,
   emptyRates,
+  wrongReadRates,
   p11,
   // Run 37578606526: tap+describe destination classes per (block, verb) and P12.
   destinationRates,
@@ -843,6 +1048,9 @@ const result = {
     ),
   },
   legacyArm,
+  // Review run 37609765062: the diagnostic arms (validity per arm) and the P5 decomposition.
+  diagnosticArms,
+  p5Decomposition,
   // Phase 3n.3 (3N2-H1/M6): the on-device fallback signal + its denominators, carried
   // for the scoreboard so Q4 states real numbers (not the dead host counter).
   strategyUnavailable,
@@ -909,8 +1117,12 @@ if (legacyArm && legacyArm.invalid) {
 for (const x of invalidBlocks) console.log(`INVALID block ${x.block}: ${x.reasons.join("; ")}`);
 for (const why of runInvalidReasons) console.log(`INVALID run: ${why}`);
 for (const x of notRun) console.log(`did not run: ${x.block} (${x.reason})`);
+for (const [n, d] of Object.entries(diagnosticArms))
+  if (d.invalid)
+    console.log(`::warning::${n} INVALID (its own section only): ${d.invalidReasons.join("; ")}`);
 console.log(
-  `P11 empty describes ≤ ${P11_THRESHOLD * 100} % per timed verb per block: ${p11.verdict}` +
+  `P11 wrong reads (empty + pre-transition/mixed) ≤ ${P11_THRESHOLD * 100} % per block on ` +
+    `${P11_GATED_VERBS.join(" and ")} (settle variants report only): ${p11.verdict}` +
     (p11.fails.length ? `; FAIL ${p11.fails.join(", ")}` : "") +
     (p11.inconclusive.length ? `; INCONCLUSIVE ${p11.inconclusive.join(", ")}` : "")
 );

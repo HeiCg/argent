@@ -1154,8 +1154,10 @@ test("scoreboard: no merged JSON -> NO RESULTS and exit 1", () => {
 // Findings 1, 3, 7: workflow + loader wiring (static: the workflow cannot run here).
 test("workflow: blocks run in the BENCH_BLOCKS order; the default is the ABBA sequence", () => {
   // Review 2026-10-07 run 37591260027 ("Next run"): interleaved ABBA, ≥ 3 blocks per arm.
+  // Review run 37609765062 (Follow-ups 1): ON-uia and OFF-legacy leave the default (still
+  // runnable by name); the diagnostic arms ON-im-bg and ON-hostawait join it.
   const y = fs.readFileSync(WORKFLOW, "utf8");
-  assert.match(y, /default: "OFF-1,ON-im-1,ON-uia,OFF-2,ON-im-2,OFF-3,ON-im-3,OFF-legacy"/);
+  assert.match(y, /default: "OFF-1,ON-im-1,ON-im-bg,OFF-2,ON-im-2,ON-hostawait,OFF-3,ON-im-3"/);
   const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
   // One loop over the requested list, in its order; no hard-coded block sequence.
   assert.match(step, /IFS=',' read -r -a REQ_BLOCKS <<< "\$BENCH_BLOCKS"/);
@@ -1789,38 +1791,126 @@ const p11Run = (offEmpty, onEmpty) => {
   return bs;
 };
 
-test("merge-blocks: P11 grades every timed describe verb per block and fails closed on either arm", () => {
+// Review run 37609765062 Part B finding 1: P11 grades WRONG reads (empty + pre-transition/
+// mixed, the tap+describe destination classes). Coordinator's contract fix (same review):
+// the gate covers only the gated variant tap+await-idle+describe and plain describe (an
+// empty read is wrong there); the settle:false / settle:true variants fail on both arms
+// and keep their rates, report only. `o` = destination counts per arm for the await and
+// settle:false variants, and the plain-describe empties per arm (of 40 windows).
+const C = (correct, preTransition, empty) => ({ correct, preTransition, empty, other: 0 });
+const TD_AWAIT = "tap+await-idle+describe";
+const p11WrongRun = (o) => {
+  const bs = FOUR();
+  for (const b of bs) {
+    const arm = b.block.config === "ON" ? "on" : "off";
+    const settle = o.settle[arm];
+    const awaitC = o.await[arm];
+    b.block.verbs.push(
+      {
+        ...vS("describe", 44, 2),
+        treeEmpty: (o.describeEmpty || {})[arm] || 0,
+        describeWindows: 40,
+      },
+      {
+        ...tdVerb(TD_ON, 300, 800, { counts: settle }),
+        treeEmpty: settle.empty,
+        describeWindows: 40,
+      },
+      {
+        ...tdVerb(TD_AWAIT, 700, 900, { counts: awaitC }),
+        treeEmpty: awaitC.empty,
+        describeWindows: 40,
+      }
+    );
+  }
+  return bs;
+};
+const CLEAN = C(40, 0, 0);
+const SETTLE45 = C(22, 12, 6); // 18/40 = 45 % wrong: the rule alone reads FAIL
+
+test("merge-blocks: P11 gates wrong reads on tap+await-idle+describe and plain describe only; the settle variants are report only", () => {
   const cases = [
-    [2, 1, "PASS"],
-    [2, 9, "INCONCLUSIVE"], // ON 9/40: CI [12.3 %, 37.5 %] straddles 25 %
-    [2, 23, "FAIL"], // ON-uiautomation's run 37571460849 rate
-    [16, 1, "FAIL"], // the OFF arm alone fails it
+    // settle:false 45 % wrong on BOTH arms, the await variant clean → PASS.
+    [{ settle: { off: SETTLE45, on: SETTLE45 }, await: { off: CLEAN, on: CLEAN } }, "PASS"],
+    // The await variant 30 % wrong (12/40) on one arm: Wilson [18.1 %, 45.5 %] straddles 25 %.
+    [{ settle: { off: CLEAN, on: CLEAN }, await: { off: CLEAN, on: C(28, 8, 4) } }, "INCONCLUSIVE"],
+    // The await variant 45 % wrong (18/40) on one arm: the lower bound is above 25 % → FAIL.
+    [{ settle: { off: CLEAN, on: CLEAN }, await: { off: SETTLE45, on: CLEAN } }, "FAIL"],
+    // Plain describe: 16/40 empty reads are wrong → FAIL.
+    [
+      {
+        settle: { off: CLEAN, on: CLEAN },
+        await: { off: CLEAN, on: CLEAN },
+        describeEmpty: { on: 16 },
+      },
+      "FAIL",
+    ],
   ];
-  for (const [offE, onE, want] of cases) {
+  for (const [o, want] of cases) {
     const out = freshOut();
-    writeBlocks(out, p11Run(offE, onE));
+    writeBlocks(out, p11WrongRun(o));
     const r = run(MERGE_BLOCKS, out, ALLENV);
     assert.strictEqual(r.code, 0, r.stderr);
     const m = mergedOf(r);
     assert.strictEqual(m.valid, true, "P11 is a gate, not run validity");
-    assert.strictEqual(m.p11.verdict, want, `off ${offE} on ${onE}: ${JSON.stringify(m.p11)}`);
-    const row = m.emptyRates.find((x) => x.block === "ON-input-manager" && x.verb === TD_ON);
-    assert.deepStrictEqual([row.empty, row.n], [onE, 40]);
-    // gesture-tap reads no describe in its timed window: not graded.
-    assert.ok(!m.emptyRates.some((x) => x.verb === "gesture-tap"));
+    assert.strictEqual(m.p11.verdict, want, JSON.stringify(o));
+    assert.match(m.p11.metric, /wrong reads/);
+    assert.deepStrictEqual(m.p11.gatedVerbs, [TD_AWAIT, "describe"]);
+    // The summary lists gated rows only.
+    for (const k of [...m.p11.fails, ...m.p11.inconclusive])
+      assert.match(k, / (tap\+await-idle\+describe|describe)$/, k);
+    const aw = m.wrongReadRates.find((x) => x.block === "ON-input-manager" && x.verb === TD_AWAIT);
+    const on = o.await.on;
+    assert.deepStrictEqual(
+      [aw.wrong, aw.empty, aw.preTransition, aw.n, aw.gated],
+      [on.empty + on.preTransition, on.empty, on.preTransition, 40, true]
+    );
+    assert.deepStrictEqual(aw.ci, stats.wilsonCI(on.empty + on.preTransition, 40));
+    // Settle variants: same rate and rule reading, report only.
+    const st = m.wrongReadRates.find((x) => x.block === "OFF-1" && x.verb === TD_ON);
+    assert.strictEqual(st.gated, false);
+    assert.strictEqual(
+      st.reportOnly,
+      "report only (settle moves to the action in step settle-on-action)"
+    );
+    assert.strictEqual(st.wrong, o.settle.off.empty + o.settle.off.preTransition);
+    // Plain describe: wrong = empty, no pre-transition class.
+    const d = m.wrongReadRates.find((x) => x.block === "ON-input-manager" && x.verb === "describe");
+    assert.deepStrictEqual(
+      [d.wrong, d.preTransition, d.n, d.gated],
+      [(o.describeEmpty || {}).on || 0, null, 40, true]
+    );
+    // The empty rate stays published, report only: no gate on its rows.
+    const e = m.emptyRates.find((x) => x.block === "ON-input-manager" && x.verb === TD_ON);
+    assert.deepStrictEqual([e.n, e.reportOnly], [40, true]);
+    assert.ok(!("gate" in e), JSON.stringify(e));
   }
+  // With the settle variants at 45 % the rule reads FAIL on them, but P11 passes.
+  const out = freshOut();
+  writeBlocks(out, p11WrongRun(cases[0][0]));
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.wrongReadRates.find((x) => x.verb === TD_ON).gate, "FAIL");
+  assert.strictEqual(m.p11.verdict, "PASS");
 });
 
-test("merge-blocks: P11 counts empties with no denominator as FAIL (fail closed)", () => {
+test("merge-blocks: P11 fails closed on the gated variant with no classified read; no gated row → N/A", () => {
   const out = freshOut();
-  const bs = FOUR();
-  withTreeEmpty(bs[1], "gesture-tap", 3); // old shape: no describeWindows
-  writeBlocks(out, bs);
+  writeBlocks(
+    out,
+    p11WrongRun({ settle: { off: CLEAN, on: CLEAN }, await: { off: CLEAN, on: C(0, 0, 0) } })
+  );
   const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
   assert.strictEqual(m.p11.verdict, "FAIL");
-  const row = m.emptyRates.find((x) => x.block === "ON-uiautomation");
-  assert.strictEqual(row.gate, "FAIL");
-  assert.strictEqual(row.n, 0);
+  const row = m.wrongReadRates.find((x) => x.block === "ON-uiautomation" && x.verb === TD_AWAIT);
+  assert.deepStrictEqual([row.gate, row.n], ["FAIL", 0]);
+  // No gated row at all (old fixtures): P11 has nothing to grade.
+  const out2 = freshOut();
+  const bs = FOUR();
+  withTreeEmpty(bs[1], "gesture-tap", 3); // old shape: no describeWindows
+  writeBlocks(out2, bs);
+  const m2 = mergedOf(run(MERGE_BLOCKS, out2, ALLENV));
+  assert.strictEqual(m2.p11.verdict, "N/A");
+  assert.strictEqual(m2.emptyRates.find((x) => x.block === "ON-uiautomation").reportOnly, true);
 });
 
 test("merge-blocks: an ON fallback still throws with P11 in place (fallbacks invalidate, empties do not)", () => {
@@ -1836,8 +1926,11 @@ test("merge-blocks: an ON fallback still throws with P11 in place (fallbacks inv
   assert.match(r.stderr, /ON-uiautomation=2/);
 });
 
-test("scoreboard: empty-rate rows with Wilson CI, the P11 line, and the time-to-non-empty table", () => {
-  const bs = p11Run(9, 23);
+test("scoreboard: P11 rows (gated + report only), the rule and why, empty rate report only, time-to-non-empty table", () => {
+  const bs = p11WrongRun({
+    settle: { off: SETTLE45, on: C(17, 0, 23) },
+    await: { off: CLEAN, on: C(31, 5, 4) },
+  });
   const ttne = {
     measured: 23,
     reached: 22,
@@ -1849,20 +1942,36 @@ test("scoreboard: empty-rate rows with Wilson CI, the P11 line, and the time-to-
   };
   for (const b of bs) for (const v of b.block.verbs) if (v.verb === TD_ON) v.timeToNonEmpty = ttne;
   const md = scoreboardOf(bs);
-  assert.match(md, /### Empty describes in timed verbs — quality metric \(P11\)/);
+  assert.match(md, /### Wrong reads in tap\+describe and describe — quality metric \(P11\)/);
   assert.match(
     md,
-    /\| verb \| block \| empty \/ windows \| rate \| Wilson 95% CI \| P11 \(≤ 25 %\) \|/
+    /\| variant \| block \| wrong \(empty \+ pre-transition\/mixed\) \/ reads \| empty \| pre-transition\/mixed \| rate \| Wilson 95% CI \| P11 \(≤ 25 %\) \|/
   );
+  // Gated: the await variant (9/40 → INCONCLUSIVE) and plain describe.
   assert.match(
     md,
-    /\| tap\+describe\(settle:false\) \| ON-uiautomation \| 23\/40 \| 57\.5% \| \[42\.2%, 71\.5%\] \| FAIL \|/
+    /\| tap\+await-idle\+describe \| ON-uiautomation \| 9\/40 \| 4 \| 5 \| 22\.5% \| \[12\.3%, 37\.5%\] \| INCONCLUSIVE \|/
   );
+  assert.match(md, /\| describe \| OFF-1 \| 0\/40 \| 0 \| - \| 0% \| \[0%, 8\.8%\] \| PASS \|/);
+  // Report only: the settle variant, with its rate.
   assert.match(
     md,
-    /\| tap\+describe \| OFF-1 \| 9\/40 \| 22\.5% \| \[12\.3%, 37\.5%\] \| INCONCLUSIVE \|/
+    /\| tap\+describe\(settle:false\) \| ON-uiautomation \| 23\/40 \| 23 \| 0 \| 57\.5% \| \[42\.2%, 71\.5%\] \| report only \(settle moves to the action in step settle-on-action\) \|/
   );
-  assert.match(md, /- \*\*P11\*\* — empty rate ≤ 25 % per timed verb per block.*: \*\*FAIL\*\*/);
+  const p11 = pLine(md, "P11");
+  assert.match(p11, /gated on tap\+await-idle\+describe and plain describe/);
+  assert.match(p11, /run 37609765062 Part B finding 1/);
+  assert.match(p11, /settle:false \/ settle:true variants: report only/);
+  assert.match(p11, /both arms fail them/);
+  assert.match(p11, /correct-at-first-read/);
+  assert.match(p11, /empty rate: report only/);
+  assert.match(p11, /INCONCLUSIVE: ON-uiautomation tap\+await-idle\+describe/);
+  assert.doesNotMatch(p11, /settle:false\)(,|;|\))/, "the summary lists gated rows only");
+  assert.match(p11, /: \*\*INCONCLUSIVE\*\*$/);
+  // The empty rate is still published, without a gate column.
+  assert.match(md, /### Empty describes in timed verbs — report only/);
+  assert.match(md, /\| verb \| block \| empty \/ windows \| rate \| Wilson 95% CI \|\n/);
+  assert.match(md, /\| tap\+describe\(settle:false\) \| OFF-1 \| 6\/40 \| 15% \| \[/);
   assert.match(md, /excluded from that verb's latency/);
   assert.match(md, /### tap\+describe time-to-non-empty/);
   assert.match(
@@ -2333,7 +2442,7 @@ test("merge-blocks (ABBA): the BENCH_BLOCKS order holds → valid; an out-of-ord
   );
 });
 
-test("merge-blocks (ABBA): Q4 applies to every ON-im block; P0 needs the ON-uia control", () => {
+test("merge-blocks (ABBA): Q4 applies to every ON-im block; P0 does not require ON-uia (P6 reads N/A)", () => {
   const out = freshOut();
   writeBlocks(
     out,
@@ -2347,11 +2456,20 @@ test("merge-blocks (ABBA): Q4 applies to every ON-im block; P0 needs the ON-uia 
     out2,
     ABBA_RUN().filter((b) => b.block.block !== "ON-uia")
   );
-  const r2 = run(MERGE_BLOCKS, out2, {
-    BENCH_BLOCKS: ABBA.filter((n) => n !== "ON-uia").join(","),
-  });
-  assert.strictEqual(r2.code, 1);
-  assert.match(r2.stderr, /P0 VOID: ON-im-1, ON-im-2, ON-im-3 ran/);
+  // Review run 37609765062: ON-uia left the default ABBA list, so an ABBA run without it
+  // merges; P6 (ON-im vs the ON-uia control) reads N/A. The pre-ABBA P0 is unchanged.
+  const env2 = { BENCH_BLOCKS: ABBA.filter((n) => n !== "ON-uia").join(",") };
+  const r2 = run(MERGE_BLOCKS, out2, env2);
+  assert.strictEqual(r2.code, 0, r2.stderr);
+  assert.strictEqual(mergedOf(r2).valid, true);
+  const sb = run(SCOREBOARD, out2);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(pLine(sb.stdout, "P6"), /\*\*N\/A\*\*$/);
+  const out3 = freshOut();
+  writeBlocks(out3, [block("OFF-1"), block("ON-input-manager"), block("OFF-2")]);
+  const r3 = run(MERGE_BLOCKS, out3, { BENCH_BLOCKS: "OFF-1,ON-input-manager,OFF-2" });
+  assert.strictEqual(r3.code, 1);
+  assert.match(r3.stderr, /P0 VOID: ON-input-manager ran/);
 });
 
 test("scoreboard (ABBA): primary CI = Welch t on the block p50s (between-block variance); within-block CI secondary", () => {
@@ -2611,10 +2729,14 @@ test("tap+describe variants: seeded per-sample schedule, N for the gated variant
 test("bench: ABBA blocks, interleaved tap+describe variants, screenshot after the last timed verb, ON diagnostics in ON-im-1 only, PROBE-BG", () => {
   const src = fs.readFileSync(BENCH_TS, "utf8");
   const abba = src.slice(src.indexOf("const ABBA_BLOCKS"), src.indexOf("const ALL_BLOCKS"));
+  // Review run 37609765062: the diagnostic arms replace ON-uia / OFF-legacy in the default.
   assert.deepStrictEqual(
     [...abba.matchAll(/\["([A-Za-z0-9-]+)", "(?:ON|OFF)"/g)].map((m) => m[1]),
-    ["OFF-1", "ON-im-1", "ON-uia", "OFF-2", "ON-im-2", "OFF-3", "ON-im-3", "OFF-legacy"]
+    ["OFF-1", "ON-im-1", "ON-im-bg", "OFF-2", "ON-im-2", "ON-hostawait", "OFF-3", "ON-im-3"]
   );
+  const all = src.slice(src.indexOf("const ALL_BLOCKS"), src.indexOf("const only ="));
+  for (const n of ["ON-uia", "OFF-legacy", "ON-uiautomation", "ON-input-manager"])
+    assert.ok(all.includes(`["${n}", "`), `${n} still runnable by name`);
   const rb = src.slice(src.indexOf("async function runBlock("));
   assert.match(rb, /variantSchedule\(tdCounts, block\)/);
   assert.match(rb, /timeTapEffectVariants\(\s*tdVariants,\s*tdSchedule,/);
@@ -2675,4 +2797,557 @@ test("workflow: PROBE-BG runs before the first block on the current release; the
     /node \.github\/bench-ci\/load-sampler\.js --serial emulator-5554 --context "\$BENCH_CONTEXT_FILE"/
   );
   assert.match(step, /stop_load_sampler\n\s+node \.github\/bench-ci\/merge-blocks\.js/);
+});
+
+/* ---- Review run 37609765062: diagnostic arms ON-im-bg / ON-hostawait, CPU per thread, P5 decomposition ---- */
+
+// Literal destructured require so knip traces the test-only exports.
+const {
+  isOnImBg,
+  isOnHostawait,
+  isDiagnosticArm,
+  armOf,
+  diagnosticArmReasons,
+  SIMSERVER_ALIVE_MIN,
+  HOST_AWAIT,
+  hostAwaitSignature,
+  hostAwaitIdle,
+} = require("./block-arms");
+
+// Load samples for one block: `alive` of `n` with a simulator-server process (its ticks
+// rising 1 per sample unless `flat`), plus one sample written by the workflow before the
+// harness started (no phase: not counted).
+const loadSamplesFor = (blockName, alive, n = 10, t0 = 0, flat = false) => [
+  { epochMs: t0, context: `block ${blockName}`, qemu: [{ pid: 1, ticks: 0 }], simServer: [] },
+  ...Array.from({ length: n }, (_, i) => ({
+    epochMs: t0 + (i + 1) * 10_000,
+    context: `block ${blockName} phase tap+describe`,
+    qemu: [{ pid: 1, ticks: (i + 1) * 2500 }],
+    simServer: i < alive ? [{ pid: 9, ticks: flat ? 5 : i }] : [],
+    device: [],
+  })),
+];
+const IM_COUNTS = { injectStrategyCounts: { "input-manager": 161 } };
+
+test("block-arms: ON-im-bg and ON-hostawait are their own arms, never pooled into ON-im; never ABBA by themselves", () => {
+  const { isOnIm, isAbbaName } = require("./block-arms");
+  assert.ok(isOnImBg("ON-im-bg") && !isOnIm("ON-im-bg"));
+  assert.ok(isOnHostawait("ON-hostawait") && !isOnIm("ON-hostawait"));
+  assert.ok(isDiagnosticArm("ON-im-bg") && isDiagnosticArm("ON-hostawait"));
+  assert.ok(!isDiagnosticArm("ON-im-1") && !isDiagnosticArm("OFF-2") && !isDiagnosticArm("ON-uia"));
+  // Review round 1 note 7: a diagnostic arm alone never selects the ABBA design.
+  assert.ok(!isAbbaName("ON-im-bg") && !isAbbaName("ON-hostawait"));
+  assert.ok(isAbbaName("ON-im-2") && isAbbaName("OFF-3"));
+  assert.deepStrictEqual(
+    [
+      "OFF-2",
+      "ON-im-3",
+      "ON-uia",
+      "ON-input-manager",
+      "ON-im-bg",
+      "ON-hostawait",
+      "OFF-legacy",
+    ].map(armOf),
+    ["OFF", "ON-im", "ON-uia", "ON-im", "ON-im-bg", "ON-hostawait", "OFF-legacy"]
+  );
+});
+
+test("block-arms: ON-im-bg is valid only with simulator-server alive in ≥ 90 % of its load samples, its CPU > 0 and on-device inject counts", () => {
+  assert.strictEqual(SIMSERVER_ALIVE_MIN, 0.9);
+  const b = { block: "ON-im-bg", config: "ON", ...IM_COUNTS };
+  assert.deepStrictEqual(diagnosticArmReasons("ON-im-bg", b, loadSamplesFor("ON-im-bg", 9)), []);
+  assert.deepStrictEqual(diagnosticArmReasons("ON-im-bg", b, loadSamplesFor("ON-im-bg", 10)), []);
+  const low = diagnosticArmReasons("ON-im-bg", b, loadSamplesFor("ON-im-bg", 8));
+  assert.strictEqual(low.length, 1);
+  assert.match(low[0], /simulator-server alive in 8\/10 load samples of ON-im-bg \(< 90 %\)/);
+  // Alive but idle at 0 CPU: the stream is not shown (review round 1 note 8).
+  assert.match(
+    diagnosticArmReasons("ON-im-bg", b, loadSamplesFor("ON-im-bg", 10, 10, 0, true)).join(" "),
+    /simulator-server CPU 0 over the load samples of ON-im-bg/
+  );
+  // Another block's samples do not count; none at all is not a pass.
+  assert.match(
+    diagnosticArmReasons("ON-im-bg", b, loadSamplesFor("ON-im-1", 10)).join(" "),
+    /no load samples for ON-im-bg/
+  );
+  assert.match(diagnosticArmReasons("ON-im-bg", b, []).join(" "), /no load samples/);
+  // Review round 1 minor 4: the input path is read from injectStrategyCounts.
+  assert.match(
+    diagnosticArmReasons("ON-im-bg", { block: "ON-im-bg" }, loadSamplesFor("ON-im-bg", 10)).join(
+      " "
+    ),
+    /no on-device injectStrategyCounts/
+  );
+});
+
+test("block-arms: ON-hostawait is valid only with on-device inject counts and a host-algorithm await that ran and never failed", () => {
+  const ok = {
+    block: "ON-hostawait",
+    config: "ON",
+    ...IM_COUNTS,
+    hostAwait: { algorithm: "host", calls: 60, failed: 0, polls: 300, readErrors: 0 },
+  };
+  assert.deepStrictEqual(diagnosticArmReasons("ON-hostawait", ok, []), []);
+  const r = (over) => diagnosticArmReasons("ON-hostawait", { ...ok, ...over }, []).join(" | ");
+  assert.match(r({ injectStrategyCounts: {} }), /no on-device injectStrategyCounts \(total 0\)/);
+  assert.match(r({ injectStrategyCounts: undefined }), /no on-device injectStrategyCounts/);
+  assert.match(
+    r({ hostAwait: { ...ok.hostAwait, failed: 2 } }),
+    /host-algorithm await failed 2\/60/
+  );
+  assert.match(r({ hostAwait: { ...ok.hostAwait, calls: 0 } }), /no host-algorithm await ran/);
+  assert.match(r({ hostAwait: undefined }), /no hostAwait record/);
+  // Not a diagnostic arm: no extra rule.
+  assert.deepStrictEqual(diagnosticArmReasons("OFF-2", { block: "OFF-2" }, []), []);
+});
+
+// A fake clock: every read costs 10 ms; sleep advances the clock.
+function fakeHost(sigAt) {
+  let t = 0;
+  let reads = 0;
+  return {
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+    read: async () => {
+      t += 10;
+      reads++;
+      return sigAt(t, reads);
+    },
+  };
+}
+
+test("block-arms: the host await algorithm — the tool's 200 ms poll / 250 ms stable window / timeout on fake signatures", async () => {
+  assert.deepStrictEqual(HOST_AWAIT, { pollIntervalMs: 200, minStableMs: 250, timeoutMs: 3000 });
+  // Stable from the first read (t=10): reads at 10, 220, 430 → 420 ms ≥ 250 → settled.
+  const stable = fakeHost(() => "A");
+  assert.deepStrictEqual(await hostAwaitIdle({ ...stable }), {
+    settled: true,
+    waitedMs: 430,
+    polls: 3,
+    readErrors: 0,
+  });
+  // Changing until t ≥ 1000, then still: waits, then settles one stable window later.
+  const moving = fakeHost((t, k) => (t < 1000 ? `X${k}` : "S"));
+  const m = await hostAwaitIdle({ ...moving });
+  assert.strictEqual(m.settled, true);
+  assert.deepStrictEqual([m.waitedMs, m.polls], [1480, 8]);
+  // Never still: gives up at the timeout, not settled.
+  const never = fakeHost((t, k) => `X${k}`);
+  const n = await hostAwaitIdle({ ...never, timeoutMs: 1000 });
+  assert.strictEqual(n.settled, false);
+  assert.ok(n.waitedMs >= 1000 && n.waitedMs <= 1010, String(n.waitedMs));
+  // An empty tree is never settled (it resets the window).
+  const empty = fakeHost(() => "");
+  assert.strictEqual((await hostAwaitIdle({ ...empty, timeoutMs: 800 })).settled, false);
+  // A read error is counted and the loop goes on.
+  const flaky = fakeHost((t, k) => {
+    if (k === 1) throw new Error("rpc");
+    return "A";
+  });
+  const f = await hostAwaitIdle({ ...flaky });
+  assert.deepStrictEqual([f.settled, f.readErrors], [true, 1]);
+});
+
+test("block-arms: the host await signature is the tool's tree-equality rule (role|label|value|frame to 0.01)", () => {
+  const node = (role, label, x, children = []) => ({
+    role,
+    label,
+    frame: { x, y: 0.1, width: 0.5, height: 0.05 },
+    children,
+  });
+  const a = { children: [node("Button", "OK", 0.1234, [node("Text", "x", 0.2)])] };
+  const b = { children: [node("Button", "OK", 0.1244, [node("Text", "x", 0.2)])] };
+  const c = { children: [node("Button", "Cancel", 0.1234, [node("Text", "x", 0.2)])] };
+  assert.strictEqual(hostAwaitSignature(a), hostAwaitSignature(b), "sub-0.01 jitter is equal");
+  assert.notStrictEqual(hostAwaitSignature(a), hostAwaitSignature(c));
+  assert.strictEqual(hostAwaitSignature(a).split("\n").length, 2, "depth first, every node");
+  assert.strictEqual(hostAwaitSignature({ children: [] }), "");
+});
+
+// Default ABBA since review run 37609765062: the diagnostic arms take the ON-uia / OFF-legacy slots.
+const ARMS = [
+  "OFF-1",
+  "ON-im-1",
+  "ON-im-bg",
+  "OFF-2",
+  "ON-im-2",
+  "ON-hostawait",
+  "OFF-3",
+  "ON-im-3",
+];
+const ARMSENV = { BENCH_BLOCKS: ARMS.join(",") };
+const shapeOf = (n) =>
+  n === "ON-im-bg" || n === "ON-hostawait" ? n : n.startsWith("OFF") ? "OFF" : "ON-im";
+// Run 37609765062's per-arm shape (time-to-correct, await floor, idle describe, tap → first
+// frame, tap → transition finished); the bg arm reproduces the "stream causes it" outcome,
+// the host-await arm a slower host poll on the ON stack.
+const ARM_SHAPE = {
+  "OFF": { tap: 52.4, ttc: 2600, floor: 497, describe: 52, ff: 700, fin: 1220 },
+  "ON-im": { tap: 53.7, ttc: 1450, floor: 302, describe: 44, ff: 365, fin: 560 },
+  "ON-im-bg": { tap: 53.7, ttc: 2400, floor: 302, describe: 44, ff: 690, fin: 1180 },
+  "ON-hostawait": { tap: 53.7, ttc: 1650, floor: 450, describe: 44, ff: 365, fin: 560 },
+};
+const ARMS_RUN = (o = {}) =>
+  ARMS.map((name) => {
+    const shape = shapeOf(name);
+    const s = ARM_SHAPE[shape];
+    const same = ARMS.filter((x) => shapeOf(x) === shape);
+    const d = same.length > 1 ? (same.indexOf(name) - 1) * 2 : 0;
+    const off = name.startsWith("OFF");
+    const verbs = [
+      vS("describe", s.describe, 2),
+      vS("gesture-tap", s.tap + d / 10, 1),
+      withNoDrain(vS("gesture-swipe", (off ? 900 : 840) + d, 8), (off ? 295 : 272) + d),
+      withNoDrain(vS("gesture-pinch", (off ? 720 : 216) + d, 8), (off ? 354 : 317) + d),
+      tdVerb("tap+await-idle+describe", off ? 900 : 700, s.ttc + d, {
+        counts: { correct: 40, preTransition: 0, empty: 0, other: 0 },
+      }),
+      vS("await-screen-idle", s.floor, 4),
+    ];
+    const extra =
+      name === "ON-hostawait"
+        ? {
+            injectStrategy: "input-manager",
+            hostAwait: { algorithm: "host", calls: 60, failed: 0, polls: 300, readErrors: 0 },
+          }
+        : name === "ON-im-bg"
+          ? {
+              injectStrategy: "input-manager",
+              idleSimServer: { spawned: true, pids: [9], aliveAtEnd: true },
+            }
+          : {};
+    const b = block(name, { verbs, ...extra, ...((o.over && o.over[name]) || {}) });
+    b.env.startedAt = new Date(
+      Date.UTC(2026, 9, 8, 10, 0) + ARMS.indexOf(name) * 60_000
+    ).toISOString();
+    return b;
+  });
+// logcat: five markers per block on the gated variant, each followed by the destination's
+// first frame (Displayed) and its OPEN transition finishing, at the arm's shape + i ms.
+const pad = (x, w = 2) => String(x).padStart(w, "0");
+const lcTime = (ms) => {
+  const h = 10 + Math.floor(ms / 3_600_000);
+  const m = Math.floor(ms / 60_000) % 60;
+  const sec = Math.floor(ms / 1000) % 60;
+  return `10-08 ${pad(h)}:${pad(m)}:${pad(sec)}.${pad(ms % 1000, 3)}`;
+};
+function armsLogcat(names = ARMS) {
+  const { markerMessage } = require("./logcat-timeline");
+  const lines = [];
+  let id = 100;
+  names.forEach((name) => {
+    const s = ARM_SHAPE[shapeOf(name)];
+    for (let i = 0; i < 5; i++) {
+      const t = ARMS.indexOf(name) * 60_000 + i * 5_000;
+      id++;
+      lines.push(
+        `${lcTime(t)}  4321  4321 I BENCH   : ${markerMessage(name, "tap+await-idle+describe", i)}`,
+        `${lcTime(t + s.ff + i - 3)}   843   910 V WindowManagerShell: onTransitionReady android.os.BinderProxy@1: {id=${id} t=OPEN f=0x0}`,
+        `${lcTime(t + s.ff + i)}   524   545 I ActivityTaskManager: Displayed com.android.settings/.SubSettings for user 0: +${s.ff}ms`,
+        `${lcTime(t + s.fin + 2 * i)}   524   545 V WindowManager: Finish Transition #${id}: created at ${lcTime(t + 66)} ready=1ms finished=${s.fin}ms`
+      );
+    }
+  });
+  return lines.join("\n") + "\n";
+}
+function armsOut(o = {}) {
+  const out = freshOut();
+  writeBlocks(out, ARMS_RUN(o));
+  fs.writeFileSync(path.join(out, "logcat-bench.txt"), armsLogcat());
+  const samples = ARMS.flatMap((n) =>
+    loadSamplesFor(n, n === "ON-im-bg" ? (o.bgAlive ?? 10) : 0, 10, ARMS.indexOf(n) * 200_000)
+  );
+  fs.writeFileSync(
+    path.join(out, "load-samples.jsonl"),
+    samples.map((x) => JSON.stringify(x)).join("\n") + "\n"
+  );
+  return out;
+}
+
+test("merge-blocks: the default ABBA with ON-im-bg and ON-hostawait merges valid; the diagnostic arms carry their validity", () => {
+  const out = armsOut();
+  const r = run(MERGE_BLOCKS, out, ARMSENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true, JSON.stringify([m.invalidBlocks, m.runInvalidReasons]));
+  for (const n of ["ON-im-bg", "ON-hostawait"])
+    assert.deepStrictEqual(
+      [m.diagnosticArms[n].invalid, m.diagnosticArms[n].invalidReasons],
+      [false, []],
+      n
+    );
+  assert.strictEqual(m.diagnosticArms["ON-im-bg"].simServerAlive, "10/10");
+  assert.strictEqual(m.diagnosticArms["ON-im-bg"].simServerTicks, 9);
+  assert.strictEqual(m.diagnosticArms["ON-hostawait"].hostAwait.calls, 60);
+  // Q4 by block covers the candidate blocks only; the diagnostic ON blocks are checked on
+  // their own (a mismatch marks their section INVALID).
+  assert.deepStrictEqual(Object.keys(m.q4ByBlock), ["ON-im-1", "ON-im-2", "ON-im-3"]);
+});
+
+test("merge-blocks: an invalid diagnostic arm invalidates only its own section, never the main run", () => {
+  const out = armsOut({
+    bgAlive: 8,
+    over: {
+      "ON-hostawait": {
+        hostAwait: { algorithm: "host", calls: 60, failed: 3, polls: 300, readErrors: 3 },
+        degradedReasons: ["await-screen-idle hit the 4000ms cap"],
+      },
+    },
+  });
+  const r = run(MERGE_BLOCKS, out, ARMSENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true, JSON.stringify(m.invalidBlocks));
+  const bg = m.diagnosticArms["ON-im-bg"];
+  assert.strictEqual(bg.invalid, true);
+  assert.match(bg.invalidReasons.join(" "), /alive in 8\/10 load samples/);
+  const ha = m.diagnosticArms["ON-hostawait"];
+  assert.strictEqual(ha.invalid, true);
+  assert.match(ha.invalidReasons.join(" "), /DEGRADED ARM/);
+  assert.match(ha.invalidReasons.join(" "), /host-algorithm await failed 3\/60/);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /### Stream causality \(ON-im vs ON-im-bg\) — INVALID/);
+  assert.match(sb.stdout, /### Await algorithm \(ON-im vs ON-hostawait\) — INVALID/);
+  assert.doesNotMatch(sb.stdout, /\| tap → first frame \(logcat\) \|/);
+});
+
+test("merge-blocks: a pre-ABBA run with a diagnostic arm keeps P0 (note 7)", () => {
+  const out = freshOut();
+  writeBlocks(out, [
+    block("OFF-1"),
+    block("ON-input-manager"),
+    block("ON-hostawait", { injectStrategy: "input-manager" }),
+    block("OFF-2"),
+  ]);
+  const r = run(MERGE_BLOCKS, out, { BENCH_BLOCKS: "OFF-1,ON-input-manager,ON-hostawait,OFF-2" });
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /P0 VOID: ON-input-manager ran/);
+});
+
+test("scoreboard: gates P2-P6 stay ON-im vs OFF; the stream-causality and await-algorithm tables compare each diagnostic arm with its nearest ON-im block", () => {
+  const out = armsOut();
+  assert.strictEqual(run(MERGE_BLOCKS, out, ARMSENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  const md = sb.stdout;
+  const rows = gateRows(md);
+  // Three ON-im and three OFF blocks: the diagnostic arms are not pooled into the gates.
+  assert.strictEqual(rows["swipe+describe"].im.split(" / ").length, 3);
+  assert.strictEqual(rows["swipe+describe"].off.split(" / ").length, 3);
+  assert.strictEqual(rows["tap+await-idle+describe time-to-correct"].im, "1448 / 1450 / 1452");
+  // Stream causality: ON-im-bg vs ON-im-1 (adjacent in the run order).
+  assert.match(md, /### Stream causality \(ON-im vs ON-im-bg\) — 1 block each; report only/);
+  assert.match(
+    md,
+    /\| metric \| reference block \| reference p50 \(n\) \| arm block \| arm p50 \(n\) \| Δ \(arm − reference\) \| 95% CI \(within-block bootstrap\) \|/
+  );
+  assert.match(
+    md,
+    /\| tap → first frame \(logcat\) \| ON-im-1 \| 367 \(5\) \| ON-im-bg \| 692 \(5\) \| 325 \| \[/
+  );
+  assert.match(
+    md,
+    /\| tap → transition finished \(logcat\) \| ON-im-1 \| 564 \(5\) \| ON-im-bg \| 1184 \(5\) \| 620 \| \[/
+  );
+  assert.match(
+    md,
+    /\| time-to-correct \(tap\+await-idle\+describe\) \| ON-im-1 \| 1448 \(40\) \| ON-im-bg \| 2400 \(40\) \| 952 \| \[/
+  );
+  // What each arm changes and what it does not (review round 1).
+  assert.match(md, /Changes: one host process \(simulator-server/);
+  assert.match(md, /com\.argent\.androiddevtools is NOT started/);
+  // Await algorithm: ON-hostawait vs ON-im-2 (adjacent in the run order).
+  assert.match(md, /### Await algorithm \(ON-im vs ON-hostawait\) — 1 block each; report only/);
+  assert.match(
+    md,
+    /\| time-to-correct \(tap\+await-idle\+describe\) \| ON-im-2 \| 1450 \(40\) \| ON-hostawait \| 1650 \(40\) \| 200 \| \[/
+  );
+  assert.match(
+    md,
+    /\| await floor \(await-screen-idle, still screen\) \| ON-im-2 \| 302 \(40\) \| ON-hostawait \| 450 \(40\) \| 148 \| \[/
+  );
+  assert.match(md, /Changes: only the await algorithm/);
+  assert.match(md, /Does not change: the stack/);
+  // The Part A text no longer says the isolating arms were not run.
+  assert.doesNotMatch(md, /not run here/);
+});
+
+test("scoreboard: no diagnostic arm in the run → no stream-causality / await-algorithm table", () => {
+  const md = scoreboardOf(ABBA_RUN(), ABBAENV);
+  assert.doesNotMatch(md, /### Stream causality/);
+  assert.doesNotMatch(md, /### Await algorithm/);
+});
+
+test("merge + scoreboard: P5 decomposition per arm closes on time-to-correct within ±1 ms", () => {
+  const out = armsOut();
+  assert.strictEqual(run(MERGE_BLOCKS, out, ARMSENV).code, 0);
+  const m = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        out,
+        fs.readdirSync(out).find((f) => /^bench-merged-.*\.json$/.test(f))
+      ),
+      "utf8"
+    )
+  );
+  const d = m.p5Decomposition;
+  assert.strictEqual(d.variant, "tap+await-idle+describe");
+  assert.deepStrictEqual(
+    d.arms.map((a) => a.arm),
+    ["OFF", "ON-im", "ON-im-bg", "ON-hostawait"]
+  );
+  for (const a of d.arms) {
+    const sum = a.transitionFinishedMs + a.awaitFloorMs + a.describeMs + a.restMs;
+    assert.ok(Math.abs(sum - a.timeToCorrectMs) <= 1, `${a.arm}: ${sum} vs ${a.timeToCorrectMs}`);
+  }
+  const off = d.arms.find((a) => a.arm === "OFF");
+  assert.deepStrictEqual(off.blocks, ["OFF-1", "OFF-2", "OFF-3"]);
+  assert.deepStrictEqual(
+    [off.timeToCorrectMs, off.transitionFinishedMs, off.awaitFloorMs, off.describeMs, off.restMs],
+    [2600, 1224, 497, 52, 827]
+  );
+  assert.strictEqual(off.fractions.transitionFinished, 0.471);
+  assert.strictEqual(off.fractions.rest, 0.318);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(
+    sb.stdout,
+    /### P5 decomposition — time-to-correct p50 by term \(report only, no gate\)/
+  );
+  assert.match(
+    sb.stdout,
+    /\| arm \| blocks \| time-to-correct p50 \| tap → transition finished \(logcat\) \| await floor \(await-screen-idle, still screen\) \| describe p50 \| rest \|/
+  );
+  assert.match(
+    sb.stdout,
+    /\| OFF \| OFF-1, OFF-2, OFF-3 \| 2600 \| 1224 \(47\.1%\) \| 497 \(19\.1%\) \| 52 \(2%\) \| 827 \(31\.8%\) \|/
+  );
+});
+
+test("scoreboard: CPU per phase carries qemu vCPU / other threads and host idle / steal / iowait", () => {
+  const out = armsOut();
+  const S = (t, ctx, main, vcpu, other, host) => ({
+    epochMs: t * 1000,
+    context: ctx,
+    qemu: [{ pid: 1, ticks: main + vcpu + other }],
+    qemuThreads: [
+      { pid: 1, tid: 1, comm: "qemu-system-x86", ticks: main },
+      { pid: 1, tid: 2, comm: "CPU 0/KVM", ticks: vcpu },
+      { pid: 1, tid: 3, comm: "gpu-render", ticks: other },
+    ],
+    simServer: [],
+    device: [],
+    hostCpu: host,
+  });
+  fs.writeFileSync(
+    path.join(out, "load-samples.jsonl"),
+    [
+      S(0, "block OFF-1 phase tap+describe", 0, 0, 0, { idle: 0, iowait: 0, steal: 0, total: 0 }),
+      S(10, "block OFF-1 phase tap+describe", 100, 2000, 400, {
+        idle: 1000,
+        iowait: 40,
+        steal: 200,
+        total: 4000,
+      }),
+    ]
+      .map((x) => JSON.stringify(x))
+      .join("\n") + "\n"
+  );
+  assert.strictEqual(run(MERGE_BLOCKS, out, ARMSENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.match(
+    sb.stdout,
+    /\| by process p50 \| qemu vCPU threads % p50 \| qemu other threads % p50 \| host idle % p50 \| host steal % p50 \| host iowait % p50 \|/
+  );
+  assert.match(
+    sb.stdout,
+    /\| OFF-1 \| tap\+describe \| 1 \| 250 \| 0 \(0\/1\) \| 0 \| - \| 210 \| 40 \| 25 \| 5 \| 1 \|/
+  );
+  assert.match(sb.stdout, /\/\^\(qemu\|\.\*vCPU\|CPU \\d\+\)\//);
+});
+
+test("workflow: the diagnostic arms have their own branch — ON-im-bg with only the simulator-server dir; a failure is report only", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
+  // run_block: the bg block keeps the proprietary devtools dirs unset and sets only the
+  // simulator-server binary dir (the idle server needs it).
+  assert.match(
+    step,
+    /env -u ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR -u ARGENT_NATIVE_DEVTOOLS_DIR \\\n\s+ARGENT_SIMULATOR_SERVER_DIR="\$PROP_PKG\/bin" \\\n\s+BENCH_ONLY="\$b"/
+  );
+  const loop = step.slice(step.indexOf('for b in "${REQ_BLOCKS[@]}"'));
+  const at = loop.indexOf("ON-im-bg|ON-hostawait)");
+  assert.ok(at > 0 && at < loop.indexOf("ON-*)"), "diagnostic case before ON-*");
+  const branch = loop.slice(at, loop.indexOf("OFF-*)"));
+  assert.ok(at < loop.indexOf("OFF-*)"), "diagnostic case before OFF-*");
+  assert.match(branch, /record_not_run "ON-im-bg"/);
+  assert.match(branch, /diagnostic arm FAILED \(report only\)/);
+  // Review round 1 minor 5: a diagnostic failure never fails the job.
+  assert.doesNotMatch(branch, /(ON|OFF|LEGACY)_FAILED=1/);
+  assert.ok(!step.includes("OFF-devawait"), "OFF-devawait removed");
+});
+
+test("bench: ON-im-bg holds an idle simulator-server for the whole block; ON-hostawait runs the host await algorithm over open-server reads", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  assert.match(src, /const BG_SIMSERVER_BLOCKS = new Set\(\["ON-im-bg"\]\)/);
+  assert.match(src, /const HOST_AWAIT_BLOCKS = new Set\(\["ON-hostawait"\]\)/);
+  assert.doesNotMatch(
+    src,
+    /OFF-devawait"|DEVICE_AWAIT_BLOCKS|ARGENT_OPEN_SERVER_DONT_SUPPRESS_A11Y/
+  );
+  // Spawn: the PROBE-BG window B call (registry resolveService of simulatorServerRef), no calls.
+  const spawn = src.slice(
+    src.indexOf("async function spawnIdleSimServer("),
+    src.indexOf("async function stopIdleSimServer(")
+  );
+  assert.match(spawn, /simulatorServerRef\(device\)/);
+  assert.match(spawn, /resolveService\(ref\.urn, ref\.options\)/);
+  assert.doesNotMatch(spawn, /invokeTool/);
+  const stop = src.slice(src.indexOf("async function stopIdleSimServer("));
+  assert.match(stop.slice(0, 800), /killSimServerForEmulator\(\)/);
+  // The teardowns inside the block leave it alone while it is held.
+  const kill = src.slice(src.indexOf("function killSimServerForEmulator("));
+  assert.match(kill.slice(0, 400), /if \(idleSimServer\) return;/);
+  const rb = src.slice(src.indexOf("async function runBlock("));
+  const at = (s) => rb.indexOf(s);
+  assert.ok(at("spawnIdleSimServer()") > 0 && at("spawnIdleSimServer()") < at("coldStart(config)"));
+  assert.ok(at("stopIdleSimServer()") > at("await teardownBackend();\n\n  // Phase 3n.3"));
+  // ON-hostawait: block-arms.js hostAwaitIdle over describeAndroidViaOpenState reads, after
+  // the tool's uncached Android-TV probe; the ON-hostawait block is an input-manager ON block.
+  assert.match(
+    src,
+    /import \{\s*HOST_AWAIT,\s*hostAwaitIdle,\s*hostAwaitSignature,\s*\} from "\.\.\/\.\.\/\.\.\/\.github\/bench-ci\/block-arms\.js"/
+  );
+  assert.match(
+    rb,
+    /await isAndroidTv\(SERIAL\);\s*const device = resolveDevice\(SERIAL\);\s*const r = await hostAwaitIdle\(/
+  );
+  assert.match(
+    rb,
+    /hostAwaitSignature\(\(await describeAndroidViaOpenState\(reg, device\)\)\.tree\)/
+  );
+  assert.match(rb, /if \(c\.awaitIdle\) await awaitIdle\(\);/);
+  assert.match(rb, /await awaitIdle\(4000\);/);
+  assert.match(rb, /hostAwait,/);
+  assert.match(rb, /idleSimServer: idleSimServerRecord,/);
+  assert.match(src, /\["ON-hostawait", "ON", "input-manager"\]/);
+});
+
+test("bench: an ON-im-bg block that throws still kills its idle simulator-server (try/finally)", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const w = src.slice(src.indexOf("async function runBlockReleasing("));
+  assert.ok(w.length > 0, "runBlockReleasing exists");
+  const body = w.slice(0, w.indexOf("\n}\n"));
+  assert.match(
+    body,
+    /try \{\s*return await runBlock\(block, config, injectStrategy\);\s*\} finally \{/
+  );
+  assert.match(body.slice(body.indexOf("finally")), /await stopIdleSimServer\(\)/);
+  // main runs every block through it.
+  const main = src.slice(src.indexOf("async function main("));
+  assert.match(main, /const r = await runBlockReleasing\(block, config, injectStrategy\);/);
+  assert.doesNotMatch(main, /await runBlock\(/);
 });

@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       blocks:
-        description: "Latency blocks to run, in run order (comma list; ABBA since run 37591260027)"
+        description: "Latency blocks to run, in run order (comma list; ABBA since run 37591260027; ON-im-bg / ON-hostawait diagnostic arms since review 37609765062; ON-uia and OFF-legacy still runnable by name)"
         required: false
-        default: "OFF-1,ON-im-1,ON-uia,OFF-2,ON-im-2,OFF-3,ON-im-3,OFF-legacy"
+        default: "OFF-1,ON-im-1,ON-im-bg,OFF-2,ON-im-2,ON-hostawait,OFF-3,ON-im-3"
       proprietary_version:
         description: "@swmansion/argent release whose binaries the proprietary (OFF) blocks use"
         required: false
@@ -85,7 +85,9 @@ jobs:
     # (validity.json start → recorded), ~20 min each; with the tap+describe variants and
     # N=40 eight blocks were estimated above 165 min, so ON-uia and OFF-legacy run at
     # n_secondary (30) and the ON-only diagnostics run in ON-im-1 only. ~25 min of setup
-    # (SDK, boot, npm ci + build, gradle, device test) comes on top.
+    # (SDK, boot, npm ci + build, gradle, device test) comes on top. Review run
+    # 37609765062: the default swaps ON-uia / OFF-legacy (n_secondary) for the diagnostic
+    # arms ON-im-bg / ON-hostawait (n), still eight blocks, ~5 min more.
     timeout-minutes: 240
 
     env:
@@ -523,6 +525,17 @@ jobs:
               record_validity "$b" fail "" n/a "$started"
               return 1
             fi
+            if [ -z "$pkg" ] && [ "$b" = "ON-im-bg" ]; then
+              # Review run 37609765062: ON-im-bg holds the proprietary simulator-server idle
+              # for the whole block, so it needs that binary's dir; the devtools dirs stay
+              # unset, and any open-server "falling back" line still fails the block.
+              env -u ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR -u ARGENT_NATIVE_DEVTOOLS_DIR \
+                ARGENT_SIMULATOR_SERVER_DIR="$PROP_PKG/bin" \
+                BENCH_ONLY="$b" BENCH_N="$n" node .github/bench-ci/run-bench.js \
+                2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || rc=$?
+              record_validity "$b" pass "$rc" n/a "$started"
+              return "$rc"
+            fi
             if [ -z "$pkg" ]; then
               # ON block (finding 3): the proprietary dirs are unset, so a fallback to
               # the proprietary path cannot find its binaries and fails loudly.
@@ -561,8 +574,9 @@ jobs:
           # diagnostics survive; failures are enforced at the end of the step.
           #
           # Review 2026-10-07 run 37591260027 ("Next run"): interleaved ABBA. The blocks run
-          # in the BENCH_BLOCKS order (default OFF-1, ON-im-1, ON-uia, OFF-2, ON-im-2, OFF-3,
-          # ON-im-3, OFF-legacy) and nothing else runs between them; merge-blocks.js
+          # in the BENCH_BLOCKS order (default since review run 37609765062: OFF-1, ON-im-1,
+          # ON-im-bg, OFF-2, ON-im-2, ON-hostawait, OFF-3, ON-im-3; ON-uia and OFF-legacy run
+          # when named) and nothing else runs between them; merge-blocks.js
           # re-checks the order from the block start timestamps and marks the run INVALID
           # otherwise. OFF-legacy (the older release) is meant to be last: its helper APK
           # replaces the current one (uninstall below), outside every current-OFF interval.
@@ -620,6 +634,20 @@ jobs:
                   LEGACY_FAILED=1
                   echo "::error::OFF-legacy ($BENCH_LEGACY_PROPRIETARY_VERSION) FAILED though its binary is executable"
                 fi
+                ;;
+              ON-im-bg|ON-hostawait)
+                # Review run 37609765062 (diagnostic arms, report only; review round 1):
+                # ON-im-bg = ON-im with the proprietary simulator-server spawned idle for the
+                # whole block (without an executable proprietary binary there is nothing to
+                # spawn: recorded not run); ON-hostawait = ON-im with the host await
+                # algorithm. A failure is reported and does NOT fail the job: merge-blocks.js
+                # marks only the arm's own section INVALID.
+                if [ "$b" = "ON-im-bg" ] && [ "$RUN_OFF" != "1" ]; then
+                  record_not_run "ON-im-bg" "$OFF_DOWNGRADE"
+                elif run_block "$b"; then :; else
+                  echo "::warning::$b diagnostic arm FAILED (report only): its scoreboard section reads INVALID; the job does not fail on it"
+                fi
+                sleep 3
                 ;;
               OFF-*)
                 if [ "$RUN_OFF" != "1" ]; then

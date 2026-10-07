@@ -580,15 +580,62 @@
         }
       ],
       "commitMessage": "bench(android): P11 on wrong reads, ON-im-bg and OFF-devawait arms, per-thread qemu CPU, P5 decomposition",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:bench-harness-p11-arms:1",
-      "reviewRounds": 1,
+      "review": {
+        "at": "2026-10-07T19:24:46.086Z",
+        "verifyRuns": [
+          {
+            "cmd": "node --test --test-concurrency=2 .github/bench-ci/gates.test.js .github/bench-ci/load-sampler.test.js .github/bench-ci/logcat-timeline.test.js",
+            "exitCode": 0,
+            "outputFile": "1-node-test-test-concurrency-2-github-benc.log"
+          },
+          {
+            "cmd": "npx tsc --noEmit -p packages/tool-server/scripts/tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-npx-tsc-noemit-p-packages-tool-server-sc.log"
+          },
+          {
+            "cmd": "npx prettier --check .github/bench-ci/*.js packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+            "exitCode": 0,
+            "outputFile": "3-npx-prettier-check-github-bench-ci-js-pa.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": ".github/bench-ci/block-arms.js",
+            "note": "L174-180: hostAwaitIdle awaits each read to completion and only then checks the deadline, while pollDescribeTree (utils/poll-describe-tree.ts settleWithin(fetchTree(), remaining)) abandons an in-flight read at the deadline; a host-await sample that times out runs past timeoutMs by up to one getState read (tens of ms on ON). Only non-settled samples are affected (Settings taps settle well under 3000 ms in run 37609765062), so the table conclusion should hold. Fix: race o.read() against the remaining time (Promise.race with a timer) and add a fake-clock test with a read that straddles the deadline.",
+            "cause": "The reproduction of the tool loop copies the post-read deadline check but not the settleWithin race that bounds the last read by the remaining budget."
+          },
+          {
+            "severity": "minor",
+            "file": ".github/bench-ci/block-arms.js",
+            "note": "L100: diagnostic arm validity only asks injectStrategyCounts total > 0; the Q4 rules every ON-im block passes (merge-blocks.js L700-730: unavailable == 0, input-manager == expectedInjectRpcs == total) are not applied to ON-im-bg / ON-hostawait, so a diagnostic block whose input fell back to uia-async (counts.unavailable > 0) or carried extra RPCs is graded valid and compared to ON-im as if its input were input-manager. Fix: in diagnosticArmReasons require counts.unavailable == 0 and counts['input-manager'] == block.expectedInjectRpcs (report the reason instead of throwing) and add a test.",
+            "cause": "The arms are defined as ON-im plus one change, but their validity check covers only that some on-device injection happened, not that the input path matched ON-im."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+            "note": "L2887-2905: prelude omitted on ON-hostawait vs the tool = ensureDeps(androidRequires) (check-deps.ts L27 60 s TTL cache: ~0 ms per call, one resolveAndroidBinary fs probe of a few ms per 60 s) + registry dispatch (zod safeParse, services(), two event emits, assertSupported): estimated < 1 ms per call against an expected Δ of hundreds of ms; the uncached isAndroidTv (2 adb spawns) is reproduced at L2891. Acceptable; say '< 1 ms of tool dispatch omitted' in the scoreboard intro instead of implying the full prelude."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+            "note": "L2895-2906: on a read error the tool's ON poll falls back per poll to describeAndroid (await-screen-idle/index.ts fetchTree), whereas ON-hostawait counts the error, finishes the host loop and then re-runs the whole tool inside the same timed sample. The arm goes INVALID (failed > 0, block-arms.js L117), so no wrong number is published; recorded only so a failed ON-hostawait is read as 'read errors', not as an algorithm result."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:bench-harness-p11-arms:2"
+      },
+      "reviewRounds": 2,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T19:25:17.118Z"
     },
     {
       "id": "navigate-to-addressable",

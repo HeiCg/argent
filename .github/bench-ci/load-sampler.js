@@ -12,6 +12,17 @@
 //    with one `adb shell` per interval (ps -A + /proc/<pid>/stat);
 //  - the bench context ($BENCH_CONTEXT_FILE: `block <name> phase <phase>`, written by the
 //    harness at every phase change).
+// Review run 37609765062 (Part A findings 3 and 6): the qemu total does not say WHERE the
+// emulator spends its CPU, and at 290-345 % on 4 cores the host is saturated. Each sample
+// also records:
+//  - qemu per thread: /proc/<qemu pid>/task/<tid>/stat (comm + utime + stime). A thread
+//    whose comm matches VCPU_COMM counts as vCPU, every other thread as "other" (GPU,
+//    gRPC, audio, ...). Unnamed threads inherit the process comm (qemu-system-…), so the
+//    main loop thread lands in vCPU: the split reads "named emulator threads" vs the rest.
+//  - the host: the aggregate `cpu` line of /proc/stat (idle, iowait, steal jiffies).
+// and each JSONL line carries the interval fields against the previous sample
+// (sampleLine): qemuVcpuPct, qemuOtherPct (100 % = one core), hostIdlePct, hostStealPct,
+// hostIowaitPct (% of all host CPU time). Where /proc is absent (macOS) they are null.
 // CPU % per interval = Δticks / HZ / Δt × 100 (100 % = one core), an interval reading, the
 // same arithmetic as top's %CPU. `aggregate` assigns each interval to the phase that was
 // current at both of its ends ("mixed" otherwise) and summarises per (block, phase).
@@ -25,6 +36,8 @@ const { spawnSync } = require("child_process");
 const { summarize } = require("./stats");
 
 const HZ = 100; // USER_HZ on the x86_64 runner and on the Android guest
+// The vCPU threads of qemu (review run 37609765062 "Follow-ups" 1).
+const VCPU_COMM = /^(qemu|.*vCPU|CPU \d+)/;
 const DEVICE_CMD =
   "ps -A -o PID,NAME | grep com.argent | while read p n; do " +
   'echo "@@P $p $n $(cat /proc/$p/stat 2>/dev/null)"; done; true';
@@ -41,6 +54,27 @@ function statTicks(line) {
   const ut = Number(f[11]);
   const st = Number(f[12]);
   return Number.isFinite(ut) && Number.isFinite(st) ? ut + st : null;
+}
+
+/** The comm of a /proc/<pid>/stat line (between the first "(" and the last ")"). */
+function commOf(line) {
+  const s = String(line || "");
+  const open = s.indexOf("(");
+  const close = s.lastIndexOf(")");
+  return open >= 0 && close > open ? s.slice(open + 1, close) : null;
+}
+
+/** The aggregate `cpu` line of /proc/stat → jiffies { idle, iowait, steal, total }. */
+function parseHostStat(text) {
+  const line = String(text || "")
+    .split("\n")
+    .find((l) => /^cpu\s/.test(l));
+  if (!line) return null;
+  // user nice system idle iowait irq softirq steal [guest guest_nice]; guest time is
+  // already inside user/nice, so the total is user..steal.
+  const f = line.trim().split(/\s+/).slice(1, 9).map(Number);
+  if (f.length < 8 || f.some((x) => !Number.isFinite(x))) return null;
+  return { idle: f[3], iowait: f[4], steal: f[7], total: f.reduce((a, b) => a + b, 0) };
 }
 
 /** DEVICE_CMD output → [{ pid, name, ticks }]. */
@@ -63,8 +97,11 @@ function parseContext(text) {
   return { block: m[1], phase: m[2] ? m[2].trim() : "(block)" };
 }
 
-/** One sample through the injected runner `run(cmd, args) → { code, stdout }`. */
-function collect(run, readFile, opts, now = Date.now()) {
+/**
+ * One sample through the injected runner `run(cmd, args) → { code, stdout }`, file reader
+ * and directory lister (`listDir(path) → names`).
+ */
+function collect(run, readFile, opts, now = Date.now(), listDir = (p) => fs.readdirSync(p)) {
   const out = (cmd, args) => {
     try {
       const r = run(cmd, args);
@@ -92,6 +129,31 @@ function collect(run, readFile, opts, now = Date.now()) {
   const simServer = pids("simulator-server .*android")
     .map((pid) => ({ pid, ticks: procTicks(pid) }))
     .filter((x) => x.ticks != null);
+  const qemuThreads = [];
+  for (const { pid } of qemu) {
+    let tids = [];
+    try {
+      tids = listDir(`/proc/${pid}/task`);
+    } catch {
+      tids = [];
+    }
+    for (const t of tids) {
+      let line;
+      try {
+        line = readFile(`/proc/${pid}/task/${t}/stat`);
+      } catch {
+        continue;
+      }
+      const ticks = statTicks(line);
+      if (ticks != null) qemuThreads.push({ pid, tid: Number(t), comm: commOf(line), ticks });
+    }
+  }
+  let hostCpu = null;
+  try {
+    hostCpu = parseHostStat(readFile("/proc/stat"));
+  } catch {
+    hostCpu = null;
+  }
   const device = parseDeviceProcs(out("adb", ["-s", opts.serial, "shell", DEVICE_CMD]));
   let context;
   try {
@@ -99,7 +161,15 @@ function collect(run, readFile, opts, now = Date.now()) {
   } catch {
     context = "";
   }
-  return { epochMs: now, context: String(context).trim(), qemu, simServer, device };
+  return {
+    epochMs: now,
+    context: String(context).trim(),
+    qemu,
+    qemuThreads,
+    simServer,
+    device,
+    hostCpu,
+  };
 }
 
 /** Sum of tick deltas over pids present in both samples (a new pid has no delta). */
@@ -113,6 +183,59 @@ function deltaTicks(prev, cur) {
     any = true;
   }
   return any ? sum : null;
+}
+
+/**
+ * The interval readings between two samples: qemu vCPU / other threads (100 % = one core,
+ * threads present at both ends) and host idle / steal / iowait (% of all host CPU time).
+ * null where either end lacks the data (/proc absent, an old sample, no thread overlap).
+ */
+function intervalLoad(a, b) {
+  const out = {
+    qemuVcpuPct: null,
+    qemuOtherPct: null,
+    hostIdlePct: null,
+    hostStealPct: null,
+    hostIowaitPct: null,
+  };
+  if (!a || !b) return out;
+  const dt = (b.epochMs - a.epochMs) / 1000;
+  const r1 = (x) => Number(x.toFixed(1));
+  const ta = Array.isArray(a.qemuThreads) ? a.qemuThreads : [];
+  const tb = Array.isArray(b.qemuThreads) ? b.qemuThreads : [];
+  if (dt > 0 && ta.length && tb.length) {
+    const key = (x) => `${x.pid}/${x.tid}`;
+    const before = new Map(ta.map((x) => [key(x), x.ticks]));
+    let vcpu = 0;
+    let other = 0;
+    let any = false;
+    for (const x of tb) {
+      if (!before.has(key(x))) continue;
+      const d = Math.max(0, x.ticks - before.get(key(x)));
+      if (VCPU_COMM.test(String(x.comm || ""))) vcpu += d;
+      else other += d;
+      any = true;
+    }
+    if (any) {
+      out.qemuVcpuPct = r1((vcpu / HZ / dt) * 100);
+      out.qemuOtherPct = r1((other / HZ / dt) * 100);
+    }
+  }
+  const ha = a.hostCpu;
+  const hb = b.hostCpu;
+  if (ha && hb && hb.total > ha.total) {
+    const tot = hb.total - ha.total;
+    const share = (k) => r1((Math.max(0, hb[k] - ha[k]) / tot) * 100);
+    out.hostIdlePct = share("idle");
+    out.hostStealPct = share("steal");
+    out.hostIowaitPct = share("iowait");
+  }
+  return out;
+}
+
+/** One JSONL line: the sample plus its interval fields against the previous one. */
+function sampleLine(prev, cur) {
+  return JSON.stringify({ ...cur, ...intervalLoad(prev, cur) });
 }
 
 /**
@@ -139,6 +262,11 @@ function aggregate(samples) {
       simServerAlive: 0,
       argent: [],
       argentByName: {},
+      qemuVcpu: [],
+      qemuOther: [],
+      hostIdle: [],
+      hostSteal: [],
+      hostIowait: [],
     });
     const q = deltaTicks(a.qemu || [], b.qemu || []);
     if (q != null) row.qemu.push(pct(q, dt));
@@ -155,7 +283,15 @@ function aggregate(samples) {
       );
       if (t != null) (row.argentByName[name] = row.argentByName[name] || []).push(pct(t, dt));
     }
+    // Review run 37609765062: recomputed from the raw ticks / jiffies of both ends.
+    const il = intervalLoad(a, b);
+    if (il.qemuVcpuPct != null) row.qemuVcpu.push(il.qemuVcpuPct);
+    if (il.qemuOtherPct != null) row.qemuOther.push(il.qemuOtherPct);
+    if (il.hostIdlePct != null) row.hostIdle.push(il.hostIdlePct);
+    if (il.hostStealPct != null) row.hostSteal.push(il.hostStealPct);
+    if (il.hostIowaitPct != null) row.hostIowait.push(il.hostIowaitPct);
   }
+  const sum = (xs) => (xs.length ? summarize(xs) : null);
   for (const phases of Object.values(out)) {
     for (const [ph, r] of Object.entries(phases)) {
       phases[ph] = {
@@ -167,6 +303,11 @@ function aggregate(samples) {
         argentByName: Object.fromEntries(
           Object.entries(r.argentByName).map(([n, xs]) => [n, summarize(xs)])
         ),
+        qemuVcpuCpuPct: sum(r.qemuVcpu),
+        qemuOtherCpuPct: sum(r.qemuOther),
+        hostIdlePct: sum(r.hostIdle),
+        hostStealPct: sum(r.hostSteal),
+        hostIowaitPct: sum(r.hostIowait),
       };
     }
   }
@@ -208,10 +349,13 @@ function main(argv) {
   };
   const readFile = (p) => fs.readFileSync(p, "utf8");
   const sab = new Int32Array(new SharedArrayBuffer(4));
+  let prev = null;
   for (;;) {
     const t0 = Date.now();
     try {
-      fs.appendFileSync(opts.out, JSON.stringify(collect(run, readFile, opts)) + "\n");
+      const cur = collect(run, readFile, opts);
+      fs.appendFileSync(opts.out, sampleLine(prev, cur) + "\n");
+      prev = cur;
     } catch {
       /* never fail the bench over a sample */
     }
@@ -222,6 +366,11 @@ function main(argv) {
 if (require.main === module) main(process.argv.slice(2));
 
 module.exports = {
+  VCPU_COMM,
+  commOf,
+  parseHostStat,
+  intervalLoad,
+  sampleLine,
   DEVICE_CMD,
   statTicks,
   parseDeviceProcs,

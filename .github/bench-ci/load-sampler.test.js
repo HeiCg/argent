@@ -2,6 +2,9 @@
 // 37591260027 finding 1: qemu, simulator-server and on-device com.argent.* CPU per
 // (block, phase). Commands and files are injected: nothing here runs adb, ps or pgrep.
 //
+// Review run 37609765062 (Part A findings 3, 6): qemu CPU per thread (vCPU vs the rest) and
+// the host's /proc/stat idle / steal / iowait per interval, null where /proc is absent.
+//
 // Run: node --test .github/bench-ci/load-sampler.test.js
 const { test } = require("node:test");
 const assert = require("node:assert");
@@ -98,4 +101,147 @@ test("load-sampler: aggregate → CPU % per (block, phase); a context change mid
   assert.strictEqual(on.qemuCpuPct.p50, 200);
   assert.strictEqual(on.simServerCpuPct.p50, 0);
   assert.strictEqual(on.simServerAliveIntervals, 0);
+});
+
+// Review run 37609765062 Part A findings 3 and 6: qemu per thread (vCPU vs the emulator's
+// other threads) and the host's idle / steal / iowait per interval. Synthetic /proc files.
+const { VCPU_COMM, commOf, parseHostStat, intervalLoad, readSamples } = require("./load-sampler");
+
+// /proc/stat "cpu" line: user nice system idle iowait irq softirq steal guest guest_nice.
+const procStat = (user, idle, iowait, steal) =>
+  `cpu  ${user} 0 0 ${idle} ${iowait} 0 0 ${steal} 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\nintr 1 2 3\n`;
+
+test("load-sampler: /proc/stat → host jiffies (idle, iowait, steal, total over user..steal)", () => {
+  assert.deepStrictEqual(parseHostStat(procStat(600, 300, 40, 60)), {
+    idle: 300,
+    iowait: 40,
+    steal: 60,
+    total: 1000,
+  });
+  assert.strictEqual(parseHostStat("intr 1 2\n"), null);
+  assert.strictEqual(parseHostStat(""), null);
+});
+
+test("load-sampler: thread comm and the vCPU rule /^(qemu|.*vCPU|CPU \\d+)/", () => {
+  assert.strictEqual(commOf(stat(9, "CPU 0/KVM", 1, 1)), "CPU 0/KVM");
+  assert.strictEqual(commOf(stat(9, "weird (name) x", 1, 1)), "weird (name) x");
+  assert.strictEqual(commOf("garbage"), null);
+  for (const c of ["qemu-system-x86", "CPU 0/KVM", "CPU 3/KVM", "x86 vCPU", "qemu-vcpu"])
+    assert.ok(VCPU_COMM.test(c), c);
+  for (const c of ["gpu-render", "MainLoopThread", "grpc_global_tim", "emulator-audio"])
+    assert.ok(!VCPU_COMM.test(c), c);
+});
+
+test("load-sampler: collect reads /proc/<qemu>/task/*/stat and /proc/stat through injected IO", () => {
+  const files = {
+    "/proc/11/stat": stat(11, "qemu-system-x86", 1000, 0),
+    "/proc/11/task/11/stat": stat(11, "qemu-system-x86", 100, 0),
+    "/proc/11/task/12/stat": stat(12, "CPU 0/KVM", 500, 100),
+    "/proc/11/task/13/stat": stat(13, "gpu-render", 250, 50),
+    "/proc/stat": procStat(600, 300, 40, 60),
+  };
+  const dirs = { "/proc/11/task": ["11", "12", "13"] };
+  const run = (cmd, args) =>
+    cmd === "pgrep" && args[1] === "qemu-system-" ? { code: 0, stdout: "11\n" } : { code: 1 };
+  const s = collect(
+    run,
+    (p) => {
+      if (!(p in files)) throw new Error("ENOENT");
+      return files[p];
+    },
+    { serial: "emulator-5554", context: "" },
+    1000,
+    (p) => {
+      if (!(p in dirs)) throw new Error("ENOENT");
+      return dirs[p];
+    }
+  );
+  assert.deepStrictEqual(s.qemuThreads, [
+    { pid: 11, tid: 11, comm: "qemu-system-x86", ticks: 100 },
+    { pid: 11, tid: 12, comm: "CPU 0/KVM", ticks: 600 },
+    { pid: 11, tid: 13, comm: "gpu-render", ticks: 300 },
+  ]);
+  assert.deepStrictEqual(s.hostCpu, { idle: 300, iowait: 40, steal: 60, total: 1000 });
+});
+
+test("load-sampler: no /proc (macOS) → qemuThreads [] and hostCpu null; interval fields null", () => {
+  const nofile = () => {
+    throw new Error("ENOENT");
+  };
+  const s = collect(() => ({ code: 1 }), nofile, { serial: "x", context: "" }, 1000, nofile);
+  assert.deepStrictEqual(s.qemuThreads, []);
+  assert.strictEqual(s.hostCpu, null);
+  assert.deepStrictEqual(intervalLoad(s, { ...s, epochMs: 11000 }), {
+    qemuVcpuPct: null,
+    qemuOtherPct: null,
+    hostIdlePct: null,
+    hostStealPct: null,
+    hostIowaitPct: null,
+  });
+});
+
+test("load-sampler: interval → qemuVcpuPct / qemuOtherPct (100 % = one core) and host idle / steal / iowait %", () => {
+  const S = (t, main, vcpu, other, host) => ({
+    epochMs: t * 1000,
+    context: "block ON-im-bg phase tap+describe",
+    qemu: [{ pid: 1, ticks: main + vcpu + other }],
+    qemuThreads: [
+      { pid: 1, tid: 1, comm: "qemu-system-x86", ticks: main },
+      { pid: 1, tid: 2, comm: "CPU 0/KVM", ticks: vcpu },
+      { pid: 1, tid: 3, comm: "gpu-render", ticks: other },
+    ],
+    simServer: [{ pid: 9, ticks: 0 }],
+    device: [],
+    hostCpu: host,
+  });
+  const a = S(0, 0, 0, 0, { idle: 0, iowait: 0, steal: 0, total: 0 });
+  // 10 s: main thread 100 ticks + vCPU 2000 = 21 s of CPU = 210 %; gpu 400 = 40 %.
+  // Host: 4000 jiffies, idle 1000 = 25 %, steal 200 = 5 %, iowait 40 = 1 %.
+  const b = S(10, 100, 2000, 400, { idle: 1000, iowait: 40, steal: 200, total: 4000 });
+  assert.deepStrictEqual(intervalLoad(a, b), {
+    qemuVcpuPct: 210,
+    qemuOtherPct: 40,
+    hostIdlePct: 25,
+    hostStealPct: 5,
+    hostIowaitPct: 1,
+  });
+  // A thread born mid-interval has no delta; a sample without the new fields reads null.
+  assert.strictEqual(intervalLoad({ epochMs: 0, qemu: [] }, b).qemuVcpuPct, null);
+  const agg = aggregate([
+    a,
+    b,
+    S(20, 200, 4200, 700, { idle: 1600, iowait: 80, steal: 400, total: 8000 }),
+  ]);
+  const r = agg["ON-im-bg"]["tap+describe"];
+  assert.strictEqual(r.qemuVcpuCpuPct.p50, 220);
+  assert.strictEqual(r.qemuOtherCpuPct.p50, 35);
+  assert.strictEqual(r.hostIdlePct.p50, 20);
+  assert.strictEqual(r.hostStealPct.p50, 5);
+  assert.strictEqual(r.hostIowaitPct.p50, 1);
+  // Old samples (no per-thread / host fields) aggregate with those summaries null.
+  const old = aggregate([
+    { epochMs: 0, context: "block OFF-1 phase x", qemu: [{ pid: 1, ticks: 0 }] },
+    { epochMs: 10000, context: "block OFF-1 phase x", qemu: [{ pid: 1, ticks: 100 }] },
+  ])["OFF-1"].x;
+  assert.strictEqual(old.qemuCpuPct.p50, 10);
+  assert.strictEqual(old.qemuVcpuCpuPct, null);
+  assert.strictEqual(old.hostIdlePct, null);
+});
+
+test("load-sampler: main writes the interval fields on each JSONL line (null on the first)", () => {
+  const { sampleLine } = require("./load-sampler");
+  const a = {
+    epochMs: 0,
+    qemu: [],
+    qemuThreads: [],
+    hostCpu: { idle: 0, iowait: 0, steal: 0, total: 0 },
+  };
+  const b = { ...a, epochMs: 10000, hostCpu: { idle: 50, iowait: 0, steal: 10, total: 100 } };
+  const first = JSON.parse(sampleLine(null, a));
+  assert.strictEqual(first.hostIdlePct, null);
+  assert.ok("qemuVcpuPct" in first && "qemuOtherPct" in first && "hostStealPct" in first);
+  const second = JSON.parse(sampleLine(a, b));
+  assert.strictEqual(second.hostIdlePct, 50);
+  assert.strictEqual(second.hostStealPct, 10);
+  assert.strictEqual(typeof readSamples, "function");
 });

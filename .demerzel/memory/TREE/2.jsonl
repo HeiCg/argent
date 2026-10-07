@@ -6,3 +6,4 @@
 {"digest":"sha256:977a49d8ad21","text":"sg-store-hygiene commitado (1dc15abe). Pendências p/ navigate-to-addressable: comentários obsoletos churn.ts/store-bounds.test, teste roundtrip v2, pins só expiram por load, store por app compartilhado entre devices (last write wins)"}
 {"digest":"sha256:c96979fc0c1f","text":"sg-store-hygiene commitado 1dc15abe; pendências p/ navigate-to-addressable: comentários obsoletos, roundtrip v2, pins só expiram por load, store por app compartilhado entre devices"}
 {"digest":"sha256:5d29d7beae07","text":"swipe-scroll-accessibility commitado a63b4952 (scroll opt-in; fling D1 fica p/ fling-d1-ci); sg-store-hygiene 1dc15abe"}
+{"digest":"sha256:290ade36e586","text":"navigate-to-addressable commitado 68359065 (label/hash8, reachable screens, compact final); pendências p/ sg-multihop-bench: tela sem label além do cap some do summary; plano via aresta de template sem texto"}

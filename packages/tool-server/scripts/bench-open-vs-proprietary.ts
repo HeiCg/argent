@@ -97,6 +97,12 @@ import {
 } from "../../../.github/bench-ci/settings-reset.js";
 import { openServerEmptyTreeCount } from "../src/tools/describe/platforms/android/index";
 import { simulatorServerRef } from "../src/blueprints/simulator-server";
+import { describeAndroidViaOpenState } from "../src/utils/open-server-describe";
+import {
+  HOST_AWAIT,
+  hostAwaitIdle,
+  hostAwaitSignature,
+} from "../../../.github/bench-ci/block-arms.js";
 import { statTicks } from "../../../.github/bench-ci/load-sampler.js";
 
 /* -------------------------------------------------------------------------- */
@@ -127,6 +133,22 @@ if (!SERIAL.startsWith("emulator-")) {
 // Run 37591260027 ("Next run", ABBA): the ON-only diagnostic phases run in these blocks
 // only. ON-im-1 in the ABBA design; the pre-ABBA single ON blocks keep them.
 const ON_DIAGNOSTIC_BLOCKS = new Set(["ON-im-1", "ON-input-manager", "ON-uiautomation"]);
+
+// Review run 37609765062 (Part A findings 5 and 6, "Follow-ups" 1): two diagnostic arms,
+// one block each, report only (.github/bench-ci/block-arms.js).
+//  - ON-im-bg: an ON-im block with the proprietary `simulator-server android --id <serial>`
+//    spawned idle for the whole block (the PROBE-BG window B spawn, no calls; its screen
+//    stream opens at spawn), killed at the end. Does the stream make the guest slower?
+//  - ON-hostawait: an ON-im block whose tap → await-idle → describe await and the timed
+//    await-screen-idle verb run the tool's HOST algorithm (block-arms.js hostAwaitIdle:
+//    poll every 200 ms, 250 ms stable window, the tool's timeout and tree-equality rule)
+//    over open-server state reads (describeAndroidViaOpenState, the read the tool's poll
+//    path makes on ON), instead of the on-device AX-event await. Same ON stack, only the
+//    algorithm changes: what does the await algorithm alone buy? It replaced OFF-devawait
+//    (review round 1: the open server next to the proprietary helper is a second
+//    UiAutomation client on one emulator).
+const BG_SIMSERVER_BLOCKS = new Set(["ON-im-bg"]);
+const HOST_AWAIT_BLOCKS = new Set(["ON-hostawait"]);
 
 const SETTINGS = "com.android.settings";
 const CHROME = "com.android.chrome";
@@ -544,7 +566,18 @@ function pngInfo(path: string): { bytes: number; width: number; height: number; 
 /* backend teardown                                                            */
 /* -------------------------------------------------------------------------- */
 
+// ON-im-bg (review run 37609765062): the idle simulator-server held for the whole block.
+// While it is held, the teardowns inside the block (cold start, setup, end) leave it alone.
+let idleSimServer: { reg: Reg; record: IdleSimServerRecord } | null = null;
+interface IdleSimServerRecord {
+  spawned: boolean;
+  pids: number[];
+  spawnMs: number;
+  aliveAtEnd: boolean | null;
+}
+
 function killSimServerForEmulator(): void {
+  if (idleSimServer) return;
   // Only ever the emulator's controller; never `android_device --id <physical>`.
   try {
     const out = execFileSync("pgrep", ["-f", `simulator-server .*android --id ${SERIAL}`], {
@@ -588,6 +621,50 @@ async function teardownBackend(reg?: Awaited<ReturnType<typeof createRegistry>>)
   forceStopInstrumentation();
   killSimServerForEmulator();
   await sleep(1200);
+}
+
+// ON-im-bg: spawn `simulator-server android --id <serial>` the way PROBE-BG window B does
+// (and a headless agent's first gesture): resolve the SimulatorServer service through its
+// own registry, then no call at all. Needs ARGENT_SIMULATOR_SERVER_DIR (the workflow sets
+// only that dir for this block). Throws when no process is alive after the spawn, so the
+// block fails instead of measuring plain ON-im under the bg name.
+async function spawnIdleSimServer(): Promise<void> {
+  const reg = createRegistry();
+  const t0 = performance.now();
+  const device = resolveDevice(SERIAL);
+  const ref = simulatorServerRef(device);
+  await reg.resolveService(ref.urn, ref.options);
+  await sleep(2000);
+  const pids = pidsOf(`simulator-server .*android --id ${SERIAL}`);
+  if (!pids.length) {
+    await reg.dispose().catch(() => undefined);
+    throw new Error("ON-im-bg: no simulator-server process alive after the idle spawn");
+  }
+  idleSimServer = {
+    reg,
+    record: {
+      spawned: true,
+      pids,
+      spawnMs: Number((performance.now() - t0).toFixed(1)),
+      aliveAtEnd: null,
+    },
+  };
+  realDebug(`[bench] ${currentBlock} idle simulator-server spawned (pids ${pids.join(",")})`);
+}
+
+// ON-im-bg: release and kill the idle simulator-server at the end of the block.
+async function stopIdleSimServer(): Promise<IdleSimServerRecord | null> {
+  const held = idleSimServer;
+  if (!held) return null;
+  const alive = pidsOf(`simulator-server .*android --id ${SERIAL}`);
+  held.record.aliveAtEnd = held.record.pids.some((p) => alive.includes(p));
+  idleSimServer = null;
+  await held.reg.dispose().catch(() => undefined);
+  killSimServerForEmulator();
+  realDebug(
+    `[bench] ${currentBlock} idle simulator-server stopped (alive at end: ${held.record.aliveAtEnd})`
+  );
+  return held.record;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2537,6 +2614,18 @@ function buildProvenance(config: "OFF" | "ON"): BuildProvenance {
   };
 }
 
+interface HostAwaitRecord {
+  algorithm: "host";
+  pollIntervalMs: number;
+  minStableMs: number;
+  calls: number;
+  failed: number;
+  settled: number;
+  polls: number;
+  readErrors: number;
+  failures: string[];
+}
+
 interface BlockResult {
   block: string;
   config: "OFF" | "ON";
@@ -2546,6 +2635,9 @@ interface BlockResult {
   // Run 37591260027 ("Next run"): whether the ON-only diagnostics ran in this block.
   onDiagnostics?: boolean;
   buildProvenance?: BuildProvenance;
+  // Review run 37609765062: ON-im-bg's idle simulator-server, ON-hostawait's await route.
+  idleSimServer?: IdleSimServerRecord | null;
+  hostAwait?: HostAwaitRecord | null;
   // Phase 3n: the on-device injection strategy this ON block requested (uia-sync /
   // uia-async / input-manager), or undefined for the DEFAULT / OFF arms.
   injectStrategy?: OpenInjectStrategy | "default";
@@ -2716,6 +2808,9 @@ async function runBlock(
 ): Promise<BlockResult> {
   const notes: string[] = [];
   currentBlock = block;
+  // Review run 37609765062: ON-im-bg holds the idle simulator-server from before the cold
+  // start to the end of the block (load samples without a phase are not counted).
+  if (BG_SIMSERVER_BLOCKS.has(block)) await spawnIdleSimServer();
   setPhase("cold-start");
   // Review 2026-10-07 finding 3: every open-server "falling back" line from here to the
   // end of the block (cold start and untimed calls included) is counted; an ON block
@@ -2768,6 +2863,53 @@ async function runBlock(
       : p;
   }) as Reg["invokeTool"];
   const verbs: VerbResult[] = [];
+
+  // Review run 37609765062 (crossed await), review round 1: on ON-hostawait the await of
+  // tap → await-idle → describe and the timed await-screen-idle verb run the tool's host
+  // algorithm (hostAwaitIdle) over open-server state reads, after the same uncached
+  // Android-TV probe the tool runs per call (isAndroidTv: adb devices + getprop); every
+  // other block runs the tool (host poll on OFF, the on-device await on ON). A call whose
+  // reads fail is counted as failed and the sample falls back to the tool (the arm is then
+  // INVALID in the merge).
+  const hostAwait: HostAwaitRecord | null = HOST_AWAIT_BLOCKS.has(block)
+    ? {
+        algorithm: "host",
+        pollIntervalMs: HOST_AWAIT.pollIntervalMs,
+        minStableMs: HOST_AWAIT.minStableMs,
+        calls: 0,
+        failed: 0,
+        settled: 0,
+        polls: 0,
+        readErrors: 0,
+        failures: [],
+      }
+    : null;
+  const awaitIdle = async (timeoutMs?: number): Promise<void> => {
+    if (hostAwait) {
+      hostAwait.calls++;
+      try {
+        await isAndroidTv(SERIAL);
+        const device = resolveDevice(SERIAL);
+        const r = await hostAwaitIdle({
+          read: async () =>
+            hostAwaitSignature((await describeAndroidViaOpenState(reg, device)).tree),
+          timeoutMs: timeoutMs ?? HOST_AWAIT.timeoutMs,
+          sleep,
+        });
+        hostAwait.polls += r.polls;
+        hostAwait.readErrors += r.readErrors;
+        if (r.settled) hostAwait.settled++;
+        if (r.readErrors === 0) return;
+        throw new Error(`${r.readErrors} open-server read(s) failed`);
+      } catch (e) {
+        hostAwait.failed++;
+        if (hostAwait.failures.length < 3)
+          hostAwait.failures.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (timeoutMs === undefined) await reg.invokeTool("await-screen-idle", { udid: SERIAL });
+    else await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs });
+  };
 
   // ---- Settings root screen ----
   // Validated pristine-root describe first: this is the sample used for
@@ -2953,13 +3095,13 @@ async function runBlock(
     (c: TdCall) =>
     async (x: number, y: number, _i: number): Promise<unknown> => {
       await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
-      if (c.awaitIdle) await reg.invokeTool("await-screen-idle", { udid: SERIAL });
+      if (c.awaitIdle) await awaitIdle();
       // The describe reply leaves the timed window as its result; it is classified after.
       return tdRead(c);
     };
   const tapThenDescribeFixed = (c: TdCall) => async (): Promise<void> => {
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY });
-    if (c.awaitIdle) await reg.invokeTool("await-screen-idle", { udid: SERIAL });
+    if (c.awaitIdle) await awaitIdle();
     await tdRead(c);
   };
   // Run 37578606526 (review finding 12): after EVERY timed tap+describe, classify the
@@ -3064,10 +3206,10 @@ async function runBlock(
   setPhase("await");
   const settledLines = await ensureSettledSettingsRoot(reg);
 
-  // await-screen-idle (already idle -> resolve time)
+  // await-screen-idle (already idle -> resolve time). ON-hostawait: the host algorithm.
   verbs.push(
     await timeCalls("await-screen-idle", async () => {
-      await reg.invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 });
+      await awaitIdle(4000);
     })
   );
 
@@ -3558,6 +3700,15 @@ async function runBlock(
     );
   }
 
+  if (hostAwait) {
+    realDebug(`[bench] ${block} hostAwait=${JSON.stringify(hostAwait)}`);
+    notes.push(
+      `host-algorithm await (await-algorithm arm): ${hostAwait.calls - hostAwait.failed}/` +
+        `${hostAwait.calls} ran clean, ${hostAwait.settled} settled, ${hostAwait.polls} reads` +
+        (hostAwait.failures.length ? `; failures: ${hostAwait.failures.join(" | ")}` : "")
+    );
+  }
+
   setPhase("teardown");
   await reg.dispose().catch(() => undefined);
   await teardownBackend();
@@ -3579,6 +3730,13 @@ async function runBlock(
           : v.latencySamples.length + v.emptyLatencySamples.length + v.errors),
       0
     );
+  // ON-im-bg: kill the idle simulator-server last (the teardown above left it alone).
+  const idleSimServerRecord = await stopIdleSimServer();
+  if (idleSimServerRecord)
+    notes.push(
+      `idle simulator-server (stream-causality arm): pids ${idleSimServerRecord.pids.join(",")}, ` +
+        `alive at end of block: ${idleSimServerRecord.aliveAtEnd}`
+    );
 
   return {
     block,
@@ -3592,6 +3750,8 @@ async function runBlock(
     measuredInjectRpcs,
     expectedInjectRpcs,
     openServerFallbacks,
+    idleSimServer: idleSimServerRecord,
+    hostAwait,
     resetWaitMs,
     resetWait,
     describeEmpty,
@@ -3632,6 +3792,22 @@ async function runBlock(
     degradedReasons,
     notes,
   };
+}
+
+// ON-im-bg (review run 37609765062): runBlock releases the idle simulator-server after its
+// final teardown on the normal path; when the block throws midway, this finally kills it,
+// so a failed bg block never leaves the stream running into the next block or process.
+// stopIdleSimServer is a no-op when nothing is held.
+async function runBlockReleasing(
+  block: string,
+  config: "OFF" | "ON",
+  injectStrategy?: OpenInjectStrategy | "default"
+): Promise<BlockResult> {
+  try {
+    return await runBlock(block, config, injectStrategy);
+  } finally {
+    await stopIdleSimServer();
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3919,18 +4095,25 @@ async function main(): Promise<void> {
   // OFF-legacy. ON-im-N = the input-manager candidate, ON-uia = the UiAutomation control
   // (one block), OFF-N = the current proprietary release. The pre-ABBA names
   // (ON-uiautomation, ON-input-manager) stay accepted under BENCH_ONLY.
+  //
+  // Review run 37609765062: the default order swaps ON-uia and OFF-legacy for the diagnostic
+  // arms ON-im-bg and ON-hostawait (BG_SIMSERVER_BLOCKS, HOST_AWAIT_BLOCKS): OFF-1, ON-im-1,
+  // ON-im-bg, OFF-2, ON-im-2, ON-hostawait, OFF-3, ON-im-3. ON-uia and OFF-legacy stay
+  // runnable by name.
   const ABBA_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
     ["OFF-1", "OFF"],
     ["ON-im-1", "ON", "input-manager"],
-    ["ON-uia", "ON", "default"],
+    ["ON-im-bg", "ON", "input-manager"],
     ["OFF-2", "OFF"],
     ["ON-im-2", "ON", "input-manager"],
+    ["ON-hostawait", "ON", "input-manager"],
     ["OFF-3", "OFF"],
     ["ON-im-3", "ON", "input-manager"],
-    ["OFF-legacy", "OFF"],
   ];
   const ALL_BLOCKS: Array<[string, "OFF" | "ON", (OpenInjectStrategy | "default")?]> = [
     ...ABBA_BLOCKS,
+    ["ON-uia", "ON", "default"],
+    ["OFF-legacy", "OFF"],
     ["ON-uiautomation", "ON", "default"],
     ["ON-input-manager", "ON", "input-manager"],
   ];
@@ -3947,9 +4130,7 @@ async function main(): Promise<void> {
   // fast-inject backend no longer exist.
   if (only && /scrcpy/i.test(only))
     throw new Error(`BENCH_ONLY="${only}" names a removed scrcpy arm (removed in phase 3n.2)`);
-  const toRun = only
-    ? ALL_BLOCKS.filter(([b]) => b === only)
-    : ABBA_BLOCKS.filter(([b]) => b !== "OFF-legacy");
+  const toRun = only ? ALL_BLOCKS.filter(([b]) => b === only) : ABBA_BLOCKS;
   if (only && toRun.length === 0)
     throw new Error(`BENCH_ONLY="${only}" is not one of ${ALL_BLOCKS.map(([b]) => b).join("|")}`);
 
@@ -3959,7 +4140,7 @@ async function main(): Promise<void> {
       `[bench] === block ${block} (${config}` +
         `${injectStrategy ? `, inject=${injectStrategy}` : ""}) ===`
     );
-    const r = await runBlock(block, config, injectStrategy);
+    const r = await runBlockReleasing(block, config, injectStrategy);
     // Finding 11: hashed after the block, while its device-side APK is still installed.
     r.buildProvenance = buildProvenance(config);
     realDebug(`[bench][${block}] buildProvenance ${JSON.stringify(r.buildProvenance)}`);
