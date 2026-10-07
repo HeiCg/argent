@@ -94,6 +94,7 @@ import { parseDescribeLocate } from "../src/screen-graph/bench/describe-locate";
 import { pickUniqueNode, type QueryNodeLite } from "../src/screen-graph/bench/locate";
 import { ScreenGraphStore } from "../src/screen-graph/store";
 import { runChurnExperiment } from "../src/screen-graph/bench/churn";
+import { formatEnvValue } from "../src/screen-graph/bench/report";
 import {
   countBoth,
   range,
@@ -2205,7 +2206,7 @@ function buildReport(
   L.push("");
   L.push("| Item | Value |");
   L.push("|---|---|");
-  for (const [k, v] of Object.entries(env)) L.push(`| ${k} | ${String(v)} |`);
+  for (const [k, v] of Object.entries(env)) L.push(`| ${k} | ${formatEnvValue(v)} |`);
   L.push("");
   if (CONFIGS.includes("B1") || by("B1")) {
     L.push("## Proprietary provenance (B1)");
@@ -3000,10 +3001,25 @@ async function main(): Promise<void> {
       const churnReg = createRegistry();
       const churnServer = await openServer(churnReg);
       const offBaseDir = join(OUT_DIR, "churn-off-graph");
+      // Review E-1 2026-10-07 finding 1: E1-G5 is graded in code, on the matrix
+      // that just ran (templates OFF): the Settings store shape and the O1/O4
+      // o200k tokens/step p50 (the same `perStepTokensTiktoken.p50` the report's
+      // per-step table prints).
+      const shape = settingsGraphShape();
+      const tokP50 = (id: BenchConfigId): number | undefined => {
+        const v = aggs.find((a) => a.config === id)?.perStepTokensTiktoken.p50;
+        return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      };
+      const g5 = {
+        ...(shape ? { settingsNodes: shape.nodes, settingsEdges: shape.edges } : {}),
+        ...(tokP50("O1") !== undefined ? { o1TokP50: tokP50("O1") } : {}),
+        ...(tokP50("O4") !== undefined ? { o4TokP50: tokP50("O4") } : {}),
+      };
       const result = await runChurnExperiment({
         server: churnServer,
         graphBaseDir: graphDir(),
         offBaseDir,
+        g5,
         launchFeed: (seed: number) => {
           adbTry(["shell", `am force-stop ${CHURN_PKG}`], 6_000);
           adbTry(
@@ -3026,7 +3042,10 @@ async function main(): Promise<void> {
             navTotal: result.navTotal,
             navSuccessPresent: result.navSuccessPresent,
             navTotalPresent: result.navTotalPresent,
+            nograph: result.nograph,
+            g5,
             navAttempts: result.navAttempts,
+            presenceSweeps: result.presenceSweeps,
             misattributionRows: result.misattributionRows,
             misattributionRowTotal: result.misattributionRowTotal,
             carouselAttributed: result.carouselAttributed,
@@ -3042,10 +3061,14 @@ async function main(): Promise<void> {
         navTotal: result.navTotal,
         navSuccessPresent: result.navSuccessPresent,
         navTotalPresent: result.navTotalPresent,
+        nograph: result.nograph,
       };
-      const churnFail = Object.entries(result.gates).some(([, g]) => g.pass === false);
+      // The OFF-nograph comparator is graded with the same bar but never fails the job.
+      const churnFail = Object.entries(result.gates).some(
+        ([, g]) => g.pass === false && !g.comparator
+      );
       process.stdout.write(
-        `[bench-sg] churn experiment done (run ${runId}): nav ${result.navSuccess}/${result.navTotal} (target present ${result.navSuccessPresent}/${result.navTotalPresent}); gates ${Object.entries(
+        `[bench-sg] churn experiment done (run ${runId}): search ON ${result.navSuccess}/${result.navTotal} (present ${result.navSuccessPresent}/${result.navTotalPresent}) vs OFF-nograph ${result.nograph.ok}/${result.nograph.total} (present ${result.nograph.presentOk}/${result.nograph.presentTotal}); gates ${Object.entries(
           result.gates
         )
           .map(([id, g]) => `${id}=${g.pass === null ? "desc" : g.pass ? "pass" : "FAIL"}`)

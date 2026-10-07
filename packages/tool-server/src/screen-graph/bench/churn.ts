@@ -9,8 +9,19 @@
  *    (per-arm scoping BEFORE the run — the hard constraint).
  *
  * It measures store growth per session (nodes/edges/bytes), volatility, template
- * instances, describe summary tokens, container misattribution, and a
- * `navigate-to`-through-a-template-edge success rate, then grades E1-G1..E1-G6.
+ * instances, describe summary tokens, container misattribution, and the
+ * reliability of the template step's scroll-and-exact-text search, then grades
+ * E1-G1..E1-G6.
+ *
+ * Review E-1 2026-10-07 (E-1.1): the search runs in TWO arms on the same targets
+ * and sessions — ON (routed through the store's template edge, scoped to the
+ * template's container) and OFF-nograph (the same search with no store and no
+ * template) — so G3 says what the template adds over a graph-free search
+ * (finding 2). Arrival is the requested item's detail headline, not any page of
+ * the detail layout (finding 3). Each attempt records wall time and per-swipe
+ * timing (finding 4). Presence is OBSERVED by a full sweep per session, and 4
+ * deliberately absent targets measure the give-up cost (finding 5). E1-G5 is
+ * graded against its pre-registered bar (finding 1).
  * The heavy lifting is host-side and shared with production (`resolveTemplate`,
  * `store.observe`, `executeTemplateStep`), so the ON arm is what the wiring would
  * persist. Best-effort: every device call is guarded so a flake degrades a
@@ -21,8 +32,15 @@ import { resolveTemplate, stripId, resolveContainer } from "../template";
 import type { TemplateElement } from "../template";
 import { buildScreenPayload } from "../../utils/screen-graph-open-wiring";
 import { buildSummary, renderSummary } from "../describe-tiers";
-import { planToTemplate, multisetJaccard, nodeResourceIds } from "../plan";
-import { executeTemplateStep } from "../../tools/navigate-to";
+import { multisetJaccard } from "../plan";
+import { nonScrollRids } from "../template";
+import {
+  executeTemplateStep,
+  planTemplateRoute,
+  sweepContainer,
+  type LiveElement,
+  type TemplateStepOptions,
+} from "../../tools/navigate-to";
 import { countBoth, pct } from "./tokens";
 import type { OpenDeviceServerApi } from "../../blueprints/android-open-server";
 import type { OpenServerElement } from "../../tools/describe/platforms/android/open-server-tree";
@@ -42,6 +60,27 @@ const MAX_ON_BYTES = 64 * 1024;
 const NAV_PASS_MIN = 38;
 const NAV_PASS_OF = 40;
 /**
+ * Review E-1 finding 5: rows the feed never has (it renders Story 0..49). One per
+ * churn100 session 1..4, run in both arms, to measure the give-up cost (`swept`,
+ * `wallMs`); excluded from the G3 denominator and reported separately.
+ */
+const ABSENT_TARGETS = [60, 61, 62, 63];
+/** The list container's stripped resource id (the presence sweep's container). */
+const LIST_ID = "list";
+/** Arrival layout match: multiset Jaccard of non-scroll rids vs the detail reference. */
+const ARRIVAL_JACCARD = 0.9;
+/**
+ * E1-G5's pre-registered bar (`2026-09-15-screen-graph-phase-e1.md`, gate table):
+ * the Settings store shape within the published variance (11/10 D.4.1, 11/11 D.4,
+ * 10/9 runs 34870686468 and 34888577404) and the o200k tokens/step p50 inside the
+ * published run-to-run floor (O1 138-179, O4 20-22,
+ * `2026-09-13-screen-graph-phase-d4-results-ci.md:294-299`).
+ */
+const G5_NODES: [number, number] = [10, 11];
+const G5_EDGES: [number, number] = [9, 11];
+const G5_O1: [number, number] = [138, 179];
+const G5_O4: [number, number] = [20, 22];
+/**
  * Feed readiness before a nav attempt. Run 37572199458's logcat shows
  * `Displayed .../.FeedActivity: +1s464ms` after a force-stop relaunch, longer
  * than the fixed 1.2 s sleep, so an attempt could start on the splash window.
@@ -50,6 +89,9 @@ const FEED_READY_TIMEOUT_MS = 6000;
 const FEED_READY_POLL_MS = 250;
 
 type Condition = "churn100" | "churn0";
+
+/** Search arm: through the template edge (ON) or graph-free (OFF-nograph). */
+type Arm = "on" | "nograph";
 
 interface StateSnapshot {
   tree: OpenServerElement[];
@@ -78,29 +120,72 @@ interface SessionMetric {
   summaryTokensOff: number;
 }
 
-/** One `navigate-to` template-step attempt (the E1-G3 denominator). */
+/** One template-step search attempt (the E1-G3 denominator, per arm). */
 interface NavAttempt {
+  arm: Arm;
   session: number;
   target: number;
+  /** A row the feed never has (ABSENT_TARGETS): a give-up probe, outside G3. */
+  deliberatelyAbsent: boolean;
+  /**
+   * `Story <target>` was OBSERVED in this session's presence sweep (review E-1
+   * finding 5), not inferred from the app model. False for the absent probes.
+   */
+  targetPresent: boolean;
   /** Container scrolls `executeTemplateStep` spent; -1 when it never ran. */
   scrolls: number;
   tapped: boolean;
+  /** The landed screen shows exactly `Headline <seed>-<target>` (the requested item's detail). */
+  headlineOk: boolean;
+  /** The landed screen's non-scroll rid multiset matches the detail layout (Jaccard >= 0.9). */
+  layoutOk: boolean;
+  /** tapped && headlineOk && layoutOk. */
   arrived: boolean;
-  /**
-   * The target row existed in the feed at attempt time. Ground truth from the
-   * app's content model (`Items.rowTitle`): rows are `Story 0..items-1`, never
-   * deleted, renamed or reordered (the seed churns only the summary and the
-   * detail headline), so this is `target < ITEMS`. Attempts on an absent target
-   * are excluded from the present-only E1-G3 denominator.
-   */
-  targetPresent: boolean;
   /** ms the feed took to show `Story 0` after the relaunch; -1 when it never did. */
   feedReadyMs: number;
+  /** Wall time of the search step (search + tap + landed read), ms; -1 when it never ran. */
+  wallMs: number;
+  /** Wall time of the whole attempt incl. the relaunch and the arrival read, ms. */
+  attemptMs: number;
+  /** Host wall time of each swipe RPC, ms. */
+  swipeMs: number[];
+  /** Device-reported DOWN-to-UP span of each swipe (APK >= 0.1.24), ms. */
+  deliveredMs: number[];
   /** `executeTemplateStep` telemetry: end-of-list turnarounds, gapped scrolls, clean sweep. */
   reversals?: number;
   gaps?: number;
   swept?: boolean;
   reason?: string;
+}
+
+/** One session's presence sweep of the list (review E-1 finding 5). */
+interface PresenceSweep {
+  session: number;
+  seed: number;
+  /** Story indices observed in the list during the sweep, ascending. */
+  observed: number[];
+  scrolls: number;
+  gaps: number;
+  complete: boolean;
+  wallMs: number;
+  reason?: string;
+}
+
+/** The matrix numbers E1-G5 is graded on (read by the bench script after the matrix). */
+export interface G5Input {
+  settingsNodes?: number;
+  settingsEdges?: number;
+  o1TokP50?: number;
+  o4TokP50?: number;
+}
+
+interface Gate {
+  /** What the gate measures (the output name). */
+  name: string;
+  pass: boolean | null;
+  detail: string;
+  /** Graded with the same bar for comparison, but never fails the job. */
+  comparator?: boolean;
 }
 
 interface ChurnDeps {
@@ -111,18 +196,24 @@ interface ChurnDeps {
   graphBaseDir: string;
   /** A dir OUTSIDE the gated graph dir for the OFF store. */
   offBaseDir: string;
+  /** E1-G5 inputs from the D.4.1 matrix that ran before the churn experiment. */
+  g5?: G5Input;
   log: (m: string) => void;
 }
 
 interface ChurnResult {
   metrics: SessionMetric[];
-  gates: Record<string, { pass: boolean | null; detail: string }>;
+  gates: Record<string, Gate>;
+  /** ON arm, every non-probe attempt (raw). */
   navSuccess: number;
   navTotal: number;
-  /** E1-G3 over attempts whose target was present at attempt time (the gated number). */
+  /** E1-G3 (ON) over attempts whose target was observed present (the gated number). */
   navSuccessPresent: number;
   navTotalPresent: number;
+  /** The OFF-nograph arm, same counts. */
+  nograph: { ok: number; total: number; presentOk: number; presentTotal: number };
   navAttempts: NavAttempt[];
+  presenceSweeps: PresenceSweep[];
   misattributionRows: number;
   misattributionRowTotal: number;
   carouselAttributed: number;
@@ -269,9 +360,48 @@ async function findExact(
   }
 }
 
-/** The app's row model (`Items.rowTitle`): is `Story <target>` in the feed? */
-function targetInFeed(target: number): boolean {
-  return Number.isInteger(target) && target >= 0 && target < ITEMS;
+/** The detail headline the churn app shows for row `i` at `seed` (`Items.rowSummary`). */
+function headlineFor(seed: number, i: number): string {
+  return `Headline ${seed}-${i}`;
+}
+
+/**
+ * Arrival at the REQUESTED item (review E-1 finding 3): the landed tree shows the
+ * item's exact detail headline AND its non-scroll rid multiset matches the detail
+ * layout. The headline alone is not enough (the feed's row summary carries the
+ * same text); the layout alone is not either (any item's detail matches it).
+ */
+export function arrivalCheck(
+  tree: ReadonlyArray<{ text?: string }>,
+  afterRids: readonly string[],
+  headline: string,
+  detailRids: readonly string[]
+): { headlineOk: boolean; layoutOk: boolean; arrived: boolean } {
+  const headlineOk = tree.some((el) => (el.text ?? "").trim() === headline);
+  const layoutOk =
+    detailRids.length > 0 && multisetJaccard(afterRids, detailRids) >= ARRIVAL_JACCARD;
+  return { headlineOk, layoutOk, arrived: headlineOk && layoutOk };
+}
+
+/** p50 / max of a millisecond series (null when empty). */
+export function summarizeMs(xs: readonly number[]): {
+  n: number;
+  p50: number | null;
+  max: number | null;
+} {
+  if (xs.length === 0) return { n: 0, p50: null, max: null };
+  const s = xs.slice().sort((a, b) => a - b);
+  return { n: s.length, p50: pct(s, 50), max: s[s.length - 1]! };
+}
+
+/** Story indices among a sweep's labels. */
+function storyIndices(labels: Iterable<string>): number[] {
+  const out = new Set<number>();
+  for (const l of labels) {
+    const m = /^Story (\d+)$/.exec(l.trim());
+    if (m) out.add(Number(m[1]));
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 /** Poll until the feed shows `Story 0` (the list is drawn); ms waited, or -1. */
@@ -321,13 +451,118 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
   });
 
   const metrics: SessionMetric[] = [];
-  let navSuccess = 0;
-  let navTotal = 0;
   const navAttempts: NavAttempt[] = [];
   let misRows = 0;
   let misRowTotal = 0;
   let carouselAttr = 0;
   let carouselTotal = 0;
+  const presenceSweeps: PresenceSweep[] = [];
+  /**
+   * The detail screen's non-scroll rid multiset, captured from the first recorded
+   * row tap (graph-independent, so both arms share one arrival predicate).
+   */
+  let detailRids: string[] | null = null;
+
+  /**
+   * One search attempt on a fresh feed. ON plans the template route on the ON
+   * store (as `navigate-to` does with `ARGENT_SG_TEMPLATES=1`) and searches inside
+   * the template's container; OFF-nograph runs the same search with no store and
+   * no template (the largest scrollable).
+   */
+  const searchAttempt = async (
+    arm: Arm,
+    session: number,
+    seed: number,
+    target: number,
+    deliberatelyAbsent: boolean,
+    seen: Set<number>
+  ): Promise<NavAttempt> => {
+    const tA = Date.now();
+    launchFeed(seed);
+    await sleep(1200);
+    const feedReadyMs = await waitForFeed(server);
+    const base = {
+      arm,
+      session,
+      target,
+      deliberatelyAbsent,
+      targetPresent: !deliberatelyAbsent && seen.has(target),
+      feedReadyMs,
+    };
+    const never = (reason: string): NavAttempt => ({
+      ...base,
+      scrolls: -1,
+      tapped: false,
+      headlineOk: false,
+      layoutOk: false,
+      arrived: false,
+      wallMs: -1,
+      attemptMs: Date.now() - tA,
+      swipeMs: [],
+      deliveredMs: [],
+      reason,
+    });
+    const cur = await snapshot(server);
+    if (!cur) return never("no snapshot");
+    const text = `Story ${target}`;
+    let opts: TemplateStepOptions = {};
+    if (arm === "on") {
+      const route = planTemplateRoute(
+        { nodes: on.nodes, edges: on.edges },
+        cur.idHash,
+        text,
+        cur.tree as unknown as LiveElement[],
+        true
+      );
+      if (!route) return never("no template route");
+      const containerId = route.steps[route.steps.length - 1]?.template?.containerId;
+      if (containerId !== undefined) opts = { containerId };
+    }
+    let out: Awaited<ReturnType<typeof executeTemplateStep>>;
+    try {
+      out = await executeTemplateStep(server, { width: cur.w, height: cur.h }, text, opts);
+    } catch (e) {
+      return never(`search error: ${String(e)}`);
+    }
+    let check = { headlineOk: false, layoutOk: false, arrived: false };
+    if (out.tapped) {
+      const after = await snapshot(server);
+      check = arrivalCheck(
+        after?.tree ?? [],
+        after
+          ? nonScrollRids(after.tree as unknown as TemplateElement[], PKG)
+          : out.afterResourceIds,
+        headlineFor(seed, target),
+        detailRids ?? []
+      );
+      await back(server);
+      await sleep(400);
+    }
+    return {
+      ...base,
+      scrolls: out.scrolls,
+      tapped: out.tapped,
+      ...check,
+      wallMs: out.wallMs,
+      attemptMs: Date.now() - tA,
+      swipeMs: out.swipeMs,
+      deliveredMs: out.deliveredMs,
+      reversals: out.reversals,
+      gaps: out.gaps,
+      swept: out.swept,
+      ...(check.arrived
+        ? {}
+        : {
+            reason:
+              out.reason ??
+              (!check.headlineOk
+                ? "arrival: headline"
+                : !check.layoutOk
+                  ? "arrival: layout"
+                  : "arrival"),
+          }),
+    };
+  };
 
   for (const condition of ["churn100", "churn0"] as Condition[]) {
     for (let session = 1; session <= SESSIONS; session++) {
@@ -373,6 +608,7 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
         const after = await snapshot(server);
         if (after && after.idHash && after.idHash !== before.idHash) {
           recordTap(on, off, before, after, pt.x, pt.y, story);
+          detailRids ??= nonScrollRids(after.tree as unknown as TemplateElement[], PKG);
         }
       }
 
@@ -462,84 +698,57 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
           : 0,
       });
 
-      // --- navigate-to through a template edge, churn100 only (n = 8 x 5 = 40) ---
+      // --- template-step search, churn100 only: presence sweep, then each target
+      //     (NAV_TARGETS + one deliberately absent probe) in BOTH arms, the arm
+      //     order alternating by session (review E-1 findings 2, 3, 4, 5) ---
       if (condition === "churn100") {
-        for (const target of NAV_TARGETS) {
-          navTotal += 1;
-          const targetPresent = targetInFeed(target);
-          launchFeed(seed);
-          await sleep(1200);
-          const feedReadyMs = await waitForFeed(server);
-          const cur = await snapshot(server);
-          if (!cur) {
-            navAttempts.push({
-              session,
-              target,
-              scrolls: -1,
-              tapped: false,
-              arrived: false,
-              targetPresent,
-              feedReadyMs,
-              reason: "no snapshot",
-            });
-            continue;
+        launchFeed(seed);
+        await sleep(1200);
+        await waitForFeed(server);
+        const sweepSnap = await snapshot(server);
+        const sw = await sweepContainer(
+          server,
+          { width: sweepSnap?.w ?? 1080, height: sweepSnap?.h ?? 2400 },
+          { containerId: LIST_ID }
+        );
+        const observed = storyIndices(sw.labels);
+        presenceSweeps.push({
+          session,
+          seed,
+          observed,
+          scrolls: sw.scrolls,
+          gaps: sw.gaps,
+          complete: sw.complete,
+          wallMs: sw.wallMs,
+          ...(sw.reason ? { reason: sw.reason } : {}),
+        });
+        log(
+          `[churn] presence sweep s${session}: ${observed.length} rows observed (scrolls=${sw.scrolls}, gaps=${sw.gaps}, complete=${sw.complete}, wallMs=${sw.wallMs})`
+        );
+        const seen = new Set(observed);
+        const absent = ABSENT_TARGETS[session - 1];
+        const targets = absent === undefined ? NAV_TARGETS : [...NAV_TARGETS, absent];
+        const arms: Arm[] = session % 2 === 1 ? ["on", "nograph"] : ["nograph", "on"];
+        for (const target of targets) {
+          for (const arm of arms) {
+            const a = await searchAttempt(arm, session, seed, target, absent === target, seen);
+            navAttempts.push(a);
+            const tele = `scrolls=${a.scrolls}, reversals=${a.reversals ?? "-"}, gaps=${a.gaps ?? "-"}, swept=${a.swept ?? "-"}, wallMs=${a.wallMs}, feedReadyMs=${a.feedReadyMs}, present=${a.targetPresent}${a.deliberatelyAbsent ? ", probe" : ""}`;
+            log(
+              a.arrived
+                ? `[churn] ${arm} Story ${target} ok (${tele})`
+                : `[churn] ${arm} Story ${target} not reached (tapped=${a.tapped}, headline=${a.headlineOk}, layout=${a.layoutOk}, ${tele}, reason=${a.reason ?? "arrival"})`
+            );
           }
-          const plan = planToTemplate({ nodes: on.nodes, edges: on.edges }, cur.idHash);
-          if (!plan) {
-            log(`[churn] no template route from feed for target ${target}`);
-            navAttempts.push({
-              session,
-              target,
-              scrolls: -1,
-              tapped: false,
-              arrived: false,
-              targetPresent,
-              feedReadyMs,
-              reason: "no template route",
-            });
-            continue;
-          }
-          const out = await executeTemplateStep(
-            server,
-            { width: cur.w, height: cur.h },
-            `Story ${target}`
-          );
-          const tplNode = on.getNode(plan.templateNode);
-          const arrived =
-            out.tapped &&
-            !!tplNode &&
-            multisetJaccard(out.afterResourceIds, nodeResourceIds(tplNode)) >= 0.9;
-          if (arrived) navSuccess += 1;
-          navAttempts.push({
-            session,
-            target,
-            scrolls: out.scrolls,
-            tapped: out.tapped,
-            arrived,
-            targetPresent,
-            feedReadyMs,
-            reversals: out.reversals,
-            gaps: out.gaps,
-            swept: out.swept,
-            ...(arrived ? {} : { reason: out.reason ?? "arrival" }),
-          });
-          const tele = `scrolls=${out.scrolls}, reversals=${out.reversals}, gaps=${out.gaps}, swept=${out.swept}, feedReadyMs=${feedReadyMs}, present=${targetPresent}`;
-          log(
-            arrived
-              ? `[churn] nav to Story ${target} ok (${tele})`
-              : `[churn] nav to Story ${target} failed (tapped=${out.tapped}, ${tele}, reason=${out.reason ?? "arrival"})`
-          );
-          await back(server);
-          await sleep(400);
         }
       }
     }
   }
 
   return grade(metrics, {
-    navSuccess,
-    navTotal,
     navAttempts,
+    presenceSweeps,
+    g5: deps.g5 ?? {},
     misRows,
     misRowTotal,
     carouselAttr,
@@ -550,34 +759,78 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
 }
 
 /**
- * E1-G3: navigate-to success >= 38/40, over attempts whose target was present at
- * attempt time (an absent target's `unresolved` is the correct answer). The bar
- * scales with the present-only denominator; the raw number is reported too.
+ * E1-G3 (template-step search reliability): success >= 38/40 over attempts whose
+ * target was OBSERVED present in that session's sweep; the deliberately absent
+ * probes never count (review E-1 finding 5). The bar scales with the present-only
+ * denominator; the raw number (every non-probe attempt) is reported too.
  */
-export function gradeNavG3(attempts: Array<Pick<NavAttempt, "arrived" | "targetPresent">>): {
+export function gradeNavG3(
+  attempts: Array<
+    Pick<NavAttempt, "arrived" | "targetPresent"> & Partial<Pick<NavAttempt, "deliberatelyAbsent">>
+  >
+): {
   pass: boolean;
   presentOk: number;
   presentTotal: number;
+  rawOk: number;
+  rawTotal: number;
   detail: string;
 } {
-  const present = attempts.filter((a) => a.targetPresent);
+  const scored = attempts.filter((a) => !a.deliberatelyAbsent);
+  const present = scored.filter((a) => a.targetPresent);
   const presentOk = present.filter((a) => a.arrived).length;
-  const rawOk = attempts.filter((a) => a.arrived).length;
+  const rawOk = scored.filter((a) => a.arrived).length;
   const bar = Math.ceil((NAV_PASS_MIN / NAV_PASS_OF) * present.length);
   return {
     pass: present.length > 0 && presentOk >= bar,
     presentOk,
     presentTotal: present.length,
-    detail: `present-only ${presentOk}/${present.length} (bar ${bar}/${present.length} = ${NAV_PASS_MIN}/${NAV_PASS_OF}); raw ${rawOk}/${attempts.length}; D.4.1 O5 baseline 59/60`,
+    rawOk,
+    rawTotal: scored.length,
+    detail: `present-only ${presentOk}/${present.length} (bar ${bar}/${present.length} = ${NAV_PASS_MIN}/${NAV_PASS_OF}); raw ${rawOk}/${scored.length}`,
+  };
+}
+
+/**
+ * E1-G5 against its pre-registered bar (review E-1 finding 1): the Settings store
+ * shape inside the published range AND the O1/O4 o200k tokens/step p50 inside the
+ * published floors. A missing number is a FAIL ("not measured"), never a pass.
+ */
+export function gradeG5(input: G5Input): { pass: boolean; detail: string } {
+  const fields: Array<[keyof G5Input, string]> = [
+    ["settingsNodes", "settings store nodes"],
+    ["settingsEdges", "settings store edges"],
+    ["o1TokP50", "O1 tokens p50"],
+    ["o4TokP50", "O4 tokens p50"],
+  ];
+  const missing = fields
+    .filter(([k]) => typeof input[k] !== "number" || !Number.isFinite(input[k]))
+    .map(([, label]) => label);
+  if (missing.length) return { pass: false, detail: `not measured: ${missing.join(", ")}` };
+  const n = input.settingsNodes!;
+  const e = input.settingsEdges!;
+  const o1 = input.o1TokP50!;
+  const o4 = input.o4TokP50!;
+  const within = (v: number, [lo, hi]: [number, number]) => v >= lo && v <= hi;
+  const shapeOk = within(n, G5_NODES) && within(e, G5_EDGES);
+  const o1Ok = within(o1, G5_O1);
+  const o4Ok = within(o4, G5_O4);
+  const inOut = (ok: boolean) => (ok ? "in" : "not in");
+  return {
+    pass: shapeOk && o1Ok && o4Ok,
+    detail:
+      `store ${n}n/${e}e ${inOut(shapeOk)} ${G5_NODES[0]}-${G5_NODES[1]}n/${G5_EDGES[0]}-${G5_EDGES[1]}e; ` +
+      `O1 ${o1} ${inOut(o1Ok)} ${G5_O1[0]}-${G5_O1[1]}; O4 ${o4} ${inOut(o4Ok)} ${G5_O4[0]}-${G5_O4[1]} ` +
+      `(pre-registered, 2026-09-15-screen-graph-phase-e1.md)`,
   };
 }
 
 function grade(
   metrics: SessionMetric[],
   ctx: {
-    navSuccess: number;
-    navTotal: number;
     navAttempts: NavAttempt[];
+    presenceSweeps: PresenceSweep[];
+    g5: G5Input;
     misRows: number;
     misRowTotal: number;
     carouselAttr: number;
@@ -607,6 +860,7 @@ function grade(
     );
   }
   gates["E1-G1"] = {
+    name: "store growth per session (ON, churn100)",
     pass: g1,
     detail: `ON [${deltas.join(", ")}] (<= ${MAX_NODE_DELTA}n/${MAX_EDGE_DELTA}e); OFF [${offDeltas.join(", ")}]`,
   };
@@ -615,15 +869,27 @@ function grade(
   const lastOn = churn100[churn100.length - 1];
   const g2 = !!lastOn && lastOn.onBytes <= MAX_ON_BYTES;
   gates["E1-G2"] = {
+    name: "store bytes at K=5 (ON)",
     pass: g2,
     detail: lastOn
       ? `ON ${lastOn.onBytes} B (<= ${MAX_ON_BYTES}); OFF ${lastOn.offBytes} B`
       : "no churn100 metric",
   };
 
-  // E1-G3: present-only navigate-to success (see gradeNavG3).
-  const g3 = gradeNavG3(ctx.navAttempts);
-  gates["E1-G3"] = { pass: g3.pass, detail: g3.detail };
+  // E1-G3: template-step search reliability, ON graded; OFF-nograph graded alongside.
+  const onG3 = gradeNavG3(ctx.navAttempts.filter((a) => a.arm === "on"));
+  const ngG3 = gradeNavG3(ctx.navAttempts.filter((a) => a.arm === "nograph"));
+  gates["E1-G3"] = {
+    name: "template-step search reliability (ON)",
+    pass: onG3.pass,
+    detail: `ON ${onG3.detail}; vs OFF-nograph ${ngG3.presentOk}/${ngG3.presentTotal}`,
+  };
+  gates["E1-G3-nograph"] = {
+    name: "same search without store or template (OFF-nograph, comparator)",
+    pass: ngG3.pass,
+    detail: `OFF-nograph ${ngG3.detail}`,
+    comparator: true,
+  };
 
   // E1-G4: invariants on the ON arm; OFF duplicateEdgeTargets RECORDED.
   const dupScreens = ctx.on.duplicateScreens().length;
@@ -640,36 +906,47 @@ function grade(
     ctx.on.edges.length <= 600 &&
     onBytes <= 2 * 1024 * 1024;
   gates["E1-G4"] = {
+    name: "invariants G-I1..G-I6 (ON)",
     pass: g4,
     detail: `ON dupScreens=${dupScreens} dupEdges=${dupEdges} dangling=${dangling} hygiene=${hygiene} nodes=${Object.keys(ctx.on.nodes).length} edges=${ctx.on.edges.length}; OFF dupEdgeTargets=${ctx.off.duplicateEdgeTargets().length} (recorded, not gated)`,
   };
 
-  // E1-G5: reported by the Settings/Chrome matrix (templates OFF) — see the run's
-  // invariants line + settingsGraph. Marked descriptive here (graded in the report).
+  // E1-G5: the D.4.1 matrix (templates OFF) against the pre-registered bar.
+  const g5 = gradeG5(ctx.g5);
   gates["E1-G5"] = {
-    pass: null,
-    detail: "D.4.1 matrix (templates OFF) non-regression — see the run's settingsGraph + tokens",
+    name: "D.4.1 matrix non-regression (templates OFF)",
+    pass: g5.pass,
+    detail: g5.detail,
   };
 
-  // E1-G6: summary tokens ON vs OFF — DESCRIPTIVE ONLY.
+  // E1-G6: summary tokens ON vs OFF — DESCRIPTIVE ONLY (review E-1 finding 7:
+  // the number is a mean of per-session p50s and the topN=6 cap bounds both).
   const onTok = churn100.map((m) => m.summaryTokensOn);
   const offTok = churn100.map((m) => m.summaryTokensOff);
   const mean = (xs: number[]) =>
     xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : 0;
   gates["E1-G6"] = {
+    name: "feed summary tokens/step, ON vs OFF",
     pass: null,
-    detail: `feed summary tokens/step p50: ON ~${mean(onTok)} vs OFF ~${mean(offTok)} (descriptive; topN=6 caps both)`,
+    detail: `mean of per-session p50s: ON ~${mean(onTok)} vs OFF ~${mean(offTok)} (descriptive; cap-bound, topN=6 caps both)`,
   };
 
   const markdown = renderMarkdown(metrics, gates, ctx);
   return {
     metrics,
     gates,
-    navSuccess: ctx.navSuccess,
-    navTotal: ctx.navTotal,
-    navSuccessPresent: g3.presentOk,
-    navTotalPresent: g3.presentTotal,
+    navSuccess: onG3.rawOk,
+    navTotal: onG3.rawTotal,
+    navSuccessPresent: onG3.presentOk,
+    navTotalPresent: onG3.presentTotal,
+    nograph: {
+      ok: ngG3.rawOk,
+      total: ngG3.rawTotal,
+      presentOk: ngG3.presentOk,
+      presentTotal: ngG3.presentTotal,
+    },
     navAttempts: ctx.navAttempts,
+    presenceSweeps: ctx.presenceSweeps,
     misattributionRows: ctx.misRows,
     misattributionRowTotal: ctx.misRowTotal,
     carouselAttributed: ctx.carouselAttr,
@@ -678,13 +955,16 @@ function grade(
   };
 }
 
+function fmtMs(s: { n: number; p50: number | null; max: number | null }): string {
+  return s.n === 0 ? "n/a (n=0)" : `${s.p50} / ${s.max} (n=${s.n})`;
+}
+
 function renderMarkdown(
   metrics: SessionMetric[],
   gates: ChurnResult["gates"],
   ctx: {
-    navSuccess: number;
-    navTotal: number;
     navAttempts: NavAttempt[];
+    presenceSweeps: PresenceSweep[];
     misRows: number;
     misRowTotal: number;
     carouselAttr: number;
@@ -707,30 +987,78 @@ function renderMarkdown(
     );
   }
   L.push("\n## Gates\n");
-  L.push("| gate | verdict | detail |");
-  L.push("| --- | --- | --- |");
+  L.push("| gate | statistic | verdict | detail |");
+  L.push("| --- | --- | --- | --- |");
   for (const [id, g] of Object.entries(gates)) {
     const v = g.pass === null ? "DESCRIPTIVE" : g.pass ? "PASS" : "FAIL";
-    L.push(`| ${id} | ${v} | ${g.detail} |`);
+    L.push(`| ${id} | ${g.name} | ${g.comparator ? `${v} (comparator)` : v} | ${g.detail} |`);
   }
+
+  L.push("\n## Template-step search reliability: ON vs OFF-nograph\n");
+  L.push(
+    "Same targets, same sessions, same relaunch. ON plans the template route on the ON store and searches inside the template's container; OFF-nograph runs the same scroll-and-exact-text search with no store and no template (largest scrollable). Arrival = the landed tree shows exactly `Headline <seed>-<target>` AND its non-scroll rid multiset matches the detail layout (Jaccard >= 0.9). Present = observed in the session's presence sweep. The deliberately absent probes are excluded here (see give-up cost).\n"
+  );
+  L.push(
+    "| arm | present ok / present | raw ok / attempts | wallMs p50 / max | swipeMs p50 / max | deliveredMs p50 / max | attempts with gaps | scrolls p50 / max |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const arm of ["on", "nograph"] as Arm[]) {
+    const as = ctx.navAttempts.filter((a) => a.arm === arm && !a.deliberatelyAbsent);
+    const g = gradeNavG3(as);
+    const ran = as.filter((a) => a.wallMs >= 0);
+    L.push(
+      `| ${arm === "on" ? "ON" : "OFF-nograph"} | ${g.presentOk}/${g.presentTotal} | ${g.rawOk}/${g.rawTotal} | ${fmtMs(summarizeMs(ran.map((a) => a.wallMs)))} | ${fmtMs(summarizeMs(as.flatMap((a) => a.swipeMs)))} | ${fmtMs(summarizeMs(as.flatMap((a) => a.deliveredMs)))} | ${ran.filter((a) => (a.gaps ?? 0) > 0).length}/${ran.length} | ${fmtMs(summarizeMs(ran.map((a) => a.scrolls)))} |`
+    );
+  }
+
+  L.push("\n## Give-up cost (deliberately absent targets)\n");
+  L.push("| arm | session | target | scrolls | reversals | gaps | swept | wallMs | reason |");
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  const opt = (v: number | boolean | undefined) => (v === undefined ? "-" : String(v));
+  const probes = ctx.navAttempts.filter((a) => a.deliberatelyAbsent);
+  for (const a of probes) {
+    L.push(
+      `| ${a.arm} | ${a.session} | Story ${a.target} | ${a.scrolls < 0 ? "-" : a.scrolls} | ${opt(a.reversals)} | ${opt(a.gaps)} | ${opt(a.swept)} | ${a.wallMs} | ${a.reason ?? ""} |`
+    );
+  }
+  for (const arm of ["on", "nograph"] as Arm[]) {
+    const ps = probes.filter((a) => a.arm === arm && a.wallMs >= 0);
+    L.push(
+      `\n- ${arm === "on" ? "ON" : "OFF-nograph"}: swept ${ps.filter((a) => a.swept).length}/${ps.length}; give-up wallMs p50 / max ${fmtMs(summarizeMs(ps.map((a) => a.wallMs)))}.`
+    );
+  }
+
+  L.push("\n## Presence sweeps (observed rows per churn100 session)\n");
+  L.push(
+    "| session | seed | rows observed | NAV targets missing | scrolls | gaps | complete | wallMs |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const p of ctx.presenceSweeps) {
+    const seen = new Set(p.observed);
+    const missing = NAV_TARGETS.filter((t) => !seen.has(t));
+    L.push(
+      `| ${p.session} | ${p.seed} | ${p.observed.length} | ${missing.length ? missing.join(", ") : "none"} | ${p.scrolls} | ${p.gaps} | ${p.complete} | ${p.wallMs} |`
+    );
+  }
+
   L.push("\n## Containment audit\n");
   L.push(
     `- Row taps attributed to \`#list\`: ${ctx.misRowTotal - ctx.misRows}/${ctx.misRowTotal} (misattributed ${ctx.misRows}).`
   );
   L.push(`- Carousel taps attributed to \`#carousel\`: ${ctx.carouselAttr}/${ctx.carouselTotal}.`);
-  const present = ctx.navAttempts.filter((a) => a.targetPresent);
+
+  L.push("\n## Search attempts (churn100)\n");
   L.push(
-    `- navigate-to (template step): raw ${ctx.navSuccess}/${ctx.navTotal}; target present ${present.filter((a) => a.arrived).length}/${present.length}.`
+    "| arm | session | target | probe | present | feed ready ms | scrolls | reversals | gaps | swept | wallMs | swipeMs p50 | deliveredMs p50 | tapped | headline | layout | arrived | reason |"
   );
-  L.push("\n## navigate-to attempts (churn100)\n");
   L.push(
-    "| session | target | present | feed ready ms | scrolls | reversals | gaps | swept | tapped | arrived | reason |"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
   );
-  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  const opt = (v: number | boolean | undefined) => (v === undefined ? "-" : String(v));
   for (const a of ctx.navAttempts) {
+    const sw = summarizeMs(a.swipeMs);
+    const dl = summarizeMs(a.deliveredMs);
     L.push(
-      `| ${a.session} | Story ${a.target} | ${a.targetPresent} | ${a.feedReadyMs} | ${a.scrolls < 0 ? "-" : a.scrolls} | ${opt(a.reversals)} | ${opt(a.gaps)} | ${opt(a.swept)} | ${a.tapped} | ${a.arrived} | ${a.reason ?? ""} |`
+      `| ${a.arm} | ${a.session} | Story ${a.target} | ${a.deliberatelyAbsent} | ${a.targetPresent} | ${a.feedReadyMs} | ${a.scrolls < 0 ? "-" : a.scrolls} | ${opt(a.reversals)} | ${opt(a.gaps)} | ${opt(a.swept)} | ${a.wallMs} | ${sw.p50 ?? "-"} | ${dl.p50 ?? "-"} | ${a.tapped} | ${a.headlineOk} | ${a.layoutOk} | ${a.arrived} | ${a.reason ?? ""} |`
     );
   }
   L.push("");
