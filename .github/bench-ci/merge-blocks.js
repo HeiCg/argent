@@ -36,6 +36,10 @@
 //    metric per (block, verb): `emptyRates` (empty / windows that read a describe,
 //    Wilson 95 % CI) graded by P11 (≤ 25 %; stats.p11Gate), verdict in `p11`. ON
 //    fallbacks still fail the merge.
+//
+// Run 37578606526 (review finding 12): `destinationRates` = the tap+describe reads
+// classified correct / stale / empty / other per (block, verb), with Wilson CIs, the
+// correct-only latency and time-to-correct; `p12` = the stale rate per row, report only.
 const fs = require("fs");
 const path = require("path");
 const {
@@ -46,6 +50,7 @@ const {
 } = require("./proprietary-provenance");
 const { readValidity, entryReasons } = require("./block-validity");
 const { median, round1, p11Gate, p11Verdict, P11_THRESHOLD } = require("./stats");
+const { destinationRates: destinationRatesOf } = require("./tap-describe-destination");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // Phase 3n: the block universe now includes the three Kotlin injection-strategy
@@ -414,6 +419,47 @@ for (const n of present) {
     });
   }
 }
+// Run 37578606526 / review finding 12: every timed tap+describe read is classified by the
+// bench (tap-describe-destination.js) as correct / stale / empty / other against the
+// block's own destination markers, and followed by a time-to-correct loop. One row per
+// (block, verb) with the counts, Wilson 95 % CIs, the correct-only latency and the
+// time-to-correct summary. P12 = the stale rate per (block, verb): report only.
+const destinationRates = [];
+for (const n of present) {
+  const b = files[n].block;
+  for (const v of b.verbs || []) {
+    if (!v.destination) continue;
+    const t = v.timeToCorrect || null;
+    destinationRates.push({
+      block: n,
+      config: b.config,
+      verb: v.verb,
+      ...destinationRatesOf(v.destination.counts),
+      correctLatency: v.destination.correctLatency || null,
+      timeToCorrect: t
+        ? {
+            measured: t.measured,
+            reached: t.reached,
+            timedOut: t.timedOut,
+            firstRead: t.firstRead,
+            budgetMs: t.budgetMs,
+            fromTapMs: t.fromTapMs,
+          }
+        : null,
+    });
+  }
+}
+const p12 = {
+  reportOnly: true,
+  rows: destinationRates.map((r) => ({
+    block: r.block,
+    verb: r.verb,
+    stale: r.counts.stale,
+    n: r.n,
+    rate: r.rates.stale.rate,
+    ci: r.rates.stale.ci,
+  })),
+};
 const p11Main = emptyRates.filter((r) => r.block !== LEGACY_OFF);
 const p11Legacy = emptyRates.filter((r) => r.block === LEGACY_OFF);
 const p11 = {
@@ -681,6 +727,9 @@ const result = {
   notRun,
   emptyRates,
   p11,
+  // Run 37578606526: tap+describe destination classes per (block, verb) and P12.
+  destinationRates,
+  p12,
   validity: validityFile ? validity : null,
   blockStartedAt: Object.fromEntries(present.map((n) => [n, startOfBlock(n)])),
   env: { ...baseEnv, ci: ciEnv },
@@ -767,6 +816,12 @@ console.log(
     (p11.fails.length ? `; FAIL ${p11.fails.join(", ")}` : "") +
     (p11.inconclusive.length ? `; INCONCLUSIVE ${p11.inconclusive.join(", ")}` : "")
 );
+if (p12.rows.length) {
+  console.log(
+    "P12 stale tap+describe reads (report only): " +
+      p12.rows.map((r) => `${r.block} ${r.verb} ${r.stale}/${r.n}`).join(", ")
+  );
+}
 if (!valid) console.log("::error::latency run INVALID — see the scoreboard banner");
 if (tls.length) {
   console.log(

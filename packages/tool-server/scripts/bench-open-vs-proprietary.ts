@@ -78,6 +78,13 @@ import {
 } from "../src/utils/bench-gesture-parity";
 import { summarize } from "../../../.github/bench-ci/stats.js";
 import {
+  TTC_POLL_MS,
+  TTC_BUDGET_MS,
+  classifyDestination,
+  deriveDestinationMarkers,
+  summarizeDestination,
+} from "../../../.github/bench-ci/tap-describe-destination.js";
+import {
   PROBE_CMD as SETTINGS_PROBE_CMD,
   RELAUNCH_CMD as SETTINGS_RELAUNCH_CMD,
   CLEAR_KILL_GUARD_MS,
@@ -245,36 +252,78 @@ function noteTimedEmpty(acc: EmptyAcc, mark: WindowMark, label: string, i: numbe
   return true;
 }
 
-// Time to a non-empty describe (run 37571460849): after an empty timed tap+describe,
-// one untimed describe loop (same call, TTNE_POLL_MS apart, up to TTNE_BUDGET_MS after
-// the empty) until a describe is non-empty. Measures the transition an agent waits out
-// after acting. Same loop on every arm.
-const TTNE_POLL_MS = 50;
-const TTNE_BUDGET_MS = 2000;
+// Time to a correct describe (run 37578606526, review finding 12; extends the run
+// 37571460849 time-to-non-empty loop). Every timed tap+describe read is classified
+// (correct / stale / empty / other, .github/bench-ci/tap-describe-destination.js). When
+// the timed read is correct, its time-to-correct is the timed latency itself. Otherwise
+// one untimed describe loop (the same call, TTC_POLL_MS apart, up to TTC_BUDGET_MS after
+// the timed read) runs until a read is correct, on EVERY sample, not only after an empty
+// one. The loop's first non-empty read also gives the old time-to-non-empty for the
+// samples whose timed read was empty. Same loop on every arm.
 interface TtneSample {
   fromTapMs: number | null;
   afterEmptyMs: number | null;
   polls: number;
 }
-async function measureTimeToNonEmpty(
+interface TtcSample {
+  cls: DestinationClass;
+  latencyMs: number;
+  ttcMs: number | null;
+  censoredAtMs: number | null;
+  polls: number;
+  // Only when the timed read was empty: the first non-empty read of the loop.
+  ttne: TtneSample | null;
+}
+type DestinationClass = "correct" | "stale" | "empty" | "other";
+interface DestinationMarkers {
+  dest: string[];
+  root: string[];
+  valid: boolean;
+}
+async function measureTimeToCorrect(
   describe: () => Promise<unknown>,
+  markers: DestinationMarkers,
+  timed: unknown,
   t0: number,
-  emptyAt: number
-): Promise<TtneSample> {
+  timedEnd: number
+): Promise<TtcSample> {
+  const latencyMs = Number((timedEnd - t0).toFixed(3));
+  const cls = classifyDestination(timed, markers) as DestinationClass;
+  if (cls === "correct")
+    return { cls, latencyMs, ttcMs: latencyMs, censoredAtMs: null, polls: 0, ttne: null };
+  const wasEmpty = cls === "empty";
+  let ttne: TtneSample | null = null;
   let polls = 0;
   for (;;) {
     const r = await describe().catch(() => undefined);
     polls++;
     const now = performance.now();
-    if (r !== undefined && !isEmptyDescribe(r)) {
-      return {
+    const c = classifyDestination(r, markers);
+    if (wasEmpty && ttne === null && c !== "empty" && r !== undefined)
+      ttne = {
         fromTapMs: Number((now - t0).toFixed(3)),
-        afterEmptyMs: Number((now - emptyAt).toFixed(3)),
+        afterEmptyMs: Number((now - timedEnd).toFixed(3)),
         polls,
       };
-    }
-    if (now - emptyAt >= TTNE_BUDGET_MS) return { fromTapMs: null, afterEmptyMs: null, polls };
-    await sleep(TTNE_POLL_MS);
+    if (c === "correct")
+      return {
+        cls,
+        latencyMs,
+        ttcMs: Number((now - t0).toFixed(3)),
+        censoredAtMs: null,
+        polls,
+        ttne: wasEmpty ? ttne : null,
+      };
+    if (now - timedEnd >= TTC_BUDGET_MS)
+      return {
+        cls,
+        latencyMs,
+        ttcMs: null,
+        censoredAtMs: Number((now - t0).toFixed(3)),
+        polls,
+        ttne: wasEmpty ? (ttne ?? { fromTapMs: null, afterEmptyMs: null, polls }) : null,
+      };
+    await sleep(TTC_POLL_MS);
   }
 }
 interface TtneSummary {
@@ -684,8 +733,14 @@ interface VerbResult {
   describeWindows: number;
   emptyLatencySamples: number[];
   // tap+describe only: after each empty timed window, the untimed time to a non-empty
-  // describe (measureTimeToNonEmpty).
+  // describe (the first non-empty read of the time-to-correct loop).
   timeToNonEmpty?: TtneSummary;
+  // tap+describe only (run 37578606526, review finding 12): every timed read classified
+  // correct / stale / empty / other against the block's destination markers, the
+  // correct-only latency, and time-to-correct from the tap for every sample
+  // (tap-describe-destination.js summarizeDestination).
+  destination?: ReturnType<typeof summarizeDestination>["destination"];
+  timeToCorrect?: ReturnType<typeof summarizeDestination>["timeToCorrect"];
   // Per timed iteration, the Settings reset wait its untimed setup paid (ms from the
   // am start until Settings was ready; null when that setup did not reset Settings).
   // Only on verbs with a per-iteration setup.
@@ -882,14 +937,16 @@ interface TapEffectResult extends VerbResult {
 async function timeTapEffect(
   label: string,
   target: string,
-  timedTapAt: (x: number, y: number, i: number) => Promise<void>,
+  // Resolves with the timed call's last result (tap+describe: the describe reply).
+  timedTapAt: (x: number, y: number, i: number) => Promise<unknown>,
   reg: Reg,
   fingerprint: () => Promise<string | undefined>,
   ensureOrigin: () => Promise<void>,
   restoreBack: () => Promise<void>,
-  // Run 37571460849: untimed follow-up after an empty timed window (tap+describe's
-  // time-to-non-empty loop). Runs before the effect poll; never inside the timed window.
-  onEmpty?: (t0: number, emptyAt: number) => Promise<TtneSample>
+  // Run 37578606526 (review finding 12): tap+describe's destination check. After EVERY
+  // timed window (never inside it), the timed read is classified and the untimed
+  // time-to-correct loop runs (measureTimeToCorrect), before the effect poll.
+  afterTimed?: (timed: unknown, t0: number, timedEnd: number) => Promise<TtcSample>
 ): Promise<TapEffectResult> {
   // Canonical ROOT fingerprint: after a reset, the first defined fingerprint is the
   // root the navigating tap moves AWAY from. Used only to confirm BACK restored it.
@@ -920,6 +977,7 @@ async function timeTapEffect(
   const empty = newEmptyAcc();
   const emptyLat: number[] = [];
   const ttne: TtneSample[] = [];
+  const ttc: TtcSample[] = [];
   let prev: { x: number; y: number } | undefined;
   for (let i = 0; i < N; i++) {
     // 1. UNTIMED fresh locate on the CURRENT screen. If it fails, relaunch a pristine
@@ -950,8 +1008,9 @@ async function timeTapEffect(
     const mark = windowMark();
     const t0 = performance.now();
     let dt: number;
+    let timed: unknown;
     try {
-      await timedTapAt(loc.x, loc.y, i);
+      timed = await timedTapAt(loc.x, loc.y, i);
       dt = elapsedMs(t0);
     } catch (e) {
       errors++;
@@ -961,9 +1020,13 @@ async function timeTapEffect(
       await ensureOrigin().catch(() => undefined);
       continue;
     }
-    const emptyAt = performance.now();
+    const timedEnd = t0 + dt;
     const wasEmpty = noteTimedEmpty(empty, mark, label, i);
-    if (wasEmpty && onEmpty) ttne.push(await onEmpty(t0, emptyAt));
+    if (afterTimed) {
+      const s = await afterTimed(timed, t0, timedEnd);
+      ttc.push(s);
+      if (s.ttne) ttne.push(s.ttne);
+    }
     // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
     const changed = await pollUntil(
       fingerprint,
@@ -1018,7 +1081,7 @@ async function timeTapEffect(
     treeEmptySamples: empty.samples,
     describeWindows: empty.describeWindows,
     emptyLatencySamples: emptyLat,
-    ...(onEmpty ? { timeToNonEmpty: summarizeTtne(ttne) } : {}),
+    ...(afterTimed ? { timeToNonEmpty: summarizeTtne(ttne), ...summarizeDestination(ttc) } : {}),
     effectChecked,
     effectZero,
     originLost,
@@ -2159,10 +2222,26 @@ function resumedActivityFingerprint(): Promise<string | undefined> {
 // single flaky read must NOT silently disarm the entire block. `settleForDerive`
 // picks the describe policy for the settled-destination marker read (true on ON so
 // the markers are complete; undefined on OFF where `settle` is a no-op).
+//
+// Run 37578606526 (review finding 12): it also returns the tap+describe destination
+// markers (tap-describe-destination.js deriveDestinationMarkers: id+text keys on the
+// settled destination and not on the root, and the reverse), from the SAME root and
+// destination describes of the backend under test. The destination read now waits,
+// identically on every arm, until the resumed activity left the root (≤ 3 s) plus
+// DEST_SETTLE_MS (the OPEN transition finished ≤ ~1.8 s after the tap in that run) and
+// an await-screen-idle, so a mid-transition read cannot become the "destination". An
+// attempt whose markers are not valid (either side has none) is retried.
+const DEST_SETTLE_MS = 2000;
 async function deriveNavTarget(
   reg: Reg,
   settleForDerive: boolean | undefined
-): Promise<{ target: string; x: number; y: number; markers: string[] } | null> {
+): Promise<{
+  target: string;
+  x: number;
+  y: number;
+  markers: string[];
+  destinationMarkers: DestinationMarkers;
+} | null> {
   const lineLabel = (l: string): string | undefined =>
     l.match(/(?<![=\w])"((?:[^"\\]|\\.)*)"/)?.[1];
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -2171,10 +2250,14 @@ async function deriveNavTarget(
     // probe measures the backend); a failure here is retryable, not fatal.
     let rootLabels: Set<string>;
     let rootLines: string[];
+    let rootDesc: string;
+    let rootFp: string | undefined;
     try {
       const root = (await reg.invokeTool("describe", { udid: SERIAL })) as { description: string };
+      rootDesc = root.description;
       rootLabels = labelSetOf(root.description);
       rootLines = root.description.split("\n");
+      rootFp = await resumedActivityFingerprint();
     } catch {
       continue;
     }
@@ -2204,23 +2287,35 @@ async function deriveNavTarget(
     await reg
       .invokeTool("gesture-tap", { udid: SERIAL, x: picked.x, y: picked.y })
       .catch(() => undefined);
+    await pollUntil(resumedActivityFingerprint, (f) => f !== undefined && f !== rootFp, 3000, 150);
+    await sleep(DEST_SETTLE_MS);
     await reg
       .invokeTool("await-screen-idle", { udid: SERIAL, timeoutMs: 4000 })
       .catch(() => undefined);
     let destLabels: Set<string>;
+    let destDesc: string;
     try {
       const dest = (await reg.invokeTool("describe", {
         udid: SERIAL,
         ...(settleForDerive === undefined ? {} : { settle: settleForDerive }),
       })) as { description: string };
+      destDesc = dest.description;
       destLabels = labelSetOf(dest.description);
     } catch {
       await ensureSettings(reg);
       continue;
     }
     const markers = [...destLabels].filter((l) => !rootLabels.has(l));
+    const destinationMarkers = deriveDestinationMarkers(rootDesc, destDesc) as DestinationMarkers;
     await ensureSettings(reg);
-    return { target: picked.target, x: picked.x, y: picked.y, markers };
+    if (!destinationMarkers.valid && attempt < 2) {
+      realDebug(
+        `[bench][destination] markers not valid on attempt ${attempt} ` +
+          `(dest=${destinationMarkers.dest.length} root=${destinationMarkers.root.length}); re-deriving`
+      );
+      continue;
+    }
+    return { target: picked.target, x: picked.x, y: picked.y, markers, destinationMarkers };
   }
   return null;
 }
@@ -2370,6 +2465,9 @@ interface BlockResult {
   // empty describe incl. untimed ones (time-to-non-empty polls included),
   // `openServerEmptyTreeCount` = the host's open-path counter delta (ON; null on OFF).
   describeEmpty: { timed: number; block: number; openServerEmptyTreeCount: number | null };
+  // Run 37578606526 (review finding 12): the tap+describe destination markers this block
+  // derived from its own settled root and destination describes (null: no nav target).
+  destinationMarkers: (DestinationMarkers & { target: string }) | null;
   coldStartMs: number[];
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
@@ -2721,9 +2819,10 @@ async function runBlock(
   // settle:true our policy); OFF has one policy.
   const tapDescribeAt =
     (settle?: boolean) =>
-    async (x: number, y: number, _i: number): Promise<void> => {
+    async (x: number, y: number, _i: number): Promise<unknown> => {
       await reg.invokeTool("gesture-tap", { udid: SERIAL, x, y });
-      await reg.invokeTool("describe", {
+      // The describe reply leaves the timed window as its result; it is classified after.
+      return reg.invokeTool("describe", {
         udid: SERIAL,
         ...(settle === undefined ? {} : { settle }),
       });
@@ -2735,19 +2834,31 @@ async function runBlock(
       ...(settle === undefined ? {} : { settle }),
     });
   };
-  // Run 37571460849: after an empty timed describe, the untimed time to a non-empty one
-  // (same describe call, 50 ms apart, up to 2 s), on every arm.
-  const ttneAfterEmpty =
+  // Run 37578606526 (review finding 12): after EVERY timed tap+describe, classify the
+  // timed read against this block's destination markers and run the untimed
+  // time-to-correct loop (same describe call, 50 ms apart, up to 3 s), on every arm. No
+  // valid markers (the derive never saw a distinct destination): no destination check,
+  // said in the notes, and the merge has no time-to-correct for P5 (N/A).
+  const destMarkers = nav && nav.destinationMarkers.valid ? nav.destinationMarkers : null;
+  if (nav && !destMarkers) {
+    notes.push(
+      `DESTINATION CHECK OFF: no valid markers for ${nav.target} (dest=${nav.destinationMarkers.dest.length} ` +
+        `root=${nav.destinationMarkers.root.length}) — tap+describe reads not classified this block`
+    );
+  }
+  const ttcAfterTimed =
     (settle?: boolean) =>
-    (t0: number, emptyAt: number): Promise<TtneSample> =>
-      measureTimeToNonEmpty(
+    (timed: unknown, t0: number, timedEnd: number): Promise<TtcSample> =>
+      measureTimeToCorrect(
         () =>
           reg.invokeTool("describe", {
             udid: SERIAL,
             ...(settle === undefined ? {} : { settle }),
           }),
+        destMarkers!,
+        timed,
         t0,
-        emptyAt
+        timedEnd
       );
   const runTapDescribe = (name: string, settle?: boolean): Promise<VerbResult> =>
     canEffect
@@ -2759,7 +2870,7 @@ async function runBlock(
           fingerprint,
           ensureOrigin,
           restoreBack,
-          ttneAfterEmpty(settle)
+          destMarkers ? ttcAfterTimed(settle) : undefined
         )
       : timeCalls(name, tapThenDescribeFixed(settle), undefined, ensureOrigin);
   // Review 2026-10-07 finding 8: the ON-only settle:true row runs AFTER the latency
@@ -3253,6 +3364,22 @@ async function runBlock(
           .join(", ")}) — left out of those verbs' latency, graded by P11 in the merge`
     );
   }
+  const destVerbs = verbs.filter((v) => v.destination && v.timeToCorrect);
+  if (destVerbs.length) {
+    const line = destVerbs
+      .map((v) => {
+        const c = v.destination!.counts;
+        const t = v.timeToCorrect!;
+        return (
+          `${v.verb} correct/stale/empty/other=${c.correct}/${c.stale}/${c.empty}/${c.other} ` +
+          `time-to-correct p50=${t.fromTapMs ? t.fromTapMs.p50.toFixed(1) : "-"} ms ` +
+          `(timed out ${t.timedOut}/${t.measured})`
+        );
+      })
+      .join("; ");
+    realDebug(`[bench] ${block} destination: ${line}`);
+    notes.push(`DESTINATION CHECK: ${line} — stale = a wrong answer to the user (P12)`);
+  }
   if (resetWait.timeouts > 0) {
     notes.push(
       `reset wait: ${resetWait.timeouts}/${resetWait.n} Settings reset(s) hit the 5 s bound ` +
@@ -3294,6 +3421,7 @@ async function runBlock(
     resetWaitMs,
     resetWait,
     describeEmpty,
+    destinationMarkers: nav ? { target: nav.target, ...nav.destinationMarkers } : null,
     coldStartMs,
     verbs,
     describeSample,

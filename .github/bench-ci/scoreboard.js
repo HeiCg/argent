@@ -23,6 +23,7 @@ const {
   gradeFamily,
   compareOnce,
 } = require("./stats");
+const { ttcGateSamples } = require("./tap-describe-destination");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const latest = (glob) => {
@@ -323,13 +324,35 @@ if (hasTreeEmpty || hasResetWait) {
   }
 }
 
+// Run 37578606526 / review finding 12: tap+describe reads classified correct / stale /
+// empty / other against the block's destination markers (merged.destinationRates), and
+// P12 = the stale rate per (block, verb), report only. A stale read answers with the
+// screen before the tap.
+const pctCell = (x) => (x == null ? "-" : `${Number((x * 100).toFixed(1))}%`);
+const rateCiCell = (r) =>
+  r && r.rate != null
+    ? `${pctCell(r.rate)} [${pctCell(r.ci[0])}, ${pctCell(r.ci[1])}]`
+    : "no denominator";
+const destRows = merged.destinationRates || [];
+const p12Rows = (merged.p12 && merged.p12.rows) || [];
+const STALE_IS_WRONG =
+  "A stale read is a wrong answer to the user: the describe returned the screen from " +
+  "before the tap, so an agent acting on it acts on a screen that is gone.";
+function p12Line() {
+  return (
+    "- **P12** — stale tap+describe reads (a root-only marker present) per block, Wilson 95 % CI, " +
+    "report only, not gated: " +
+    p12Rows.map((r) => `${r.block} ${r.verb} ${r.stale}/${r.n} = ${rateCiCell(r)}`).join("; ") +
+    ": **REPORT ONLY**"
+  );
+}
+
 // Run 37571460849: empty describes as a quality metric. One row per (block, verb) whose
 // timed window reads a describe: empty windows / windows, the rate, its Wilson 95 % CI
 // and the P11 grade (≤ 25 %). Rendered from merged.emptyRates / merged.p11 (absent on
 // older merged JSONs).
 const emptyRates = merged.emptyRates || [];
 if (emptyRates.length || merged.p11) {
-  const pctCell = (x) => (x == null ? "-" : `${Number((x * 100).toFixed(1))}%`);
   L.push("### Empty describes in timed verbs — quality metric (P11)");
   L.push("");
   L.push(
@@ -362,25 +385,30 @@ if (emptyRates.length || merged.p11) {
       (detail ? ` (${detail})` : "") +
       `: **${p11.verdict}**`
   );
+  // Run 37578606526 / finding 12: P12, printed right next to P11 — the stale-read rate.
+  if (p12Rows.length) L.push(p12Line());
   if (p11.legacyVerdict)
     L.push(`- **P11 (OFF-legacy, own arm)** — same rule: **${p11.legacyVerdict}**`);
   L.push("");
-  // Time to a non-empty describe after an empty one inside tap+describe: an untimed
-  // describe loop (50 ms apart, up to 2 s) right after the empty timed window, on every
-  // arm. "from tap" is what an agent waits for after acting; "after the empty" is the
-  // extra wait past the timed window.
+  // Time to a non-empty describe after an empty one inside tap+describe: the first
+  // non-empty read of the untimed time-to-correct loop (50 ms apart; up to 2 s before run
+  // 37578606526, up to 3 s since) after an empty timed window, on every arm. "from tap" is
+  // what an agent waits for after acting; "after the empty" is the extra wait past the
+  // timed window. A non-empty read can still be stale (see the destination check).
   const ttneRows = emptyRates.filter((r) => r.timeToNonEmpty);
   if (ttneRows.length) {
+    const budget = destRows.length ? "3 s" : "2 s";
     L.push("### tap+describe time-to-non-empty");
     L.push("");
     L.push(
-      "After an empty timed describe, an untimed describe loop (50 ms apart, up to 2 s) runs until " +
+      `After an empty timed describe, an untimed describe loop (50 ms apart, up to ${budget}) runs until ` +
         "a describe is non-empty. from tap = from the start of the timed tap; after the empty = from " +
-        "the end of the timed window. Same loop on every arm."
+        "the end of the timed window. Same loop on every arm. Non-empty is not correct: a stale read " +
+        "is non-empty."
     );
     L.push("");
     L.push(
-      "| block | verb | empties | reached non-empty | timed out (2 s) | from tap p50/p95 (ms) | after the empty p50/p95 (ms) |"
+      `| block | verb | empties | reached non-empty | timed out (${budget}) | from tap p50/p95 (ms) | after the empty p50/p95 (ms) |`
     );
     L.push("| --- | --- | --- | --- | --- | --- | --- |");
     for (const r of ttneRows) {
@@ -391,6 +419,42 @@ if (emptyRates.length || merged.p11) {
           `${pp(t.afterEmptyMs)} |`
       );
     }
+    L.push("");
+  }
+}
+
+if (destRows.length) {
+  const pp = (x) => (x ? `${fmt(x.p50)}/${fmt(x.p95)}` : "-");
+  L.push("### tap+describe destination check — correct / stale / empty / other (P12)");
+  L.push("");
+  L.push(
+    "Every timed tap+describe read is classified against the block's own markers, derived from " +
+      "its settled root and settled destination describes (id+text keys on one and not the other; " +
+      "same selector on every arm): correct = a destination marker and no root-only marker; stale = " +
+      "a root-only marker present (the screen before the tap, alone or mixed); empty = no " +
+      "elements; other = neither. Rates with Wilson 95 % CIs. correct-only latency = the timed " +
+      "window over correct reads (the honest headline). time-to-correct = from the tap to the first " +
+      "correct read: the timed latency when the timed read was correct, else an untimed describe " +
+      "loop (same call, 50 ms apart, up to 3 s after the timed read) on every sample. " +
+      STALE_IS_WRONG
+  );
+  L.push("");
+  L.push(
+    "| block | verb | n | correct | stale | empty | other | correct rate | stale rate (P12) | empty rate | correct-only latency p50/p95 (ms) | time-to-correct p50/p95 (ms) | correct at first read | timed out |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const r of destRows) {
+    const t = r.timeToCorrect || {};
+    L.push(
+      `| ${r.block} | ${r.verb} | ${r.n} | ${r.counts.correct} | ${r.counts.stale} | ${r.counts.empty} | ` +
+        `${r.counts.other} | ${rateCiCell(r.rates.correct)} | ${rateCiCell(r.rates.stale)} | ` +
+        `${rateCiCell(r.rates.empty)} | ${pp(r.correctLatency)} | ${pp(t.fromTapMs)} | ` +
+        `${t.firstRead ?? "-"} | ${t.timedOut ?? "-"} |`
+    );
+  }
+  L.push("");
+  if (!emptyRates.length && !merged.p11 && p12Rows.length) {
+    L.push(p12Line());
     L.push("");
   }
 }
@@ -582,23 +646,72 @@ if (la && la.invalid) {
 const onUia = blocks.find((b) => b.block === "ON-uiautomation");
 const onIm = blocks.find((b) => b.block === "ON-input-manager");
 if (onIm && off1Blk && off2Blk) {
-  // comparator verb name in the OFF blocks (tap+describe(settle:false) → tap+describe).
-  const offVerb = (vn) => (vn === "tap+describe(settle:false)" ? "tap+describe" : vn);
-  const gatedVerbs = [
-    "gesture-tap",
-    "gesture-swipe",
-    "gesture-pinch",
-    "tap+describe(settle:false)",
-  ].filter((vn) => verbNames.includes(vn));
-  const family = gradeFamily(
-    gatedVerbs.map((vn) => ({
+  // Run 37578606526 / review finding 12: the tap+describe headline is TIME-TO-CORRECT
+  // (from the tap to the first describe that shows the destination), not the first
+  // read's latency, which counted a stale read (the screen before the tap) as a fast
+  // success. Timed-out samples enter at their give-up time and are counted.
+  const TD_ON_ROWS = ["tap+describe(settle:false)", "tap+describe(settle:true)"];
+  const ttcOf = (b, vn) => {
+    const v = verbOf(b, vn);
+    return v ? ttcGateSamples(v.timeToCorrect) : null;
+  };
+  const medianOf = (s) => (s && s.length ? median(s) : null);
+  const offTtc = (b) => ttcOf(b, "tap+describe");
+  // P5 comparator: the ON-input-manager tap+describe row with the smaller time-to-correct.
+  const ttcCands = TD_ON_ROWS.map((vn) => {
+    const t = ttcOf(onIm, vn);
+    return { vn, p50: t ? medianOf(t.samples) : null };
+  }).filter((c) => c.p50 != null);
+  const ttcRow = ttcCands.length ? ttcCands.reduce((a, c) => (c.p50 < a.p50 ? c : a)) : null;
+
+  // Gated rows: one spec per row, so the table, the Holm family, the p95 table and P6
+  // read the same samples.
+  const gated = [];
+  for (const vn of ["gesture-tap", "gesture-swipe", "gesture-pinch"].filter((x) =>
+    verbNames.includes(x)
+  ))
+    gated.push({
       key: vn,
-      a: samplesOf(onIm, vn),
-      b: pooledOffSamplesOf(offVerb(vn)),
-      margin: offMargin(offVerb(vn)),
-    }))
+      on: (b) => samplesOf(b, vn),
+      onP50: (b) => p50Of(b, vn),
+      off: (b) => samplesOf(b, vn),
+      offP50: (b) => p50Of(b, vn),
+      margin: offMargin(vn),
+      drift: drift(vn),
+    });
+  const TTC_KEY = ttcRow ? `tap+describe time-to-correct (ON row ${ttcRow.vn})` : null;
+  if (ttcRow) {
+    const on = (b) => {
+      const t = ttcOf(b, ttcRow.vn);
+      return t ? t.samples : null;
+    };
+    const off = (b) => {
+      const t = offTtc(b);
+      return t ? t.samples : null;
+    };
+    const o1 = off(off1Blk),
+      o2 = off(off2Blk);
+    const e = equivalenceMargin(o1, o2);
+    gated.push({
+      key: TTC_KEY,
+      on,
+      onP50: (b) => medianOf(on(b)),
+      off,
+      offP50: (b) => medianOf(off(b)),
+      margin: e ? e.margin : null,
+      drift: o1 && o2 && o1.length && o2.length ? round1(median(o1) - median(o2)) : null,
+    });
+  }
+  const pooledOff = (r) => {
+    const a = r.off(off1Blk),
+      b = r.off(off2Blk);
+    return a && b ? a.concat(b) : null;
+  };
+  const family = gradeFamily(
+    gated.map((r) => ({ key: r.key, a: r.on(onIm), b: pooledOff(r), margin: r.margin }))
   );
   const rowOf = Object.fromEntries(family.map((r) => [r.key, r]));
+  const specOf = Object.fromEntries(gated.map((r) => [r.key, r]));
   const marginCell = (r) => (r.margin == null ? "**N/A**" : `±${r.margin}`);
   const holmCell = (r) =>
     r.alpha == null ? "-" : `α=${Number(r.alpha.toFixed(4))} (rank ${r.rank}/${r.m})`;
@@ -613,17 +726,17 @@ if (onIm && off1Blk && off2Blk) {
     "| verb | ON-uiautomation | ON-input-manager | OFF-1 | OFF-2 | drift | margin | Δ(im−pooledOFF) | Holm α | CI | reading |"
   );
   L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  for (const vn of gatedVerbs) {
-    const r = rowOf[vn];
+  for (const s of gated) {
+    const r = rowOf[s.key];
     L.push(
       "| " +
         [
-          vn,
-          fmt(p50Of(onUia, vn)),
-          fmt(p50Of(onIm, vn)),
-          fmt(p50Of(off1Blk, offVerb(vn))),
-          fmt(p50Of(off2Blk, offVerb(vn))),
-          fmt(drift(offVerb(vn))),
+          s.key,
+          fmt(s.onP50(onUia)),
+          fmt(s.onP50(onIm)),
+          fmt(s.offP50(off1Blk)),
+          fmt(s.offP50(off2Blk)),
+          fmt(s.drift),
           marginCell(r),
           fmt(r.delta),
           holmCell(r),
@@ -640,11 +753,46 @@ if (onIm && off1Blk && off2Blk) {
   L.push("");
   L.push("| verb | Δp95 | 95% CI |");
   L.push("| --- | --- | --- |");
-  for (const vn of gatedVerbs) {
-    const c = compareOnce(samplesOf(onIm, vn), pooledOffSamplesOf(offVerb(vn)), { p: 0.95 });
-    L.push(`| ${vn} | ${fmt(c.delta)} | ${ciStr(c.ci)} |`);
+  for (const s of gated) {
+    const c = compareOnce(s.on(onIm), pooledOff(s), { p: 0.95 });
+    L.push(`| ${s.key} | ${fmt(c.delta)} | ${ciStr(c.ci)} |`);
   }
   L.push("");
+
+  // The pre-run-37578606526 headline, kept as a report-only row: the timed tap+describe
+  // window over every non-empty first read (a stale read counts; empty reads are out).
+  const firstReadRows = TD_ON_ROWS.filter((vn) => verbNames.includes(vn));
+  if (firstReadRows.length) {
+    const offM = offMargin("tap+describe");
+    const offS = pooledOffSamplesOf("tap+describe");
+    const o1 = p50Of(off1Blk, "tap+describe"),
+      o2 = p50Of(off2Blk, "tap+describe");
+    const po = offS ? median(offS) : null;
+    L.push(
+      "first-read latency (any non-empty) — report only, not gated: the timed tap+describe " +
+        "window over every non-empty first read, stale reads included (the P5 headline before " +
+        "run 37578606526)."
+    );
+    L.push("");
+    L.push(
+      "| ON row | ON-uiautomation | ON-input-manager | OFF-1 | OFF-2 | margin | Δ(im−pooledOFF) | 95% CI | reading | ratio im ÷ OFF-1 / OFF-2 / pooled |"
+    );
+    L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    for (const vn of firstReadRows) {
+      const imS = samplesOf(onIm, vn);
+      const c = compareOnce(imS, offS);
+      const im = imS ? median(imS) : p50Of(onIm, vn);
+      const ratio = [o1, o2, po]
+        .map((d) => (im != null && d != null && d > 0 ? (im / d).toFixed(2) : "-"))
+        .join(" / ");
+      L.push(
+        `| ${vn} | ${fmt(p50Of(onUia, vn))} | ${fmt(p50Of(onIm, vn))} | ${fmt(o1)} | ${fmt(o2)} | ` +
+          `${offM == null ? "**N/A**" : `±${offM}`} | ${fmt(c.delta)} | ${ciStr(c.ci)} | ` +
+          `${readCI(c.ci, offM)} | ${ratio} |`
+      );
+    }
+    L.push("");
+  }
 
   // P lines: rendered from the SAME family rows as the table above.
   const pline = (id, text, verdict) => L.push(`- **${id}** — ${text}: **${verdict}**`);
@@ -659,46 +807,66 @@ if (onIm && off1Blk && off2Blk) {
   pGate("P2", "tap", "gesture-tap");
   pGate("P3", "swipe", "gesture-swipe");
   pGate("P4", "pinch", "gesture-pinch");
-  // P5: the headline ratio ≤ 1.15 vs each of OFF-1, OFF-2 and pooled, AND the headline
-  // row's CI reading. PASS needs both; FAIL on a failed ratio or a loss; otherwise
-  // INCONCLUSIVE (a 1.14x slower headline with a wide CI no longer passes).
+  // P5 (run 37578606526): time-to-correct p50 ON ÷ OFF ≤ 1.15 vs each of OFF-1, OFF-2 and
+  // pooled, AND the time-to-correct row's CI reading. PASS needs both; FAIL on a failed
+  // ratio or a loss; otherwise INCONCLUSIVE. The ON row is the ON-input-manager
+  // tap+describe row with the smaller time-to-correct (settle:false or settle:true). A
+  // timed-out sample (no correct read within the loop) enters at its give-up time, a lower
+  // bound, so a PASS that has any is INCONCLUSIVE.
   {
-    const hv = "tap+describe(settle:false)";
-    const im = p50Of(onIm, hv);
-    const pooledS = pooledOffSamplesOf("tap+describe");
-    const imS = samplesOf(onIm, hv);
-    const o1 = p50Of(off1Blk, "tap+describe"),
-      o2 = p50Of(off2Blk, "tap+describe");
-    const po = pooledS ? median(pooledS) : o1 != null && o2 != null ? (o1 + o2) / 2 : null;
-    const imP = imS ? median(imS) : im;
-    const ratios = [
-      [im, o1],
-      [im, o2],
-      [imP, po],
-    ].map(([a, d]) => (a != null && d != null && d > 0 ? a / d : null));
-    const anyNa = ratios.some((r) => r == null);
-    const ratioOk = !anyNa && ratios.every((r) => r <= 1.15);
-    const r = rowOf[hv];
-    const reading = r ? r.reading : "N/A";
-    const ciGate = gateOf(reading);
-    const verdict =
-      anyNa || ciGate === "N/A"
-        ? "N/A"
-        : !ratioOk || ciGate === "FAIL"
-          ? "FAIL"
-          : ciGate === "PASS"
-            ? "PASS"
-            : "INCONCLUSIVE";
-    pline(
-      "P5",
-      `headline ${hv} ÷ OFF tap+describe ≤ 1.15 vs each OFF-1/OFF-2/pooled ` +
-        `(${ratios.map((x) => (x == null ? "-" : x.toFixed(2))).join(" / ")}): ratio ${anyNa ? "N/A" : ratioOk ? "PASS" : "FAIL"}; ` +
-        `CI reading ${reading}${r && r.ci ? ` (${gateText(r)})` : ""}`,
-      verdict
-    );
+    const label =
+      "headline tap+describe time-to-correct p50 (tap → first describe showing the destination), " +
+      "ON-input-manager ÷ OFF tap+describe ≤ 1.15 vs each OFF-1/OFF-2/pooled";
+    if (!ttcRow) {
+      pline(
+        "P5",
+        `${label}: no time-to-correct in this run (blocks before run 37578606526)`,
+        "N/A"
+      );
+    } else {
+      const imT = ttcOf(onIm, ttcRow.vn);
+      const o1T = offTtc(off1Blk),
+        o2T = offTtc(off2Blk);
+      const im = medianOf(imT.samples);
+      const o1 = o1T ? medianOf(o1T.samples) : null,
+        o2 = o2T ? medianOf(o2T.samples) : null;
+      const po = o1T && o2T ? medianOf(o1T.samples.concat(o2T.samples)) : null;
+      const ratios = [o1, o2, po].map((d) => (im != null && d != null && d > 0 ? im / d : null));
+      const anyNa = ratios.some((r) => r == null);
+      const ratioOk = !anyNa && ratios.every((r) => r <= 1.15);
+      const r = rowOf[TTC_KEY];
+      const reading = r ? r.reading : "N/A";
+      const ciGate = gateOf(reading);
+      const offTimedOut = (o1T ? o1T.timedOut : 0) + (o2T ? o2T.timedOut : 0);
+      const offN = (o1T ? o1T.samples.length : 0) + (o2T ? o2T.samples.length : 0);
+      const timedOut = imT.timedOut + offTimedOut;
+      let verdict =
+        anyNa || ciGate === "N/A"
+          ? "N/A"
+          : !ratioOk || ciGate === "FAIL"
+            ? "FAIL"
+            : ciGate === "PASS"
+              ? "PASS"
+              : "INCONCLUSIVE";
+      if (verdict === "PASS" && timedOut > 0) verdict = "INCONCLUSIVE";
+      const others = ttcCands
+        .filter((c) => c.vn !== ttcRow.vn)
+        .map((c) => `; ${c.vn} ${fmt(c.p50)} ms`)
+        .join("");
+      pline(
+        "P5",
+        `${label}; ON row ${ttcRow.vn} (time-to-correct p50 ${fmt(ttcRow.p50)} ms${others}), the ON ` +
+          `row with the smaller time-to-correct ` +
+          `(${ratios.map((x) => (x == null ? "-" : x.toFixed(2))).join(" / ")}): ratio ${anyNa ? "N/A" : ratioOk ? "PASS" : "FAIL"}; ` +
+          `CI reading ${reading}${r && r.ci ? ` (${gateText(r)})` : ""}; ` +
+          `timed out: ON ${imT.timedOut}/${imT.samples.length}, OFF ${offTimedOut}/${offN}` +
+          (timedOut > 0 ? " (entered at the give-up time, a lower bound: no PASS on it)" : ""),
+        verdict
+      );
+    }
   }
   // P6: ON-input-manager vs the ON-uiautomation control, same rule and Holm across the
-  // gated verbs, at the NULL margin of that pair (stats.pooledNullMargin: both arms
+  // gated rows, at the NULL margin of that pair (stats.pooledNullMargin: both arms
   // recentred on their medians, residuals pooled), not the OFF drift margin. FAIL on any loss; INCONCLUSIVE if no
   // loss but any verb is inconclusive; PASS when every verb is win or parity.
   {
@@ -708,11 +876,11 @@ if (onIm && off1Blk && off2Blk) {
       pline("P6", label, "N/A");
     } else {
       const p6 = gradeFamily(
-        gatedVerbs.map((vn) => ({
-          key: vn,
-          a: samplesOf(onIm, vn),
-          b: samplesOf(onUia, vn),
-          margin: pooledNullMargin(samplesOf(onIm, vn), samplesOf(onUia, vn)),
+        gated.map((s) => ({
+          key: s.key,
+          a: s.on(onIm),
+          b: s.on(onUia),
+          margin: pooledNullMargin(s.on(onIm), s.on(onUia)),
         }))
       );
       L.push("");
@@ -722,7 +890,7 @@ if (onIm && off1Blk && off2Blk) {
       L.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
       for (const r of p6)
         L.push(
-          `| ${r.key} | ${fmt(p50Of(onIm, r.key))} | ${fmt(p50Of(onUia, r.key))} | ${marginCell(r)} | ` +
+          `| ${r.key} | ${fmt(specOf[r.key].onP50(onIm))} | ${fmt(specOf[r.key].onP50(onUia))} | ${marginCell(r)} | ` +
             `${fmt(r.delta)} | ${holmCell(r)} | ${ciCell(r)} | ${readingCell(r)} |`
         );
       L.push("");
@@ -801,6 +969,18 @@ if (onIm && off1Blk && off2Blk) {
       "INCONCLUSIVE (not passed, not a FAIL). P6 uses the null margin of its own pair: each arm " +
       "is recentred on its own median, the residuals are pooled and both resamples are drawn " +
       "from that pool (95th percentile of |Δp50|). p95 Δ is report only._"
+  );
+  L.push("");
+  // Run 37578606526 / review finding 12: what the tap+describe headline measures.
+  L.push(
+    "_tap+describe (run 37578606526, review finding 12): the gated row is time-to-correct, " +
+      "from the tap to the first describe that shows the destination (a destination marker and " +
+      "no root-only marker), on the ON-input-manager row (settle:false or settle:true) with the " +
+      "smaller time-to-correct; its margin is the same equivalence margin over the OFF " +
+      "time-to-correct samples. The first-read latency row is report only: it counts a stale " +
+      "read as a success. " +
+      STALE_IS_WRONG +
+      " Stale rates are P12 (report only)._"
   );
   L.push("");
   L.push(`_${EQUIV_FOOTER} (run 37561512651, Review 2026-10-07)._`);
