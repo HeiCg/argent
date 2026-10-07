@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   IosOpenServerClient,
   type IosOpenServerNode,
+  type IosOpenServerState,
 } from "../../src/utils/ios-open-server-client";
 
 /**
@@ -132,6 +133,197 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
   return r;
 }
 
+// ---- runner liveness and Settings readiness --------------------------------
+//
+// Runs 37561275916 and 37587956245: the one Settings instance stopped taking input
+// for ~60 s (a getNestedState snapshot took 7 s instead of 240 ms), so tap/swipe
+// failed with a pixel diff of exactly 0. Each gesture test now relaunches Settings
+// and probes it first; an unresponsive app fails as a readiness error, not a diff.
+
+/** A readiness probe's getNestedState must answer within this wall budget. */
+const READY_PROBE_BUDGET_MS = 2_000;
+/** ...with a runner-side capture under this (healthy: ~240 ms). */
+const READY_CAPTURE_MAX_MS = 1_500;
+/** ...and at least this many nodes in the Settings root tree. */
+const READY_MIN_ELEMENTS = 10;
+/** Settle after `launchApp` before probing (the old inline relaunch used the same). */
+const LAUNCH_SETTLE_MS = 1_500;
+
+/**
+ * Marker file the CI step reads (`IOS_OPEN_SERVER_STATUS_FILE`, not `ARGENT_`
+ * prefixed): `runner-never-up` makes the workflow restart the runner once.
+ */
+const STATUS_FILE = process.env.IOS_OPEN_SERVER_STATUS_FILE ?? "";
+
+function writeStatus(status: "runner-never-up" | "runner-died-mid-suite"): void {
+  if (!STATUS_FILE) return;
+  try {
+    writeFileSync(STATUS_FILE, `${status}\n`);
+  } catch (err) {
+    console.log(`[device] could not write ${STATUS_FILE}: ${errMsg(err)}`);
+  }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The runner process is gone (socket refused/closed), as opposed to slow. */
+function isRunnerGone(err: unknown): boolean {
+  return /ECONNREFUSED|ECONNRESET|EPIPE|connection closed/i.test(errMsg(err));
+}
+
+/** Ping with a short budget: "alive", "gone" (process exited), or "wedged". */
+async function runnerLiveness(c: IosOpenServerClient): Promise<"alive" | "gone" | "wedged"> {
+  try {
+    await c.request("ping", undefined, { timeoutMs: 5_000 });
+    return "alive";
+  } catch (err) {
+    return isRunnerGone(err) ? "gone" : "wedged";
+  }
+}
+
+interface ReadinessProbe {
+  ok: boolean;
+  /** Empty when ok; otherwise every failed criterion. */
+  reason: string;
+  wallMs: number;
+  captureMs?: number;
+  snapshotMs?: number;
+  elements?: number;
+  navBars: string[];
+  runnerGone: boolean;
+}
+
+/**
+ * One bounded getNestedState: Settings is at its root (a 'General' row, a scroll
+ * container, no 'General' NavigationBar), the tree has ≥ READY_MIN_ELEMENTS nodes,
+ * and both the wall time and the runner's captureMs are within budget.
+ */
+async function probeSettingsRoot(c: IosOpenServerClient): Promise<ReadinessProbe> {
+  const t0 = Date.now();
+  let state: IosOpenServerState;
+  try {
+    state = await c.request<IosOpenServerState>(
+      "getNestedState",
+      {},
+      { timeoutMs: READY_PROBE_BUDGET_MS }
+    );
+  } catch (err) {
+    const wallMs = Date.now() - t0;
+    return {
+      ok: false,
+      reason: `getNestedState failed after ${wallMs}ms: ${errMsg(err)}`,
+      wallMs,
+      navBars: [],
+      runnerGone: isRunnerGone(err),
+    };
+  }
+  const wallMs = Date.now() - t0;
+  let elements = 0;
+  const navBars: string[] = [];
+  walk(state.tree, (n) => {
+    elements++;
+    if (n.type === "NavigationBar") navBars.push(`${n.identifier ?? ""}|${n.label ?? ""}`);
+  });
+  const problems: string[] = [];
+  if (wallMs > READY_PROBE_BUDGET_MS)
+    problems.push(`wall ${wallMs}ms > ${READY_PROBE_BUDGET_MS}ms`);
+  if (state.timings.captureMs >= READY_CAPTURE_MAX_MS) {
+    problems.push(
+      `captureMs ${state.timings.captureMs.toFixed(0)} >= ${READY_CAPTURE_MAX_MS} ` +
+        `(snapshot ${state.timings.snapshotMs.toFixed(0)}ms)`
+    );
+  }
+  if (elements < READY_MIN_ELEMENTS) problems.push(`${elements} elements < ${READY_MIN_ELEMENTS}`);
+  if (!findByLabel(state.tree, "General")) problems.push("no 'General' row");
+  if (!findByType(state.tree, "Table") && !findByType(state.tree, "CollectionView")) {
+    problems.push("no scroll container");
+  }
+  if (navBars.some((b) => b.split("|").includes("General"))) {
+    problems.push("not at the Settings root (NavigationBar 'General')");
+  }
+  return {
+    ok: problems.length === 0,
+    reason: problems.join("; "),
+    wallMs,
+    captureMs: state.timings.captureMs,
+    snapshotMs: state.timings.snapshotMs,
+    elements,
+    navBars,
+    runnerGone: false,
+  };
+}
+
+function logProbe(test: string, attempt: string, launchMs: number, p: ReadinessProbe): void {
+  console.log(
+    `[device][ready] test="${test}" attempt=${attempt} launchMs=${launchMs} ` +
+      `probeWallMs=${p.wallMs} captureMs=${p.captureMs?.toFixed(1) ?? "-"} ` +
+      `snapshotMs=${p.snapshotMs?.toFixed(1) ?? "-"} elements=${p.elements ?? "-"} ` +
+      `navBars=${JSON.stringify(p.navBars)} ok=${p.ok}${p.ok ? "" : ` reason="${p.reason}"`}`
+  );
+}
+
+function runnerDiedMidSuite(test: string, detail: string): Error {
+  writeStatus("runner-died-mid-suite");
+  return new Error(
+    `[device] runner died mid-suite before "${test}" (it served earlier RPCs; now: ${detail}). ` +
+      `See build/runner.log for the XCTest failure.`
+  );
+}
+
+/**
+ * Relaunch Settings (XCUIApplication.launch() restarts it, so it starts at the
+ * root, scrolled to the top) and probe it. Not ready: terminateApp + launchApp
+ * once and probe again. Still not ready: throw a readiness error.
+ */
+async function ensureSettingsReady(c: IosOpenServerClient, test: string): Promise<void> {
+  const launchAndProbe = async (attempt: string): Promise<ReadinessProbe> => {
+    const t0 = Date.now();
+    try {
+      await c.launchApp(SETTINGS);
+    } catch (err) {
+      if (isRunnerGone(err)) throw runnerDiedMidSuite(test, `launchApp: ${errMsg(err)}`);
+      const launchMs = Date.now() - t0;
+      const p: ReadinessProbe = {
+        ok: false,
+        reason: `launchApp failed after ${launchMs}ms: ${errMsg(err)}`,
+        wallMs: 0,
+        navBars: [],
+        runnerGone: false,
+      };
+      logProbe(test, attempt, launchMs, p);
+      return p;
+    }
+    const launchMs = Date.now() - t0;
+    await sleep(LAUNCH_SETTLE_MS);
+    const p = await probeSettingsRoot(c);
+    logProbe(test, attempt, launchMs, p);
+    if (p.runnerGone) throw runnerDiedMidSuite(test, p.reason);
+    return p;
+  };
+
+  const first = await launchAndProbe("1");
+  if (first.ok) return;
+  try {
+    await c.terminateApp(SETTINGS);
+  } catch (err) {
+    if (isRunnerGone(err)) throw runnerDiedMidSuite(test, `terminateApp: ${errMsg(err)}`);
+    console.log(`[device][ready] test="${test}" terminateApp failed: ${errMsg(err)}`);
+  }
+  const second = await launchAndProbe("2 (after terminateApp)");
+  if (second.ok) return;
+  throw new Error(
+    `[device] readiness failure before "${test}": Settings did not answer a root ` +
+      `getNestedState within ${READY_PROBE_BUDGET_MS}ms with captureMs < ${READY_CAPTURE_MAX_MS} ` +
+      `and >= ${READY_MIN_ELEMENTS} elements. First probe: ${first.reason}. ` +
+      `After terminateApp + launchApp: ${second.reason}.`
+  );
+}
+
+/** Tests that drive input and assert its effect; each gets a fresh, probed Settings. */
+const GESTURE_TEST = /^(tap|swipe|typeText)\b/;
+
 describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => {
   let client: IosOpenServerClient;
 
@@ -139,9 +331,56 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     expect(PORT, "IOS_OPEN_SERVER_PORT must be set").toBeGreaterThan(0);
     expect(UDID, "IOS_OPEN_SERVER_UDID must be set").not.toBe("");
     client = new IosOpenServerClient({ port: PORT, timeoutMs: 90_000 });
-    await client.launchApp(SETTINGS);
-    await sleep(1500);
-  }, 120_000);
+    // Run 37587956245 attempt 1: XCTest "Timed out attempting to launch app" ended
+    // the runner's test, so every later RPC was ECONNREFUSED. If the runner is gone
+    // after the first launch, say so and leave `runner-never-up` for the workflow,
+    // which restarts the runner once. If it is still alive, relaunch once here.
+    const neverUp = (detail: string): Error => {
+      writeStatus("runner-never-up");
+      return new Error(
+        `[device] runner never came up: the initial launchApp(${SETTINGS}) failed and the ` +
+          `runner no longer answers (${detail}). See build/runner.log ("Timed out attempting to launch app").`
+      );
+    };
+    let launched = false;
+    for (let attempt = 1; attempt <= 2 && !launched; attempt++) {
+      const t0 = Date.now();
+      try {
+        await client.launchApp(SETTINGS);
+        launched = true;
+        console.log(
+          `[device][ready] beforeAll launchApp attempt=${attempt} ok in ${Date.now() - t0}ms`
+        );
+      } catch (err) {
+        console.log(
+          `[device][ready] beforeAll launchApp attempt=${attempt} failed after ${Date.now() - t0}ms: ${errMsg(err)}`
+        );
+        const liveness = await runnerLiveness(client);
+        if (liveness === "gone") throw neverUp(errMsg(err));
+        if (attempt === 2) {
+          throw new Error(
+            `[device] runner up (${liveness}) but launchApp(${SETTINGS}) failed twice: ${errMsg(err)}`
+          );
+        }
+        try {
+          await client.terminateApp(SETTINGS);
+        } catch {
+          /* a launch that never finished leaves nothing to terminate */
+        }
+      }
+    }
+    await sleep(LAUNCH_SETTLE_MS);
+  }, 300_000);
+
+  // Every test: a refused/closed socket means the runner exited mid-suite. Gesture
+  // tests additionally relaunch Settings and probe it (ensureSettingsReady).
+  beforeEach(async (ctx) => {
+    const liveness = await runnerLiveness(client);
+    if (liveness === "gone") throw runnerDiedMidSuite(ctx.task.name, "ping refused");
+    if (liveness === "wedged")
+      console.log(`[device][ready] test="${ctx.task.name}" ping >5s (wedged)`);
+    if (GESTURE_TEST.test(ctx.task.name)) await ensureSettingsReady(client, ctx.task.name);
+  }, 300_000);
 
   afterAll(async () => {
     try {
@@ -230,9 +469,7 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
   }, 90_000);
 
   it("typeText enters text into the Settings search field", async () => {
-    // Return to the Settings root.
-    await client.launchApp(SETTINGS);
-    await sleep(1500);
+    // beforeEach relaunched Settings at its root and probed it.
     // iOS hides the search bar just above the first row; a downward swipe at the
     // top reveals it so its element is on-screen and hittable.
     const s0 = await client.getNestedState();

@@ -149,49 +149,80 @@ jobs:
             XCTESTRUN=$(ls build/ios-open-derived/Build/Products/*.xctestrun | head -1)
           fi
           echo "xctestrun=$XCTESTRUN"
-          PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-          echo "runner port=$PORT"
           mkdir -p build/shots
+          # The suite writes `runner-never-up` here when the runner died on its first
+          # launch of Settings (XCTest "Timed out attempting to launch app").
+          export IOS_OPEN_SERVER_STATUS_FILE="$PWD/build/device-suite-status"
+
           # Launch the runner in the BACKGROUND OF THIS STEP and run the suite in the
           # same step: a detached xcodebuild test does not survive the step boundary
           # (the next step saw ECONNREFUSED), so the runner must stay a child of the
-          # shell that runs vitest.
-          TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT xcodebuild test-without-building \
-            -xctestrun "$XCTESTRUN" \
-            -only-testing:ArgentRunnerUITests/ArgentRunnerSession/testServeCommands \
-            -destination "platform=iOS Simulator,id=$SIM_UDID" \
-            -test-timeouts-enabled NO \
-            -resultBundlePath build/runner.xcresult \
-            > build/runner.log 2>&1 &
-          RUNNER_PID=$!
-          echo "$RUNNER_PID" > build/runner.pid
-          # Poll a JSON-RPC ping over raw TCP until ready (120s).
-          READY=""
-          for i in $(seq 1 120); do
-            if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
-              echo "::error::runner process exited before answering"; tail -120 build/runner.log || true; exit 1
+          # shell that runs vitest. $1 = log/xcresult suffix ("" or "-retry").
+          start_runner() {
+            PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+            echo "runner port=$PORT"
+            TEST_RUNNER_ARGENT_RUNNER_PORT=$PORT xcodebuild test-without-building \
+              -xctestrun "$XCTESTRUN" \
+              -only-testing:ArgentRunnerUITests/ArgentRunnerSession/testServeCommands \
+              -destination "platform=iOS Simulator,id=$SIM_UDID" \
+              -test-timeouts-enabled NO \
+              -resultBundlePath "build/runner$1.xcresult" \
+              > "build/runner$1.log" 2>&1 &
+            RUNNER_PID=$!
+            echo "$RUNNER_PID" > build/runner.pid
+            # Poll a JSON-RPC ping over raw TCP until ready (120s).
+            for i in $(seq 1 120); do
+              if ! kill -0 "$RUNNER_PID" 2>/dev/null; then
+                echo "runner process exited before answering"; tail -120 "build/runner$1.log" || true; return 1
+              fi
+              if node -e "
+                const net=require('net');
+                const s=net.connect($PORT,'127.0.0.1');
+                s.on('connect',()=>s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping'})+'\n'));
+                s.on('data',()=>process.exit(0));
+                s.on('error',()=>process.exit(1));
+                setTimeout(()=>process.exit(1),1500);
+              " 2>/dev/null; then echo "runner ready after ${i}s"; return 0; fi
+              sleep 1
+            done
+            echo "runner did not answer ping within 120s"; tail -120 "build/runner$1.log" || true
+            return 1
+          }
+          stop_runner() {
+            kill "$RUNNER_PID" 2>/dev/null || true
+            for _ in $(seq 1 15); do kill -0 "$RUNNER_PID" 2>/dev/null || break; sleep 1; done
+          }
+
+          # One restart of the runner, for exactly two cases: it never answered ping,
+          # or the suite reported `runner-never-up`. Any other failure is final.
+          STATUS=1
+          for ATTEMPT in 1 2; do
+            SUFFIX=""; [ "$ATTEMPT" -eq 2 ] && SUFFIX="-retry"
+            rm -f "$IOS_OPEN_SERVER_STATUS_FILE"
+            if ! start_runner "$SUFFIX"; then
+              stop_runner
+              if [ "$ATTEMPT" -eq 1 ]; then
+                echo "::warning::runner never came up (attempt 1); restarting it once"; continue
+              fi
+              echo "::error::runner never came up (attempt 2)"; exit 1
             fi
-            if node -e "
-              const net=require('net');
-              const s=net.connect($PORT,'127.0.0.1');
-              s.on('connect',()=>s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping'})+'\n'));
-              s.on('data',()=>process.exit(0));
-              s.on('error',()=>process.exit(1));
-              setTimeout(()=>process.exit(1),1500);
-            " 2>/dev/null; then READY=1; echo "runner ready after ${i}s"; break; fi
-            sleep 1
+            # Same step: the background runner stays up while vitest runs.
+            export IOS_OPEN_SERVER_PORT=$PORT
+            export IOS_OPEN_SERVER_UDID=$SIM_UDID
+            set +e
+            ( cd packages/tool-server && npx vitest run --maxWorkers=2 test/blueprints/ios-open-server.device.test.ts )
+            STATUS=$?
+            set -e
+            stop_runner
+            SUITE_STATUS=$(cat "$IOS_OPEN_SERVER_STATUS_FILE" 2>/dev/null || true)
+            if [ -n "$SUITE_STATUS" ]; then echo "suite status marker: $SUITE_STATUS"; fi
+            grep -n "Timed out attempting to launch app" "build/runner$SUFFIX.log" || true
+            if [ "$STATUS" -ne 0 ] && [ "$ATTEMPT" -eq 1 ] && [ "$SUITE_STATUS" = "runner-never-up" ]; then
+              echo "::warning::runner died on the first launch of Settings (attempt 1); restarting it once"
+              continue
+            fi
+            break
           done
-          if [ -z "$READY" ]; then
-            echo "::error::runner did not answer ping within 120s"; tail -120 build/runner.log || true; exit 1
-          fi
-          # Same step: the background runner stays up while vitest runs.
-          export IOS_OPEN_SERVER_PORT=$PORT
-          export IOS_OPEN_SERVER_UDID=$SIM_UDID
-          set +e
-          ( cd packages/tool-server && npx vitest run --maxWorkers=2 test/blueprints/ios-open-server.device.test.ts )
-          STATUS=$?
-          set -e
-          kill "$RUNNER_PID" 2>/dev/null || true
           exit $STATUS
 
       - name: Stop the runner
@@ -211,6 +242,9 @@ jobs:
             build/build-device.log
             build/runner.log
             build/runner.xcresult
+            build/runner-retry.log
+            build/runner-retry.xcresult
+            build/device-suite-status
             build/shots
             build/simslim
           if-no-files-found: warn
