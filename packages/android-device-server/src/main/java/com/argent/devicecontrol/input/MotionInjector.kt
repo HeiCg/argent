@@ -65,14 +65,23 @@ object MotionInjector {
      * The final ACTION_UP is dispatched synchronously under DEFAULT (F3); the
      * explicit [strategy] values override the final-UP mode (phase 3n).
      *
+     * Hold anchor (review E-1 2026-10-07 finding 4). [holdAnchorFrame] is the index
+     * of a held swipe's LAST TRAVEL frame (a MOVE, `1..frames-2`), or -1. Every
+     * frame after it is shifted by how late it actually went out
+     * ([HoldAnchor.shiftMs]), so when the travel dispatches late (loaded emulator)
+     * the hold frames and the UP are not injected back to back: the stationary span
+     * before the lift stays the scheduled hold, measured on the device clock.
+     *
      * @return the [InjectOutcome]: `dropped` if any event was rejected, plus the
-     *   strategy that actually ran (`"unavailable"` on a hiddenapi fallback).
+     *   strategy that actually ran (`"unavailable"` on a hiddenapi fallback), the
+     *   delivered DOWN-to-UP span and, with an anchor, the delivered hold.
      */
     fun inject(
         uiAutomation: UiAutomation,
         ids: IntArray,
         paths: List<List<Point>>,
-        strategy: InjectStrategy = InjectStrategy.DEFAULT
+        strategy: InjectStrategy = InjectStrategy.DEFAULT,
+        holdAnchorFrame: Int = -1
     ): InjectOutcome {
         val n = paths.size
         require(n >= 1) { "gesture needs at least one pointer" }
@@ -119,10 +128,14 @@ object MotionInjector {
             }
         }
 
-        fun send(action: Int, count: Int, slotMs: Long, isFinalUp: Boolean = false) {
+        // Delay added to every frame after the hold anchor (0 until it is sent).
+        var shiftMs = 0L
+
+        // Returns the event's real dispatch time (device clock).
+        fun send(action: Int, count: Int, slotMs: Long, isFinalUp: Boolean = false): Long {
             // Real-clock pacing: sleep only for the time still remaining until this
             // frame's slot, measured now.
-            val waitMs = (downTime + slotMs) - SystemClock.uptimeMillis()
+            val waitMs = (downTime + slotMs + shiftMs) - SystemClock.uptimeMillis()
             if (waitMs > 0) SystemClock.sleep(waitMs)
             // The event's timestamp is the true arrival time, so VelocityTracker
             // fits its curve over what actually happened (F17).
@@ -153,10 +166,12 @@ object MotionInjector {
             } finally {
                 event.recycle()
             }
+            return eventTime
         }
 
         // Downs: pointer 0 with ACTION_DOWN, each additional pointer with an
         // ACTION_POINTER_DOWN carrying every pointer already on the glass.
+        var firstDownAt = -1L
         for (k in 0 until n) {
             setCoords(0, k + 1)
             val action = if (k == 0) {
@@ -164,13 +179,21 @@ object MotionInjector {
             } else {
                 MotionEvent.ACTION_POINTER_DOWN or (k shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
             }
-            send(action, k + 1, paths[0][0].tMs)
+            val at = send(action, k + 1, paths[0][0].tMs)
+            if (k == 0) firstDownAt = at
         }
 
-        // Moves: every intermediate frame with all pointers at that frame.
+        // Moves: every intermediate frame with all pointers at that frame. After the
+        // hold anchor (a held swipe's last travel frame), later slots are shifted by
+        // the anchor's lateness so the hold cannot collapse.
+        var anchorAt = -1L
         for (f in 1 until frames - 1) {
             setCoords(f, n)
-            send(MotionEvent.ACTION_MOVE, n, paths[0][f].tMs)
+            val at = send(MotionEvent.ACTION_MOVE, n, paths[0][f].tMs)
+            if (f == holdAnchorFrame) {
+                anchorAt = at
+                shiftMs = HoldAnchor.shiftMs(downTime + paths[0][f].tMs, at)
+            }
         }
 
         // Ups: lift the highest-indexed pointer first (ACTION_POINTER_UP), then
@@ -187,7 +210,7 @@ object MotionInjector {
             )
         }
         setCoords(last, 1)
-        send(MotionEvent.ACTION_UP, 1, upSlot, isFinalUp = true)
+        val upAt = send(MotionEvent.ACTION_UP, 1, upSlot, isFinalUp = true)
         // Settle bookkeeping. A synchronous final UP (default swipe/gesture, or
         // uia-sync) already drained the dispatcher FIFO — including any tap async UP
         // still in flight — so clear the flag. An async final UP (uia-async /
@@ -201,7 +224,14 @@ object MotionInjector {
             asyncUp.markOutstanding(coords[0].x, coords[0].y)
         }
         InjectStrategyCounter.record(effective.reported)
-        return InjectOutcome(dropped, effective.reported, effective.fellBackTo, effective.error)
+        return InjectOutcome(
+            dropped,
+            effective.reported,
+            effective.fellBackTo,
+            effective.error,
+            deliveredMs = HoldAnchor.spanMs(firstDownAt, upAt),
+            heldMs = HoldAnchor.spanMs(anchorAt, upAt)
+        )
     }
 
     /**

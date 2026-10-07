@@ -835,6 +835,17 @@ jobs:
           npm run build:android-device-server
           ls -la packages/android-device-server/bin/
 
+      - name: Build churn app (Phase E, E-1)
+        if: ${{ contains(github.event.inputs.blocks, 'churn') }}
+        # Reuses the android-device-server Gradle wrapper via `-p`, so no second
+        # wrapper.jar. Gated on `blocks` containing `churn` (a new workflow_dispatch
+        # input would be rejected by the default-branch schema on a feature ref);
+        # `blocks` is ignored by the screen-graph job otherwise.
+        run: |
+          set -euo pipefail
+          bash bench/churn-app/scripts/build.sh
+          ls -la bench/churn-app/build/outputs/apk/debug/
+
       - name: Fetch proprietary binaries (B1 config, @swmansion/argent@<proprietary_version>)
         # Re-baseline (0.27): the release comes from the dispatch input. Its
         # provenance (version from the tarball's package.json + sha256 of every
@@ -877,11 +888,22 @@ jobs:
           node -e 'require("ts-node").register({transpileOnly:true,skipProject:true,compilerOptions:{module:"commonjs",target:"ES2022",moduleResolution:"node",esModuleInterop:true,resolveJsonModule:true,skipLibCheck:true,strict:false,ignoreDeprecations:"6.0"}}); require("./packages/tool-server/scripts/bench-preflight.ts");' \
             2>&1 | tee "$RUNNER_TEMP/sg-preflight.log"
 
+      - name: Install churn app (Phase E, E-1)
+        if: ${{ contains(github.event.inputs.blocks, 'churn') && github.event.inputs.sg_mode != 'capture' }}
+        run: |
+          set -euo pipefail
+          APK="$(find bench/churn-app/build/outputs/apk/debug -name '*.apk' | head -n1)"
+          adb -s emulator-5554 install -r "$APK"
+          adb -s emulator-5554 shell pm list packages | grep com.argent.churnapp
+
       - name: Screen-graph matrix
         id: matrix
         if: ${{ github.event.inputs.sg_mode != 'capture' }}
         env:
           BENCH_SERIAL: emulator-5554
+          # Phase E (E-1): run the churn experiment after the matrix when `blocks`
+          # contains `churn` (see the build step for why not a new input).
+          BENCH_CHURN: ${{ contains(github.event.inputs.blocks, 'churn') && '1' || '' }}
           # C.4 work item F: 5 reps for a tighter Wilson interval above the noise floor.
           BENCH_REPS: "5"
           ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin

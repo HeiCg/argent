@@ -125,6 +125,8 @@ int)` with `INJECT_INPUT_EVENT_MODE_ASYNC` resolved and ran on the image with **
   stores; **`skippedNoIdHash` 0** (34813849446: 0; 34853156073: 2; 34840929610: still
   unrecorded). Back at the reference. **Run with `input-manager` as the injector** — the open
   configs inject through the flipped default.
+- **E-1 (reviewed 2026-10-07)**: bounded store 23 KB vs 203 KB at K=5, +0 nodes/edges per
+  session; template-step navigation 37/37 = no-graph 37/37, no speed gain; run 37600322190.
 - **Process** — run 34870686468, attempt **1**, head `bb3fbddf`, `workflow_dispatch`,
   `suite=both`, `sg_mode=matrix`. Conclusion `failure`: the sole failing step is **#20
   `Enforce device-test result`** (the 3m.1 residual gate); step #14 reports success despite

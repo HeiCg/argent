@@ -57,6 +57,17 @@ export interface OpenInjectReport {
   injectError?: string;
 }
 
+/**
+ * Device-clock timing a swipe reply carries from APK 0.1.24 (review E-1
+ * 2026-10-07 finding 4): `deliveredMs` is the injected DOWN-to-UP span and
+ * `heldMs` the stationary span between the end of travel and the UP (held swipes
+ * only). Absent on an older APK.
+ */
+export interface OpenSwipeTiming {
+  deliveredMs?: number;
+  heldMs?: number;
+}
+
 type OpenDeviceServerFactoryOptions = Record<string, unknown> & {
   device: DeviceInfo;
 };
@@ -604,7 +615,7 @@ export interface OpenDeviceServerApi {
     steps?: number,
     holdEndMs?: number,
     opts?: OutcomeOptions & { inject?: OpenInjectStrategy }
-  ): Promise<{ success: boolean } & OpenServerActionOutcome>;
+  ): Promise<{ success: boolean } & OpenServerActionOutcome & OpenSwipeTiming>;
   gestureWithOutcome(
     pointers: GesturePointerPath[],
     opts?: OutcomeOptions & { inject?: OpenInjectStrategy }
@@ -1208,7 +1219,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           outcome: outcomeObject(outcomeOpts),
         }),
       swipeWithOutcome: (startX, startY, endX, endY, steps, holdEndMs, outcomeOpts) =>
-        client.request<{ success: boolean } & OpenServerActionOutcome>("swipe", {
+        client.request<{ success: boolean } & OpenServerActionOutcome & OpenSwipeTiming>("swipe", {
           startX,
           startY,
           endX,

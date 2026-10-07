@@ -10,11 +10,16 @@
  *   is the device hash, not time.
  */
 import type { Edge, ScreenNode } from "./types";
-import { actionLabel } from "./types";
+import { actionLabel, isNodeVolatile } from "./types";
 
 /** Short display id for a screen with no label. */
 export function hash8(hash: string): string {
   return hash.slice(0, 8);
+}
+
+/** Short display id for a template identity (4 hex nibbles). */
+function tpl4(hash: string): string {
+  return hash.slice(0, 4);
 }
 
 interface SummaryAffordance {
@@ -29,6 +34,12 @@ interface ScreenSummary {
   affordances: SummaryAffordance[];
   /** Number of changed fields vs the last visit, when `stateHash` differs. */
   changedSince?: number;
+  /**
+   * Phase E (design D1/D2 R4): the screen is a live-content container — its
+   * `stateHash` churns while its `H_id` holds. Rendered as a `volatile` line so
+   * the agent knows the cached content is not reused across visits.
+   */
+  volatile?: boolean;
 }
 
 interface SummaryOptions {
@@ -56,7 +67,7 @@ export function buildSummary(
     .sort((a, b) => b.count - a.count)
     .slice(0, topN)
     .map((e) => ({
-      action: actionLabel(e.action),
+      action: templateAffordanceLabel(e) ?? actionLabel(e.action),
       to: nodes[e.to] ? screenName(nodes[e.to]!) : hash8(e.to),
       count: e.count,
     }));
@@ -66,7 +77,23 @@ export function buildSummary(
     affordances,
   };
   if (opts.changedSince !== undefined) summary.changedSince = opts.changedSince;
+  // Phase E: flag a live-content container so the agent does not trust cached text.
+  if (isNodeVolatile(node)) summary.volatile = true;
   return summary;
+}
+
+/**
+ * Phase E (design D1): the summary line for a TEMPLATE edge — one line per
+ * (container, template) instead of up to six arbitrary item titles. `count` is
+ * the total item taps seen through the container; `instances` the distinct
+ * concrete destinations folded (the number that matters). Returns `undefined`
+ * for an ordinary edge (the caller then uses `actionLabel`).
+ */
+function templateAffordanceLabel(e: Edge): string | undefined {
+  const t = e.template;
+  if (!t) return undefined;
+  const where = t.containerId ? `#${t.containerId}` : `#${tpl4(t.containerKey)}`;
+  return `tap item[*] in ${where} (tpl ${tpl4(t.itemTemplate)}, ${e.count} seen, ${t.instances} instances)`;
 }
 
 /** Render a {@link ScreenSummary} to terse text (the ≤ ~100 token tier). */
@@ -80,6 +107,9 @@ export function renderSummary(summary: ScreenSummary): string {
   }
   if (summary.changedSince !== undefined) {
     lines.push(`changedSince: ${summary.changedSince} field(s)`);
+  }
+  if (summary.volatile) {
+    lines.push("volatile: content changes every visit");
   }
   return lines.join("\n");
 }

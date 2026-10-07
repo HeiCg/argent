@@ -1,6 +1,7 @@
 package com.argent.devicecontrol.handlers
 
 import android.app.UiAutomation
+import android.util.Log
 import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.input.InjectOutcome
 import com.argent.devicecontrol.input.InjectStrategy
@@ -13,6 +14,7 @@ class SwipeHandler(
 ) {
 
     private companion object {
+        const val TAG = "SwipeHandler"
         // Wall-clock spacing between injected samples for a held swipe. Small and
         // constant so the OS velocity tracker reads a clean deceleration curve.
         const val STEP_MS = 8L
@@ -56,9 +58,20 @@ class SwipeHandler(
         } else {
             injectMomentumSwipe(startX, startY, endX, endY, steps, strategy)
         }
+        // Review E-1 2026-10-07 finding 4: the delivered DOWN-to-UP span (and, for a
+        // held swipe, the delivered hold) on the device clock, logged per swipe and
+        // returned so the host can record what the OS actually received.
+        if (holdEndMs > 0) {
+            Log.i(
+                TAG,
+                "held swipe steps=$steps holdEndMs=$holdEndMs deliveredMs=${outcome.deliveredMs} heldMs=${outcome.heldMs}"
+            )
+        }
         return JSONObject().apply {
             put("success", !outcome.dropped)
             if (outcome.dropped) put("dropped", true)
+            if (outcome.deliveredMs >= 0) put("deliveredMs", outcome.deliveredMs)
+            if (outcome.heldMs >= 0) put("heldMs", outcome.heldMs)
             put("strategy", outcome.strategy)
             outcome.fellBackTo?.let { put("fellBackTo", it) }
             outcome.error?.let { put("injectError", it) }
@@ -144,6 +157,14 @@ class SwipeHandler(
             path.add(MotionInjector.Point(endX.toFloat(), endY.toFloat(), baseT + h * STEP_MS))
         }
 
-        return MotionInjector.inject(uiAutomation, intArrayOf(0), listOf(path), strategy)
+        // Anchor the hold on the last travel frame (index travelSteps) so a late
+        // travel cannot collapse the hold before the lift (HoldAnchor).
+        return MotionInjector.inject(
+            uiAutomation,
+            intArrayOf(0),
+            listOf(path),
+            strategy,
+            holdAnchorFrame = travelSteps
+        )
     }
 }
