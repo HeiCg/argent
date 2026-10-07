@@ -132,15 +132,19 @@ const realDebug = console.debug.bind(console);
 console.debug = (...a: unknown[]): void => {
   debugLines.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
 };
-// Host-side inject-fallback log counter. Phase 3n.2: the host-side fast-inject
-// backend was removed, so no `[open-server-fast-inject] … falling back` line is
-// emitted any more and this reads 0. The AUTHORITATIVE fallback signal is now
-// on-device — the `unavailable→uia-async` split in `injectStrategyReported`
-// (injectStrategyCounts). It must still NOT count the describe path's own
-// "[describe.android] … falling back to uiautomator" (a benign empty-tree retry).
+// Host-side open-server fallback log counter. Review 2026-10-07 finding 3: the old
+// pattern only matched `[open-server-fast-inject] … falling back`, whose emitter was
+// removed in phase 3n.2, so it always read 0 while gesture-tap/swipe/pinch,
+// await-screen-idle, describe, paste … each log
+// `[<tool>] open-device-server … failed, falling back …` when they leave the open
+// path. Count every such line. Not counted: the proprietary path's own
+// "[describe.android] devtools service failed, falling back to uiautomator dump"
+// (OFF-only) and the open path's tier retries ("[describe.android.tier] …"), which
+// never name the open device server.
+const OPEN_SERVER_FALLBACK = /\bopen[- ](?:ios-)?device-server\b.*\bfalling back\b/i;
 function fallbackCountSince(mark: number): { count: number; samples: string[] } {
   const slice = debugLines.slice(mark);
-  const hits = slice.filter((l) => /\[open-server-fast-inject\].*falling back/i.test(l));
+  const hits = slice.filter((l) => OPEN_SERVER_FALLBACK.test(l));
   return { count: hits.length, samples: hits.slice(0, 3) };
 }
 
@@ -445,7 +449,69 @@ interface VerbResult {
   effectChecked?: number;
   effectZero?: number;
   originLost?: number;
+  // Review 2026-10-07 finding 2: gesture-swipe / gesture-pinch are timed as gesture +
+  // one draining read (`drainRead`); `noDrain` is the gesture call alone over the
+  // same iterations (secondary, the pre-fix number).
+  drainRead?: string;
+  noDrain?: { latency: ReturnType<typeof summarize>; latencySamples: number[] };
   extra?: Record<string, unknown>;
+}
+
+// Review 2026-10-07 finding 2: the read that drains a queued final UP, identical on
+// every arm. input-manager (and uia-async) inject the final ACTION_UP asynchronously,
+// so the swipe/pinch RPC returns before the finger is up and the next state read pays
+// the drain; a sync-UP arm pays it inside the gesture RPC. Timing the gesture alone
+// therefore credits the async arms with work they defer. `describe` with
+// `settle:false` is the read the headline tap row (tap+describe(settle:false)) uses:
+// on the open path it drains the async UP before capturing (StateHandler /
+// HierarchyHandler), on the proprietary path `settle` is ignored and it is that
+// path's plain describe.
+const DRAIN_READ = "describe(settle:false)";
+
+async function timeGestureDrained(
+  label: string,
+  gesture: (i: number) => Promise<void>,
+  drain: () => Promise<void>,
+  setup?: (i: number) => Promise<void>
+): Promise<VerbResult> {
+  for (let i = 0; i < WARMUP; i++) {
+    if (setup) await setup(i).catch(() => undefined);
+    await gesture(i).catch(() => undefined);
+    await drain().catch(() => undefined);
+  }
+  const mark = debugLines.length;
+  const lat: number[] = [];
+  const noDrain: number[] = [];
+  let errors = 0;
+  const errorSamples: string[] = [];
+  for (let i = 0; i < N; i++) {
+    if (setup) await setup(i).catch(() => undefined);
+    const t0 = Date.now();
+    try {
+      await gesture(i);
+      const t1 = Date.now();
+      await drain();
+      const t2 = Date.now();
+      lat.push(t2 - t0);
+      noDrain.push(t1 - t0);
+    } catch (e) {
+      errors++;
+      if (errorSamples.length < 5)
+        errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const fb = fallbackCountSince(mark);
+  return {
+    verb: label,
+    latency: summarize(lat),
+    latencySamples: lat.slice(),
+    errors,
+    errorSamples,
+    fallbacks: fb.count,
+    fallbackSamples: fb.samples,
+    drainRead: DRAIN_READ,
+    noDrain: { latency: summarize(noDrain), latencySamples: noDrain.slice() },
+  };
 }
 
 async function timeCalls(
@@ -1882,6 +1948,13 @@ interface BlockResult {
   // Phase 3n.3 (3N2-M6): count of TIMED, measured gated-inject RPCs behind the latency
   // rows (the "N measured" in the 161 process-wide breakdown). undefined on OFF/no verbs.
   measuredInjectRpcs?: number;
+  // Review 2026-10-07 finding 3: every gesture tool call (tap/swipe/pinch/…) the bench
+  // issued in this block, timed or not. On an ON block the on-device counter for the
+  // block's strategy must equal it (Q4 equality, merge-blocks.js). Both configs.
+  expectedInjectRpcs: number;
+  // Review 2026-10-07 finding 3: `[<tool>] open-device-server … falling back` lines
+  // logged during the whole block. Any on an ON block fails the block.
+  openServerFallbacks: { count: number; samples: string[] };
   coldStartMs: number[];
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
@@ -2006,6 +2079,10 @@ async function runBlock(
   injectStrategy?: OpenInjectStrategy | "default"
 ): Promise<BlockResult> {
   const notes: string[] = [];
+  // Review 2026-10-07 finding 3: every open-server "falling back" line from here to the
+  // end of the block (cold start and untimed calls included) is counted; an ON block
+  // with any fails (main() writes the block JSON first, then exits non-zero).
+  const blockDebugMark = debugLines.length;
   resetUiDumpProbe(); // re-probe the backend-independent locate source per block
   if (config === "ON") setFlag("open-device-server", true, "project");
   else unsetFlag("open-device-server", "project");
@@ -2020,6 +2097,26 @@ async function runBlock(
 
   await teardownBackend();
   const reg = createRegistry();
+  // Review 2026-10-07 finding 3 (Q4 equality): count every gesture tool call this
+  // block issues (timed, warm-up, oracle, locate, setup/reset alike). Each one is one
+  // tap/swipe/gesture RPC on the open path, and the on-device InjectStrategyCounter
+  // records exactly one entry per such RPC, so for an ON block the counter must equal
+  // this number; a call that left the open path never reaches the counter. The
+  // server process is fresh for this registry (teardownBackend above), so its counts
+  // are this block's.
+  const INJECT_TOOLS = new Set([
+    "gesture-tap",
+    "gesture-swipe",
+    "gesture-pinch",
+    "gesture-rotate",
+    "gesture-custom",
+  ]);
+  let hostInjectCalls = 0;
+  const rawInvokeTool = reg.invokeTool.bind(reg) as Reg["invokeTool"];
+  reg.invokeTool = ((name: string, ...rest: unknown[]) => {
+    if (INJECT_TOOLS.has(name)) hostInjectCalls++;
+    return (rawInvokeTool as (n: string, ...r: unknown[]) => Promise<unknown>)(name, ...rest);
+  }) as Reg["invokeTool"];
   const verbs: VerbResult[] = [];
 
   // ---- Settings root screen ----
@@ -2070,10 +2167,6 @@ async function runBlock(
   }
   verbs.push(describeRes);
 
-  // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
-  // this is an ON-only probe; OFF blocks report nulls.
-  const ping = config === "ON" ? await measurePing(reg, N) : { p50: null, p95: null, n: 0 };
-
   // Per-describe adb-spawn cost the form-factor check used to pay (phase 3i #1),
   // measured on both configs.
   const adbFF = await measureAdbFormFactorCost(Math.min(N, 12));
@@ -2084,88 +2177,6 @@ async function runBlock(
       adbFF.beforeP95 === null ? "-" : adbFF.beforeP95.toFixed(2)
     }, n=${adbFF.n})`
   );
-
-  // Back-to-back RPC decompositions (phase 3i), ON only, on the idle Settings root.
-  // getNestedState = the describe path (big nested text, no screenshot);
-  // getState+screenshot = a JPEG-heavy payload. Comparing the 5-point timeline of
-  // the two (and vs ping) shows whether the residual scales per-byte or is a fixed
-  // per-request cost. Back-to-back so the piggybacked prevServer* is clean.
-  const rpcBreakdowns: RpcBreakdown[] = [];
-  let phase3j: Phase3jResults | undefined;
-  if (config === "ON") {
-    await ensureSettings(reg);
-    const nested = await measureRpcBreakdown(
-      reg,
-      "getNestedState (describe path)",
-      N,
-      (s) => s.getNestedState({ waitTimeoutMs: 0 }) as Promise<RpcTimedReply>
-    );
-    if (nested) {
-      rpcBreakdowns.push(nested);
-      realDebug(formatRpcBreakdown(nested));
-    }
-    const withShot = await measureRpcBreakdown(
-      reg,
-      "getState +screenshot",
-      N,
-      (s) => s.getState({ waitTimeoutMs: 0, includeScreenshot: true }) as Promise<RpcTimedReply>
-    );
-    if (withShot) {
-      rpcBreakdowns.push(withShot);
-      realDebug(formatRpcBreakdown(withShot));
-    }
-    // Capture ONE real nested reply into the artifact (phase 3i #7), in the exact
-    // HostBenchFixture shape, so the next phase can commit a real fixture in place
-    // of the synthetic one. ON blocks only (the plain describe path).
-    if (config === "ON") {
-      try {
-        const device = resolveDevice(SERIAL);
-        const ref = openDeviceServerRef(device);
-        const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-        const state = (await server.getNestedState({ waitTimeoutMs: 0 })) as {
-          tree: unknown;
-          info: { screenWidth: number; screenHeight: number };
-          wireBytes?: number;
-        };
-        const capturePath = join(OUT_DIR, "real-nested-reply.json");
-        writeFileSync(
-          capturePath,
-          JSON.stringify(
-            {
-              description:
-                "Real idle-Settings nested reply captured by the CI latency bench (phase 3i). " +
-                "Drop-in HostBenchFixture for bench-describe-host — replaces the synthetic fixture.",
-              screen: { width: state.info.screenWidth, height: state.info.screenHeight },
-              tree: state.tree,
-            },
-            null,
-            2
-          ) + "\n"
-        );
-        realDebug(
-          `[bench] captured real nested reply -> ${capturePath} (wireBytes=${state.wireBytes ?? "?"})`
-        );
-      } catch (e) {
-        realDebug(
-          `[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`
-        );
-      }
-    }
-    // Phase 3j: serialize-once + compact in-run A/B, and the transport experiment.
-    // Off by default (keeps routine runs ~1 h); enable with BENCH_PHASE3J_EXPERIMENT=1.
-    if (PHASE3J_EXPERIMENT) {
-      try {
-        phase3j = await runPhase3j(reg, N);
-        realDebug(formatPhase3j(phase3j));
-      } catch (e) {
-        realDebug(
-          `[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`
-        );
-      }
-    } else {
-      realDebug("[bench] phase3j experiment OFF (set BENCH_PHASE3J_EXPERIMENT=1 to run it)");
-    }
-  }
 
   // screenshot — NOT a latency verb (F6). The two backends return different-sized
   // frames (OFF a ~270×600 stream frame, ON a full-res capture), so timing them
@@ -2310,10 +2321,10 @@ async function runBlock(
           restoreBack
         )
       : timeCalls(name, tapThenDescribeFixed(settle), undefined, ensureOrigin);
+  // Review 2026-10-07 finding 8: the ON-only settle:true row runs AFTER the latency
+  // verbs (below), so it no longer loads the ON arms before swipe/await/paste/pinch.
   if (config === "ON") {
     verbs.push(await runTapDescribe("tap+describe(settle:false)", false));
-    await ensureSettings(reg);
-    verbs.push(await runTapDescribe("tap+describe(settle:true)", true));
   } else {
     verbs.push(await runTapDescribe("tap+describe", undefined));
   }
@@ -2328,28 +2339,6 @@ async function runBlock(
     await reg.invokeTool("gesture-tap", { udid: SERIAL, x: tapX, y: tapY }).catch(() => undefined);
   });
 
-  // Phase 3m.1 (3M-M4): a companion after-tap split read with fingerprints ON, so
-  // `describeSplitAfterTapFp.stages.fingerprintMs` measures the opt-in rebuild cost
-  // (the plain split above is opt-out and reads fingerprintMs 0 tautologically).
-  // ON arms only; the proprietary path has no open server.
-  const describeSplitAfterTapFp =
-    config === "ON"
-      ? await describeSplitAfterTapFingerprints(reg, Math.min(N, 10), tapX, tapY)
-      : null;
-
-  // Print the per-stage p50/p95 split (idle vs after-tap) so the residual is
-  // attributable to a concrete stage. Persisted in the block JSON via
-  // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
-  // baseline (proprietary path leaves these null) and ON to read the open path.
-  realDebug(formatStageTable(config, describeSplitIdle, describeSplitAfterTap));
-  if (config === "ON") {
-    realDebug(
-      `[bench] ${config} ping p50/p95=${ping.p50 === null ? "-" : ping.p50.toFixed(2)}/${
-        ping.p95 === null ? "-" : ping.p95.toFixed(2)
-      } ms (n=${ping.n})`
-    );
-  }
-
   await ensureSettings(reg);
 
   // Post-navigating-tap staleness probe (phase 3d `destinationVisible`) REMOVED
@@ -2362,9 +2351,16 @@ async function runBlock(
   // choice is "locate fresh per iteration OR remove", and it is removed here (the
   // phase-3d staleness claim is void from run 7 and is not re-measured this run).
 
-  // gesture-swipe — reset to the Settings root before each iteration (F5).
+  // gesture-swipe — reset to the Settings root before each iteration (F5). Review
+  // 2026-10-07 finding 2: timed as swipe + one draining read (DRAIN_READ) on every arm,
+  // so an async final UP still queued when the RPC returns is paid for; the swipe call
+  // alone is kept as the no-drain column. The server returns no delivered gesture
+  // duration (`{ swiped, timestampMs }` only), so none is recorded per sample.
+  const drainRead = async (): Promise<void> => {
+    await reg.invokeTool("describe", { udid: SERIAL, settle: false });
+  };
   verbs.push(
-    await timeCalls(
+    await timeGestureDrained(
       "gesture-swipe",
       async () => {
         await reg.invokeTool("gesture-swipe", {
@@ -2376,7 +2372,7 @@ async function runBlock(
           durationMs: BENCH_GESTURE_PARAMS.swipeDurationMs,
         });
       },
-      undefined,
+      drainRead,
       async () => {
         await ensureSettings(reg);
       }
@@ -2472,8 +2468,9 @@ async function runBlock(
   const chromeOk = await ensureChrome(reg);
   if (!chromeOk)
     notes.push("gesture-pinch: Chrome/example.com did not confirm content; latency still measured");
+  // Review 2026-10-07 finding 2: pinch + the same draining read, as for the swipe.
   verbs.push(
-    await timeCalls(
+    await timeGestureDrained(
       "gesture-pinch",
       async () => {
         await reg.invokeTool("gesture-pinch", {
@@ -2485,7 +2482,7 @@ async function runBlock(
           durationMs: BENCH_GESTURE_PARAMS.pinchDurationMs,
         });
       },
-      undefined,
+      drainRead,
       async () => {
         // Untimed reset: pinch the page back to minimum zoom, then settle, so the
         // measured zoom-in starts from the identical page scale on both backends.
@@ -2505,6 +2502,125 @@ async function runBlock(
       }
     )
   );
+
+  // ---- ON-only diagnostics, AFTER every latency verb (review 2026-10-07 finding 8) ----
+  // ping, the 2xN getNestedState / getState+screenshot decompositions, the nested-reply
+  // capture, the phase-3j experiment, the tap+describe(settle:true) policy row and the
+  // fingerprinted after-tap split used to run before tap/swipe on ON blocks only, so the
+  // ON arms measured their latency verbs after extra warm-up load OFF never got. They
+  // now run here, after the last latency verb, and change no OFF-vs-ON row.
+  const rpcBreakdowns: RpcBreakdown[] = [];
+  let phase3j: Phase3jResults | undefined;
+  if (config === "ON") {
+    await ensureSettings(reg);
+    verbs.push(await runTapDescribe("tap+describe(settle:true)", true));
+    await ensureSettings(reg);
+  }
+  // Phase 3m.1 (3M-M4): a companion after-tap split read with fingerprints ON, so
+  // `describeSplitAfterTapFp.stages.fingerprintMs` measures the opt-in rebuild cost
+  // (the plain split above is opt-out and reads fingerprintMs 0 tautologically).
+  // ON arms only; the proprietary path has no open server.
+  const describeSplitAfterTapFp =
+    config === "ON"
+      ? await describeSplitAfterTapFingerprints(reg, Math.min(N, 10), tapX, tapY)
+      : null;
+
+  // Raw RPC round-trip floor (phase 3i). Only the open server answers `ping`, so
+  // this is an ON-only probe; OFF blocks report nulls.
+  const ping = config === "ON" ? await measurePing(reg, N) : { p50: null, p95: null, n: 0 };
+
+  // Back-to-back RPC decompositions (phase 3i), ON only, on the idle Settings root.
+  // getNestedState = the describe path (big nested text, no screenshot);
+  // getState+screenshot = a JPEG-heavy payload. Comparing the 5-point timeline of
+  // the two (and vs ping) shows whether the residual scales per-byte or is a fixed
+  // per-request cost. Back-to-back so the piggybacked prevServer* is clean.
+  if (config === "ON") {
+    await ensureSettings(reg);
+    const nested = await measureRpcBreakdown(
+      reg,
+      "getNestedState (describe path)",
+      N,
+      (s) => s.getNestedState({ waitTimeoutMs: 0 }) as Promise<RpcTimedReply>
+    );
+    if (nested) {
+      rpcBreakdowns.push(nested);
+      realDebug(formatRpcBreakdown(nested));
+    }
+    const withShot = await measureRpcBreakdown(
+      reg,
+      "getState +screenshot",
+      N,
+      (s) => s.getState({ waitTimeoutMs: 0, includeScreenshot: true }) as Promise<RpcTimedReply>
+    );
+    if (withShot) {
+      rpcBreakdowns.push(withShot);
+      realDebug(formatRpcBreakdown(withShot));
+    }
+    // Capture ONE real nested reply into the artifact (phase 3i #7), in the exact
+    // HostBenchFixture shape, so the next phase can commit a real fixture in place
+    // of the synthetic one. ON blocks only (the plain describe path).
+    if (config === "ON") {
+      try {
+        const device = resolveDevice(SERIAL);
+        const ref = openDeviceServerRef(device);
+        const server = await reg.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+        const state = (await server.getNestedState({ waitTimeoutMs: 0 })) as {
+          tree: unknown;
+          info: { screenWidth: number; screenHeight: number };
+          wireBytes?: number;
+        };
+        const capturePath = join(OUT_DIR, "real-nested-reply.json");
+        writeFileSync(
+          capturePath,
+          JSON.stringify(
+            {
+              description:
+                "Real idle-Settings nested reply captured by the CI latency bench (phase 3i). " +
+                "Drop-in HostBenchFixture for bench-describe-host — replaces the synthetic fixture.",
+              screen: { width: state.info.screenWidth, height: state.info.screenHeight },
+              tree: state.tree,
+            },
+            null,
+            2
+          ) + "\n"
+        );
+        realDebug(
+          `[bench] captured real nested reply -> ${capturePath} (wireBytes=${state.wireBytes ?? "?"})`
+        );
+      } catch (e) {
+        realDebug(
+          `[bench] real nested-reply capture skipped: ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+    // Phase 3j: serialize-once + compact in-run A/B, and the transport experiment.
+    // Off by default (keeps routine runs ~1 h); enable with BENCH_PHASE3J_EXPERIMENT=1.
+    if (PHASE3J_EXPERIMENT) {
+      try {
+        phase3j = await runPhase3j(reg, N);
+        realDebug(formatPhase3j(phase3j));
+      } catch (e) {
+        realDebug(
+          `[bench] phase3j experiment skipped: ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    } else {
+      realDebug("[bench] phase3j experiment OFF (set BENCH_PHASE3J_EXPERIMENT=1 to run it)");
+    }
+  }
+
+  // Print the per-stage p50/p95 split (idle vs after-tap) so the residual is
+  // attributable to a concrete stage. Persisted in the block JSON via
+  // describeSplit{Idle,AfterTap}.stages too; run OFF-1 and OFF-2 to read the
+  // baseline (proprietary path leaves these null) and ON to read the open path.
+  realDebug(formatStageTable(config, describeSplitIdle, describeSplitAfterTap));
+  if (config === "ON") {
+    realDebug(
+      `[bench] ${config} ping p50/p95=${ping.p50 === null ? "-" : ping.p50.toFixed(2)}/${
+        ping.p95 === null ? "-" : ping.p95.toFixed(2)
+      } ms (n=${ping.n})`
+    );
+  }
 
   const rss = config === "OFF" ? simServerRssKb() : null;
   if (config === "ON")
@@ -2643,6 +2759,22 @@ async function runBlock(
       );
     }
   }
+  // Finding 3: the expected on-device injection count (Q4 equality) and the block's
+  // open-server fallback lines. Logged per block so bench-log-<block>.txt shows both.
+  const expectedInjectRpcs = hostInjectCalls;
+  const openServerFallbacks = fallbackCountSince(blockDebugMark);
+  realDebug(
+    `[bench] ${block} expectedInjectRpcs=${expectedInjectRpcs} (gesture tool calls issued this block)` +
+      (injectStrategyCounts ? ` on-device counts=${JSON.stringify(injectStrategyCounts)}` : "") +
+      ` openServerFallbacks=${openServerFallbacks.count}` +
+      (openServerFallbacks.samples.length ? ` first: ${openServerFallbacks.samples[0]}` : "")
+  );
+  if (config === "ON" && openServerFallbacks.count > 0) {
+    notes.push(
+      `OPEN-SERVER FALLBACK: ${openServerFallbacks.count} "falling back" line(s) this block — ` +
+        `some calls ran on the proprietary path; the block fails`
+    );
+  }
 
   await reg.dispose().catch(() => undefined);
   await teardownBackend();
@@ -2671,6 +2803,8 @@ async function runBlock(
     injectStrategyCounts,
     injectStrategyTotal,
     measuredInjectRpcs,
+    expectedInjectRpcs,
+    openServerFallbacks,
     coldStartMs,
     verbs,
     describeSample,
@@ -2707,6 +2841,22 @@ async function runBlock(
     degradedReasons,
     notes,
   };
+}
+
+// Review 2026-10-07 finding 3: an ON block with any open-server "falling back" line
+// measured (part of) the proprietary path. Throws so the process exits non-zero.
+function assertNoOpenServerFallback(blocks: BlockResult[]): void {
+  const bad = blocks.filter((b) => b.config === "ON" && b.openServerFallbacks.count > 0);
+  if (!bad.length) return;
+  throw new Error(
+    "open-server fallback on ON block(s): " +
+      bad
+        .map(
+          (b) =>
+            `${b.block}=${b.openServerFallbacks.count} (first: ${b.openServerFallbacks.samples[0] ?? "?"})`
+        )
+        .join(" | ")
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2783,13 +2933,15 @@ async function main(): Promise<void> {
     );
     const r = await runBlock(block, config, injectStrategy);
     blocks.push(r);
-    // Per-block summary: the strategy fallback count (input-manager→uia-async is
-    // reported on-device via injectStrategyReported; this host-side counter reads 0
-    // now that injection runs on-device) plus effect-check counts, so
-    // bench-log-<block>.txt shows the block ran clean without digging into the JSON.
+    // Per-block summary: the open-server fallback lines over the timed verbs and over
+    // the whole block (finding 3; input-manager→uia-async is reported on-device via
+    // injectStrategyReported) plus effect-check counts, so bench-log-<block>.txt shows
+    // the block ran clean without digging into the JSON.
     const fbTotal = (r.verbs || []).reduce((s, v) => s + (v.fallbacks || 0), 0);
     realDebug(
-      `[bench][${block}] strategyFallbacks=${fbTotal} ` +
+      `[bench][${block}] openServerFallbacks(timed verbs)=${fbTotal} ` +
+        `openServerFallbacks(block)=${r.openServerFallbacks.count} ` +
+        `expectedInjectRpcs=${r.expectedInjectRpcs} ` +
         `oracleSelfTest=${r.oracleSelfTestPassed ? "pass" : "FAILED"} ` +
         `firstTapNoEffect=${r.firstTapNoEffectTotal}/${r.effectCheckedTotal} ` +
         `locateFailed=${r.locateFailedTotal} coordMoved=${r.coordMovedTotal} ` +
@@ -2815,12 +2967,16 @@ async function main(): Promise<void> {
     // block must run and write its JSON so the merge can report ALL four per-block
     // counts and fail at the END (ON fatal, OFF tolerated). A per-block throw here
     // aborted the CI step at the first failing block and hid a later block's result.
+    // Review 2026-10-07 finding 3: an ON block that left the open path DOES fail its
+    // process (after the JSON is written), so run_block records it INVALID.
+    assertNoOpenServerFallback(blocks);
     return;
   }
 
   // Parity gate: every block must have driven the identical gesture timeline, so
   // the OFF/ON latency comparison is genuinely like-for-like (throws otherwise).
   assertIdenticalGestureParams(blocks);
+  assertNoOpenServerFallback(blocks);
   // Tap-timeline parity (phase 3h): same authored holdMs everywhere; a clean
   // two-frame DOWN→UP with NO MOVE on any arm. Recorded from the real injected shape.
   assertTapTimelineParity(blocks);

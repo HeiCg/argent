@@ -377,9 +377,10 @@ jobs:
         # its own step) so the bench diagnostics survive and upload.
         if: ${{ !cancelled() }}
         env:
-          ARGENT_SIMULATOR_SERVER_DIR: ${{ env.PROP_PKG }}/bin
-          ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR: ${{ env.PROP_PKG }}/bin
-          ARGENT_NATIVE_DEVTOOLS_DIR: ${{ env.PROP_PKG }}/dylibs
+          # Review 2026-10-07 finding 3: no proprietary dirs at step level. OFF blocks
+          # get theirs inline in run_block; ON blocks run with them unset (env -u), so
+          # an open-server fallback to the proprietary path fails instead of
+          # succeeding silently on the 0.27.0 binaries.
           BENCH_SERIAL: emulator-5554
           # Phase 3j (3d shipped): the on-device server now decides the 0.0.0.0 bind
           # itself from the qemu system properties (EmulatorDetect), so redir engages
@@ -450,23 +451,45 @@ jobs:
           # AndroidManifest.xml, the signature), and the screen-sharing agent jar is
           # byte-identical (sha256 037dc09b…). The legacy arm therefore differs from
           # the current one only in the simulator-server binary.
+          #
+          # Review 2026-10-07 findings 6/7: every block records its validity (start time,
+          # ready-gate, bench exit code, provenance stamp) in $BENCH_OUT/validity.json via
+          # block-validity.js; merge-blocks.js and scoreboard.js read it. run_block is
+          # called inside `if`/`||`, where `set -e` is off, so every failure path returns
+          # explicitly: a ready-gate failure returns 1 for EVERY block (OFF-*, ON-*)
+          # before the bench runs.
           LAST_OFF_PKG=""
+          record_validity () {
+            # $1 block  $2 ready-gate pass|fail  $3 exit code ("" = not run)  $4 stamped  $5 started
+            node .github/bench-ci/block-validity.js record "$BENCH_OUT/validity.json" \
+              --block "$1" --ready-gate "$2" --exit-code "$3" --stamped "$4" --started-at "$5" \
+              2>&1 | tee -a "$BENCH_OUT/bench-log-$1.txt" || true
+          }
           run_block () {
-            local b="$1" pkg="${2:-}" ver="${3:-}" rc=0
+            local b="$1" pkg="${2:-}" ver="${3:-}" rc=0 src=0 started
             if emu_lost; then
               echo "::warning::block $b skipped: emulator lost (no restart — results would not be comparable)"
               return 1
             fi
             echo "block $b" > "$BENCH_CONTEXT_FILE"
             echo "########## BLOCK $b ##########"
-            # F12: BLOCKING per-block readiness gate (strict, 4th arg = 1). A screen
-            # that never settles poisons the effect check, so a timeout FAILS the
-            # block (a tap on an ANR dialog is not a landed tap) instead of `|| true`.
-            bash .github/bench-ci/ready-gate.sh emulator-5554 3 60 1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
+            started="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+            # F12 + finding 7: BLOCKING per-block readiness gate (strict, 4th arg = 1). A
+            # screen that never settles poisons the effect check (a tap on an ANR dialog
+            # is not a landed tap), so a timeout fails the block before the bench runs.
+            if ! bash .github/bench-ci/ready-gate.sh emulator-5554 3 60 1 2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"; then
+              echo "::error::block $b: ready-gate did not settle — block not run (INVALID)"
+              record_validity "$b" fail "" n/a "$started"
+              return 1
+            fi
             if [ -z "$pkg" ]; then
-              BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
-                2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
-              return
+              # ON block (finding 3): the proprietary dirs are unset, so a fallback to
+              # the proprietary path cannot find its binaries and fails loudly.
+              env -u ARGENT_SIMULATOR_SERVER_DIR -u ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR -u ARGENT_NATIVE_DEVTOOLS_DIR \
+                BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
+                2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || rc=$?
+              record_validity "$b" pass "$rc" n/a "$started"
+              return "$rc"
             fi
             if [ -n "$LAST_OFF_PKG" ] && [ "$LAST_OFF_PKG" != "$pkg" ]; then
               echo "OFF binary set changed ($LAST_OFF_PKG -> $pkg): uninstalling com.argent.androiddevtools so $b installs its own helper APK" \
@@ -479,17 +502,27 @@ jobs:
             ARGENT_NATIVE_DEVTOOLS_DIR="$pkg/dylibs" \
             BENCH_ONLY="$b" BENCH_N="$BENCH_N" node .github/bench-ci/run-bench.js \
               2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || rc=$?
-            [ "$rc" = "0" ] || return "$rc"
+            if [ "$rc" != "0" ]; then
+              record_validity "$b" pass "$rc" no "$started"
+              return "$rc"
+            fi
             node .github/bench-ci/proprietary-provenance.js stamp "$BENCH_OUT/bench-block-$b.json" \
-              --expect-version "$ver" 2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt"
+              --expect-version "$ver" 2>&1 | tee -a "$BENCH_OUT/bench-log-$b.txt" || src=$?
+            record_validity "$b" pass 0 "$([ "$src" = "0" ] && echo yes || echo no)" "$started"
+            return "$src"
           }
           # F13: the OFF proprietary baseline. If the binary is executable on this
           # runner (PROP_EXECUTABLE=1) a requested OFF block that FAILS is a real
           # missing-baseline failure and fails the run (no warn-and-continue). Only a
           # proprietary that cannot exec at all (PROP_EXECUTABLE=0 — the documented
           # Linux refusal) downgrades to ON-only, and that downgrade is stated here,
-          # not a silent absent baseline. The ON blocks + merge still run first so the
-          # diagnostics survive; the OFF failure is enforced at the end of the step.
+          # not a silent absent baseline. The remaining blocks + merge still run so the
+          # diagnostics survive; failures are enforced at the end of the step.
+          #
+          # Finding 1: blocks run in this order and nothing else runs between them:
+          # OFF-1, ON-uiautomation, ON-input-manager, OFF-2, OFF-legacy. OFF-1 and OFF-2
+          # bracket every ON block; merge-blocks.js re-checks it from the block start
+          # timestamps and marks the run INVALID otherwise.
           RUN_OFF=0
           if [ "${PROP_EXECUTABLE:-0}" = "1" ]; then
             RUN_OFF=1
@@ -497,6 +530,7 @@ jobs:
             echo "::warning::proprietary simulator-server not executable on this runner — OFF baseline skipped, scoring ON-only (documented downgrade)"
           fi
           OFF_FAILED=0
+          ON_FAILED=0
           if [ "$RUN_OFF" = "1" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
             if run_block "OFF-1" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
               OFF_FAILED=1
@@ -504,11 +538,22 @@ jobs:
             fi
             sleep 3
           fi
-          # ON blocks — hard requirement (set -e fails the step on any ON failure).
-          if echo "$BENCH_BLOCKS" | grep -q "ON-uiautomation"; then run_block "ON-uiautomation"; sleep 3; fi
-          # Phase 3n.2: ON-scrcpy removed. ON-input-manager is self-orchestrated by
-          # run-bench.js (STRATEGY_ARMS) on the first run_block invocation above, so it
-          # needs no explicit run_block call here.
+          # ON blocks — hard requirement: a failure is recorded, the remaining blocks
+          # and the merge still run (diagnostics + INVALID scoreboard), the step fails.
+          if echo "$BENCH_BLOCKS" | grep -q "ON-uiautomation"; then
+            if run_block "ON-uiautomation"; then :; else
+              ON_FAILED=1
+              echo "::error::ON-uiautomation FAILED"
+            fi
+            sleep 3
+          fi
+          if echo "$BENCH_BLOCKS" | grep -q "ON-input-manager"; then
+            if run_block "ON-input-manager"; then :; else
+              ON_FAILED=1
+              echo "::error::ON-input-manager FAILED"
+            fi
+            sleep 3
+          fi
           if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
             if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
               OFF_FAILED=1
@@ -523,7 +568,8 @@ jobs:
           # is the drift floor every ON-vs-OFF delta is read against, so no extra block
           # (and no helper-APK reinstall) may sit inside it. Skipped when the input is
           # empty or that binary cannot exec here; an executable legacy block that FAILS
-          # fails the run at the end (like F13).
+          # fails the run at the end (like F13), but only invalidates the legacy
+          # section of the merge (finding 6).
           LEGACY_FAILED=0
           if echo "$BENCH_BLOCKS" | grep -q "OFF-legacy"; then
             if [ -z "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
@@ -547,6 +593,10 @@ jobs:
             echo "::error::proprietary OFF baseline failed on an executable runner — failing the run (missing baseline, F13)"
             exit 1
           fi
+          if [ "$ON_FAILED" = "1" ]; then
+            echo "::error::an ON block failed — failing the run (see validity.json / the scoreboard INVALID banner)"
+            exit 1
+          fi
           if [ "$LEGACY_FAILED" = "1" ]; then
             echo "::error::OFF-legacy failed on an executable runner — failing the run (missing legacy baseline)"
             exit 1
@@ -557,17 +607,27 @@ jobs:
 
       # ---- scoreboard into the job summary ----
       - name: Scoreboard → job summary
+        # Review 2026-10-07 finding 6: the scoreboard exits 1 on an INVALID run (a
+        # failed / unstamped / ready-gate-failed non-legacy block, or OFF-1/OFF-2 not
+        # bracketing the ON blocks) and when nothing merged. The rendered Markdown (with
+        # its INVALID banner at the top) still lands in the summary; then the step fails.
         if: always()
         run: |
           export BENCH_OUT="$PWD/.bench-results"
           mkdir -p "$BENCH_OUT"
-          if node .github/bench-ci/scoreboard.js > "$BENCH_OUT/scoreboard.md" 2>/tmp/scoreboard.err; then
+          SB_RC=0
+          node .github/bench-ci/scoreboard.js > "$BENCH_OUT/scoreboard.md" 2>/tmp/scoreboard.err || SB_RC=$?
+          if [ -s "$BENCH_OUT/scoreboard.md" ]; then
             cat "$BENCH_OUT/scoreboard.md" >> "$GITHUB_STEP_SUMMARY"
             cat "$BENCH_OUT/scoreboard.md"   # also to the step log (artifact-independent)
           else
             echo "scoreboard generation failed" | tee -a "$GITHUB_STEP_SUMMARY"
-            cat /tmp/scoreboard.err || true
           fi
+          if [ "$SB_RC" != "0" ]; then
+            cat /tmp/scoreboard.err || true
+            echo "::error::scoreboard exit $SB_RC — INVALID run, no merged result, or a scoreboard error"
+          fi
+          exit "$SB_RC"
 
       - name: Stop host sampler + emulator post-mortem
         # Always: kill the sampler/watchdog, then dmesg tail (OOM/kvm highlights),

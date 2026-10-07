@@ -2,52 +2,43 @@
 // the repo root so the flag file + .bench-results resolve there. BENCH_ONLY
 // selects a single block; the merge assembles the per-block files afterwards.
 //
-// Phase 3n self-orchestration. The workflow's run_block loop drives the OFF baselines
-// and ON-uiautomation directly; the Kotlin injection-STRATEGY arms (ON-uia-sync /
-// ON-uia-async / ON-input-manager) are self-orchestrated here so a dispatch can add a
-// strategy arm via the `blocks` input without a workflow edit. On the FIRST invocation,
-// for each strategy arm named in BENCH_BLOCKS this loader
-// spawns an isolated child `node run-bench.js` with BENCH_ONLY=<arm> (per-block
-// process isolation preserved — the memory-frugal design), gated by a lock so the
-// workflow's later block calls don't re-run them. A dispatch whose `blocks` input
-// includes ON-uia-sync / ON-uia-async / ON-input-manager therefore runs those arms
-// with NO workflow edit; the OFF baselines and the merge stay with the workflow.
-(function orchestrateStrategyArms() {
+// Review 2026-10-07 finding 1: this loader no longer self-orchestrates the Kotlin
+// injection-strategy arms. It used to spawn ON-input-manager from the FIRST run_block
+// call (OFF-1), so the candidate arm ran before OFF-1 and outside the OFF-1↔OFF-2
+// drift window, with its ready-gate advisory and its failure reported as OFF-1's. The
+// workflow now runs every block explicitly, in order OFF-1, ON-uiautomation,
+// ON-input-manager, OFF-2, OFF-legacy, each behind the blocking ready-gate.
+//
+// Ticket 3o: the optical fling harness still self-orchestrates here — a `FLING` token
+// in the `blocks` input runs `run-fling.js` + `merge-fling.js` once, inside the latency
+// job's already-booted emulator (animations off, proprietary fetched for the OFF arm),
+// on the first invocation, before OFF-1. It is report-only and not part of the merge.
+(function orchestrateFling() {
   if (process.env.ARGENT_BENCH_NO_ORCHESTRATE === "1") return; // a spawned child
   const fs = require("node:fs");
   const path = require("node:path");
   const { execFileSync } = require("node:child_process");
-  const STRATEGY_ARMS = ["ON-uia-sync", "ON-uia-async", "ON-input-manager"];
   const requested = (process.env.BENCH_BLOCKS || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const arms = STRATEGY_ARMS.filter((a) => requested.includes(a));
-  // Ticket 3o: the fling job cannot be added to the workflow YAML (no `workflow` OAuth
-  // scope to push it), so the optical fling harness self-orchestrates here too — a
-  // `FLING` token in the `blocks` input runs `run-fling.js` + `merge-fling.js` once,
-  // inside the latency job's already-booted emulator (animations off, proprietary
-  // fetched for the OFF arm). Same lock as the strategy arms, so it runs exactly once.
   const wantFling = requested.includes("FLING");
-  if (arms.length === 0 && !wantFling) return; // legacy run — nothing to self-orchestrate
+  if (!wantFling) return;
   const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
-  const LOCK = path.join(OUT, ".bench-strategy-arms.lock");
+  const LOCK = path.join(OUT, ".bench-fling.lock");
   try {
     fs.mkdirSync(OUT, { recursive: true });
   } catch {
     /* best effort */
   }
-  if (fs.existsSync(LOCK)) return; // another invocation already ran the arms
+  if (fs.existsSync(LOCK)) return; // another invocation already ran the fling harness
   fs.writeFileSync(
     LOCK,
-    `strategy arms claimed ${new Date().toISOString()} by BENCH_ONLY=${process.env.BENCH_ONLY}\n`
+    `fling claimed ${new Date().toISOString()} by BENCH_ONLY=${process.env.BENCH_ONLY}\n`
   );
   const serial = process.env.BENCH_SERIAL || "emulator-5554";
-  console.log(
-    `[run-bench] self-orchestrating ${[...arms, ...(wantFling ? ["FLING"] : [])].join(", ") || "(nothing)"} (workflow-scope workaround)`
-  );
-  // Tell the CI emulator watchdog which block is running (emulator-diagnostics.sh):
-  // a self-orchestrated arm runs inside the workflow's first run_block call.
+  console.log("[run-bench] self-orchestrating FLING (workflow-scope workaround)");
+  // Tell the CI emulator watchdog which block is running (emulator-diagnostics.sh).
   const setContext = (text) => {
     if (!process.env.BENCH_CONTEXT_FILE) return;
     try {
@@ -56,37 +47,6 @@
       /* diagnostics only */
     }
   };
-  for (const arm of arms) {
-    setContext(`block ${arm} (self-orchestrated)`);
-    console.log(`########## BLOCK ${arm} (self-orchestrated) ##########`);
-    // Readiness gate before each arm (best-effort, mirrors the workflow's per-block
-    // ready-gate; a bad screen still trips the child's own effect gate).
-    try {
-      execFileSync(
-        "bash",
-        [path.join(".github", "bench-ci", "ready-gate.sh"), serial, "3", "60", "1"],
-        {
-          stdio: "inherit",
-        }
-      );
-    } catch {
-      console.log(
-        `[run-bench] ready-gate warned before ${arm} — proceeding (the child effect gate is authoritative)`
-      );
-    }
-    // Isolated child process: one block, memory-frugal, cannot re-orchestrate. Tee the
-    // child's output to bench-log-<arm>.txt (3N-M5) — staged in the artifact — AND the
-    // job log, so a self-orchestrated arm's warnings are reviewable from the zip.
-    const logPath = path.join(OUT, `bench-log-${arm}.txt`);
-    execFileSync(
-      "bash",
-      [
-        "-c",
-        `ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=${arm} node ${JSON.stringify(__filename)} 2>&1 | tee -a ${JSON.stringify(logPath)}; exit \${PIPESTATUS[0]}`,
-      ],
-      { stdio: "inherit", env: process.env }
-    );
-  }
   if (wantFling) {
     setContext("block FLING (self-orchestrated)");
     console.log(
