@@ -54,10 +54,27 @@ extension ArgentRunnerSession {
         return OkReply(success: true)
     }
 
+    /// Drag velocity bounds in points per second (base B). Below 60 pt/s XCUITest's
+    /// drag stalls; above 5000 pt/s it is a single-frame jump.
+    static let swipeVelocityBounds: ClosedRange<Double> = 60...5000
+
+    /// Drag velocity in points per second for a straight swipe of `distance`
+    /// points that should take `durationMs`: `distance / (durationMs / 1000)`,
+    /// clamped to `swipeVelocityBounds`. `nil` when no positive duration was asked
+    /// for (XCUITest's default velocity applies) or the distance is not positive
+    /// (nothing to drag; the caller presses instead). Pure, so it is unit-tested.
+    static func swipeVelocity(distance: Double, durationMs: Double?) -> Double? {
+        guard let durationMs, durationMs > 0, distance > 0 else { return nil }
+        let raw = distance / (durationMs / 1000)
+        return min(max(raw, swipeVelocityBounds.lowerBound), swipeVelocityBounds.upperBound)
+    }
+
     /// `swipe`: drag between two screen points. `durationMs` maps to drag velocity
-    /// (base B's clamp [60, 5000] pt/s); `holdEndMs > 0` rests at the destination
-    /// before lifting so the release velocity decays and the view does not fling —
-    /// base B's `settle`. (`steps` is accepted; XCUITest interpolates its own.)
+    /// through `swipeVelocity`; without it XCUITest's default velocity applies. A
+    /// zero-length swipe with a duration is a press of `durationMs`. `holdEndMs > 0`
+    /// rests at the destination before lifting so the release velocity decays and
+    /// the view does not fling (base B's `settle`). `steps` is accepted and unused:
+    /// XCUITest interpolates its own drag.
     func handleSwipe(_ params: RunnerParams) throws -> OkReply {
         let app = try resolveTargetApp(params)
         guard let fromX = params.startX, let fromY = params.startY,
@@ -67,16 +84,24 @@ extension ArgentRunnerSession {
         }
 
         let start = point(app, fromX, fromY)
-        let end = point(app, toX, toY)
+        let distance = hypot(toX - fromX, toY - fromY)
 
+        if distance <= 0, let durationMs = params.durationMs, durationMs > 0 {
+            NSLog("ARGENT_RUNNER_SWIPE distance=0 durationMs=%.0f press", durationMs)
+            start.press(forDuration: max(0.05, durationMs / 1000))
+            return OkReply(success: true)
+        }
+
+        let end = point(app, toX, toY)
         let holdEndMs = params.holdEndMs ?? 0
         let endHold: TimeInterval = holdEndMs > 0 ? max(0.3, holdEndMs / 1000) : 0.05
         let velocity: XCUIGestureVelocity
-        if let durationMs = params.durationMs, durationMs > 0 {
-            let distance = ((toX - fromX) * (toX - fromX) + (toY - fromY) * (toY - fromY)).squareRoot()
-            let pointsPerSecond = min(max(distance / (durationMs / 1000), 60), 5000)
+        if let pointsPerSecond = Self.swipeVelocity(distance: distance, durationMs: params.durationMs) {
+            NSLog("ARGENT_RUNNER_SWIPE distance=%.1f durationMs=%.0f velocity=%.0f",
+                  distance, params.durationMs ?? 0, pointsPerSecond)
             velocity = XCUIGestureVelocity(rawValue: CGFloat(pointsPerSecond))
         } else {
+            NSLog("ARGENT_RUNNER_SWIPE distance=%.1f velocity=default", distance)
             velocity = .default
         }
 

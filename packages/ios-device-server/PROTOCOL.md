@@ -46,6 +46,15 @@ screenshot. Node `bounds` are `{x1,y1,x2,y2}` in screen points.
 | `batch`          | `actions:[{method,params}]`                                           | `{results:[…]}`                                                                       |
 | `shutdown`       | —                                                                     | `{status:"ok"}`, then the session ends                                                |
 
+`swipe` `durationMs` sets the drag velocity: `distance / (durationMs / 1000)`
+points per second, clamped to [60, 5000]. Without it XCUITest's default velocity
+applies. A zero-length swipe with `durationMs` is a press of that length. `steps`
+is accepted and ignored (XCUITest interpolates its own drag).
+
+App-scoped methods (`getState`, `getNestedState`, `tap`, `longPress`, `swipe`,
+`typeText`, keyboard `key`s) also take an optional `bundleId` that overrides the
+`launchApp` target for that call.
+
 `tree` is the **nested** shape: each node is
 `{type, label?, identifier?, value?, bounds{x1,y1,x2,y2}, enabled, hittable,
 selected, focused, children:[…]}`. `version` is a monotonic counter that advances

@@ -218,8 +218,9 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     const midX = (b.x1 + b.x2) / 2;
     const beforeShot = await simctlScreenshot("swipe-before");
     // Swipe up (content moves up): from lower third to upper third of the list.
+    // `durationMs` is what the host sends; the runner turns it into drag velocity.
     await client.swipe(midX, b.y1 + (b.y2 - b.y1) * 0.75, midX, b.y1 + (b.y2 - b.y1) * 0.25, {
-      steps: 12,
+      durationMs: 300,
     });
     await sleep(1200);
     const afterShot = await simctlScreenshot("swipe-after");

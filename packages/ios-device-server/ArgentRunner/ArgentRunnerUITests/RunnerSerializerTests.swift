@@ -53,6 +53,26 @@ final class RunnerSerializerTests: XCTestCase {
         XCTAssertNotEqual(ArgentRunnerSession.canonicalHash([a]), ArgentRunnerSession.canonicalHash([b]))
     }
 
+    // MARK: - swipe velocity
+
+    func testSwipeVelocityIsDistanceOverDuration() {
+        // 400 pt in 500 ms = 800 pt/s; 400 pt in 2000 ms = 200 pt/s.
+        XCTAssertEqual(ArgentRunnerSession.swipeVelocity(distance: 400, durationMs: 500), 800)
+        XCTAssertEqual(ArgentRunnerSession.swipeVelocity(distance: 400, durationMs: 2000), 200)
+    }
+
+    func testSwipeVelocityClampsToBounds() {
+        // 300 pt in 10 s = 30 pt/s, raised to 60; 600 pt in 50 ms = 12000 pt/s, cut to 5000.
+        XCTAssertEqual(ArgentRunnerSession.swipeVelocity(distance: 300, durationMs: 10_000), 60)
+        XCTAssertEqual(ArgentRunnerSession.swipeVelocity(distance: 600, durationMs: 50), 5000)
+    }
+
+    func testSwipeVelocityIsNilWithoutDurationOrDistance() {
+        XCTAssertNil(ArgentRunnerSession.swipeVelocity(distance: 400, durationMs: nil))
+        XCTAssertNil(ArgentRunnerSession.swipeVelocity(distance: 400, durationMs: 0))
+        XCTAssertNil(ArgentRunnerSession.swipeVelocity(distance: 0, durationMs: 300))
+    }
+
     // MARK: - method table
 
     func testMethodTableHasNoDeferredOverlap() {
