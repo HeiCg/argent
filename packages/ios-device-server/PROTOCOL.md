@@ -21,9 +21,23 @@ The runner is an XCUITest bundle. It targets **another app by bundle id**
 
 All input coordinates are **screen points** (the same space as
 `XCUIElementSnapshot.frame`). The host converts from its normalized 0–1 points
-against the screen size from `getInfo` / `getScreenSize`. `getInfo` reads the
-screen size in points and the scale from `UIScreen.main` — never from a
-screenshot. Node `bounds` are `{x1,y1,x2,y2}` in screen points.
+against the screen size from `getInfo` / `getScreenSize`. Node `bounds` are
+`{x1,y1,x2,y2}` in screen points.
+
+Geometry fields (`getInfo`, `getScreenSize`, `getState`/`getNestedState`
+`info`), never read from a screenshot:
+
+- `screenWidth`, `screenHeight`: the point size of the screen as the target app
+  sees it: the target app's frame when it is in the foreground (on the state
+  methods, the snapshot root's frame), else SpringBoard's. 402×874 on an
+  iPhone 17 in portrait. `orientation` is `portrait` when width ≤ height.
+- `scale`: framebuffer pixels per point, the panel's long side in pixels
+  (`UIScreen.nativeBounds`) over the long side in points. 3 on an iPhone 17;
+  `screenHeight × scale` is the height of a `simctl io screenshot`.
+
+The runner does not use its own `UIScreen.main.bounds`: the test code runs in
+the XCTest runner app, which Xcode generates without a launch screen, so iOS
+runs it in compatibility mode and reports a 320×480-class size there.
 
 ## Methods (iOS-1)
 

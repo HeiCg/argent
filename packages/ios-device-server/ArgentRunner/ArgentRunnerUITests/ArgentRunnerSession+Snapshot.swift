@@ -77,10 +77,15 @@ extension ArgentRunnerSession {
         }
 
         let version = versionForHash(hash)
-        let geo = Self.screenGeometry()
+        // The snapshot root is the target app, so its frame is the screen in points
+        // at no extra XPC cost (see `screenGeometry` for why not `UIScreen.main`).
+        let rootFrame = root.frame
+        let geo = !rootFrame.isNull && !rootFrame.isInfinite && rootFrame.width > 0 && rootFrame.height > 0
+            ? Self.geometry(points: rootFrame)
+            : Self.screenGeometry(foreground: nil)
         let info = StateInfo(
             bundleId: targetBundleId() ?? (params.bundleId?.trimmedNonEmpty ?? ""),
-            orientation: geo.width <= geo.height ? "portrait" : "landscape",
+            orientation: geo.orientation,
             keyboardVisible: app.keyboards.firstMatch.exists,
             screenWidth: geo.width,
             screenHeight: geo.height,

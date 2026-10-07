@@ -202,8 +202,9 @@ struct PingReply: Encodable {
 }
 
 /// `getInfo`: the target app's bundle id, orientation, keyboard visibility, and
-/// the main screen size in POINTS with the backing scale — read from
-/// `XCUIScreen.main`, never from a screenshot.
+/// the screen size in POINTS as the target app sees it (its frame) with the
+/// framebuffer px-per-point scale — never from a screenshot, never from the
+/// runner process's own `UIScreen.main.bounds` (see `screenGeometry`).
 struct InfoReply: Encodable {
     let bundleId: String
     let orientation: String

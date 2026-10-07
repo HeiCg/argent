@@ -124,6 +124,49 @@ function center(n: IosOpenServerNode): { x: number; y: number } {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// ---- simctl device type profile --------------------------------------------
+
+/**
+ * The simulator's screen from its simctl device type profile: `mainScreenWidth` /
+ * `mainScreenHeight` are portrait PIXELS, so points = pixels / `mainScreenScale`
+ * (402×874 @3 on an iPhone 17). Independent of the runner.
+ */
+async function simctlScreenPoints(udid: string): Promise<{ w: number; h: number; scale: number }> {
+  const { stdout: devicesJson } = await execFileAsync("xcrun", ["simctl", "list", "devices", "-j"]);
+  const devices = Object.values(
+    (JSON.parse(devicesJson) as { devices: Record<string, Array<Record<string, string>>> }).devices
+  ).flat();
+  const typeId = devices.find((d) => d.udid === udid)?.deviceTypeIdentifier;
+  if (!typeId) throw new Error(`simctl lists no device type for ${udid}`);
+  const { stdout: typesJson } = await execFileAsync("xcrun", [
+    "simctl",
+    "list",
+    "devicetypes",
+    "-j",
+  ]);
+  const bundlePath = (
+    JSON.parse(typesJson) as { devicetypes: Array<{ identifier: string; bundlePath: string }> }
+  ).devicetypes.find((t) => t.identifier === typeId)?.bundlePath;
+  if (!bundlePath) throw new Error(`simctl lists no bundle for device type ${typeId}`);
+  const { stdout: profileJson } = await execFileAsync("plutil", [
+    "-convert",
+    "json",
+    "-o",
+    "-",
+    path.join(bundlePath, "Contents", "Resources", "profile.plist"),
+  ]);
+  const p = JSON.parse(profileJson) as {
+    mainScreenWidth: number;
+    mainScreenHeight: number;
+    mainScreenScale: number;
+  };
+  return {
+    w: p.mainScreenWidth / p.mainScreenScale,
+    h: p.mainScreenHeight / p.mainScreenScale,
+    scale: p.mainScreenScale,
+  };
+}
+
 /** Time one RPC and log it as an informal observation (NOT a scoreboard number). */
 async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const t0 = Date.now();
@@ -165,6 +208,30 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     expect(["portrait", "landscape"]).toContain(info.orientation);
   }, 30_000);
 
+  it("geometry is the device type's point size, not the runner's compatibility-mode screen", async () => {
+    // Run 37572773799: the runner reported its own UIScreen.main (480 pt tall on an
+    // iPhone 17, 402×874 pt @3), so every normalized tap hit the wrong row.
+    const expected = await simctlScreenPoints(UDID);
+    const info = await client.getInfo();
+    const size = await client.getScreenSize();
+    const state = await client.getNestedState();
+    console.log(
+      `[device] simctl profile ${expected.w}x${expected.h}@${expected.scale}; ` +
+        `getInfo ${info.screenWidth}x${info.screenHeight}@${info.scale}; ` +
+        `getScreenSize ${size.screenWidth}x${size.screenHeight}@${size.scale}; ` +
+        `getNestedState ${state.info.screenWidth}x${state.info.screenHeight}@${state.info.scale}`
+    );
+    // Portrait profile; the reply may be landscape, so compare short and long sides.
+    const sides = (w: number, h: number): [number, number] => [Math.min(w, h), Math.max(w, h)];
+    const [expShort, expLong] = sides(expected.w, expected.h);
+    for (const g of [info, size, state.info]) {
+      const [short, long] = sides(g.screenWidth, g.screenHeight);
+      expect(Math.abs(short - expShort)).toBeLessThanOrEqual(1);
+      expect(Math.abs(long - expLong)).toBeLessThanOrEqual(1);
+      expect(Math.abs(g.scale - expected.scale)).toBeLessThanOrEqual(0.01);
+    }
+  }, 60_000);
+
   it("getNestedState stage timings sum to captureMs", async () => {
     const state = await client.getNestedState();
     expect(state.screenshot).toBeUndefined();
@@ -200,13 +267,17 @@ describe.skipIf(!enabled)("open iOS server — device suite (simulator)", () => 
     expect(after.version).not.toBe(before.version);
     // Informational: whether the pushed screen carries "General" as a nav title.
     let hasGeneralTitle = false;
+    const navBars: string[] = [];
     walk(after.tree, (n) => {
       if ((n.type === "NavigationBar" || n.type === "StaticText") && n.label === "General") {
         hasGeneralTitle = true;
       }
+      if (n.type === "NavigationBar") navBars.push(`${n.identifier ?? ""}|${n.label ?? ""}`);
     });
+    // The bench's landing check reads the destination's NavigationBar title.
     console.log(
-      `[device] after tap: version ${before.version}->${after.version}, generalTitlePresent=${hasGeneralTitle}`
+      `[device] after tap: version ${before.version}->${after.version}, generalTitlePresent=${hasGeneralTitle}, ` +
+        `navigationBars(identifier|label)=${JSON.stringify(navBars)}`
     );
   }, 90_000);
 

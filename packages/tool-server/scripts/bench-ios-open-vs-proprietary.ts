@@ -30,8 +30,9 @@
  *
  * Effect oracle for tap (IOS2-H4): neutral-pixel diff ratio per tap RECORDED (not
  * a boolean), the landing threshold DERIVED from the block's own G0 self-test
- * (`landed = ratio ≥ 0.5 × navDiff`), and G0 requires `navDiff ≥ 0.10` with
- * `rootDiff ≈ 0`. Optical scroll (IOS2-H5): full-resolution NCC via
+ * (`landed = ratio ≥ 0.5 × navDiff` AND the destination's navigation bar is the
+ * target title, fail closed), and G0 requires `navDiff ≥ 0.10` with `rootDiff ≈ 0`
+ * and the same title check. Optical scroll (IOS2-H5): full-resolution NCC via
  * `optical-scroll.ts` (no half-window clamp, refuse only on confidence < 0.6),
  * reported in screen POINTS with the raster scale stated, before/after PNGs kept
  * for a few samples per block.
@@ -441,6 +442,9 @@ interface Arm {
   /** Locate a label's center as a normalized point on the CURRENT screen — the
    * ONE shared oracle for every arm (IOS2-H3), untimed. */
   locate(label: string): Promise<NPoint | null>;
+  /** Whether the CURRENT screen is the one titled `title` (a navigation bar carries
+   * it), with the navigation titles seen — the same shared oracle, untimed. */
+  destination(title: string): Promise<{ landed: boolean; titles: string[] }>;
   /** The scroll container's normalized vertical span (for the optical region). */
   scrollRegion(): Promise<{ y1: number; y2: number }>;
   /** The runner screen height in POINTS (cached per block; for px→points). */
@@ -646,6 +650,9 @@ abstract class ArmBase {
 
   locate(label: string): Promise<NPoint | null> {
     return this.oracle.locate(label);
+  }
+  destination(title: string): Promise<{ landed: boolean; titles: string[] }> {
+    return this.oracle.destination(title);
   }
   scrollRegion(): Promise<{ y1: number; y2: number }> {
     return this.oracle.scrollRegion();
@@ -976,7 +983,10 @@ interface TapRecord {
   ratio: number; // max neutral-pixel diff ratio observed (IOS2-H4: recorded, not a boolean)
   pollIndex: number; // which poll the max ratio came from
   latencyMs: number | null; // null when the tap RPC errored
-  landed: boolean;
+  landed: boolean; // pixelLanded AND titleLanded
+  pixelLanded: boolean; // ratio ≥ landingThreshold
+  titleLanded: boolean; // the destination's navigation bar is `target` (fail closed)
+  navTitles: string[] | null; // navigation titles after the tap; null when the read failed
   errored: boolean;
   servedBy: string; // C.1: the injector that served the tap ("error" when it threw)
   fallback: boolean; // the tool layer fell back from the open path during the tap
@@ -996,9 +1006,13 @@ interface TapEffectResult extends VerbResult {
  * FIRST-attempt, timing-INDEPENDENT effect-checked tap (IOS2-H4). Every iteration:
  * ensureRoot → UNTIMED shared locate → UNTIMED simctl BEFORE → TIMED arm.tap →
  * OUTSIDE the timed window poll the neutral-pixel diff and RECORD the max ratio →
- * next iteration's ensureRoot restores. `landed = ratio ≥ landingThreshold`, where
- * the threshold is 0.5 × the block's own G0 navDiff. A locate failure EXCLUDES the
- * iteration (never a blind tap); a miss is never retried away.
+ * read the destination's navigation title from the tree → next iteration's
+ * ensureRoot restores. `landed = ratio ≥ landingThreshold AND the destination is
+ * titled `target``, where the threshold is 0.5 × the block's own G0 navDiff. The
+ * title check fails closed (a failed read or no navigation bar is a miss): any
+ * Settings row navigates, so the pixel diff alone counted run 37572773799's taps on
+ * "Apple Intelligence & Siri" as landings on "General". A locate failure EXCLUDES
+ * the iteration (never a blind tap); a miss is never retried away.
  */
 async function timeTapEffect(
   arm: Arm,
@@ -1037,7 +1051,7 @@ async function timeTapEffect(
     const dt = Date.now() - t0;
     let maxRatio = 0;
     let maxPoll = -1;
-    let landed = false;
+    let pixelLanded = false;
     let lastAfter = "";
     for (let poll = 0; poll < 3; poll++) {
       await sleep(800);
@@ -1050,10 +1064,13 @@ async function timeTapEffect(
       if (lastAfter) rmShot(lastAfter);
       lastAfter = after;
       if (ratio >= landingThreshold) {
-        landed = true;
+        pixelLanded = true;
         break;
       }
     }
+    const dest = await arm.destination(target).catch(() => null);
+    const titleLanded = dest?.landed === true;
+    const landed = pixelLanded && titleLanded;
     // Keep a few before/after pairs per block in the artifact (IOS2-H4 item 4).
     if (record && keptShots < KEEP_SHOTS_PER_BLOCK) {
       persistShot(before, block, `tap-${keptShots}-before.png`);
@@ -1069,6 +1086,9 @@ async function timeTapEffect(
         pollIndex: maxPoll,
         latencyMs: tapErr ? null : dt,
         landed,
+        pixelLanded,
+        titleLanded,
+        navTitles: dest ? dest.titles : null,
         errored: Boolean(tapErr),
         servedBy,
         fallback,
@@ -1085,7 +1105,8 @@ async function timeTapEffect(
         effectZero++;
         if (noEffectSamples.length < 8)
           noEffectSamples.push(
-            `${arm.name} tap@(${coord.x.toFixed(3)},${coord.y.toFixed(3)}) ratio=${maxRatio.toFixed(4)} < ${landingThreshold.toFixed(4)}`
+            `${arm.name} tap@(${coord.x.toFixed(3)},${coord.y.toFixed(3)}) ratio=${maxRatio.toFixed(4)} ` +
+              `(threshold ${landingThreshold.toFixed(4)}) navTitles=${dest ? JSON.stringify(dest.titles) : "read failed"}`
           );
       }
     }
@@ -1337,6 +1358,7 @@ interface BlockResult {
     target: string;
     navDiff: number;
     rootDiff: number;
+    navTitles: string[] | null;
     navMin: number;
     landingThreshold: number;
     note: string;
@@ -1380,20 +1402,23 @@ function makeArm(block: string): Arm {
   }
 }
 
+interface SelfTest {
+  selfTestPassed: boolean;
+  navDiff: number;
+  rootDiff: number;
+  /** Navigation titles after the self-test tap; null when not read. */
+  navTitles: string[] | null;
+  note: string;
+}
+
 /** G0 oracle self-test with one retry (a transient screenshot blip or a first
  * cold tap must not fail the block on its own). */
-async function oracleSelfTest(
-  arm: Arm,
-  target: string
-): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
+async function oracleSelfTest(arm: Arm, target: string): Promise<SelfTest> {
   let last = await oracleSelfTestOnce(arm, target);
   if (!last.selfTestPassed) last = await oracleSelfTestOnce(arm, target);
   return last;
 }
-async function oracleSelfTestOnce(
-  arm: Arm,
-  target: string
-): Promise<{ selfTestPassed: boolean; navDiff: number; rootDiff: number; note: string }> {
+async function oracleSelfTestOnce(arm: Arm, target: string): Promise<SelfTest> {
   try {
     await arm.ensureRoot();
     const coord = await arm.locate(target);
@@ -1402,6 +1427,7 @@ async function oracleSelfTestOnce(
         selfTestPassed: false,
         navDiff: 0,
         rootDiff: 0,
+        navTitles: null,
         note: `target "${target}" not found on root`,
       };
     const rootShot = await simctlScreenshot("oracle-root");
@@ -1409,6 +1435,8 @@ async function oracleSelfTestOnce(
     await sleep(1200);
     const navShot = await simctlScreenshot("oracle-nav");
     const navDiff = await neutralPixelDiffRatio(rootShot, navShot);
+    // The tap must reach the screen titled `target`, not any pushed screen.
+    const dest = await arm.destination(target).catch(() => null);
     await arm.goBack();
     await sleep(1000);
     const backShot = await simctlScreenshot("oracle-back");
@@ -1416,21 +1444,29 @@ async function oracleSelfTestOnce(
     rmShot(rootShot, navShot, backShot);
     // IOS2-H4: navigation must be a REAL screen change (navDiff ≥ 0.10, an order of
     // magnitude above a row highlight ≈ 0.055), and BACK must restore the root
-    // (rootDiff ≈ 0: below half the navigation change).
-    const selfTestPassed = navDiff >= G0_NAV_MIN && rootDiff < LANDING_FRACTION_OF_NAV * navDiff;
+    // (rootDiff ≈ 0: below half the navigation change), and the pushed screen must
+    // be titled `target` (fail closed: a failed read or no navigation bar fails).
+    const pixelsOk = navDiff >= G0_NAV_MIN && rootDiff < LANDING_FRACTION_OF_NAV * navDiff;
+    const titleOk = dest?.landed === true;
+    const selfTestPassed = pixelsOk && titleOk;
+    const titles = dest ? JSON.stringify(dest.titles) : "read failed";
     return {
       selfTestPassed,
       navDiff: Number(navDiff.toFixed(4)),
       rootDiff: Number(rootDiff.toFixed(4)),
+      navTitles: dest ? dest.titles : null,
       note: selfTestPassed
         ? "ok"
-        : `navDiff=${navDiff.toFixed(4)} rootDiff=${rootDiff.toFixed(4)} (needs navDiff>=${G0_NAV_MIN} and rootDiff<${LANDING_FRACTION_OF_NAV}*navDiff)`,
+        : !pixelsOk
+          ? `navDiff=${navDiff.toFixed(4)} rootDiff=${rootDiff.toFixed(4)} (needs navDiff>=${G0_NAV_MIN} and rootDiff<${LANDING_FRACTION_OF_NAV}*navDiff)`
+          : `tap on "${target}" reached navTitles=${titles}, not "${target}"`,
     };
   } catch (e) {
     return {
       selfTestPassed: false,
       navDiff: 0,
       rootDiff: 0,
+      navTitles: null,
       note: `self-test threw: ${e instanceof Error ? e.message : String(e)}`,
     };
   }

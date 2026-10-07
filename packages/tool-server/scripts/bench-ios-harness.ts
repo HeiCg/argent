@@ -264,6 +264,44 @@ function findTappableByLabel(
   return (pool.length ? pool : matches).slice().sort((a, b) => b.dfs - a.dfs)[0]?.node;
 }
 
+/**
+ * The screen in POINTS for a tree read: the Application root's frame (the target
+ * app, the same space as every node's bounds), else the runner's `info` size.
+ * Normalized oracle points are fractions of the REAL screen because the OFF and
+ * sim-input arms interpret them that way; a runner whose `info` reported its own
+ * compatibility-mode 320×480 size (run 37572773799) skewed every oracle point.
+ */
+export function screenOf(st: IosOpenServerState): { w: number; h: number } {
+  const root = st.tree.length === 1 ? st.tree[0] : undefined;
+  if (root?.type === "Application") {
+    const w = root.bounds.x2 - root.bounds.x1;
+    const h = root.bounds.y2 - root.bounds.y1;
+    if (w > 0 && h > 0) return { w, h };
+  }
+  return { w: st.info.screenWidth, h: st.info.screenHeight };
+}
+
+/** Titles of the navigation bars in a tree (identifier, else label), in DFS order. */
+export function navigationTitles(nodes: IosOpenServerNode[]): string[] {
+  const titles: string[] = [];
+  walk(nodes, (n) => {
+    if (n.type !== "NavigationBar") return;
+    const t = n.identifier ?? n.label;
+    if (t) titles.push(t);
+  });
+  return titles;
+}
+
+/**
+ * Whether the screen in `nodes` is the destination titled `title`: a navigation
+ * bar carries it (UIKit sets a bar's identifier to its title). The root's "General"
+ * cell does not count, and a tree with no navigation bar is undecidable, so it is
+ * NOT landed (fail closed). A pixel diff alone counted any row's push as landed.
+ */
+export function landedOn(nodes: IosOpenServerNode[], title: string): boolean {
+  return navigationTitles(nodes).includes(title);
+}
+
 function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | undefined {
   for (const t of ["Table", "CollectionView", "ScrollView"]) {
     let hit: IosOpenServerNode | undefined;
@@ -386,22 +424,31 @@ export class RunnerOracle {
 
   async locate(label: string): Promise<NPoint | null> {
     const st = await this.tree("locate");
-    const hit = findTappableByLabel(st.tree, label, st.info.screenWidth, st.info.screenHeight);
+    const screen = screenOf(st);
+    const hit = findTappableByLabel(st.tree, label, screen.w, screen.h);
     if (!hit) return null;
     const cxPt = (hit.bounds.x1 + hit.bounds.x2) / 2;
     const cyPt = (hit.bounds.y1 + hit.bounds.y2) / 2;
-    return { x: cxPt / st.info.screenWidth, y: cyPt / st.info.screenHeight };
+    return { x: cxPt / screen.w, y: cyPt / screen.h };
   }
 
   async scrollRegion(): Promise<{ y1: number; y2: number }> {
     const st = await this.tree("scrollRegion");
     const c = findScrollContainer(st.tree);
     if (!c) return { y1: 0.2, y2: 0.85 };
+    const { h } = screenOf(st);
     // Clamp to [0,1]: a Table can report a content-sized frame taller than the
     // window (IOS2-H5 item 5), which would put a swipe endpoint off-screen.
-    const y1 = Math.max(0, Math.min(1, c.bounds.y1 / st.info.screenHeight));
-    const y2 = Math.max(0, Math.min(1, c.bounds.y2 / st.info.screenHeight));
+    const y1 = Math.max(0, Math.min(1, c.bounds.y1 / h));
+    const y2 = Math.max(0, Math.min(1, c.bounds.y2 / h));
     return y1 < y2 ? { y1, y2 } : { y1: 0.2, y2: 0.85 };
+  }
+
+  /** Whether the current screen is the one titled `title` ({@link landedOn}),
+   * with the navigation titles seen (for the record). One tree read, untimed. */
+  async destination(title: string): Promise<{ landed: boolean; titles: string[] }> {
+    const st = await this.tree("destination");
+    return { landed: landedOn(st.tree, title), titles: navigationTitles(st.tree) };
   }
 
   async stages(): Promise<StageSample> {
