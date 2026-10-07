@@ -318,8 +318,9 @@ describe("formatDescribeTree", () => {
   });
 
   // The iOS open-device-server path also reports `xcuitest-runner`, but from a
-  // simulator: it keeps the flat rendering and the gesture-pinch hint.
-  it("keeps the simulator xcuitest-runner (iOS open-device-server) rendering flat with gesture-pinch", () => {
+  // simulator: it keeps the gesture-pinch hint. The tree is the same nested
+  // runner tree as on a physical device, so it renders nested too.
+  it("renders the simulator xcuitest-runner (iOS open-device-server) nested, with gesture-pinch", () => {
     const empty: DescribeNode = {
       role: "Application",
       frame: { x: 0, y: 0, width: 1, height: 1 },
@@ -328,13 +329,53 @@ describe("formatDescribeTree", () => {
     const out = formatDescribeTree(empty, { source: "xcuitest-runner", simulator: true });
     expect(out).toBe(
       "Source: xcuitest-runner\n" +
-        "Mode: flat\n" +
+        "Mode: nested\n" +
         "Coordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.\n" +
         "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.\n" +
         "To tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.\n" +
         "\n" +
         "ROOT  Application (0.000, 0.000, 1.000, 1.000)\n"
     );
+  });
+
+  // iOS bench run 37584719906: the simulator runner's tree is Application →
+  // NavigationBar / SearchField / Table → Cells. Flat mode prints only the
+  // root's children, so describe returned 3 lines (Settings, Search, the table)
+  // while ax-service returned 30 and the oracle found the "General" cell.
+  it("emits the simulator runner's descendants (the cells under the table)", () => {
+    const cell = (label: string, y: number): DescribeNode =>
+      leaf({ role: "AXButton", label, frame: { x: 0, y, width: 1, height: 0.05 } });
+    const root: DescribeNode = {
+      role: "Application",
+      label: "Settings",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        leaf({
+          role: "NavigationBar",
+          identifier: "Settings",
+          frame: { x: 0, y: 0.06, width: 1, height: 0.05 },
+        }),
+        leaf({
+          role: "AXTextField",
+          label: "Search",
+          frame: { x: 0, y: 0.11, width: 1, height: 0.04 },
+        }),
+        {
+          role: "Table",
+          scrollable: true,
+          frame: { x: 0, y: 0.15, width: 1, height: 0.85 },
+          children: [cell("Wi-Fi", 0.4), cell("General", 0.64)],
+        },
+      ],
+    };
+    const out = formatDescribeTree(root, { source: "xcuitest-runner", simulator: true });
+    const all = out.split("\n");
+    const lines = all
+      .slice(all.findIndex((l) => l.startsWith("ROOT ")) + 1)
+      .filter((l) => l.trim());
+    expect(lines).toHaveLength(5);
+    expect(out).toContain('    AXButton "General"  (0.000, 0.640, 1.000, 0.050)');
+    expect(out).toContain("gesture-pinch");
   });
 
   // format-tree.ts is deployed shared code: the xcuitest-runner branch above

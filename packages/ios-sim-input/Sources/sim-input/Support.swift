@@ -8,11 +8,53 @@
 // reference `Input`, `DeviceHost`, `Point`, `Size`, `GesturePhase`,
 // `DeviceEdge`, `KeyboardKey`, `KeyModifier`, `HIDUsage`, `DeviceButton`,
 // `CoreSimulators.developerDir()`, and the free functions `log`,
-// `logErr`, `dlerrorString`. This file provides those — and ONLY those —
-// so the two HID files can stay byte-for-byte verbatim.
+// `logErr`, `dlerrorString`. This file provides those, plus the per-message
+// send timeline (`SendTimeline`, iOS-4 ticket 1) that the two HID files'
+// send helpers record into. That one call per send helper is their only
+// change from the verbatim port.
 
 import Foundation
 import ObjectiveC
+
+// MARK: - Wire timing (iOS-4 ticket 1)
+
+/// Monotonic milliseconds (CLOCK_MONOTONIC_RAW, sub-µs resolution). Only
+/// differences between two readings are meaningful; the host clock is a
+/// different one.
+func monotonicMs() -> Double {
+    Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000
+}
+
+/// The HID messages sent while one command runs: `sendStart` / `sendEnd` of
+/// each `sendWithMessage:` call, in order. main.swift resets it when a line is
+/// read and drains it into the ack. Locked because the send helpers are not
+/// actor-isolated.
+final class SendTimeline: @unchecked Sendable {
+    static let shared = SendTimeline()
+
+    private let lock = NSLock()
+    private var sends: [(start: Double, end: Double)] = []
+
+    func reset() {
+        lock.lock()
+        sends.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+
+    func record(start: Double, end: Double) {
+        lock.lock()
+        sends.append((start: start, end: end))
+        lock.unlock()
+    }
+
+    func drain() -> [(start: Double, end: Double)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let out = sends
+        sends.removeAll(keepingCapacity: true)
+        return out
+    }
+}
 
 // MARK: - Coordinate / gesture types
 

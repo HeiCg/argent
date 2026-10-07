@@ -9,7 +9,10 @@
  * `packages/ios-simulator/src/input-service.ts` (the driver that pairs with the
  * same Swift CLI). Behaviour is unchanged: the service stamps a monotonic `id`
  * onto every command, matches acks by `id` when present, and falls back to FIFO
- * (head of the per-UDID pending queue) otherwise. Only the default binary path
+ * (head of the per-UDID pending queue) otherwise. Since iOS-4 ticket 1 every
+ * command resolves with a {@link SimInputAck}: the ack's `timing` block
+ * (sim-input's own receive / per-message send / ack times) plus the host's
+ * `performance.now()` at the write and at the ack line. Only the default binary path
  * differs — it resolves the product this repo builds under
  * `packages/ios-sim-input/bin/sim-input`, overridable via
  * `IOS_SIM_INPUT_BINARY` (the bench sets it to the CI build output).
@@ -18,6 +21,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
+import { performance } from "node:perf_hooks";
 
 type SpawnLike = typeof nodeSpawn;
 
@@ -35,6 +39,8 @@ interface TapArgs {
   height: number;
   /** Reserved — sim-input currently treats tap as instantaneous. */
   duration?: number;
+  /** Down→Up hold in ms; sim-input defaults to 50 when omitted. */
+  holdMs?: number;
 }
 
 interface SwipeArgs {
@@ -47,9 +53,32 @@ interface SwipeArgs {
   height?: number;
 }
 
+/** The ack line's `timing` block, in ms on the sim-input process's monotonic
+ * clock (only differences are meaningful; not comparable to the host clock). */
+export interface SimInputWireTiming {
+  /** The command line was read off stdin. */
+  recvAt: number;
+  /** One entry per HID message sent for the command, in order. */
+  sends: Array<{ sendStart: number; sendEnd: number }>;
+  /** Just before the ack line was written. */
+  ackAt: number;
+}
+
+/** What a command resolves with. */
+export interface SimInputAck {
+  id: number;
+  /** `performance.now()` just before the command line was written to stdin. */
+  hostWriteAt: number;
+  /** `performance.now()` when the ack line was parsed. */
+  hostAckAt: number;
+  /** The ack's timing block; null when the ack carried none (older binary). */
+  timing: SimInputWireTiming | null;
+}
+
 interface PendingAck {
   id: number;
-  resolve: () => void;
+  hostWriteAt: number;
+  resolve: (ack: SimInputAck) => void;
   reject: (err: Error) => void;
 }
 
@@ -78,17 +107,18 @@ export class IosSimInputService {
 
   // ---- public surface ----
 
-  tap(udid: string, args: TapArgs): Promise<void> {
+  tap(udid: string, args: TapArgs): Promise<SimInputAck> {
     return this.send(udid, {
       type: "tap",
       x: args.x,
       y: args.y,
       screenWidth: args.width,
       screenHeight: args.height,
+      ...(args.holdMs !== undefined ? { holdMs: args.holdMs } : {}),
     });
   }
 
-  swipe(udid: string, args: SwipeArgs): Promise<void> {
+  swipe(udid: string, args: SwipeArgs): Promise<SimInputAck> {
     const env: Record<string, unknown> = {
       type: "swipe",
       fromX: args.fromX,
@@ -102,7 +132,7 @@ export class IosSimInputService {
     return this.send(udid, env);
   }
 
-  typeText(udid: string, text: string): Promise<void> {
+  typeText(udid: string, text: string): Promise<SimInputAck> {
     return this.send(udid, { type: "text", text });
   }
 
@@ -110,13 +140,14 @@ export class IosSimInputService {
    * Raw escape hatch — write an arbitrary envelope. The service stamps `id` onto
    * the object before writing.
    */
-  send(udid: string, envelope: object): Promise<void> {
+  send(udid: string, envelope: object): Promise<SimInputAck> {
     const entry = this.ensureProc(udid);
     const id = this.nextId++;
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<SimInputAck>((resolve, reject) => {
       const stamped = { id, ...envelope };
       const line = JSON.stringify(stamped) + "\n";
-      entry.pending.push({ id, resolve, reject });
+      const hostWriteAt = performance.now();
+      entry.pending.push({ id, hostWriteAt, resolve, reject });
       const stdin = entry.proc.stdin;
       if (!stdin || stdin.destroyed) {
         const idx = entry.pending.findIndex((p) => p.id === id);
@@ -205,7 +236,8 @@ export class IosSimInputService {
   }
 
   private handleAckLine(entry: ProcEntry, line: string): void {
-    let obj: { id?: number; ok?: boolean; error?: string };
+    const hostAckAt = performance.now();
+    let obj: { id?: number; ok?: boolean; error?: string; timing?: unknown };
     try {
       obj = JSON.parse(line);
     } catch {
@@ -214,6 +246,14 @@ export class IosSimInputService {
     }
     const ok = obj.ok === true;
     const err = obj.error ?? "sim-input reported failure";
+    const timing = parseWireTiming(obj.timing);
+    const settle = (pending: PendingAck): void => {
+      if (ok) {
+        pending.resolve({ id: pending.id, hostWriteAt: pending.hostWriteAt, hostAckAt, timing });
+      } else {
+        pending.reject(new Error(err));
+      }
+    };
 
     if (typeof obj.id === "number") {
       const idx = entry.pending.findIndex((p) => p.id === obj.id);
@@ -221,9 +261,7 @@ export class IosSimInputService {
         console.error("[sim-input] no pending entry for ack id=%d", obj.id);
         return;
       }
-      const pending = entry.pending.splice(idx, 1)[0]!;
-      if (ok) pending.resolve();
-      else pending.reject(new Error(err));
+      settle(entry.pending.splice(idx, 1)[0]!);
       return;
     }
 
@@ -233,8 +271,7 @@ export class IosSimInputService {
       console.error("[sim-input] received ack with empty pending queue");
       return;
     }
-    if (ok) pending.resolve();
-    else pending.reject(new Error(err));
+    settle(pending);
   }
 
   private rejectAll(entry: ProcEntry, err: Error): void {
@@ -243,4 +280,20 @@ export class IosSimInputService {
       p.reject(err);
     }
   }
+}
+
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** The ack's `timing` block when every field is a finite number, else null. */
+function parseWireTiming(raw: unknown): SimInputWireTiming | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const t = raw as { recvAt?: unknown; sends?: unknown; ackAt?: unknown };
+  if (!isNum(t.recvAt) || !isNum(t.ackAt) || !Array.isArray(t.sends)) return null;
+  const sends: SimInputWireTiming["sends"] = [];
+  for (const s of t.sends as unknown[]) {
+    const m = (s ?? {}) as { sendStart?: unknown; sendEnd?: unknown };
+    if (!isNum(m.sendStart) || !isNum(m.sendEnd)) return null;
+    sends.push({ sendStart: m.sendStart, sendEnd: m.sendEnd });
+  }
+  return { recvAt: t.recvAt, sends, ackAt: t.ackAt };
 }

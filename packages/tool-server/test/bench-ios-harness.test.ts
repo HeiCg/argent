@@ -17,14 +17,22 @@ import {
   RunnerLease,
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
+  decomposeSimInputAck,
+  deviceScreenPoints,
   gesturePath,
   landedOn,
   navigationTitles,
+  openToolTapPoint,
+  proprietaryTapPoint,
+  retryLocateOnce,
   screenOf,
+  simInputTapPoint,
   toolLayerRunner,
   waitForStableFrame,
   watchRunnerLifecycle,
+  type NPoint,
   type OracleRunner,
+  type ScreenGeometry,
 } from "../scripts/bench-ios-harness";
 
 /**
@@ -368,6 +376,8 @@ describe("target app before any tree read (B)", () => {
 
     expect(runner.calls.slice(0, 2)).toEqual(["getInfo", `launchApp:${SETTINGS_BUNDLE_ID}`]);
     expect(runner.calls.filter((c) => c.startsWith("launchApp"))).toHaveLength(1);
+    // The block's first targeting is not a re-target.
+    expect(oracle.retargetsSeen()).toBe(0);
     const reads = runner.calls.filter((c) => c.startsWith("getNestedState"));
     expect(reads).toHaveLength(4);
     for (const r of reads) expect(r).toBe(`getNestedState:${SETTINGS_BUNDLE_ID}`);
@@ -380,6 +390,31 @@ describe("target app before any tree read (B)", () => {
     await oracle.ensureTarget();
     await oracle.locate("General");
     expect(runner.calls).toEqual(["getInfo", `getNestedState:${SETTINGS_BUNDLE_ID}`]);
+  });
+
+  it("after a simctl relaunch the next read re-checks the target and relaunches it only when lost (iOS-4 ticket 2)", async () => {
+    const runner = fakeRunner(SETTINGS_BUNDLE_ID);
+    const oracle = new RunnerOracle({ runner: async () => runner });
+    await oracle.ensureTarget();
+    oracle.noteRelaunch();
+    // Target intact: one getInfo, no launchApp.
+    await oracle.ensureTarget();
+    expect(runner.calls).toEqual(["getInfo", "getInfo"]);
+    expect(oracle.retargetsSeen()).toBe(0);
+    // The runner lost its target across the relaunch: launchApp re-targets it.
+    oracle.noteRelaunch();
+    const lost = runner.getInfo;
+    runner.getInfo = async () => ({ ...(await lost()), bundleId: "" });
+    await oracle.locate("General");
+    expect(runner.calls.slice(2)).toEqual([
+      "getInfo",
+      `launchApp:${SETTINGS_BUNDLE_ID}`,
+      `getNestedState:${SETTINGS_BUNDLE_ID}`,
+    ]);
+    expect(oracle.retargetsSeen()).toBe(1);
+    // No relaunch since: the next read does not re-check.
+    await oracle.locate("General");
+    expect(runner.calls.filter((c) => c === "getInfo")).toHaveLength(3);
   });
 
   it("retries a transient connection error on the SAME runner, bounded, without re-resolving it", async () => {
@@ -629,5 +664,310 @@ describe("oracle geometry and landing (run 37572773799: 480 pt runner, wrong row
       landed: false,
       titles: ["Apple Intelligence & Siri"],
     });
+  });
+});
+
+describe("one located element, one physical point on every arm (run 37595262694)", () => {
+  // iPhone 17: 402×874 pt @3 (framebuffer 1206×2622 px). The Settings root's
+  // "General" row, in SCREEN points (the space of every node's bounds).
+  const SCREEN = { w: 402, h: 874 };
+  const FRAMEBUFFER = { width: 1206, height: 2622 };
+  const GENERAL = { x1: 16, y1: 382, x2: 386, y2: 432 }; // centre (201, 407)
+
+  function cell(label: string, b: typeof GENERAL): IosOpenServerNode {
+    return {
+      type: "Cell",
+      label,
+      bounds: b,
+      enabled: true,
+      hittable: true,
+      selected: false,
+      focused: false,
+      children: [],
+    };
+  }
+
+  /** The target app's frame at `origin` (screen points), the row inside it. */
+  function appAt(origin: { x: number; y: number }): {
+    state: IosOpenServerState;
+    runner: OracleRunner;
+    geometry: ScreenGeometry;
+  } {
+    const frame = { w: SCREEN.w - origin.x, h: SCREEN.h - origin.y };
+    const state: IosOpenServerState = {
+      ...nestedState(),
+      tree: [
+        {
+          ...cell("Settings", {
+            x1: origin.x,
+            y1: origin.y,
+            x2: origin.x + frame.w,
+            y2: origin.y + frame.h,
+          }),
+          type: "Application",
+          children: [cell("General", GENERAL)],
+        },
+      ],
+      info: { ...nestedState().info, screenWidth: frame.w, screenHeight: frame.h },
+    };
+    const runner: OracleRunner = {
+      getInfo: async () => ({ ...state.info, version: 1 }),
+      launchApp: async (bundleId: string) => ({ success: true, bundleId }),
+      getNestedState: async () => state,
+      // The runner's getScreenSize is the target app's frame SIZE (no origin).
+      getScreenSize: async () => ({ screenWidth: frame.w, screenHeight: frame.h, scale: 3 }),
+    };
+    return {
+      state,
+      runner,
+      geometry: { screen: deviceScreenPoints(FRAMEBUFFER, 3)!, runner: frame },
+    };
+  }
+
+  // Where each consumer puts a point on the glass, in screen points:
+  //  - simulator-server `touch`: 0..1 of the device screen;
+  //  - the open gesture-tap tool: 0..1 × getScreenSize (clamped), sent to the
+  //    runner as screen points (`point()` cancels withOffset's app-relative base);
+  //  - sim-input: x / screenWidth (clamped) as the digitizer's 0..1 of the screen.
+  const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
+  const viaProprietary = (n: NPoint, g: ScreenGeometry) => ({
+    x: clamp01(n.x) * g.screen.w,
+    y: clamp01(n.y) * g.screen.h,
+  });
+  const viaOpenTool = (n: NPoint, g: ScreenGeometry) => ({
+    x: clamp01(n.x) * g.runner.w,
+    y: clamp01(n.y) * g.runner.h,
+  });
+  const viaSimInput = (p: { x: number; y: number; width: number; height: number }) => ({
+    x: clamp01(p.x / p.width) * SCREEN.w,
+    y: clamp01(p.y / p.height) * SCREEN.h,
+  });
+
+  it("deviceScreenPoints: framebuffer px / scale; null without a usable pair", () => {
+    expect(deviceScreenPoints(FRAMEBUFFER, 3)).toEqual(SCREEN);
+    expect(deviceScreenPoints(null, 3)).toBeNull();
+    expect(deviceScreenPoints(FRAMEBUFFER, null)).toBeNull();
+    expect(deviceScreenPoints({ width: NaN, height: NaN }, 3)).toBeNull();
+  });
+
+  for (const origin of [
+    { x: 0, y: 0 },
+    { x: 0, y: 54 },
+  ]) {
+    it(`app frame origin (${origin.x}, ${origin.y}): the oracle's point lands on the row's centre on all three arms`, async () => {
+      const { runner, geometry } = appAt(origin);
+      const oracle = new RunnerOracle({ runner: async () => runner });
+      oracle.setDeviceScreen(geometry.screen);
+      const n = await oracle.locate("General");
+      expect(n).not.toBeNull();
+      // Canonical: 0..1 of the DEVICE screen, from the row's centre in screen points.
+      expect(n!.x).toBeCloseTo(201 / 402, 9);
+      expect(n!.y).toBeCloseTo(407 / 874, 9);
+
+      const centre = { x: 201, y: 407 };
+      const off = viaProprietary(proprietaryTapPoint(n!, geometry), geometry);
+      const open = viaOpenTool(openToolTapPoint(n!, geometry), geometry);
+      const sim = viaSimInput(simInputTapPoint(n!, geometry));
+      for (const p of [off, open, sim]) {
+        expect(p.x).toBeCloseTo(centre.x, 6);
+        expect(p.y).toBeCloseTo(centre.y, 6);
+      }
+    });
+  }
+
+  it("without a measured device screen the oracle normalizes by the root frame's extent (origin + size)", async () => {
+    const { runner } = appAt({ x: 0, y: 54 });
+    const oracle = new RunnerOracle({ runner: async () => runner });
+    const n = await oracle.locate("General");
+    // Extent 402×874 = the device screen here; the frame SIZE alone (820) was 27 pt off.
+    expect(n!.y).toBeCloseTo(407 / 874, 9);
+  });
+
+  it("scrollRegion is a fraction of the device screen too", async () => {
+    const { state, runner, geometry } = appAt({ x: 0, y: 54 });
+    state.tree[0]!.children.push({
+      ...cell("list", { x1: 0, y1: 154, x2: 402, y2: 874 }),
+      type: "Table",
+    });
+    const oracle = new RunnerOracle({ runner: async () => runner });
+    oracle.setDeviceScreen(geometry.screen);
+    const r = await oracle.scrollRegion();
+    expect(r.y1).toBeCloseTo(154 / 874, 9);
+    expect(r.y2).toBe(1);
+  });
+});
+
+describe("settled locate (run 37595262694: the root's late banner moved 'General' 87 pt)", () => {
+  // Settings inserts "Ready for Apple Intelligence" above General after launch:
+  // a read before it has General at y 296..343 (centre 319.5 = 0.3656 of 874),
+  // after it at 382..431 (centre 406.5 = 0.4651). A tap at 0.3656 then hit the
+  // banner, which opens the Siri page, on every arm.
+  function root(general: { y1: number; y2: number }): IosOpenServerState {
+    return {
+      ...nestedState(),
+      tree: [
+        {
+          type: "Application",
+          label: "Settings",
+          bounds: { x1: 0, y1: 0, x2: 402, y2: 874 },
+          enabled: true,
+          hittable: true,
+          selected: false,
+          focused: false,
+          children: [
+            {
+              type: "Cell",
+              label: "General",
+              bounds: { x1: 16, y1: general.y1, x2: 386, y2: general.y2 },
+              enabled: true,
+              hittable: true,
+              selected: false,
+              focused: false,
+              children: [],
+            },
+          ],
+        },
+      ],
+    };
+  }
+  const EARLY = root({ y1: 296, y2: 343 });
+  const SETTLED = root({ y1: 382, y2: 431 });
+
+  function runnerReading(states: IosOpenServerState[]): OracleRunner & { reads: number } {
+    const r = {
+      reads: 0,
+      getInfo: async () => ({ ...nestedState().info, bundleId: SETTINGS_BUNDLE_ID, version: 1 }),
+      launchApp: async (bundleId: string) => ({ success: true, bundleId }),
+      getNestedState: async () => states[Math.min(r.reads++, states.length - 1)]!,
+      getScreenSize: async () => ({ screenWidth: 402, screenHeight: 874, scale: 3 }),
+    };
+    return r;
+  }
+
+  it("re-reads until two consecutive reads agree, and returns the settled position", async () => {
+    const runner = runnerReading([EARLY, SETTLED, SETTLED]);
+    const sleeps: number[] = [];
+    const oracle = new RunnerOracle({
+      runner: async () => runner,
+      locateSettle: { stableMs: 1000, maxReads: 5 },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    const n = await oracle.locate("General");
+    expect(n!.y).toBeCloseTo(406.5 / 874, 9);
+    expect(runner.reads).toBe(3);
+    expect(sleeps).toEqual([1000, 1000]);
+    expect(oracle.locateShiftsSeen()).toBe(1);
+    expect(oracle.unsettledLocatesSeen()).toBe(0);
+  });
+
+  it("two agreeing reads return at once (no shift)", async () => {
+    const runner = runnerReading([SETTLED]);
+    const oracle = new RunnerOracle({
+      runner: async () => runner,
+      locateSettle: { stableMs: 1000, maxReads: 5 },
+      sleep: async () => undefined,
+    });
+    expect((await oracle.locate("General"))!.y).toBeCloseTo(406.5 / 874, 9);
+    expect(runner.reads).toBe(2);
+    expect(oracle.locateShiftsSeen()).toBe(0);
+  });
+
+  it("a layout that never settles within maxReads is a miss (null), never a stale point", async () => {
+    const runner = runnerReading([EARLY, SETTLED, EARLY, SETTLED]);
+    const oracle = new RunnerOracle({
+      runner: async () => runner,
+      locateSettle: { stableMs: 10, maxReads: 4 },
+      sleep: async () => undefined,
+    });
+    expect(await oracle.locate("General")).toBeNull();
+    expect(runner.reads).toBe(4);
+    expect(oracle.unsettledLocatesSeen()).toBe(1);
+  });
+
+  it("without locateSettle a locate is one read (as before)", async () => {
+    const runner = runnerReading([EARLY, SETTLED]);
+    const oracle = new RunnerOracle({ runner: async () => runner });
+    expect((await oracle.locate("General"))!.y).toBeCloseTo(319.5 / 874, 9);
+    expect(runner.reads).toBe(1);
+  });
+});
+
+describe("sim-input ack decomposition (iOS-4 ticket 1)", () => {
+  it("splits host write→ack into receive→first send, per-message sends and last send→ack", () => {
+    const sample = decomposeSimInputAck({
+      id: 7,
+      hostWriteAt: 5000,
+      hostAckAt: 5190,
+      timing: {
+        recvAt: 100,
+        sends: [
+          { sendStart: 100.5, sendEnd: 167.5 },
+          { sendStart: 217.5, sendEnd: 284.5 },
+        ],
+        ackAt: 285,
+      },
+    });
+    expect(sample).toEqual({
+      hostWriteToAck: 190,
+      recvToFirstSend: 0.5,
+      perMessageSendMs: [67, 67],
+      lastSendToAck: 0.5,
+      sidecarMs: 185,
+      gapsMs: 50,
+      hostPipeMs: 5,
+    });
+  });
+
+  it("a command with no HID message has no send terms; no timing block yields null", () => {
+    expect(
+      decomposeSimInputAck({
+        id: 1,
+        hostWriteAt: 0,
+        hostAckAt: 2,
+        timing: { recvAt: 10, sends: [], ackAt: 10.5 },
+      })
+    ).toEqual({
+      hostWriteToAck: 2,
+      recvToFirstSend: null,
+      perMessageSendMs: [],
+      lastSendToAck: null,
+      sidecarMs: 0.5,
+      gapsMs: null,
+      hostPipeMs: 1.5,
+    });
+    expect(decomposeSimInputAck({ id: 1, hostWriteAt: 0, hostAckAt: 2, timing: null })).toBeNull();
+  });
+});
+
+describe("locate retry (M4, run 37584719906: ON-siminput tap+describe locateFailed=1)", () => {
+  it("returns the first locate without a retry", async () => {
+    let calls = 0;
+    const r = await retryLocateOnce(async () => {
+      calls++;
+      return { x: 0.5, y: 0.6 };
+    });
+    expect(r).toEqual({ value: { x: 0.5, y: 0.6 }, retried: false });
+    expect(calls).toBe(1);
+  });
+
+  it("retries a miss (null or a throw) once and reports the retry", async () => {
+    const outcomes: Array<() => Promise<NPoint | null>> = [
+      async () => {
+        throw new Error("connection reset");
+      },
+      async () => ({ x: 0.5, y: 0.6 }),
+    ];
+    const r = await retryLocateOnce(() => outcomes.shift()!());
+    expect(r).toEqual({ value: { x: 0.5, y: 0.6 }, retried: true });
+
+    let calls = 0;
+    const miss = await retryLocateOnce(async () => {
+      calls++;
+      return null;
+    });
+    expect(miss).toEqual({ value: null, retried: true });
+    expect(calls).toBe(2);
   });
 });

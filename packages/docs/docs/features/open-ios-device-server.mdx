@@ -27,7 +27,8 @@ argent enable open-ios-device-server
 The agent uses the same tools. Only the backend they reach changes.
 
 - **`describe`** reads the accessibility tree from the runner. The result is
-  tagged `source: "xcuitest-runner"`.
+  tagged `source: "xcuitest-runner"`. The result keeps the parent and child
+  structure of the tree, so the rows of a list appear under the list.
 - **`gesture-tap`**, **`gesture-swipe`**, the **keyboard** text and key entry, and
   **`screenshot`** dispatch through the runner instead of the simulator-server.
 - **`launch-app`** also makes the launched app the runner target. The runner

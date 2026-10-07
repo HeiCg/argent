@@ -10,7 +10,9 @@ independent on iOS — see the spec).
 ## Provenance
 
 The four sources under `Sources/sim-input/` were copied **verbatim** from the
-owner's `device-farm/device-stream/tools/sim-input` and carry their own
+owner's `device-farm/device-stream/tools/sim-input` (since changed only by the
+iOS-4 instrumentation below: one timing call in each HID send helper, the ack
+`timing` block and tap `holdMs`) and carry their own
 Apache-2.0 provenance banners pointing at
 [baguette](https://github.com/tddworks/baguette):
 
@@ -40,14 +42,26 @@ Each stdin line is a JSON command; each writes one ack line to stdout. Coords ar
 `screenHeight` when supplied). Logs go to stderr.
 
 ```
-{"id":<int>,"type":"tap","x":<f>,"y":<f>,"screenWidth":<f>,"screenHeight":<f>}
+{"id":<int>,"type":"tap","x":<f>,"y":<f>,"screenWidth":<f>,"screenHeight":<f>,"holdMs":<f>}   // holdMs optional, default 50
 {"id":<int>,"type":"swipe","fromX":<f>,"fromY":<f>,"toX":<f>,"toY":<f>,"durationMs":<int>,"screenWidth":<f>,"screenHeight":<f>}
 {"id":<int>,"type":"press","key":<int>}     // key = HID usage on page 7
 {"id":<int>,"type":"release","key":<int>}
 {"id":<int>,"type":"text","text":"..."}      // ASCII; decomposed via KeyboardKey
 ```
 
-Acks: `{"id":<int>,"ok":true}` or `{"id":<int>,"ok":false,"error":"..."}`.
+Acks: `{"id":<int>,"ok":true,"timing":{...}}` or
+`{"id":<int>,"ok":false,"error":"...","timing":{...}}`, written after the last HID
+message of the command. `timing` is in monotonic milliseconds on the sim-input
+process's clock (only differences are meaningful):
+
+```
+{"recvAt":<f>,"sends":[{"sendStart":<f>,"sendEnd":<f>}, ...],"ackAt":<f>}
+```
+
+`recvAt` is when the line was read off stdin, `sends` has one entry per HID
+message (`sendWithMessage:` call) in order, `ackAt` is just before the ack is
+written. The host driver adds its own `hostWriteAt` / `hostAckAt`
+(`performance.now()`) to the resolved ack.
 
 The host driver (`packages/tool-server/src/utils/ios-sim-input-service.ts`) spawns
 one long-lived process per UDID and matches acks by `id` with a FIFO fallback.
