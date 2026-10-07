@@ -190,6 +190,10 @@ driver-attributable. Update memory.
   unchanged. nograph uses `describe {tier:"compact"}` so both arms share one
   renderer. AW graph arms run the tool-server on a temporary HOME (emulator
   console token copied in); the real `~/.argent` is never touched.
+- 2026-10-07, `settle-on-action` (review round 1): `gesture-swipe` takes
+  `settleAfter`, not `settle` (the retired name of `momentum`, upstream #732).
+- 2026-10-07, `settle-on-action`: the key tool is `button`; the reply carries
+  `settled` (`quiet`|`timeout`|`no-event`) instead of `timedOut`.
 
 ## Rules that hold
 

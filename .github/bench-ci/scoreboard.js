@@ -36,6 +36,8 @@ const {
   ttcGateSamples,
   TD_VARIANTS,
   TD_GATED_VARIANT,
+  TD_ACTION_SETTLE_VARIANT,
+  TD_ACTION_SETTLE_TARGET,
   CLASS_LABEL,
 } = require("./tap-describe-destination");
 const { isCurrentOff, isOnIm, isOnUia, isOnImBg, isOnHostawait } = require("./block-arms");
@@ -1115,8 +1117,12 @@ if (onIm && offBlocks.length) {
   }
   L.push("");
 
-  // Report only (finding 4): every tap+describe variant per arm, pooled.
-  const variantNames = TD_VARIANTS.filter((vn) => verbNames.includes(vn));
+  // Report only (finding 4): every tap+describe variant per arm, pooled. Step
+  // settle-on-action: tap(settle)+describe runs on ON blocks only; an arm with no block
+  // that ran a variant prints no row for it.
+  const variantNames = [...TD_VARIANTS, TD_ACTION_SETTLE_VARIANT].filter((vn) =>
+    verbNames.includes(vn)
+  );
   if (variantNames.length) {
     L.push(
       "tap+describe variants, interleaved per sample in a seeded order on every block — " +
@@ -1137,7 +1143,7 @@ if (onIm && offBlocks.length) {
       const off = poolOf(offBlocks, (b) => ttcSamplesOf(b, vn));
       const c = compareOnce(im, off);
       for (const [arm, bs] of arms) {
-        if (!bs.length) continue;
+        if (!bs.length || !bs.some((b) => verbOf(b, vn))) continue;
         const first = poolOf(bs, (b) => samplesOf(b, vn));
         const ttc = poolOf(bs, (b) => ttcSamplesOf(b, vn));
         const cs = bs.map((b) => verbOf(b, vn)).filter((v) => v && v.timeToCorrect);
@@ -1160,6 +1166,39 @@ if (onIm && offBlocks.length) {
       }
     }
     L.push("");
+    const target = actionSettleTargetLine();
+    if (target) {
+      L.push(target);
+      L.push("");
+    }
+  }
+
+  // Step settle-on-action: the pre-registered target of tap(settle)+describe on ON-im,
+  // report only, no gate. Correct at first read (pooled k/n) >= 90 % AND the pooled
+  // time-to-correct p50 <= that of the gated await variant on the same arm.
+  function actionSettleTargetLine() {
+    const vn = TD_ACTION_SETTLE_VARIANT;
+    if (!imBlocks.some((b) => verbOf(b, vn))) return null;
+    const cs = imBlocks.map((b) => cafrOf(b, vn)).filter(Boolean);
+    const k = cs.reduce((s, c) => s + c.k, 0);
+    const n = cs.reduce((s, c) => s + c.n, 0);
+    const ttc = poolOf(imBlocks, (b) => ttcSamplesOf(b, vn));
+    const ref = poolOf(imBlocks, (b) => ttcSamplesOf(b, TD_GATED_VARIANT));
+    const ttcP50 = ttc && ttc.length ? median(ttc) : null;
+    const refP50 = ref && ref.length ? median(ref) : null;
+    const goal = TD_ACTION_SETTLE_TARGET.correctAtFirstRead;
+    const verdict =
+      !n || ttcP50 == null || refP50 == null
+        ? "N/A"
+        : k / n >= goal && ttcP50 <= refP50
+          ? "MET"
+          : "NOT MET";
+    return (
+      `- **${vn} target** (pre-registered, report only, no gate) — correct at first read ≥ ` +
+      `${goal * 100} % and time-to-correct p50 ≤ ${TD_ACTION_SETTLE_TARGET.ttcAtMostVariant} on ` +
+      `ON-im: ${n ? `${k}/${n} = ${pctCell(k / n)}` : "-"} correct at first read, ` +
+      `time-to-correct p50 ${fmt(ttcP50)} vs ${fmt(refP50)} ms: **${verdict}**`
+    );
   }
 
   // P lines: rendered from the SAME graded rows as the table above.
@@ -1356,7 +1395,9 @@ if (onIm && offBlocks.length) {
       "per sample in a seeded random order; P5 is pre-registered on " +
       `${TD_GATED_VARIANT} on both arms (time-to-correct AND correct-at-first-read); the ` +
       "other variants are report only. The proprietary describe ignores `settle`, so on OFF " +
-      "the two settle variants are the same call. " +
+      "the two settle variants are the same call. ON blocks also run " +
+      `${TD_ACTION_SETTLE_VARIANT} (gesture-tap settle:true, then describe settle:false): ` +
+      "report only, with a pre-registered target and no gate. " +
       PRE_TRANSITION_NOTE +
       "_"
   );

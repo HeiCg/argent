@@ -206,10 +206,29 @@ const TD_VARIANTS = [
 ];
 const TD_GATED_VARIANT = "tap+await-idle+describe";
 
-/** Samples per variant for a block with BENCH_N = n (TD_VARIANTS order). */
-function variantCounts(n) {
+// Step settle-on-action (review run 37609765062 Part B): the settle moves from the
+// describe to the action. "tap(settle)+describe" = gesture-tap with settle: true (the open
+// server waits for the first accessibility event, then 80 ms of quiet, cap 1500 ms), then
+// describe with settle: false. ON blocks only: the proprietary tap ignores `settle`, so on
+// OFF the variant is the plain tap+describe(settle:false) already measured there. Report
+// only, with a pre-registered target and no gate: correct at first read >= 90 % and
+// time-to-correct <= the gated await variant, on ON-im.
+const TD_ACTION_SETTLE_VARIANT = "tap(settle)+describe";
+const TD_ACTION_SETTLE_TARGET = { correctAtFirstRead: 0.9, ttcAtMostVariant: TD_GATED_VARIANT };
+const TD_ON_VARIANTS = [...TD_VARIANTS, TD_ACTION_SETTLE_VARIANT];
+
+/** The tap+describe variants a block runs: the ON arm adds tap(settle)+describe. */
+function tdVariantsFor(config) {
+  return config === "ON" ? TD_ON_VARIANTS : TD_VARIANTS;
+}
+
+/**
+ * Samples per variant for a block with BENCH_N = n, in `variants` order: N for the gated
+ * variant, N/2 for each other one.
+ */
+function variantCounts(n, variants = TD_VARIANTS) {
   const half = Math.max(1, Math.round(n / 2));
-  return [half, half, n];
+  return variants.map((v) => (v === TD_GATED_VARIANT ? n : half));
 }
 
 /** 32-bit string hash (FNV-1a), the seed of a block's schedule. */
@@ -249,6 +268,9 @@ function variantSchedule(counts, seed) {
 module.exports = {
   TD_VARIANTS,
   TD_GATED_VARIANT,
+  TD_ACTION_SETTLE_VARIANT,
+  TD_ACTION_SETTLE_TARGET,
+  tdVariantsFor,
   variantCounts,
   variantSchedule,
   CLASS_LABEL,

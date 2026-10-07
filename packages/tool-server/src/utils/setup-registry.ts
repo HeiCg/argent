@@ -37,7 +37,7 @@ import { gestureDragTool } from "../tools/gesture-drag";
 import { createGestureCustomTool } from "../tools/gesture-custom";
 import { createGesturePinchTool } from "../tools/gesture-pinch";
 import { createGestureRotateTool } from "../tools/gesture-rotate";
-import { buttonTool } from "../tools/button";
+import { createButtonTool } from "../tools/button";
 import { createKeyboardTool } from "../tools/keyboard";
 import { createPasteTool } from "../tools/paste";
 import { rotateTool } from "../tools/rotate";
@@ -155,7 +155,7 @@ export function createRegistry(): Registry {
   registry.registerTool(createGestureCustomTool(registry));
   registry.registerTool(createGesturePinchTool(registry));
   registry.registerTool(createGestureRotateTool(registry));
-  registry.registerTool(buttonTool);
+  registry.registerTool(createButtonTool(registry));
   registry.registerTool(createKeyboardTool(registry));
   registry.registerTool(createPasteTool(registry));
   registry.registerTool(rotateTool);

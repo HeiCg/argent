@@ -89,6 +89,8 @@ const {
   destinationRates: destinationRatesOf,
   ttcGateSamples,
   TD_GATED_VARIANT,
+  TD_ACTION_SETTLE_VARIANT,
+  TD_ACTION_SETTLE_TARGET,
 } = require("./tap-describe-destination");
 const { timelineOfFile, residualAfterFinish, markerVerbKey } = require("./logcat-timeline");
 const { readSamples, aggregate: aggregateLoad } = require("./load-sampler");
@@ -560,7 +562,18 @@ const p12 = {
 // settle moves to the action (step settle-on-action).
 const P11_GATED_VERBS = [TD_GATED_VARIANT, "describe"];
 const SETTLE_REPORT_ONLY = "report only (settle moves to the action in step settle-on-action)";
-const reportOnlyLabel = (verb) => (/settle/.test(verb) ? SETTLE_REPORT_ONLY : "report only");
+// Step settle-on-action: tap(settle)+describe (settle on the tap, describe settle:false)
+// is report only too, with its pre-registered target and no gate.
+const ACTION_SETTLE_REPORT_ONLY =
+  "report only (pre-registered target: correct at first read ≥ " +
+  `${TD_ACTION_SETTLE_TARGET.correctAtFirstRead * 100} % and time-to-correct ≤ ` +
+  `${TD_ACTION_SETTLE_TARGET.ttcAtMostVariant}; no gate)`;
+const reportOnlyLabel = (verb) =>
+  verb === TD_ACTION_SETTLE_VARIANT
+    ? ACTION_SETTLE_REPORT_ONLY
+    : /settle/.test(verb)
+      ? SETTLE_REPORT_ONLY
+      : "report only";
 const wrongRow = (r, wrong, empty, preTransition, n) => {
   const g = p11Gate(wrong, n);
   const gated = P11_GATED_VERBS.includes(r.verb);

@@ -298,7 +298,9 @@ async function executeCanonicalAction(
       return landingOf(await server.swipeWithOutcome(sx, sy, ex, ey, 10));
     }
     case "back":
-      return landingOf(await server.keyWithOutcome("KEYCODE_BACK"));
+      // The device server's key name (KeyHandler.kt keyNameMap); it rejects
+      // "KEYCODE_BACK" as an unknown key.
+      return landingOf(await server.keyWithOutcome("back"));
     case "key":
       return landingOf(await server.keyWithOutcome(action.key ?? "KEYCODE_ENTER"));
     case "typeText": {

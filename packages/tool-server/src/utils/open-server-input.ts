@@ -16,7 +16,9 @@ import {
   type OpenServerBatchStepResult,
   type OpenServerSelector,
   type OpenSwipeTiming,
+  type OutcomeOptions,
 } from "../blueprints/android-open-server";
+import type { ActionInvocation } from "../screen-graph/canonical";
 import { buildIndexElements } from "../tools/describe/platforms/android/index-tier";
 import { openDeviceServerMutex } from "./device-mutex";
 import {
@@ -152,6 +154,13 @@ function tappedSelectorFromTree(
   return sel;
 }
 
+/** R1 (phase 3g) on an outcome-bearing reply: the injected event was dropped. */
+function throwIfDropped(r: { success?: unknown; dropped?: unknown }, what: string): void {
+  if (r.dropped === true || r.success === false) {
+    throw new Error(`open-device-server ${what} was dropped by the input dispatcher`);
+  }
+}
+
 /** Drop the action's own `{success}` and keep the outcome fingerprint delta. */
 function toOutcome(r: OpenServerActionOutcome & { success?: unknown }): OpenServerActionOutcome {
   return {
@@ -163,6 +172,61 @@ function toOutcome(r: OpenServerActionOutcome & { success?: unknown }): OpenServ
     firstEventMs: r.firstEventMs,
     idleMs: r.idleMs,
   };
+}
+
+/**
+ * Step settle-on-action (review ABBA run 37609765062, Part B): the bounds an action
+ * carries when the agent asks it to settle (`settle: true` on gesture-tap / button,
+ * `settleAfter: true` on gesture-swipe). The device waits up to 600 ms for the first
+ * accessibility event the action causes, then for 80 ms with no event, capped at
+ * 1500 ms (`runAction` → `TreeStore.settleAfterAction`). These equal the server
+ * defaults; they are sent explicitly so the contract does not move with a default.
+ */
+export const ACTION_SETTLE_BOUNDS = {
+  firstEventTimeoutMs: 600,
+  quietMs: 80,
+  idleTimeoutMs: 1500,
+} as const satisfies OutcomeOptions;
+
+/** `settleIgnored` value when the device is not on the Android open server. */
+export const SETTLE_IGNORED_NOT_OPEN = "not Android open server";
+
+/** The settle fields an action reply carries when the agent asked it to settle. */
+export interface ActionSettleFields {
+  /**
+   * Device-clock time the action spent settling: first event + quiet phase, or the
+   * 600 ms first-event cap when no event came (`settled: "no-event"`).
+   */
+  settledMs: number;
+  settled: OpenServerActionOutcome["settled"];
+  /** The screen identity hash changed: a different screen, not only new content. */
+  screenChanged: boolean;
+}
+
+/** Map an action outcome to the agent-facing settle fields. */
+export function actionSettleFields(o: OpenServerActionOutcome): ActionSettleFields {
+  return {
+    settledMs:
+      o.firstEventMs >= 0 ? o.firstEventMs + o.idleMs : ACTION_SETTLE_BOUNDS.firstEventTimeoutMs,
+    settled: o.settled,
+    screenChanged: o.newScreen,
+  };
+}
+
+/** The `settleIgnored` reason after the open path failed and another backend acted. */
+export function settleIgnoredAfterFallback(err: unknown): string {
+  return `open server failed (${err instanceof Error ? err.message : String(err)}); the fallback backend does not settle`;
+}
+
+/** Outcome-request options of the `*WithOutcome` helpers below. */
+interface OutcomeRequest {
+  /** Settle bounds sent with the action; each one omitted falls to the server default. */
+  bounds?: OutcomeOptions;
+  /**
+   * Throw when the device reports the injected event dropped (as the plain paths
+   * do), so the caller falls back instead of reporting a settle of nothing.
+   */
+  failOnDrop?: boolean;
 }
 
 /**
@@ -321,6 +385,9 @@ export function openServerSetClipboard(
  * round-trip. For a multi-tap (`clickCount > 1`) the leading taps run plain and
  * the outcome's `before` is taken from a pre-gesture `getState`, so the delta
  * spans the whole gesture; the final tap carries the server-side idle wait.
+ * `req.bounds` sets the settle bounds (settle-on-action sends
+ * {@link ACTION_SETTLE_BOUNDS}); with screen-graph recording on, the same RPC
+ * feeds the recorder, so a settle request adds no second action RPC.
  */
 export function openServerTapWithOutcome(
   registry: Registry,
@@ -328,7 +395,7 @@ export function openServerTapWithOutcome(
   xNorm: number,
   yNorm: number,
   clickCount: number,
-  idleTimeoutMs?: number
+  req: OutcomeRequest = {}
 ): Promise<OpenServerActionOutcome> {
   return withServer(registry, device, async (server, size) => {
     const { x, y } = toPixels(size, xNorm, yNorm);
@@ -354,15 +421,15 @@ export function openServerTapWithOutcome(
     // server-side) AND the outcome request, so a double-tap is a single
     // round-trip that both lands inside the OS double-tap window and reports the
     // before/after fingerprint delta.
-    const outcome = toOutcome(
-      await server.tapWithOutcome(x, y, {
-        clickCount,
-        holdMs: TAP_HOLD_MS,
-        ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
-        ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
-        ...injectOpt(),
-      })
-    );
+    const raw = await server.tapWithOutcome(x, y, {
+      clickCount,
+      holdMs: TAP_HOLD_MS,
+      ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+      ...req.bounds,
+      ...injectOpt(),
+    });
+    if (req.failOnDrop) throwIfDropped(raw, "tap");
+    const outcome = toOutcome(raw);
     await recordOpenServerObservation(device, server, size, { kind: "tap", x, y }, outcome, {
       ...(actedSelector ? { actedSelector } : {}),
       ...(beforeTree ? { beforeTree, point: { x, y } } : {}),
@@ -631,7 +698,7 @@ export async function openServerSwipeWithOutcome(
     toYNorm,
     steps,
     holdEndMs,
-    idleTimeoutMs
+    idleTimeoutMs !== undefined ? { bounds: { idleTimeoutMs } } : {}
   );
   return r.outcome;
 }
@@ -639,6 +706,7 @@ export async function openServerSwipeWithOutcome(
 /**
  * {@link openServerSwipeWithOutcome} that also returns the reply's device-clock
  * swipe timing ({@link swipeTimingOf}) next to the outcome, not inside it.
+ * `req` as in {@link openServerTapWithOutcome}.
  */
 export function openServerSwipeWithOutcomeTimed(
   registry: Registry,
@@ -649,16 +717,17 @@ export function openServerSwipeWithOutcomeTimed(
   toYNorm: number,
   steps: number,
   holdEndMs?: number,
-  idleTimeoutMs?: number
+  req: OutcomeRequest = {}
 ): Promise<{ outcome: OpenServerActionOutcome; timing: OpenSwipeTiming }> {
   const opts = {
-    ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+    ...req.bounds,
     ...injectOpt(),
   };
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
     const reply = await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts);
+    if (req.failOnDrop) throwIfDropped(reply as { dropped?: unknown; success?: unknown }, "swipe");
     const outcome = toOutcome(reply);
     const timing = swipeTimingOf(reply);
     await recordOpenServerObservation(
@@ -718,6 +787,32 @@ export function openServerTypeTextWithOutcome(
       outcome,
       opts.secretsUsed ? { secret: true } : {}
     );
+    return outcome;
+  });
+}
+
+/**
+ * Press a device key through the open server's `key` RPC and report the
+ * before/after delta (step settle-on-action: `button` with `settle: true`). `key`
+ * is the device server's key name (`back`, `home`, `volume_up`, …). With
+ * screen-graph recording on, the same reply is recorded as `invocation`, so the
+ * settle adds no second key RPC. Throws on a failed press so the caller falls back.
+ */
+export function openServerKeyWithOutcome(
+  registry: Registry,
+  device: DeviceInfo,
+  key: string,
+  invocation: ActionInvocation,
+  req: OutcomeRequest = {}
+): Promise<OpenServerActionOutcome> {
+  const ref = openDeviceServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const raw = await server.keyWithOutcome(key, req.bounds);
+    if (req.failOnDrop) throwIfDropped(raw, "key");
+    const outcome = toOutcome(raw);
+    // No coordinates for a key, so bucketing is irrelevant: pass a 0 size.
+    await recordOpenServerObservation(device, server, { width: 0, height: 0 }, invocation, outcome);
     return outcome;
   });
 }
@@ -948,24 +1043,33 @@ export function resolveTargetNorm(
  * `index` and `label` so the tool can name WHAT it tapped (A2-M10). Backs the
  * additive `target` param on `gesture-tap`. Throws {@link IndexTargetError} on a
  * stale/out-of-range index; throws on a dropped injection or RPC failure.
+ * With `settleBounds` (settle-on-action) the tap carries the outcome request and
+ * the reply's `outcome` is returned.
  */
 export function openServerTapAtIndex(
   registry: Registry,
   device: DeviceInfo,
   target: IndexTarget,
-  clickCount: number
-): Promise<{ index: number; label: string }> {
+  clickCount: number,
+  settleBounds?: OutcomeOptions
+): Promise<{ index: number; label: string; outcome?: OpenServerActionOutcome }> {
   const ref = openDeviceServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
     const state = await server.getState({ includeScreenshot: false, fingerprints: true });
     const { x, y, label } = resolveIndexTarget(state.tree, state.version, target);
-    const res = await server.tap(x, y, {
+    const tapOpts = {
       clickCount,
       holdMs: TAP_HOLD_MS,
       ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
       ...injectOpt(),
-    });
+    };
+    if (settleBounds) {
+      const raw = await server.tapWithOutcome(x, y, { ...tapOpts, ...settleBounds });
+      throwIfDropped(raw, "tap");
+      return { index: target.index, label, outcome: toOutcome(raw) };
+    }
+    const res = await server.tap(x, y, tapOpts);
     if (res.dropped || res.success === false) {
       throw new Error("open-device-server tap was dropped by the input dispatcher");
     }

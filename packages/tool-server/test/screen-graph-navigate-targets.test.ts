@@ -94,7 +94,31 @@ interface FakeServer {
   getInfo: ReturnType<typeof vi.fn>;
   query: ReturnType<typeof vi.fn>;
   tapWithOutcome: ReturnType<typeof vi.fn>;
+  keyWithOutcome: ReturnType<typeof vi.fn>;
 }
+
+/** The key names the device server knows (KeyHandler.kt keyNameMap); others throw. */
+const DEVICE_KEY_NAMES = new Set([
+  "home",
+  "back",
+  "enter",
+  "delete",
+  "tab",
+  "escape",
+  "menu",
+  "search",
+  "volume_up",
+  "volume_down",
+  "power",
+  "camera",
+  "dpad_up",
+  "dpad_down",
+  "dpad_left",
+  "dpad_right",
+  "dpad_center",
+  "recent_apps",
+  "space",
+]);
 
 /**
  * A device that starts on ROOT. Every row text in EDGES is on screen once; a
@@ -107,6 +131,8 @@ function fakeServer(
     landOn?: (to: string) => string;
     settled?: "quiet" | "timeout" | "no-event";
     start?: string;
+    /** The screen a `back` key press lands on. */
+    backTo?: string;
   } = {}
 ): FakeServer {
   let screen = opts.start ?? ROOT;
@@ -146,6 +172,17 @@ function fakeServer(
       return {
         changed: true,
         settled: opts.settled ?? "quiet",
+        after: { idHash: reported, hash: reported, stateHash: `st_${screen}` },
+      };
+    }),
+    keyWithOutcome: vi.fn(async (key: string) => {
+      const name = key.toLowerCase();
+      if (!DEVICE_KEY_NAMES.has(name)) throw new Error(`Unknown key: ${name}`);
+      if (name === "back" && opts.backTo) screen = opts.backTo;
+      reported = screen;
+      return {
+        changed: true,
+        settled: "quiet",
         after: { idHash: reported, hash: reported, stateHash: `st_${screen}` },
       };
     }),
@@ -482,5 +519,17 @@ describe("summary tier lists reachable screens", () => {
     };
     const text = renderSummary(buildSummary(lone, [], { [ROOT]: lone }, { edges: [] }));
     expect(text).not.toContain("reachable screens");
+  });
+});
+
+describe("navigate-to replays a back edge with the device key name", () => {
+  it("sends keyWithOutcome('back'), the name KeyHandler.kt knows, and lands", async () => {
+    currentStore.observe(INTERNET, { kind: "back" }, NET);
+    const server = fakeServer({ start: INTERNET, backTo: NET });
+    const res = await navigate(server, { screen: "22222222" });
+    expect(server.keyWithOutcome).toHaveBeenCalledTimes(1);
+    expect(server.keyWithOutcome.mock.calls[0]![0]).toBe("back");
+    expect(res.reached).toBe(true);
+    expect(res.hops).toBe(1);
   });
 });
