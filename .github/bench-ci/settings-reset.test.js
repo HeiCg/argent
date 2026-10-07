@@ -15,6 +15,9 @@ const {
   FOCUS_MARK,
   KILL_GUARD_MS,
   RELAUNCH_AFTER_MS,
+  CLEAR_KILL_GUARD_MS,
+  RELAUNCH_CMD,
+  classifyAmStart,
   parseResetProbe,
   waitSettingsReady,
 } = require("./settings-reset");
@@ -151,6 +154,96 @@ test("settings-reset: bounded — never clean within the budget returns ok:false
   assert.strictEqual(r.ok, false);
   assert.ok(r.waitMs >= 2000 && r.waitMs < 2300, `wait ${r.waitMs}`);
   assert.match(r.last, /finishing/);
+});
+
+/* ---- run 37571460849: the stale resumed record and the decision-reason histogram ---- */
+
+test("settings-reset: a resumed record with a dead process is relaunched; the relaunch force-stops first", async () => {
+  // Run 37571460849: the delayed post-pm-clear "remove task" kill left the task's top
+  // record resumed with no process. A plain `am start` was delivered to that record
+  // (result code 3) and never started a process; 50/49 relaunches per OFF block, every
+  // one delivered-to-top, 12 timeouts. RELAUNCH_CMD force-stops before am start.
+  assert.match(RELAUNCH_CMD, /^am force-stop com\.android\.settings; am start -n /);
+  const h = harness((_t, _i, relaunchedAt) =>
+    relaunchedAt.length ? { pid: "6262" } : { pid: "", focus: "" }
+  );
+  const r = await waitSettingsReady(h.opts);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.relaunches, 1);
+  assert.strictEqual(r.pid, "6262");
+  assert.ok(r.reasons["wait:dead-record"] >= 1, JSON.stringify(r.reasons));
+  assert.strictEqual(r.reasons["relaunch:dead-record"], 1);
+  assert.strictEqual(r.reasons["outcome:ready"], 1);
+});
+
+test("settings-reset: the reasons histogram names every wait, relaunch and the outcome", async () => {
+  // Gone (not resumed) until a relaunch, then a clean pid.
+  const gone = harness((_t, _i, relaunchedAt) =>
+    relaunchedAt.length ? {} : { resumed: "", pid: "", focus: "com.android.launcher3/.Launcher" }
+  );
+  const r = await waitSettingsReady(gone.opts);
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.reasons["wait:not-resumed"] >= 1);
+  assert.strictEqual(r.reasons["relaunch:gone"], 1);
+  assert.ok(r.reasons["wait:kill-guard"] >= 1, JSON.stringify(r.reasons));
+  // Resumed and alive but never focused (no first frame): a wait reason, no relaunch.
+  const noFocus = harness(() => ({ focus: "" }));
+  const t = await waitSettingsReady({ ...noFocus.opts, budgetMs: 1500 });
+  assert.strictEqual(t.ok, false);
+  assert.strictEqual(t.relaunches, 0);
+  assert.ok(t.reasons["wait:not-focused"] >= 1);
+  assert.strictEqual(t.reasons["outcome:timeout"], 1);
+  // The relaunch's am start output is classified (delivered-to-top was the run's bug).
+  const dtt = harness((_t, _i, relaunchedAt) =>
+    relaunchedAt.length ? {} : { resumed: "", pid: "", focus: "" }
+  );
+  const r2 = await waitSettingsReady({
+    ...dtt.opts,
+    relaunch: () => {
+      dtt.relaunchedAt.push(0);
+      return (
+        "Starting: Intent { cmp=com.android.settings/.Settings }\n" +
+        "Warning: Activity not started, intent has been delivered to currently running top-most instance."
+      );
+    },
+  });
+  assert.strictEqual(r2.reasons["relaunch-start:delivered-to-top"], 1);
+});
+
+test("settings-reset: classifyAmStart reads am start's result line", () => {
+  assert.strictEqual(
+    classifyAmStart("Starting: Intent { cmp=com.android.settings/.Settings }\n"),
+    "started"
+  );
+  assert.strictEqual(
+    classifyAmStart(
+      "Warning: Activity not started, intent has been delivered to currently running top-most instance."
+    ),
+    "delivered-to-top"
+  );
+  assert.strictEqual(
+    classifyAmStart(
+      "Warning: Activity not started, its current task has been brought to the front"
+    ),
+    "brought-to-front"
+  );
+  assert.strictEqual(classifyAmStart("Error: Activity class does not exist."), "error");
+  assert.strictEqual(classifyAmStart(undefined), "unknown");
+});
+
+test("settings-reset: am start waits CLEAR_KILL_GUARD_MS after pm clear (the delayed kill lands 1.0-1.5 s after it)", () => {
+  // Run 37571460849 logcat: every "Killing … com.android.settings … remove task" came
+  // 1.000-1.502 s after the pm clear ("Force stopping … clear data"), on all four blocks.
+  assert.ok(CLEAR_KILL_GUARD_MS >= 1800, `guard ${CLEAR_KILL_GUARD_MS}`);
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const body = src.slice(src.indexOf("async function ensureSettings("));
+  const fnBody = body.slice(0, body.indexOf("\n}\n"));
+  const clear = fnBody.indexOf("pm clear ${SETTINGS}");
+  const guard = fnBody.indexOf("CLEAR_KILL_GUARD_MS", clear);
+  const start = fnBody.indexOf("am start -n ${SETTINGS}/.Settings");
+  assert.ok(clear > 0 && guard > clear && start > guard, "pm clear → guard → am start");
+  // The probe's relaunch uses the force-stop command, not a bare am start.
+  assert.match(src, /adbShell\(SETTINGS_RELAUNCH_CMD/);
 });
 
 test("settings-reset: the bench waits for Settings after every am start, logs resetWaitMs", () => {

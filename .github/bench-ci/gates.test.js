@@ -1541,37 +1541,20 @@ const withTreeEmpty = (b, verb, n) => {
   return b;
 };
 
-test("merge-blocks: a timed treeEmpty on an ON block makes the block INVALID (fail closed)", () => {
+// Run 37571460849: an empty describe inside a timed verb no longer invalidates the
+// block (rule d). It is excluded from that verb's latency on both arms (rule a) and
+// graded by P11 (empty rate per timed verb per block, Wilson 95 % CI vs 25 %).
+test("merge-blocks: a timed treeEmpty alone no longer makes a block INVALID, on either arm", () => {
   const out = freshOut();
   const bs = FOUR();
   withTreeEmpty(bs[2], "gesture-tap", 9);
-  writeBlocks(out, bs);
-  const r = run(MERGE_BLOCKS, out, ALLENV);
-  assert.strictEqual(r.code, 0, r.stderr);
-  const m = mergedOf(r);
-  assert.strictEqual(m.valid, false);
-  const inv = m.invalidBlocks.find((x) => x.block === "ON-input-manager");
-  assert.ok(inv, JSON.stringify(m.invalidBlocks));
-  assert.match(inv.reasons.join(), /treeEmpty.*gesture-tap=9/);
-  const sb = run(SCOREBOARD, out);
-  assert.strictEqual(sb.code, 1);
-  assert.match(sb.stdout.split("\n").slice(0, 4).join("\n"), /INVALID/);
-});
-
-test("merge-blocks: the OFF equivalent (0 elements inside a timed verb) gets the same rule", () => {
-  const out = freshOut();
-  const bs = FOUR();
   withTreeEmpty(bs[0], "gesture-tap", 2);
   writeBlocks(out, bs);
   const r = run(MERGE_BLOCKS, out, ALLENV);
   assert.strictEqual(r.code, 0, r.stderr);
   const m = mergedOf(r);
-  assert.strictEqual(m.valid, false);
-  assert.deepStrictEqual(
-    m.invalidBlocks.map((x) => x.block),
-    ["OFF-1"]
-  );
-  assert.match(m.invalidBlocks[0].reasons.join(), /treeEmpty.*gesture-tap=2/);
+  assert.strictEqual(m.valid, true, JSON.stringify(m.invalidBlocks));
+  assert.deepStrictEqual(m.invalidBlocks, []);
 });
 
 test("merge-blocks: treeEmpty 0 on every timed verb keeps the run valid", () => {
@@ -1706,4 +1689,274 @@ test("scoreboard: gate margin is the equivalence margin; footer states the pre-r
     /\| verb \| OFF-1 p50 \| OFF-2 p50 \| drift \| bootstrap margin \| equivalence margin \|/
   );
   assert.match(md, /\| gesture-pinch \| 350 \| 350 \| 0 \| ±[\d.]+ \| ±7 \(2% of p50\) \|/);
+});
+
+/* ------- run 37571460849: empty describes as a quality metric (P11), TTNE ------- */
+
+test("stats: wilsonCI matches the Wilson score interval (95 %)", () => {
+  const { wilsonCI } = stats;
+  assert.deepStrictEqual(wilsonCI(0, 40), [0, 0.0876]);
+  assert.deepStrictEqual(wilsonCI(4, 40), [0.0396, 0.2305]);
+  assert.deepStrictEqual(wilsonCI(9, 40), [0.1232, 0.375]);
+  assert.deepStrictEqual(wilsonCI(23, 40), [0.422, 0.7149]);
+  assert.strictEqual(wilsonCI(0, 0), null);
+});
+
+test("stats: p11Gate — PASS if the CI upper bound ≤ 25 %, FAIL if the lower > 25 %, else INCONCLUSIVE; no denominator FAILs", () => {
+  const { p11Gate, P11_THRESHOLD } = stats;
+  assert.strictEqual(P11_THRESHOLD, 0.25);
+  assert.strictEqual(p11Gate(0, 40).gate, "PASS");
+  assert.strictEqual(p11Gate(4, 40).gate, "PASS");
+  assert.strictEqual(p11Gate(5, 40).gate, "INCONCLUSIVE");
+  assert.strictEqual(p11Gate(15, 40).gate, "INCONCLUSIVE");
+  assert.strictEqual(p11Gate(16, 40).gate, "FAIL");
+  assert.strictEqual(p11Gate(23, 40).gate, "FAIL");
+  // Fail closed: empties counted with no denominator, or no denominator at all.
+  assert.strictEqual(p11Gate(3, 0).gate, "FAIL");
+  assert.strictEqual(p11Gate(0, 0).gate, "FAIL");
+  const r = p11Gate(9, 40);
+  assert.strictEqual(r.rate, 0.225);
+  assert.deepStrictEqual(r.ci, [0.1232, 0.375]);
+});
+
+// A verb whose timed window reads a describe: `describeWindows` is the P11 denominator,
+// `treeEmpty` the windows with an empty describe (excluded from latencySamples).
+const withEmpties = (b, verb, empty, n = 40, extra = {}) => {
+  const has = b.block.verbs.some((v) => v.verb === verb);
+  if (!has) b.block.verbs.push(mkVerb(verb, 400));
+  b.block.verbs = b.block.verbs.map((v) =>
+    v.verb === verb ? { ...v, treeEmpty: empty, describeWindows: n, ...extra } : v
+  );
+  return b;
+};
+const TD_ON = "tap+describe(settle:false)";
+const TD_OFF = "tap+describe";
+const p11Run = (offEmpty, onEmpty) => {
+  const bs = FOUR();
+  for (const b of bs)
+    withEmpties(
+      b,
+      b.block.config === "ON" ? TD_ON : TD_OFF,
+      b.block.config === "ON" ? onEmpty : offEmpty
+    );
+  return bs;
+};
+
+test("merge-blocks: P11 grades every timed describe verb per block and fails closed on either arm", () => {
+  const cases = [
+    [2, 1, "PASS"],
+    [2, 9, "INCONCLUSIVE"], // ON 9/40: CI [12.3 %, 37.5 %] straddles 25 %
+    [2, 23, "FAIL"], // ON-uiautomation's run 37571460849 rate
+    [16, 1, "FAIL"], // the OFF arm alone fails it
+  ];
+  for (const [offE, onE, want] of cases) {
+    const out = freshOut();
+    writeBlocks(out, p11Run(offE, onE));
+    const r = run(MERGE_BLOCKS, out, ALLENV);
+    assert.strictEqual(r.code, 0, r.stderr);
+    const m = mergedOf(r);
+    assert.strictEqual(m.valid, true, "P11 is a gate, not run validity");
+    assert.strictEqual(m.p11.verdict, want, `off ${offE} on ${onE}: ${JSON.stringify(m.p11)}`);
+    const row = m.emptyRates.find((x) => x.block === "ON-input-manager" && x.verb === TD_ON);
+    assert.deepStrictEqual([row.empty, row.n], [onE, 40]);
+    // gesture-tap reads no describe in its timed window: not graded.
+    assert.ok(!m.emptyRates.some((x) => x.verb === "gesture-tap"));
+  }
+});
+
+test("merge-blocks: P11 counts empties with no denominator as FAIL (fail closed)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withTreeEmpty(bs[1], "gesture-tap", 3); // old shape: no describeWindows
+  writeBlocks(out, bs);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.p11.verdict, "FAIL");
+  const row = m.emptyRates.find((x) => x.block === "ON-uiautomation");
+  assert.strictEqual(row.gate, "FAIL");
+  assert.strictEqual(row.n, 0);
+});
+
+test("merge-blocks: an ON fallback still throws with P11 in place (fallbacks invalidate, empties do not)", () => {
+  const out = freshOut();
+  const bs = p11Run(0, 0);
+  bs[1].block.openServerFallbacks = {
+    count: 2,
+    samples: ["[describe.android] open-device-server failed, falling back: x"],
+  };
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /ON-uiautomation=2/);
+});
+
+test("scoreboard: empty-rate rows with Wilson CI, the P11 line, and the time-to-non-empty table", () => {
+  const bs = p11Run(9, 23);
+  const ttne = {
+    measured: 23,
+    reached: 22,
+    timedOut: 1,
+    fromTapMs: { p50: 912.4, p95: 1480.2 },
+    afterEmptyMs: { p50: 401.3, p95: 960 },
+    fromTapSamples: [],
+    afterEmptySamples: [],
+  };
+  for (const b of bs) for (const v of b.block.verbs) if (v.verb === TD_ON) v.timeToNonEmpty = ttne;
+  const md = scoreboardOf(bs);
+  assert.match(md, /### Empty describes in timed verbs — quality metric \(P11\)/);
+  assert.match(
+    md,
+    /\| verb \| block \| empty \/ windows \| rate \| Wilson 95% CI \| P11 \(≤ 25 %\) \|/
+  );
+  assert.match(
+    md,
+    /\| tap\+describe\(settle:false\) \| ON-uiautomation \| 23\/40 \| 57\.5% \| \[42\.2%, 71\.5%\] \| FAIL \|/
+  );
+  assert.match(
+    md,
+    /\| tap\+describe \| OFF-1 \| 9\/40 \| 22\.5% \| \[12\.3%, 37\.5%\] \| INCONCLUSIVE \|/
+  );
+  assert.match(md, /- \*\*P11\*\* — empty rate ≤ 25 % per timed verb per block.*: \*\*FAIL\*\*/);
+  assert.match(md, /excluded from that verb's latency/);
+  assert.match(md, /### tap\+describe time-to-non-empty/);
+  assert.match(
+    md,
+    /\| ON-input-manager \| tap\+describe\(settle:false\) \| 23 \| 22 \| 1 \| 912\.4\/1480\.2 \| 401\.3\/960 \|/
+  );
+  // treeEmpty no longer reads as invalidating.
+  assert.doesNotMatch(md, /Any treeEmpty or ON fallback invalidates the block/);
+});
+
+test("scoreboard: the reset table carries the probe's decision-reason histogram", () => {
+  const bs = FOUR();
+  for (const b of bs)
+    b.block.resetWait = {
+      n: 4,
+      meanMs: 900,
+      maxMs: 1200,
+      timeouts: 0,
+      relaunches: 1,
+      reasons: {
+        "wait:kill-guard": 30,
+        "wait:dead-record": 3,
+        "relaunch:dead-record": 1,
+        "outcome:ready": 4,
+      },
+    };
+  const md = scoreboardOf(bs);
+  assert.match(
+    md,
+    /\| block \| resets \| resetWaitMs mean \| resetWaitMs max \| timeouts \| relaunches \| probe reasons \|/
+  );
+  assert.match(
+    md,
+    /\| OFF-1 \| 4 \| 900 \| 1200 \| 0 \| 1 \| wait:kill-guard=30, outcome:ready=4, wait:dead-record=3, relaunch:dead-record=1 \|/
+  );
+});
+
+test("bench: empty samples leave the latency stats on both arms; TTNE loop 50 ms / 2 s; no treeEmpty fatal", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  assert.doesNotMatch(src, /assertNoTimedTreeEmpty\(blocks\)/);
+  assert.match(src, /emptyLatencySamples/);
+  assert.match(src, /describeWindows/);
+  assert.match(src, /TTNE_POLL_MS = 50/);
+  assert.match(src, /TTNE_BUDGET_MS = 2000/);
+  // TTNE runs for every tap+describe variant, through the same timeTapEffect hook.
+  assert.match(src, /timeToNonEmpty/);
+});
+
+/* ---------- run 37571460849: every requested block runs or says it did not ---------- */
+
+test("block-validity: --did-not-run records an explicit not-run entry that is not INVALID by itself", () => {
+  const out = freshOut();
+  execFileSync(
+    "node",
+    [
+      VALIDITY,
+      "record",
+      path.join(out, "validity.json"),
+      "--block",
+      "OFF-2",
+      "--did-not-run",
+      "emulator lost",
+    ],
+    { encoding: "utf8" }
+  );
+  const v = JSON.parse(fs.readFileSync(path.join(out, "validity.json"), "utf8"));
+  assert.strictEqual(v.blocks["OFF-2"].ran, false);
+  assert.strictEqual(v.blocks["OFF-2"].notRunReason, "emulator lost");
+  const { entryReasons } = require(VALIDITY);
+  assert.deepStrictEqual(entryReasons(v.blocks["OFF-2"]), []);
+});
+
+test("merge-blocks: a requested block with neither a JSON nor a validity entry makes the run INVALID", () => {
+  const out = freshOut();
+  const bs = FOUR().filter((b) => b.block.block !== "OFF-2");
+  writeBlocks(out, bs);
+  recordValidity(
+    out,
+    ALL_OK(["OFF-1", "ON-uiautomation", "ON-input-manager"]).map((e) => ({ ...e, stamped: "n/a" }))
+  );
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.valid, false);
+  assert.match(
+    m.runInvalidReasons.join(" "),
+    /requested block OFF-2 has no bench-block-OFF-2\.json and no validity entry/
+  );
+});
+
+test("merge-blocks: the same gap with BENCH_REQUIRE_VALIDITY=1 and no validity.json at all is INVALID", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    FOUR().filter((b) => b.block.block !== "OFF-2")
+  );
+  const m = mergedOf(run(MERGE_BLOCKS, out, { ...ALLENV, BENCH_REQUIRE_VALIDITY: "1" }));
+  assert.strictEqual(m.valid, false);
+  assert.match(m.runInvalidReasons.join(" "), /requested block OFF-2/);
+});
+
+test("merge-blocks: an explicit did-not-run entry accounts for the block and is listed in notRun", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    FOUR().filter((b) => b.block.block !== "OFF-2")
+  );
+  recordValidity(
+    out,
+    ALL_OK(["OFF-1", "ON-uiautomation", "ON-input-manager"]).map((e) => ({ ...e, stamped: "n/a" }))
+  );
+  execFileSync("node", [
+    VALIDITY,
+    "record",
+    path.join(out, "validity.json"),
+    "--block",
+    "OFF-2",
+    "--did-not-run",
+    "proprietary not executable on this runner",
+  ]);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.ok(
+    !m.runInvalidReasons.some((x) => /requested block OFF-2/.test(x)),
+    JSON.stringify(m.runInvalidReasons)
+  );
+  assert.deepStrictEqual(m.notRun, [
+    { block: "OFF-2", reason: "proprietary not executable on this runner" },
+  ]);
+});
+
+test("workflow: OFF-2 runs regardless of an earlier block's failure; every skip records did-not-run", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
+  // Run 37571460849: `[ "$OFF_FAILED" = "0" ] && … grep -q "OFF-2"` skipped OFF-2 after
+  // OFF-1 exited 1.
+  const off2 = step.split("\n").find((l) => l.includes('grep -q "OFF-2"'));
+  assert.ok(off2, "no OFF-2 condition");
+  assert.doesNotMatch(off2, /_FAILED/);
+  // No block condition reads an earlier block's result.
+  for (const m of step.matchAll(/^\s*(?:el)?if .*grep -q "([A-Za-z0-9-]+)".*$/gm))
+    assert.doesNotMatch(m[0], /_FAILED/, m[0]);
+  // The emulator-lost early return, the ON-only downgrade and the legacy skips record it.
+  assert.ok((step.match(/--did-not-run/g) || []).length >= 1);
+  assert.ok((step.match(/record_not_run /g) || []).length >= 4, "record_not_run call sites");
+  assert.match(step, /BENCH_REQUIRE_VALIDITY: "1"/);
 });

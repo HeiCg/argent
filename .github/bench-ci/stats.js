@@ -354,7 +354,60 @@ function compareOnce(a, b, opt = {}) {
   return { delta, ci: [round1(ci[0]), round1(ci[1])] };
 }
 
+/* ---- empty describes: quality metric + P11 (run 37571460849) ---- */
+
+const Z95 = 1.959963984540054;
+/** P11: the pre-registered ceiling on the empty-describe rate per timed verb per block. */
+const P11_THRESHOLD = 0.25;
+
+/**
+ * Wilson score interval for a binomial proportion k/n (95 % by default), each bound
+ * rounded to 4 decimals. null when n is 0.
+ * @param {number} k
+ * @param {number} n
+ * @param {number} [z]
+ * @returns {[number, number] | null}
+ */
+function wilsonCI(k, n, z = Z95) {
+  if (!(n > 0)) return null;
+  const p = k / n;
+  const z2 = z * z;
+  const d = 1 + z2 / n;
+  const c = (p + z2 / (2 * n)) / d;
+  const h = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / d;
+  const r4 = (x) => Number(x.toFixed(4));
+  return [r4(Math.max(0, c - h)), r4(Math.min(1, c + h))];
+}
+
+/**
+ * P11 for one (block, verb): `empty` timed windows with an empty describe out of `n`
+ * windows that read one. PASS when the Wilson 95 % upper bound is ≤ 25 %, FAIL when the
+ * lower bound is > 25 %, INCONCLUSIVE when the interval straddles 25 %. No denominator
+ * (n = 0) is a FAIL: the rate cannot be shown to be under the ceiling (fail closed).
+ * @param {number} empty
+ * @param {number} n
+ * @returns {{ empty: number, n: number, rate: number | null, ci: [number, number] | null,
+ *   gate: "PASS" | "FAIL" | "INCONCLUSIVE" }}
+ */
+function p11Gate(empty, n) {
+  const ci = wilsonCI(empty, n);
+  if (!ci) return { empty, n: n || 0, rate: null, ci: null, gate: "FAIL" };
+  const gate = ci[1] <= P11_THRESHOLD ? "PASS" : ci[0] > P11_THRESHOLD ? "FAIL" : "INCONCLUSIVE";
+  return { empty, n, rate: Number((empty / n).toFixed(4)), ci, gate };
+}
+
+/** One verdict over many P11 rows: any FAIL → FAIL, else any INCONCLUSIVE, else PASS. */
+function p11Verdict(rows) {
+  if (!rows.length) return "N/A";
+  const gates = rows.map((r) => r.gate);
+  return gates.includes("FAIL") ? "FAIL" : gates.includes("INCONCLUSIVE") ? "INCONCLUSIVE" : "PASS";
+}
+
 module.exports = {
+  wilsonCI,
+  p11Gate,
+  p11Verdict,
+  P11_THRESHOLD,
   median,
   summarize,
   driftMargin,

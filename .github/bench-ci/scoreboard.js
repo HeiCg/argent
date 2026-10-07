@@ -261,9 +261,11 @@ if (drainRows.length) {
 
 // Run 37561512651 / Review 2026-10-07: per verb, the open-server fallback lines (now
 // counted at console.debug, console.warn and console.error) and the timed samples whose
-// describe came back empty (`treeEmpty`: the open server's marker on ON, 0 elements on
-// OFF; any one makes the block INVALID). Per block, the Settings reset wait (resumed +
-// focused + not finishing + stable pid after am start). Older artifacts carry neither.
+// describe came back empty (`treeEmpty`: the open server's marker or 0 elements on ON,
+// 0 elements on OFF). Since run 37571460849 they are excluded from the verb's latency on
+// both arms and graded by P11 (section below), not invalidating. Per block, the Settings
+// reset wait (resumed + focused + not finishing + stable pid after am start) and the
+// probe's decision-reason histogram. Older artifacts carry neither.
 const hasTreeEmpty = blocks.some((b) => (b.verbs || []).some((v) => v.treeEmpty != null));
 const hasResetWait = blocks.some((b) => b.resetWait);
 if (hasTreeEmpty || hasResetWait) {
@@ -272,7 +274,8 @@ if (hasTreeEmpty || hasResetWait) {
   if (hasTreeEmpty) {
     L.push(
       "treeEmpty = timed samples whose describe returned an empty tree (ON: the open " +
-        "server's `treeEmpty`; OFF: 0 elements). Any treeEmpty or ON fallback invalidates the block."
+        "server's `treeEmpty` or 0 elements; OFF: 0 elements). They are excluded from that verb's " +
+        "latency on both arms and graded by P11 below; an ON fallback invalidates the block."
     );
     L.push("");
     L.push("| verb | block | fallbacks | treeEmpty |");
@@ -291,20 +294,111 @@ if (hasTreeEmpty || hasResetWait) {
   if (hasResetWait) {
     L.push(
       "Settings reset wait after `am start` until Settings is resumed, focused, not finishing " +
-        "and on the same pid over two reads (bounded at 5 s; relaunched if it was killed)."
+        "and on the same pid over two reads (bounded at 5 s; relaunched with force-stop + am start " +
+        "if it was killed). am start waits 2 s after pm clear (run 37571460849). probe reasons = " +
+        "the wait's decisions over the block: `wait:<why not ready>` per poll, `relaunch:<why>`, " +
+        "`relaunch-start:<am start answer>`, `outcome:ready|timeout`."
     );
     L.push("");
-    L.push("| block | resets | resetWaitMs mean | resetWaitMs max | timeouts | relaunches |");
-    L.push("| --- | --- | --- | --- | --- | --- |");
+    L.push(
+      "| block | resets | resetWaitMs mean | resetWaitMs max | timeouts | relaunches | probe reasons |"
+    );
+    L.push("| --- | --- | --- | --- | --- | --- | --- |");
+    const reasonsCell = (rs) =>
+      rs && Object.keys(rs).length
+        ? Object.entries(rs)
+            .sort((x, y) => y[1] - x[1])
+            .map(([k, n]) => `${k}=${n}`)
+            .join(", ")
+        : "-";
     for (const b of blocks) {
       const r = b.resetWait;
       if (!r) continue;
       L.push(
-        `| ${b.block} | ${r.n} | ${fmt(r.meanMs)} | ${fmt(r.maxMs)} | ${r.timeouts} | ${r.relaunches} |`
+        `| ${b.block} | ${r.n} | ${fmt(r.meanMs)} | ${fmt(r.maxMs)} | ${r.timeouts} | ${r.relaunches} | ` +
+          `${reasonsCell(r.reasons)} |`
       );
     }
     L.push("");
   }
+}
+
+// Run 37571460849: empty describes as a quality metric. One row per (block, verb) whose
+// timed window reads a describe: empty windows / windows, the rate, its Wilson 95 % CI
+// and the P11 grade (≤ 25 %). Rendered from merged.emptyRates / merged.p11 (absent on
+// older merged JSONs).
+const emptyRates = merged.emptyRates || [];
+if (emptyRates.length || merged.p11) {
+  const pctCell = (x) => (x == null ? "-" : `${Number((x * 100).toFixed(1))}%`);
+  L.push("### Empty describes in timed verbs — quality metric (P11)");
+  L.push("");
+  L.push(
+    "A timed window whose describe came back empty is excluded from that verb's latency on both " +
+      "arms (the p50/p95 above are over the non-empty windows). Its rate is published here: " +
+      "empty / windows that read a describe, with a Wilson 95 % CI."
+  );
+  L.push("");
+  L.push("| verb | block | empty / windows | rate | Wilson 95% CI | P11 (≤ 25 %) |");
+  L.push("| --- | --- | --- | --- | --- | --- |");
+  for (const r of emptyRates)
+    L.push(
+      `| ${r.verb} | ${r.block} | ${r.empty}/${r.n} | ${pctCell(r.rate)} | ` +
+        `${r.ci ? `[${pctCell(r.ci[0])}, ${pctCell(r.ci[1])}]` : "no denominator"} | ${r.gate} |`
+    );
+  L.push("");
+  const p11 = merged.p11 || { verdict: "N/A", fails: [], inconclusive: [] };
+  const detail = [
+    p11.fails && p11.fails.length ? `FAIL: ${p11.fails.join(", ")}` : "",
+    p11.inconclusive && p11.inconclusive.length
+      ? `INCONCLUSIVE: ${p11.inconclusive.join(", ")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+  L.push(
+    "- **P11** — empty rate ≤ 25 % per timed verb per block (pre-registered; Wilson 95 % CI: PASS " +
+      "if the upper bound ≤ 25 %, FAIL if the lower bound > 25 %, INCONCLUSIVE if it straddles " +
+      "25 %; a FAIL on either arm fails it; empties with no denominator FAIL)" +
+      (detail ? ` (${detail})` : "") +
+      `: **${p11.verdict}**`
+  );
+  if (p11.legacyVerdict)
+    L.push(`- **P11 (OFF-legacy, own arm)** — same rule: **${p11.legacyVerdict}**`);
+  L.push("");
+  // Time to a non-empty describe after an empty one inside tap+describe: an untimed
+  // describe loop (50 ms apart, up to 2 s) right after the empty timed window, on every
+  // arm. "from tap" is what an agent waits for after acting; "after the empty" is the
+  // extra wait past the timed window.
+  const ttneRows = emptyRates.filter((r) => r.timeToNonEmpty);
+  if (ttneRows.length) {
+    L.push("### tap+describe time-to-non-empty");
+    L.push("");
+    L.push(
+      "After an empty timed describe, an untimed describe loop (50 ms apart, up to 2 s) runs until " +
+        "a describe is non-empty. from tap = from the start of the timed tap; after the empty = from " +
+        "the end of the timed window. Same loop on every arm."
+    );
+    L.push("");
+    L.push(
+      "| block | verb | empties | reached non-empty | timed out (2 s) | from tap p50/p95 (ms) | after the empty p50/p95 (ms) |"
+    );
+    L.push("| --- | --- | --- | --- | --- | --- | --- |");
+    for (const r of ttneRows) {
+      const t = r.timeToNonEmpty;
+      const pp = (x) => (x ? `${fmt(x.p50)}/${fmt(x.p95)}` : "-");
+      L.push(
+        `| ${r.block} | ${r.verb} | ${t.measured} | ${t.reached} | ${t.timedOut} | ${pp(t.fromTapMs)} | ` +
+          `${pp(t.afterEmptyMs)} |`
+      );
+    }
+    L.push("");
+  }
+}
+
+// Run 37571460849: blocks the workflow recorded as not run, with the reason.
+if ((merged.notRun || []).length) {
+  L.push(`Did not run: ${merged.notRun.map((x) => `**${x.block}** (${x.reason})`).join(", ")}`);
+  L.push("");
 }
 
 // describe sample + screenshot dims

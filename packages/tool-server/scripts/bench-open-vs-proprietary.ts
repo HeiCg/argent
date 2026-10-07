@@ -79,6 +79,8 @@ import {
 import { summarize } from "../../../.github/bench-ci/stats.js";
 import {
   PROBE_CMD as SETTINGS_PROBE_CMD,
+  RELAUNCH_CMD as SETTINGS_RELAUNCH_CMD,
+  CLEAR_KILL_GUARD_MS,
   waitSettingsReady,
 } from "../../../.github/bench-ci/settings-reset.js";
 import { openServerEmptyTreeCount } from "../src/tools/describe/platforms/android/index";
@@ -185,34 +187,119 @@ function fallbackCountSince(mark: number): { count: number; samples: string[] } 
 // Every `describe` the block's registry returns is checked: ON = the open server's
 // `treeEmpty` marker (PR #20), OFF = the equivalent, a describe with 0 elements under
 // ROOT. The rule is the same for both arms (either condition counts on either arm). The
-// timing helpers compare the counter before and after each timed window, so a timed
-// sample that read an empty screen is counted on its verb (`treeEmpty`) and fails the
-// block; untimed describes only count toward the block total.
+// timing helpers compare the counters before and after each timed window, so a timed
+// sample that read an empty screen is counted on its verb (`treeEmpty`); untimed
+// describes only count toward the block total.
+//
+// Run 37571460849: every empty timed sample (ON tap+describe(settle:false) 23/40 and
+// 12/40, OFF tap+describe 9/40 and 10/40) carried treeEmpty=false with 0 elements: a
+// window was there, but the destination screen had nothing to describe yet (the
+// SubSettings transition). Empty windows no longer fail the block: they are dropped
+// from the verb's latency on both arms (`emptyLatencySamples` keeps them), and the
+// verb publishes `treeEmpty` out of `describeWindows` (timed windows that read a
+// describe), graded by P11 in the merge.
 let emptyDescribeCount = 0;
+let describeCount = 0;
 let lastEmptyDescribe = "";
+function isEmptyDescribe(r: unknown): boolean {
+  if (!r || typeof r !== "object") return false;
+  const d = r as { description?: unknown; treeEmpty?: unknown };
+  const elements =
+    typeof d.description === "string" ? parseDescribe(d.description).elements : undefined;
+  return d.treeEmpty === true || elements === 0;
+}
 function noteDescribeResult(r: unknown): void {
   if (!r || typeof r !== "object") return;
+  describeCount++;
+  if (!isEmptyDescribe(r)) return;
   const d = r as { description?: unknown; treeEmpty?: unknown; treeEmptyReason?: unknown };
   const elements =
     typeof d.description === "string" ? parseDescribe(d.description).elements : undefined;
-  if (d.treeEmpty !== true && elements !== 0) return;
   emptyDescribeCount++;
   lastEmptyDescribe =
     `treeEmpty=${d.treeEmpty === true}` +
     (typeof d.treeEmptyReason === "string" ? ` reason=${d.treeEmptyReason}` : "") +
     ` elements=${elements ?? "?"}`;
 }
-// Per-verb accumulator: how many timed samples read at least one empty describe.
+// Per-verb accumulator: timed windows that read a describe, and how many of them read
+// at least one empty describe.
 interface EmptyAcc {
   count: number;
+  describeWindows: number;
   samples: string[];
 }
-function noteTimedEmpty(acc: EmptyAcc, mark: number, label: string, i: number): void {
-  if (emptyDescribeCount === mark) return;
+const newEmptyAcc = (): EmptyAcc => ({ count: 0, describeWindows: 0, samples: [] });
+interface WindowMark {
+  empty: number;
+  describes: number;
+}
+const windowMark = (): WindowMark => ({ empty: emptyDescribeCount, describes: describeCount });
+/** Close one timed window: count it; returns true when it read an empty describe. */
+function noteTimedEmpty(acc: EmptyAcc, mark: WindowMark, label: string, i: number): boolean {
+  if (describeCount > mark.describes) acc.describeWindows++;
+  if (emptyDescribeCount === mark.empty) return false;
   acc.count++;
-  const s = `i=${i} verb='${label}' emptyDescribes=${emptyDescribeCount - mark} ${lastEmptyDescribe}`;
+  const s = `i=${i} verb='${label}' emptyDescribes=${emptyDescribeCount - mark.empty} ${lastEmptyDescribe}`;
   if (acc.samples.length < 5) acc.samples.push(s);
   realDebug(`[bench][tree-empty] ${s}`);
+  return true;
+}
+
+// Time to a non-empty describe (run 37571460849): after an empty timed tap+describe,
+// one untimed describe loop (same call, TTNE_POLL_MS apart, up to TTNE_BUDGET_MS after
+// the empty) until a describe is non-empty. Measures the transition an agent waits out
+// after acting. Same loop on every arm.
+const TTNE_POLL_MS = 50;
+const TTNE_BUDGET_MS = 2000;
+interface TtneSample {
+  fromTapMs: number | null;
+  afterEmptyMs: number | null;
+  polls: number;
+}
+async function measureTimeToNonEmpty(
+  describe: () => Promise<unknown>,
+  t0: number,
+  emptyAt: number
+): Promise<TtneSample> {
+  let polls = 0;
+  for (;;) {
+    const r = await describe().catch(() => undefined);
+    polls++;
+    const now = performance.now();
+    if (r !== undefined && !isEmptyDescribe(r)) {
+      return {
+        fromTapMs: Number((now - t0).toFixed(3)),
+        afterEmptyMs: Number((now - emptyAt).toFixed(3)),
+        polls,
+      };
+    }
+    if (now - emptyAt >= TTNE_BUDGET_MS) return { fromTapMs: null, afterEmptyMs: null, polls };
+    await sleep(TTNE_POLL_MS);
+  }
+}
+interface TtneSummary {
+  measured: number;
+  reached: number;
+  timedOut: number;
+  fromTapMs: ReturnType<typeof summarize> | null;
+  afterEmptyMs: ReturnType<typeof summarize> | null;
+  fromTapSamples: (number | null)[];
+  afterEmptySamples: (number | null)[];
+  polls: number[];
+}
+function summarizeTtne(xs: TtneSample[]): TtneSummary {
+  const from = xs.map((x) => x.fromTapMs).filter((x): x is number => x !== null);
+  const after = xs.map((x) => x.afterEmptyMs).filter((x): x is number => x !== null);
+  return {
+    measured: xs.length,
+    reached: from.length,
+    timedOut: xs.length - from.length,
+    fromTapMs: from.length ? summarize(from) : null,
+    afterEmptyMs: after.length ? summarize(after) : null,
+    fromTapSamples: xs.map((x) => x.fromTapMs),
+    afterEmptySamples: xs.map((x) => x.afterEmptyMs),
+    polls: xs.map((x) => x.polls),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -226,12 +313,18 @@ function noteTimedEmpty(acc: EmptyAcc, mark: number, label: string, i: number): 
 // finishing and on a stable pid, relaunching it if it was killed, bounded at 5 s. The
 // same wait runs in every block. Each wait is logged (`resetWaitMs`, measured from the
 // am start) and summarised per block (`resetWait`).
+//
+// Run 37571460849: the relaunch force-stops before am start (SETTINGS_RELAUNCH_CMD), so
+// a resumed record whose process was killed no longer swallows the intent (every
+// relaunch in that run was "delivered to the top-most instance" and started nothing),
+// and each wait's decision reasons are summed per block (`resetWait.reasons`).
 interface ResetWaitRecord {
   waitMs: number;
   ok: boolean;
   relaunches: number;
   polls: number;
   last: string;
+  reasons: Record<string, number>;
 }
 const resetLog: ResetWaitRecord[] = [];
 async function awaitSettingsReady(startedAt: number): Promise<ResetWaitRecord> {
@@ -248,9 +341,10 @@ async function awaitSettingsReady(startedAt: number): Promise<ResetWaitRecord> {
     },
     relaunch: () => {
       try {
-        adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
+        return adbShell(SETTINGS_RELAUNCH_CMD, 8_000);
       } catch {
         /* the next probe sees it is still gone */
+        return "Error: relaunch adb call failed";
       }
     },
   });
@@ -261,12 +355,13 @@ async function awaitSettingsReady(startedAt: number): Promise<ResetWaitRecord> {
     relaunches: r.relaunches,
     polls: r.polls,
     last: r.last,
+    reasons: r.reasons,
   };
   resetLog.push(rec);
   if (!rec.ok || rec.relaunches > 0)
     realDebug(
       `[bench][reset] resetWaitMs=${rec.waitMs} ok=${rec.ok} relaunches=${rec.relaunches} ` +
-        `polls=${rec.polls} last: ${rec.last}`
+        `polls=${rec.polls} last: ${rec.last} reasons=${JSON.stringify(rec.reasons)}`
     );
   return rec;
 }
@@ -410,12 +505,19 @@ async function ensureSettings(reg: Reg): Promise<void> {
   adbShell(`am force-stop ${SETTINGS}`, 8_000);
   // Reset Settings so a restored search screen (with leftover paste text) can't
   // masquerade as the root; guarantees the pristine-root describe is comparable.
+  let clearedAt: number | null = null;
   try {
     adbShell(`pm clear ${SETTINGS}`, 8_000);
+    clearedAt = performance.now();
   } catch {
     /* fall through to plain launch */
   }
-  await sleep(300);
+  // Run 37571460849: pm clear schedules a "remove task" kill that lands 1.0-1.5 s
+  // later. An am start inside that window got its new process killed (OFF 17/18 per
+  // block, ON 4/4). Start only CLEAR_KILL_GUARD_MS after the clear, on every arm.
+  await sleep(
+    clearedAt === null ? 300 : Math.max(300, CLEAR_KILL_GUARD_MS - (performance.now() - clearedAt))
+  );
   adbShell(`am start -n ${SETTINGS}/.Settings`, 8_000);
   // Run 37561512651: wait out the delayed post-pm-clear kill (resumed + focused + not
   // finishing + stable pid; relaunched if killed), then keep the 1.5 s render settle
@@ -573,10 +675,17 @@ interface VerbResult {
   drainRead?: string;
   noDrain?: { latency: ReturnType<typeof summarize>; latencySamples: number[] };
   // Run 37561512651 (Review 2026-10-07): timed samples whose window read at least one
-  // empty describe (ON `treeEmpty`, OFF 0 elements), with the first few identities. Any
-  // one fails the block (bench exit + merge INVALID), on both arms.
+  // empty describe (ON `treeEmpty` or 0 elements, OFF 0 elements), with the first few
+  // identities. Run 37571460849: no longer fails the block; those windows are left out
+  // of `latency`/`latencySamples` on both arms (their times are `emptyLatencySamples`)
+  // and the rate treeEmpty / describeWindows is graded by P11 in the merge.
   treeEmpty: number;
   treeEmptySamples: string[];
+  describeWindows: number;
+  emptyLatencySamples: number[];
+  // tap+describe only: after each empty timed window, the untimed time to a non-empty
+  // describe (measureTimeToNonEmpty).
+  timeToNonEmpty?: TtneSummary;
   // Per timed iteration, the Settings reset wait its untimed setup paid (ms from the
   // am start until Settings was ready; null when that setup did not reset Settings).
   // Only on verbs with a per-iteration setup.
@@ -611,26 +720,32 @@ async function timeGestureDrained(
   const noDrain: number[] = [];
   let errors = 0;
   const errorSamples: string[] = [];
-  const empty: EmptyAcc = { count: 0, samples: [] };
+  const empty = newEmptyAcc();
+  const emptyLat: number[] = [];
   const resetWaitMs: (number | null)[] = [];
   for (let i = 0; i < N; i++) {
     const resetMark = resetLog.length;
     if (setup) await setup(i).catch(() => undefined);
     if (setup) resetWaitMs.push(resetWaitSince(resetMark));
-    const emptyMark = emptyDescribeCount;
+    const mark = windowMark();
     const t0 = performance.now();
+    let sample: { total: number; gesture: number } | null = null;
     try {
       await gesture(i);
       const gestureMs = elapsedMs(t0);
       await drain();
-      lat.push(elapsedMs(t0));
-      noDrain.push(gestureMs);
+      sample = { total: elapsedMs(t0), gesture: gestureMs };
     } catch (e) {
       errors++;
       if (errorSamples.length < 5)
         errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
-    noteTimedEmpty(empty, emptyMark, label, i);
+    const wasEmpty = noteTimedEmpty(empty, mark, label, i);
+    if (sample && wasEmpty) emptyLat.push(sample.total);
+    else if (sample) {
+      lat.push(sample.total);
+      noDrain.push(sample.gesture);
+    }
   }
   const fb = fallbackCountSince(mark);
   return {
@@ -643,6 +758,8 @@ async function timeGestureDrained(
     fallbackSamples: fb.samples,
     treeEmpty: empty.count,
     treeEmptySamples: empty.samples,
+    describeWindows: empty.describeWindows,
+    emptyLatencySamples: emptyLat,
     ...(setup ? { resetWaitMs } : {}),
     drainRead: DRAIN_READ,
     noDrain: { latency: summarize(noDrain), latencySamples: noDrain.slice() },
@@ -666,23 +783,26 @@ async function timeCalls(
   const lat: number[] = [];
   let errors = 0;
   const errorSamples: string[] = [];
-  const empty: EmptyAcc = { count: 0, samples: [] };
+  const empty = newEmptyAcc();
+  const emptyLat: number[] = [];
   const resetWaitMs: (number | null)[] = [];
   for (let i = 0; i < N; i++) {
     const resetMark = resetLog.length;
     if (setup) await setup(i).catch(() => undefined);
     if (setup) resetWaitMs.push(resetWaitSince(resetMark));
-    const emptyMark = emptyDescribeCount;
+    const mark = windowMark();
     const t0 = performance.now();
+    let dt: number | null = null;
     try {
       await fn(i);
-      lat.push(elapsedMs(t0));
+      dt = elapsedMs(t0);
     } catch (e) {
       errors++;
       if (errorSamples.length < 5)
         errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
-    noteTimedEmpty(empty, emptyMark, label, i);
+    const wasEmpty = noteTimedEmpty(empty, mark, label, i);
+    if (dt !== null) (wasEmpty ? emptyLat : lat).push(dt);
   }
   const fb = fallbackCountSince(mark);
   return {
@@ -695,6 +815,8 @@ async function timeCalls(
     fallbackSamples: fb.samples,
     treeEmpty: empty.count,
     treeEmptySamples: empty.samples,
+    describeWindows: empty.describeWindows,
+    emptyLatencySamples: emptyLat,
     ...(setup ? { resetWaitMs } : {}),
     extra: extra?.(),
   };
@@ -764,7 +886,10 @@ async function timeTapEffect(
   reg: Reg,
   fingerprint: () => Promise<string | undefined>,
   ensureOrigin: () => Promise<void>,
-  restoreBack: () => Promise<void>
+  restoreBack: () => Promise<void>,
+  // Run 37571460849: untimed follow-up after an empty timed window (tap+describe's
+  // time-to-non-empty loop). Runs before the effect poll; never inside the timed window.
+  onEmpty?: (t0: number, emptyAt: number) => Promise<TtneSample>
 ): Promise<TapEffectResult> {
   // Canonical ROOT fingerprint: after a reset, the first defined fingerprint is the
   // root the navigating tap moves AWAY from. Used only to confirm BACK restored it.
@@ -792,7 +917,9 @@ async function timeTapEffect(
   // and final fingerprints, timings, coordinate + locate source), so a 59/60 is
   // diagnosable from the artifacts rather than a bare aggregate count.
   const noEffectSamples: string[] = [];
-  const empty: EmptyAcc = { count: 0, samples: [] };
+  const empty = newEmptyAcc();
+  const emptyLat: number[] = [];
+  const ttne: TtneSample[] = [];
   let prev: { x: number; y: number } | undefined;
   for (let i = 0; i < N; i++) {
     // 1. UNTIMED fresh locate on the CURRENT screen. If it fails, relaunch a pristine
@@ -820,7 +947,7 @@ async function timeTapEffect(
     }
     const originFp = origin;
     // 3. TIMED window: the coordinate tap [+describe] through the backend under test.
-    const emptyMark = emptyDescribeCount;
+    const mark = windowMark();
     const t0 = performance.now();
     let dt: number;
     try {
@@ -830,11 +957,13 @@ async function timeTapEffect(
       errors++;
       if (errorSamples.length < 5)
         errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
-      noteTimedEmpty(empty, emptyMark, label, i);
+      noteTimedEmpty(empty, mark, label, i);
       await ensureOrigin().catch(() => undefined);
       continue;
     }
-    noteTimedEmpty(empty, emptyMark, label, i);
+    const emptyAt = performance.now();
+    const wasEmpty = noteTimedEmpty(empty, mark, label, i);
+    if (wasEmpty && onEmpty) ttne.push(await onEmpty(t0, emptyAt));
     // 4. UNTIMED first-attempt verdict: did the FIRST tap change the screen ≤3 s?
     const changed = await pollUntil(
       fingerprint,
@@ -845,8 +974,10 @@ async function timeTapEffect(
     effectChecked++;
     // The miss iteration's latency is EXCLUDED from the tap percentiles (team-lead
     // run-6 decision): a tap that produced no effect is not a representative timing.
-    // Its count is firstTapNoEffect (printed); it is never retried away.
-    if (changed) lat.push(dt);
+    // Its count is firstTapNoEffect (printed); it is never retried away. Run
+    // 37571460849: an empty window is left out too (emptyLatencySamples, P11).
+    if (changed && wasEmpty) emptyLat.push(dt);
+    else if (changed) lat.push(dt);
     else {
       effectZero++;
       // F7: capture WHY this first attempt showed no effect — the fingerprint the
@@ -885,6 +1016,9 @@ async function timeTapEffect(
     fallbackSamples: fb.samples,
     treeEmpty: empty.count,
     treeEmptySamples: empty.samples,
+    describeWindows: empty.describeWindows,
+    emptyLatencySamples: emptyLat,
+    ...(onEmpty ? { timeToNonEmpty: summarizeTtne(ttne) } : {}),
     effectChecked,
     effectZero,
     originLost,
@@ -1244,20 +1378,26 @@ async function describeIdleLatencyWithStages(
   const lat: number[] = [];
   let errors = 0;
   const errorSamples: string[] = [];
-  const empty: EmptyAcc = { count: 0, samples: [] };
+  const empty = newEmptyAcc();
+  const emptyLat: number[] = [];
   for (let i = 0; i < n; i++) {
-    const emptyMark = emptyDescribeCount;
+    const mark = windowMark();
     const t0 = performance.now();
+    let sample: { dt: number; d: DescribeMeta } | null = null;
     try {
       const d = (await reg.invokeTool("describe", { udid: SERIAL })) as DescribeMeta;
-      lat.push(elapsedMs(t0));
-      collectSplit(acc, d);
+      sample = { dt: elapsedMs(t0), d };
     } catch (e) {
       errors++;
       if (errorSamples.length < 5)
         errorSamples.push(`i=${i}: ${e instanceof Error ? e.message : String(e)}`);
     }
-    noteTimedEmpty(empty, emptyMark, label, i);
+    const wasEmpty = noteTimedEmpty(empty, mark, label, i);
+    if (sample && wasEmpty) emptyLat.push(sample.dt);
+    else if (sample) {
+      lat.push(sample.dt);
+      collectSplit(acc, sample.d);
+    }
   }
   const fb = fallbackCountSince(mark);
   return {
@@ -1271,6 +1411,8 @@ async function describeIdleLatencyWithStages(
       fallbackSamples: fb.samples,
       treeEmpty: empty.count,
       treeEmptySamples: empty.samples,
+      describeWindows: empty.describeWindows,
+      emptyLatencySamples: emptyLat,
       extra: undefined,
     },
     split: finalizeSplit(acc),
@@ -2221,9 +2363,11 @@ interface BlockResult {
     maxMs: number | null;
     timeouts: number;
     relaunches: number;
+    reasons: Record<string, number>;
   };
   // Empty describes in this block: `timed` = timed samples with one (sum of the verbs'
-  // `treeEmpty`, fails the block), `block` = every empty describe incl. untimed ones,
+  // `treeEmpty`; graded by P11, no longer fatal since run 37571460849), `block` = every
+  // empty describe incl. untimed ones (time-to-non-empty polls included),
   // `openServerEmptyTreeCount` = the host's open-path counter delta (ON; null on OFF).
   describeEmpty: { timed: number; block: number; openServerEmptyTreeCount: number | null };
   coldStartMs: number[];
@@ -2591,6 +2735,20 @@ async function runBlock(
       ...(settle === undefined ? {} : { settle }),
     });
   };
+  // Run 37571460849: after an empty timed describe, the untimed time to a non-empty one
+  // (same describe call, 50 ms apart, up to 2 s), on every arm.
+  const ttneAfterEmpty =
+    (settle?: boolean) =>
+    (t0: number, emptyAt: number): Promise<TtneSample> =>
+      measureTimeToNonEmpty(
+        () =>
+          reg.invokeTool("describe", {
+            udid: SERIAL,
+            ...(settle === undefined ? {} : { settle }),
+          }),
+        t0,
+        emptyAt
+      );
   const runTapDescribe = (name: string, settle?: boolean): Promise<VerbResult> =>
     canEffect
       ? timeTapEffect(
@@ -2600,7 +2758,8 @@ async function runBlock(
           reg,
           fingerprint,
           ensureOrigin,
-          restoreBack
+          restoreBack,
+          ttneAfterEmpty(settle)
         )
       : timeCalls(name, tapThenDescribeFixed(settle), undefined, ensureOrigin);
   // Review 2026-10-07 finding 8: the ON-only settle:true row runs AFTER the latency
@@ -3068,6 +3227,12 @@ async function runBlock(
     maxMs: resetWaitMs.length ? Math.max(...resetWaitMs) : null,
     timeouts: resetWaits.filter((r) => !r.ok).length,
     relaunches: resetWaits.reduce((a, r) => a + r.relaunches, 0),
+    // Run 37571460849: the probe's decisions summed over the block (why it waited,
+    // why it relaunched, what each relaunch's am start answered, the outcomes).
+    reasons: resetWaits.reduce<Record<string, number>>((acc, r) => {
+      for (const [k, n] of Object.entries(r.reasons)) acc[k] = (acc[k] || 0) + n;
+      return acc;
+    }, {}),
   };
   const describeEmpty = {
     timed: verbs.reduce((a, v) => a + v.treeEmpty, 0),
@@ -3081,11 +3246,11 @@ async function runBlock(
   );
   if (describeEmpty.timed > 0) {
     notes.push(
-      `TREE EMPTY: ${describeEmpty.timed} timed sample(s) read an empty describe ` +
+      `EMPTY DESCRIBES: ${describeEmpty.timed} timed sample(s) read an empty describe ` +
         `(${verbs
           .filter((v) => v.treeEmpty > 0)
-          .map((v) => `${v.verb}=${v.treeEmpty}`)
-          .join(", ")}) — those samples timed a screen with no active window; the block fails`
+          .map((v) => `${v.verb}=${v.treeEmpty}/${v.describeWindows}`)
+          .join(", ")}) — left out of those verbs' latency, graded by P11 in the merge`
     );
   }
   if (resetWait.timeouts > 0) {
@@ -3110,7 +3275,9 @@ async function runBlock(
     .reduce(
       (s, v) =>
         s +
-        (v.effectChecked != null ? v.effectChecked + v.errors : v.latencySamples.length + v.errors),
+        (v.effectChecked != null
+          ? v.effectChecked + v.errors
+          : v.latencySamples.length + v.emptyLatencySamples.length + v.errors),
       0
     );
 
@@ -3176,27 +3343,6 @@ function assertNoOpenServerFallback(blocks: BlockResult[]): void {
         .map(
           (b) =>
             `${b.block}=${b.openServerFallbacks.count} (first: ${b.openServerFallbacks.samples[0] ?? "?"})`
-        )
-        .join(" | ")
-  );
-}
-
-// Run 37561512651 (Review 2026-10-07): a timed sample that read an empty describe (ON
-// `treeEmpty`, OFF 0 elements) timed a screen with no active window. Fails the process
-// on BOTH arms (after the block JSON is written), as the open-server fallback does on ON.
-function assertNoTimedTreeEmpty(blocks: BlockResult[]): void {
-  const bad = blocks.filter((b) => b.describeEmpty.timed > 0);
-  if (!bad.length) return;
-  throw new Error(
-    "empty describe inside timed verb samples: " +
-      bad
-        .map(
-          (b) =>
-            `${b.block} ` +
-            b.verbs
-              .filter((v) => v.treeEmpty > 0)
-              .map((v) => `${v.verb}=${v.treeEmpty} (first: ${v.treeEmptySamples[0] ?? "?"})`)
-              .join(", ")
         )
         .join(" | ")
   );
@@ -3315,8 +3461,9 @@ async function main(): Promise<void> {
     // aborted the CI step at the first failing block and hid a later block's result.
     // Review 2026-10-07 finding 3: an ON block that left the open path DOES fail its
     // process (after the JSON is written), so run_block records it INVALID.
+    // Run 37571460849: an empty describe inside a timed verb no longer fails the
+    // process (P11 grades the rate in the merge).
     assertNoOpenServerFallback(blocks);
-    assertNoTimedTreeEmpty(blocks);
     return;
   }
 
@@ -3324,7 +3471,6 @@ async function main(): Promise<void> {
   // the OFF/ON latency comparison is genuinely like-for-like (throws otherwise).
   assertIdenticalGestureParams(blocks);
   assertNoOpenServerFallback(blocks);
-  assertNoTimedTreeEmpty(blocks);
   // Tap-timeline parity (phase 3h): same authored holdMs everywhere; a clean
   // two-frame DOWN→UP with NO MOVE on any arm. Recorded from the real injected shape.
   assertTapTimelineParity(blocks);
