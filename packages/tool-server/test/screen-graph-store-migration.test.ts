@@ -435,4 +435,49 @@ describe("schema-1 store migration (review E-1 finding 8)", () => {
     expect(raw).not.toContain("lastItemTexts");
     expect(raw).not.toContain("\\u0000");
   });
+
+  it("round-trips a schema 2 store: same nodes, edges, item hashes and session", async () => {
+    writeV1();
+    const first = await ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: dir,
+      now: () => NOW,
+    });
+    await first.flush();
+    const second = await ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: dir,
+      now: () => NOW,
+    });
+    expect(second.nodes).toEqual(first.nodes);
+    expect(second.edges).toEqual(first.edges);
+    expect(second.edges.find((e) => e.template)?.template?.lastItemHashes).toEqual([
+      fnv1aHex("story 7"),
+      fnv1aHex("card 0"),
+    ]);
+    // A schema 2 load is not a migration: nothing to rewrite.
+    const file = join(dir, "com.churn", "1.json");
+    const before = readFileSync(file, "utf8");
+    await second.flush();
+    expect(JSON.parse(readFileSync(file, "utf8")).sessionSeq).toBe(JSON.parse(before).sessionSeq);
+    first.dispose();
+    second.dispose();
+  });
+
+  it("loads a document of an unknown schema version as an empty store", async () => {
+    const file = join(dir, "com.churn", "1.json");
+    mkdirSync(join(dir, "com.churn"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ ...v1Doc, version: 99 }, null, 2) + "\n", "utf8");
+    const s = await ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: dir,
+      now: () => NOW,
+    });
+    expect(s.nodes).toEqual({});
+    expect(s.edges).toEqual([]);
+    s.dispose();
+  });
 });

@@ -157,7 +157,7 @@ describe("bounded store — volatility (design D2 R4)", () => {
   });
 });
 
-describe("bounds OFF is byte-for-byte the pre-E behaviour (E1-G5 non-regression)", () => {
+describe("a store built with enforceBounds off (the constructor default; the wiring passes true) stays unbounded", () => {
   it("does not evict, decay, track volatility or drop compact when disabled", async () => {
     const store = new ScreenGraphStore({
       packageName: "com.android.settings",

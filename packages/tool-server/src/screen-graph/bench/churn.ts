@@ -4,7 +4,8 @@
  * Drives the synthetic `com.argent.churnapp` feed on the CI emulator and records
  * every item tap into TWO stores from the SAME device interaction:
  *  - ON  arm: `ARGENT_SG_TEMPLATES`-style bounded store with template edges;
- *  - OFF arm: today's unbounded store (the control), kept OUTSIDE the gated graph
+ *  - OFF arm: an unbounded store (`enforceBounds: false`, the control; the
+ *    screen-graph wiring itself is bounded by default), kept OUTSIDE the gated graph
  *    dir so its (expected) `duplicateEdgeTargets` break can never kill the job
  *    (per-arm scoping BEFORE the run — the hard constraint).
  *

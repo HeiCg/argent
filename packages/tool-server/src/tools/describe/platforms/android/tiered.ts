@@ -117,6 +117,7 @@ export async function describeAndroidTiered(
         }
         const summary = buildSummary(node, store.outgoingEdges(idHash), store.nodes, {
           ...(changedSince !== undefined ? { changedSince } : {}),
+          edges: store.edges,
         });
         return { description: renderSummary(summary), source: "open-device-server" as const };
       }

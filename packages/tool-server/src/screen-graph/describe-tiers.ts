@@ -1,9 +1,13 @@
 /**
  * Screen-graph Phase B describe tiers (ticket B2, design §2.2 / §2.3).
  *
- * - `summary`: `{screen, visits, affordances, changedSince?}` rendered to ≤ ~100
- *   tokens — the label (or hash8), visit count, and the top-N outgoing edges
- *   with their targets' labels.
+ * - `summary`: `{screen, visits, affordances, changedSince?, reachable?}` — the
+ *   label (or hash8), visit count, the top-N outgoing edges with their targets'
+ *   labels, and (when the caller passes the graph edges) up to 8 screens
+ *   `navigate-to` can reach from here (address, label cut to 40 characters,
+ *   hops). With that list, an edge to another screen (a 1-hop destination) is
+ *   not an affordance.
+ *   ≤ ~100 tokens without the list, ≤ ~200 with it.
  * - `compact`: served from the node's cached rendering when the device
  *   `stateHash` still matches; patched from a device `diff` when only text
  *   changed (structural `hash` unchanged); refreshed otherwise. Cache validity
@@ -11,10 +15,20 @@
  */
 import type { Edge, ScreenNode } from "./types";
 import { actionLabel, isNodeVolatile } from "./types";
+import { reachableScreens, screenAddress } from "./plan";
 
 /** Short display id for a screen with no label. */
 export function hash8(hash: string): string {
   return hash.slice(0, 8);
+}
+
+/** Longest screen label a summary line prints; a longer one ends with `…`. */
+export const MAX_REACHABLE_LABEL = 40;
+
+function cutLabel(label: string): string {
+  return label.length <= MAX_REACHABLE_LABEL
+    ? label
+    : `${label.slice(0, MAX_REACHABLE_LABEL - 1)}…`;
 }
 
 /** Short display id for a template identity (4 hex nibbles). */
@@ -40,6 +54,12 @@ interface ScreenSummary {
    * the agent knows the cached content is not reused across visits.
    */
   volatile?: boolean;
+  /**
+   * Screens reachable from this one (nearest first), each with the address
+   * `navigate-to` takes as `target.screen` (the hash8, longer only on a prefix
+   * collision). Absent when nothing is reachable.
+   */
+  reachable?: Array<{ address: string; label?: string; hops: number }>;
 }
 
 interface SummaryOptions {
@@ -47,6 +67,8 @@ interface SummaryOptions {
   topN?: number;
   /** Changed-field count vs last visit (present only when it differs). */
   changedSince?: number;
+  /** Every graph edge, for the reachable-screens list. */
+  edges?: Edge[];
 }
 
 const DEFAULT_TOP_N = 6;
@@ -63,7 +85,25 @@ export function buildSummary(
   opts: SummaryOptions = {}
 ): ScreenSummary {
   const topN = opts.topN ?? DEFAULT_TOP_N;
+  const reachable: NonNullable<ScreenSummary["reachable"]> = [];
+  if (opts.edges && opts.edges.length > 0) {
+    const graph = { edges: opts.edges, nodes };
+    for (const r of reachableScreens(graph, node.hash)) {
+      reachable.push({
+        address: screenAddress(graph, r.hash),
+        hops: r.hops,
+        ...(r.label !== undefined ? { label: r.label } : {}),
+      });
+    }
+  }
+  // With a reachable list, a plain edge to another screen is a 1-hop
+  // destination: listed there, or past the list's cap and reachable by its
+  // label. Leave every one out so the tier stays within ~200 tokens however many
+  // destinations the screen has; self-loops and template edges stay.
+  const oneHop = (e: Edge): boolean =>
+    !e.template && e.to !== node.hash && nodes[e.to]?.template !== true;
   const affordances = [...outgoing]
+    .filter((e) => reachable.length === 0 || !oneHop(e))
     .sort((a, b) => b.count - a.count)
     .slice(0, topN)
     .map((e) => ({
@@ -79,6 +119,7 @@ export function buildSummary(
   if (opts.changedSince !== undefined) summary.changedSince = opts.changedSince;
   // Phase E: flag a live-content container so the agent does not trust cached text.
   if (isNodeVolatile(node)) summary.volatile = true;
+  if (reachable.length > 0) summary.reachable = reachable;
   return summary;
 }
 
@@ -101,8 +142,10 @@ export function renderSummary(summary: ScreenSummary): string {
   const lines: string[] = [`screen: ${summary.screen}  visits: ${summary.visits}`];
   if (summary.affordances.length > 0) {
     lines.push("affordances:");
-    for (const a of summary.affordances) lines.push(`- ${a.action} -> ${a.to} (${a.count})`);
-  } else {
+    for (const a of summary.affordances) {
+      lines.push(`- ${a.action} -> ${cutLabel(a.to)} (${a.count})`);
+    }
+  } else if (!summary.reachable) {
     lines.push("affordances: (none known)");
   }
   if (summary.changedSince !== undefined) {
@@ -110,6 +153,15 @@ export function renderSummary(summary: ScreenSummary): string {
   }
   if (summary.volatile) {
     lines.push("volatile: content changes every visit");
+  }
+  if (summary.reachable) {
+    lines.push("reachable screens:");
+    for (const r of summary.reachable) {
+      const hops = `(${r.hops} ${r.hops === 1 ? "hop" : "hops"})`;
+      lines.push(
+        r.label ? `- ${r.address}  ${cutLabel(r.label)}  ${hops}` : `- ${r.address}  ${hops}`
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -141,7 +193,8 @@ export interface CompactTierDeps {
 
 /**
  * Resolve the `compact` describe tier against the current device fingerprint:
- *  - `stateHash` matches the node's → serve the cache (no client call);
+ *  - `stateHash` matches the node's and the cached text is not empty → serve
+ *    the cache (no client call);
  *  - structural `hash` matches but `stateHash` differs → `patch` from a diff;
  *  - otherwise → `refresh`.
  */
@@ -150,7 +203,14 @@ export async function resolveCompactTier(
   current: CurrentFingerprint,
   deps: CompactTierDeps
 ): Promise<CompactTierResult> {
-  if (node.stateHash !== undefined && node.stateHash === current.stateHash && !node.redacted) {
+  // An empty `compact` is never served: a volatile node is persisted without it
+  // (store R4a) while it keeps its stateHash, so a match would serve "".
+  if (
+    node.stateHash !== undefined &&
+    node.stateHash === current.stateHash &&
+    !node.redacted &&
+    node.compact !== ""
+  ) {
     return { text: node.compact, mode: "cache" };
   }
   if (node.hash === current.hash && node.stateHash !== undefined && !node.redacted) {
