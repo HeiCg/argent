@@ -3,6 +3,13 @@
 // into $GITHUB_STEP_SUMMARY and uploads it as an artifact. This is x86_64/KVM on
 // a hosted runner — NOT comparable to the local arm64/HVF numbers; only OFF vs ON
 // within THIS run is like-for-like.
+//
+// Review 2026-10-07 finding 6: the merged JSON carries run validity (`valid`,
+// `invalidBlocks`, `runInvalidReasons` from validity.json, the block-order check and
+// the merge gates). An INVALID run gets a banner at the top and this script exits 1,
+// so the scoreboard step fails the job; OFF-legacy validity only marks its own
+// section. No merged JSON at all also exits 1 (a latency run that merged nothing is
+// never a result).
 const fs = require("fs");
 const path = require("path");
 
@@ -18,7 +25,7 @@ const latest = (glob) => {
 const mergedPath = latest("^bench-merged-.*\\.json$");
 if (!mergedPath) {
   console.log("## Latency bench — NO RESULTS\n\nNo `bench-merged-*.json` was produced.");
-  process.exit(0);
+  process.exit(1);
 }
 const merged = JSON.parse(fs.readFileSync(mergedPath, "utf8"));
 
@@ -28,6 +35,16 @@ const L = [];
 
 L.push("## Open vs proprietary — latency bench (CI)");
 L.push("");
+// Finding 6: INVALID banner before anything else. Old merged JSONs carry no `valid`
+// key and read as valid.
+const runInvalid = merged.valid === false;
+if (runInvalid) {
+  L.push("> **INVALID RUN — do not read the numbers below as a result.** The job fails (exit 1).");
+  for (const x of merged.invalidBlocks || [])
+    L.push(`> - ${x.block}: ${(x.reasons || []).join("; ")}`);
+  for (const why of merged.runInvalidReasons || []) L.push(`> - ${why}`);
+  L.push("");
+}
 L.push("> **x86_64 / KVM on a GitHub-hosted runner.** These numbers are NOT comparable");
 L.push("> to the local arm64 / HVF results (v4–v6). Only OFF vs ON *within this run* is");
 L.push("> like-for-like.");
@@ -95,7 +112,7 @@ L.push("");
 // sha256 of every binary/APK used), so a "vs proprietary" number names its baseline.
 const pp = merged.proprietaryProvenance || null;
 const provLabel = (p) =>
-  !p || typeof p !== "object" ? "unknown" : `${p.package || "?"}@${p.version || "?"}`;
+  !p ? "unknown" : typeof p !== "object" ? String(p) : `${p.package || "?"}@${p.version || "?"}`;
 const offBlockNames = (merged.blocks || [])
   .map((b) => b.block)
   .filter((n) => typeof n === "string" && n.startsWith("OFF"));
@@ -187,6 +204,35 @@ for (const vn of verbNames) {
 }
 L.push("");
 
+// Review 2026-10-07 finding 2: gesture-swipe / gesture-pinch are timed as the gesture
+// PLUS one draining read (the same read on every arm), so an async final UP that is
+// still queued when the RPC returns is paid for inside the timed window. The raw
+// gesture-only time of the same iterations is the secondary "no-drain" column.
+const drainRows = [];
+for (const vn of ["gesture-swipe", "gesture-pinch"]) {
+  for (const b of blocks) {
+    const v = verbOf(b, vn);
+    if (v && v.noDrain) drainRows.push({ vn, b, v });
+  }
+}
+if (drainRows.length) {
+  const read = drainRows.find((r) => r.v.drainRead)?.v.drainRead || "?";
+  L.push("### Gesture drain — swipe/pinch timed as gesture + one draining read");
+  L.push("");
+  L.push(
+    `Timed window = gesture + \`${read}\` on every arm (the read the headline tap row uses; ` +
+      "it drains a queued async final UP). no-drain = the gesture call alone, same iterations."
+  );
+  L.push("");
+  L.push("| verb | block | gesture + drain p50/p95 | no-drain p50/p95 |");
+  L.push("| --- | --- | --- | --- |");
+  for (const { vn, b, v } of drainRows) {
+    const nd = v.noDrain.latency || {};
+    L.push(`| ${vn} | ${b.block} | ${v.latency.p50}/${v.latency.p95} | ${nd.p50}/${nd.p95} |`);
+  }
+  L.push("");
+}
+
 // describe sample + screenshot dims
 L.push("### describe sample & screenshot");
 L.push("");
@@ -265,7 +311,20 @@ const ciVerdict = (delta, ci, floor) => {
 // faster than the current one.
 const legacyBlk = blocks.find((b) => b.block === "OFF-legacy");
 const la = merged.legacyArm || null;
-if (legacyBlk && la) {
+if (la && la.invalid) {
+  // Finding 6: a failed / degraded / unstamped / wrong-release OFF-legacy invalidates
+  // this section only. Its numbers are not printed as a comparison.
+  L.push(
+    `### Proprietary baseline: ${la.version || la.label || "unknown"} vs ${la.currentVersion || la.currentLabel || "unknown"} — INVALID`
+  );
+  L.push("");
+  L.push(
+    "OFF-legacy is not a valid baseline this run (legacy section only; the main arms are unaffected):"
+  );
+  L.push("");
+  for (const why of la.invalidReasons || []) L.push(`- ${why}`);
+  L.push("");
+} else if (legacyBlk && la) {
   const legLabel = la.version || la.label || "unknown";
   const curLabel = la.currentVersion || la.currentLabel || "unknown";
   L.push(`### Proprietary baseline: ${legLabel} vs ${curLabel}`);
@@ -468,6 +527,18 @@ if (onIm && off1Blk && off2Blk) {
         : Object.values(c).reduce((s, n) => s + n, 0);
     const unavail = c.unavailable || 0;
     const measured = onIm.measuredInjectRpcs;
+    // Review 2026-10-07 finding 3: Q4 is an EQUALITY — the on-device input-manager
+    // count must equal the gesture tool calls the bench issued (the merge refuses a
+    // mismatch, so a rendered scoreboard only ever shows PASS or N/A here).
+    const expected = onIm.expectedInjectRpcs;
+    const imN = c["input-manager"] || 0;
+    L.push(
+      `- **Q4 equality** — on-device \`injectStrategyCounts["input-manager"]\` = **${imN}** == expected ` +
+        (expected == null
+          ? "**?** (no expectedInjectRpcs in the block): **N/A**"
+          : `**${expected}** (gesture tool calls the bench issued in the block): ` +
+            `**${imN === expected && total === expected && unavail === 0 ? "PASS" : "FAIL"}**`)
+    );
     L.push(
       `- **Q4 fallbacks (on-device)** — \`injectStrategyCounts.unavailable\` = **${unavail}/${total}** ` +
         `(counts ${JSON.stringify(c)}) — the authoritative fallback signal; the host \`fastInject\` ` +
@@ -640,3 +711,15 @@ if (on3j.length) {
 L.push(`_merged: ${path.basename(mergedPath)}_`);
 
 process.stdout.write(L.join("\n") + "\n");
+// Finding 6: an INVALID run fails the scoreboard step (and so the job).
+if (runInvalid) {
+  process.stderr.write(
+    "latency run INVALID: " +
+      [
+        ...(merged.invalidBlocks || []).map((x) => `${x.block}: ${(x.reasons || []).join("; ")}`),
+        ...(merged.runInvalidReasons || []),
+      ].join(" | ") +
+      "\n"
+  );
+  process.exit(1);
+}

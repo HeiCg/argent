@@ -48,11 +48,18 @@ const ENV = {
   tokenizer: "o200k",
 };
 
+// Review 2026-10-07 finding 1: blocks run OFF-1, ON-uiautomation, ON-input-manager,
+// OFF-2, OFF-legacy, and the merge asserts that order from each block's env.startedAt.
+// Fixtures carry start times in that order, one minute apart.
+const ORDER = ["OFF-1", "ON-uiautomation", "ON-input-manager", "OFF-2", "OFF-legacy"];
+const startOf = (name) =>
+  new Date(Date.UTC(2026, 9, 7, 18, 0) + ORDER.indexOf(name) * 60_000).toISOString();
+
 /** A healthy per-block file. Override any field of `.block`. */
 function block(name, over = {}) {
   const isOff = name.startsWith("OFF");
   return {
-    env: ENV,
+    env: { ...ENV, startedAt: startOf(name) },
     block: {
       block: name,
       config: isOff ? "OFF" : "ON",
@@ -84,6 +91,9 @@ function block(name, over = {}) {
               name === "ON-uiautomation" ? { default: 161 } : { "input-manager": 161 },
             injectStrategyTotal: 161,
             measuredInjectRpcs: 100,
+            // Review 2026-10-07 finding 3: host-issued gesture tool calls this block.
+            // Q4 requires the on-device counter to match it exactly.
+            expectedInjectRpcs: 161,
           }),
       ...over,
     },
@@ -836,4 +846,337 @@ test("scoreboard: PARTIAL banner + emulator rows; old merged JSON without them s
   const sb2 = run(SCOREBOARD, old);
   assert.strictEqual(sb2.code, 0, sb2.stderr);
   assert.doesNotMatch(sb2.stdout, /PARTIAL/);
+});
+
+/* ------------------ review 2026-10-07: findings 1, 2, 3, 6, 7 ------------------ */
+
+const VALIDITY = path.join(HERE, "block-validity.js");
+const WORKFLOW = path.join(HERE, "..", "workflows", "bench-open-vs-proprietary.yml");
+const RUN_BENCH = path.join(HERE, "run-bench.js");
+
+/** Write $out/validity.json the way the workflow's run_block does (via the CLI). */
+function recordValidity(out, entries) {
+  for (const e of entries) {
+    const args = [VALIDITY, "record", path.join(out, "validity.json"), "--block", e.block];
+    args.push("--ready-gate", e.readyGate || "pass");
+    if (e.exitCode !== undefined) args.push("--exit-code", String(e.exitCode));
+    if (e.stamped) args.push("--stamped", e.stamped);
+    args.push("--started-at", startOf(e.block));
+    execFileSync("node", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  }
+}
+const ALL_OK = (names) =>
+  names.map((b) => ({ block: b, exitCode: 0, stamped: b.startsWith("OFF") ? "yes" : "n/a" }));
+
+// Finding 1: block order.
+test("merge-blocks: order OFF-1 < ON-* < OFF-2 holds -> run valid", () => {
+  const out = freshOut();
+  writeBlocks(out, FOUR());
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true);
+  assert.deepStrictEqual(m.runInvalidReasons, []);
+});
+
+test("merge-blocks: ON-input-manager started before OFF-1 -> run INVALID with the timestamps", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  // Run 37223823613's shape: ON-im self-orchestrated inside OFF-1's process, before it.
+  bs[2].env.startedAt = "2026-10-07T17:59:00.000Z";
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, false);
+  const msg = m.runInvalidReasons.join(" ");
+  assert.match(
+    msg,
+    /OFF-1 .*2026-10-07T18:00:00\.000Z.*ON-input-manager .*2026-10-07T17:59:00\.000Z/
+  );
+  assert.match(r.stdout, /INVALID/);
+});
+
+test("merge-blocks: OFF-2 started before an ON block -> run INVALID", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[3].env.startedAt = "2026-10-07T18:00:30.000Z"; // OFF-2 before ON-uiautomation
+  writeBlocks(out, bs);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.valid, false);
+  assert.match(m.runInvalidReasons.join(" "), /OFF-2 .*started before ON-uiautomation/);
+});
+
+test("merge-blocks: a block with no start timestamp -> order cannot be verified -> INVALID", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  delete bs[1].env.startedAt;
+  writeBlocks(out, bs);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.valid, false);
+  assert.match(m.runInvalidReasons.join(" "), /no start timestamp for ON-uiautomation/);
+});
+
+test("scoreboard: INVALID banner at the top and exit 1 when the order is wrong", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].env.startedAt = "2026-10-07T17:59:00.000Z";
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, ALLENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 1);
+  const head = sb.stdout.split("\n").slice(0, 4).join("\n");
+  assert.match(head, /INVALID/);
+  assert.match(sb.stdout, /ON-input-manager .*17:59:00/);
+});
+
+// Finding 6: per-block validity file.
+test("block-validity: the record CLI merges per-block entries into validity.json", () => {
+  const out = freshOut();
+  recordValidity(out, [
+    { block: "OFF-1", exitCode: 0, stamped: "yes" },
+    { block: "ON-input-manager", readyGate: "fail" },
+  ]);
+  const v = JSON.parse(fs.readFileSync(path.join(out, "validity.json"), "utf8"));
+  assert.strictEqual(v.blocks["OFF-1"].exitCode, 0);
+  assert.strictEqual(v.blocks["OFF-1"].stamped, "yes");
+  assert.strictEqual(v.blocks["ON-input-manager"].readyGate, "fail");
+  assert.strictEqual(v.blocks["ON-input-manager"].exitCode, null);
+  const { entryReasons } = require(VALIDITY);
+  assert.deepStrictEqual(entryReasons(v.blocks["OFF-1"]), []);
+  assert.match(entryReasons(v.blocks["ON-input-manager"]).join(), /ready-gate failed/);
+});
+
+test("merge-blocks: all blocks recorded valid -> merged.valid, validity carried", () => {
+  const out = freshOut();
+  const bs = FOUR().map((b) => (b.block.block.startsWith("OFF") ? withProv(b, prov("0.27.0")) : b));
+  writeBlocks(out, bs);
+  recordValidity(out, ALL_OK(["OFF-1", "ON-uiautomation", "ON-input-manager", "OFF-2"]));
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true);
+  assert.deepStrictEqual(m.invalidBlocks, []);
+  assert.strictEqual(m.validity["OFF-1"].stamped, "yes");
+});
+
+test("merge-blocks + scoreboard: an OFF block that exited non-zero is INVALID (banner, exit 1)", () => {
+  const out = freshOut();
+  const bs = FOUR().map((b) => (b.block.block.startsWith("OFF") ? withProv(b, prov("0.27.0")) : b));
+  writeBlocks(out, bs);
+  recordValidity(out, [
+    { block: "OFF-1", exitCode: 1, stamped: "no" },
+    ...ALL_OK(["ON-uiautomation", "ON-input-manager", "OFF-2"]),
+  ]);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, false);
+  assert.deepStrictEqual(
+    m.invalidBlocks.map((x) => x.block),
+    ["OFF-1"]
+  );
+  assert.match(m.invalidBlocks[0].reasons.join(), /bench exited 1/);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 1);
+  assert.match(sb.stdout.split("\n").slice(0, 4).join("\n"), /INVALID/);
+  assert.match(sb.stdout, /OFF-1: bench exited 1/);
+});
+
+test("merge-blocks: an ON block whose ready-gate failed (no file) is INVALID, not a thrown merge", () => {
+  const out = freshOut();
+  writeBlocks(out, [block("OFF-1"), block("ON-uiautomation"), block("OFF-2")]);
+  recordValidity(out, [
+    ...ALL_OK(["OFF-1", "ON-uiautomation", "OFF-2"]).map((e) => ({ ...e, stamped: "n/a" })),
+    { block: "ON-input-manager", readyGate: "fail" },
+  ]);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, false);
+  assert.match(
+    m.invalidBlocks.find((x) => x.block === "ON-input-manager").reasons.join(),
+    /ready-gate failed/
+  );
+  assert.strictEqual(run(SCOREBOARD, out).code, 1);
+});
+
+test("merge-blocks: a current OFF block recorded unstamped is INVALID", () => {
+  const out = freshOut();
+  writeBlocks(out, FOUR());
+  recordValidity(out, [
+    { block: "OFF-1", exitCode: 0, stamped: "no" },
+    ...ALL_OK(["ON-uiautomation", "ON-input-manager", "OFF-2"]),
+  ]);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.valid, false);
+  assert.match(m.invalidBlocks.find((x) => x.block === "OFF-1").reasons.join(), /not stamped/);
+});
+
+test("merge-blocks: an unstamped OFF-legacy file is INVALID (not 'unknown'); main merge stays valid", () => {
+  const out = freshOut();
+  const bs = FIVE();
+  delete bs[4].block.proprietaryProvenance;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, FIVEENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true);
+  assert.strictEqual(m.legacyArm.invalid, true);
+  assert.match(m.legacyArm.invalidReasons.join(), /unstamped/);
+  assert.notStrictEqual(m.proprietaryProvenance.legacy, "unknown");
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /Proprietary baseline: .*INVALID/);
+  assert.doesNotMatch(sb.stdout.split("\n").slice(0, 4).join("\n"), /INVALID/);
+});
+
+test("merge-blocks: a DEGRADED OFF-legacy invalidates only the legacy section, never throws the merge", () => {
+  const out = freshOut();
+  const bs = FIVE();
+  bs[4].block.degradedReasons = ["await-screen-idle capped every iteration"];
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, FIVEENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true);
+  assert.strictEqual(m.legacyArm.invalid, true);
+  assert.match(m.legacyArm.invalidReasons.join(), /DEGRADED/);
+});
+
+test("merge-blocks: OFF-legacy on the wrong release or failed in run_block -> legacy INVALID only", () => {
+  const out = freshOut();
+  writeBlocks(out, FIVE());
+  recordValidity(out, [
+    ...ALL_OK(["OFF-1", "ON-uiautomation", "ON-input-manager", "OFF-2"]),
+    { block: "OFF-legacy", exitCode: 1, stamped: "no" },
+  ]);
+  const r = run(MERGE_BLOCKS, out, { ...FIVEENV, BENCH_LEGACY_PROPRIETARY_VERSION: "0.21.0" });
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true);
+  const why = m.legacyArm.invalidReasons.join(" | ");
+  assert.match(why, /bench exited 1/);
+  assert.match(why, /expected 0\.21\.0/);
+});
+
+// Finding 3: fallback visibility + Q4 equality.
+test("merge-blocks: an ON block that logged an open-server 'falling back' line FIRES", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[1].block.openServerFallbacks = {
+    count: 2,
+    samples: ["[gesture-swipe] open-device-server failed, falling back to simulator-server: x"],
+  };
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /ON-uiautomation=2/);
+  assert.match(r.stderr, /falling back/);
+});
+
+test("merge-blocks: Q4 FIRES when injectStrategyCounts[input-manager] != expected injections", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  // 9 of 170 host-issued gesture calls never reached the on-device injector (a
+  // proprietary fallback leaves no trace in the counter, so the totals differ).
+  bs[2].block.injectStrategyCounts = { "input-manager": 161 };
+  bs[2].block.expectedInjectRpcs = 170;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /input-manager.*161.*expected 170/);
+});
+
+test("merge-blocks: Q4 FIRES when ON-input-manager carries no expected inject count", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  delete bs[2].block.expectedInjectRpcs;
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /expectedInjectRpcs/);
+});
+
+test("scoreboard: Q4 states on-device input-manager count == expected injections", () => {
+  const out = freshOut();
+  writeBlocks(out, RUN2());
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /Q4 .*input-manager.*\*\*161\*\* == expected \*\*161\*\*.*PASS/);
+});
+
+// Finding 2: swipe/pinch carry a drained timing + the raw no-drain column.
+test("scoreboard: swipe/pinch drain table with a no-drain column per block", () => {
+  const out = freshOut();
+  const nd = (p50) => ({ latency: { p50, p95: p50 + 8 }, latencySamples: [p50] });
+  const withDrain = (b, sw, pi) => {
+    for (const v of b.block.verbs) {
+      if (v.verb === "gesture-swipe") v.noDrain = nd(sw);
+      if (v.verb === "gesture-pinch") v.noDrain = nd(pi);
+      if (v.verb === "gesture-swipe" || v.verb === "gesture-pinch")
+        v.drainRead = "describe(settle:false)";
+    }
+    return b;
+  };
+  const bs = RUN2().map((b) => withDrain(b, 250, 310));
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /describe\(settle:false\)/);
+  assert.match(sb.stdout, /\| verb \| block \| gesture \+ drain p50\/p95 \| no-drain p50\/p95 \|/);
+  assert.match(sb.stdout, /\| gesture-swipe \| ON-input-manager \| 268\/276 \| 250\/258 \|/);
+  assert.match(sb.stdout, /\| gesture-pinch \| OFF-1 \| 351\/359 \| 310\/318 \|/);
+});
+
+test("scoreboard: no merged JSON -> NO RESULTS and exit 1", () => {
+  const out = freshOut();
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 1);
+  assert.match(sb.stdout, /NO RESULTS/);
+});
+
+// Findings 1, 3, 7: workflow + loader wiring (static: the workflow cannot run here).
+test("workflow: run_block order is OFF-1, ON-uiautomation, ON-input-manager, OFF-2, OFF-legacy", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const calls = [...y.matchAll(/run_block "([A-Za-z0-9-]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(calls, [
+    "OFF-1",
+    "ON-uiautomation",
+    "ON-input-manager",
+    "OFF-2",
+    "OFF-legacy",
+  ]);
+});
+
+test("workflow: ready-gate failure returns non-zero from run_block for every block", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const body = y.slice(y.indexOf("run_block () {"), y.indexOf("RUN_OFF=0"));
+  assert.match(body, /if ! bash \.github\/bench-ci\/ready-gate\.sh emulator-5554 3 60 1/);
+  // The gate's failure branch records validity and returns before any node run.
+  const gateFail = body.slice(body.indexOf("if ! bash .github/bench-ci/ready-gate.sh"));
+  assert.ok(
+    gateFail.indexOf("return 1") < gateFail.indexOf("run-bench.js"),
+    "ready-gate failure must return before the bench runs"
+  );
+});
+
+test("workflow: ON blocks run with the proprietary dirs unset", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
+  assert.doesNotMatch(step.split("run: |")[0], /ARGENT_SIMULATOR_SERVER_DIR/);
+  assert.match(
+    step,
+    /env -u ARGENT_SIMULATOR_SERVER_DIR -u ARGENT_NATIVE_DEVTOOLS_ANDROID_BIN_DIR -u ARGENT_NATIVE_DEVTOOLS_DIR/
+  );
+});
+
+test("run-bench.js: no strategy-arm self-orchestration (no hidden block before OFF-1)", () => {
+  const src = fs.readFileSync(RUN_BENCH, "utf8");
+  assert.doesNotMatch(src, /STRATEGY_ARMS/);
+  // No child bench block is spawned from the loader (only the FLING harness is).
+  assert.doesNotMatch(src, /ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=/);
+  assert.doesNotMatch(src, /proceeding \(the child effect gate is authoritative\)/);
 });

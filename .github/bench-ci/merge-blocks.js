@@ -14,6 +14,17 @@
 // throwing, so the merged JSON + scoreboard still describe the blocks that completed.
 // The quality gates below still apply to every completed block. The workflow fails
 // the job on the marker regardless (emulator-diagnostics.sh enforce).
+//
+// Review 2026-10-07 (findings 1, 3, 6). Validity is recorded, not only thrown:
+//  - $BENCH_OUT/validity.json (block-validity.js, written by the workflow's run_block)
+//    carries each block's ready-gate result, exit code and provenance stamp; a block
+//    recorded as failed is INVALID, and a requested ON block that failed without a
+//    file no longer throws the merge (the scoreboard shows it under an INVALID banner).
+//  - Block order: OFF-1 must start before every ON block and OFF-2 after every ON
+//    block (env.startedAt per block). Otherwise the run is INVALID (`runInvalidReasons`).
+//  - OFF-legacy is graded on its own: a failed, degraded, unstamped or wrong-release
+//    legacy block marks only `legacyArm.invalid`, never throws the main merge.
+// `valid` (non-legacy) is false when any of the above holds; scoreboard.js exits 1 on it.
 const fs = require("fs");
 const path = require("path");
 const {
@@ -22,6 +33,7 @@ const {
   provenanceLabel,
   provenanceDiff,
 } = require("./proprietary-provenance");
+const { readValidity, entryReasons } = require("./block-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // Phase 3n: the block universe now includes the three Kotlin injection-strategy
@@ -72,21 +84,46 @@ const requestedBlocks = (process.env.BENCH_BLOCKS || ALL.join(","))
   .map((s) => s.trim())
   .filter((n) => ALL.includes(n));
 const missingBlocks = requestedBlocks.filter((n) => !files[n]);
+
+// Per-block validity (review 2026-10-07 finding 6): what the workflow recorded for
+// each block (ready-gate, exit code, provenance stamp). Absent on old artifacts and
+// fixtures, which then merge as before. `invalid` collects reasons per block; the
+// gates below add to it where a failure must not throw the merge (OFF-legacy).
+const validityFile = readValidity(OUT);
+const validity = validityFile ? validityFile.blocks : {};
+const invalid = {};
+const markInvalid = (n, why) => {
+  (invalid[n] = invalid[n] || []).push(why);
+};
+for (const [n, e] of Object.entries(validity))
+  for (const why of entryReasons(e)) markInvalid(n, why);
+const mainInvalidBlocks = () =>
+  Object.keys(invalid)
+    .filter((n) => n !== LEGACY_OFF)
+    .map((n) => ({ block: n, reasons: invalid[n] }));
+
 if (present.length === 0) {
-  if (!partial) throw new Error(`no bench-block-*.json found under ${OUT}`);
+  const recordedInvalid = mainInvalidBlocks();
+  if (!partial && !recordedInvalid.length)
+    throw new Error(`no bench-block-*.json found under ${OUT}`);
   const emptyPath = path.join(OUT, `bench-merged-${Date.now()}.json`);
   const empty = {
-    partial: true,
+    partial,
     emulatorLost,
     missingBlocks,
     emulator,
     env: { ci: readJson(path.join(OUT, "ci-runner-env.json")) || {} },
+    valid: recordedInvalid.length === 0,
+    invalidBlocks: recordedInvalid,
+    runInvalidReasons: [],
+    validity: validityFile ? validity : null,
     blocksRan: [],
     blocks: [],
     finishedAt: new Date().toISOString(),
   };
   fs.writeFileSync(emptyPath, JSON.stringify(empty, null, 2));
-  console.log(`PARTIAL: emulator lost at ${lostLabel} before any block completed`);
+  if (partial) console.log(`PARTIAL: emulator lost at ${lostLabel} before any block completed`);
+  for (const x of recordedInvalid) console.log(`INVALID block ${x.block}: ${x.reasons.join("; ")}`);
   console.log("MERGED_JSON=" + emptyPath);
   process.exit(0);
 }
@@ -99,7 +136,11 @@ const requested = (process.env.BENCH_BLOCKS || ALL.join(","))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-const missingOn = requested.filter((n) => n.startsWith("ON") && ALL.includes(n) && !files[n]);
+// A requested ON block the workflow recorded as failed (validity.json) is reported as
+// INVALID below instead of throwing here, so the scoreboard can say so.
+const missingOn = requested.filter(
+  (n) => n.startsWith("ON") && ALL.includes(n) && !files[n] && !invalid[n]
+);
 if (missingOn.length && !partial) {
   throw new Error(`missing required ON block file(s): ${missingOn.join(", ")}`);
 }
@@ -108,7 +149,12 @@ if (missingOn.length && !partial) {
 // input-manager candidate ran — without the current default as a same-run control,
 // no "no regression of the default" (P6) or default-path claim is possible. A 3n.1
 // run with ON-input-manager but no ON-uiautomation is VOID.
-if (files["ON-input-manager"] && !files["ON-uiautomation"] && !partial) {
+if (
+  files["ON-input-manager"] &&
+  !files["ON-uiautomation"] &&
+  !partial &&
+  !invalid["ON-uiautomation"]
+) {
   throw new Error(
     "P0 VOID: ON-input-manager ran but the ON-uiautomation control block is absent — " +
       "the run cannot grade the promotion candidate against the current default (P6)."
@@ -124,7 +170,16 @@ if (files["ON-input-manager"] && !files["ON-uiautomation"] && !partial) {
 // "unknown" and still merges. OFF-legacy is a separate arm and is never pooled.
 const provOf = (n) => (files[n] && files[n].block.proprietaryProvenance) || UNKNOWN;
 const currentOffPresent = CURRENT_OFF.filter((n) => files[n]);
-for (let i = 1; i < currentOffPresent.length; i++) {
+// With a validity record (every run since review 2026-10-07), a current OFF block
+// without provenance was not stamped: INVALID, not "unknown". An OFF block already
+// recorded as invalid is not compared for pooling (the run is INVALID anyway).
+if (validityFile) {
+  for (const n of currentOffPresent)
+    if (provOf(n) === UNKNOWN && !(invalid[n] || []).some((r) => /not stamped/.test(r)))
+      markInvalid(n, "unstamped: no proprietary provenance in the block file");
+}
+const poolable = currentOffPresent.every((n) => !invalid[n]);
+for (let i = 1; poolable && i < currentOffPresent.length; i++) {
   const a = currentOffPresent[0],
     b = currentOffPresent[i];
   if (provenanceKey(provOf(a)) !== provenanceKey(provOf(b))) {
@@ -136,27 +191,47 @@ for (let i = 1; i < currentOffPresent.length; i++) {
   }
 }
 const currentProv = currentOffPresent.length ? provOf(currentOffPresent[0]) : null;
-const legacyProv = files[LEGACY_OFF] ? provOf(LEGACY_OFF) : null;
+// Finding 6: an unstamped OFF-legacy file is INVALID, never pooled or labelled "unknown".
+const legacyUnstamped = Boolean(files[LEGACY_OFF]) && provOf(LEGACY_OFF) === UNKNOWN;
+if (legacyUnstamped)
+  markInvalid(LEGACY_OFF, "unstamped: no proprietary provenance in the OFF-legacy block file");
+const legacyProv = files[LEGACY_OFF] && !legacyUnstamped ? provOf(LEGACY_OFF) : null;
 // The workflow passes the requested releases; a stamped block on another release is
-// the wrong baseline (e.g. a stale PROP_PKG), not a result.
-const expectVersion = (label, prov, want) => {
-  if (!want || !prov || prov === UNKNOWN) return;
-  if (prov.version !== want) {
-    throw new Error(
-      `${label} proprietary arm ran ${provenanceLabel(prov)}, expected ${want} ` +
-        `(${label === "current" ? "BENCH_PROPRIETARY_VERSION" : "BENCH_LEGACY_PROPRIETARY_VERSION"})`
-    );
-  }
+// the wrong baseline (e.g. a stale PROP_PKG), not a result. Current: fatal. Legacy:
+// invalidates the legacy section only.
+const versionMismatch = (label, prov, want) => {
+  if (!want || !prov || prov === UNKNOWN || prov.version === want) return null;
+  return (
+    `${label} proprietary arm ran ${provenanceLabel(prov)}, expected ${want} ` +
+    `(${label === "current" ? "BENCH_PROPRIETARY_VERSION" : "BENCH_LEGACY_PROPRIETARY_VERSION"})`
+  );
 };
-expectVersion("current", currentProv, process.env.BENCH_PROPRIETARY_VERSION);
-expectVersion("legacy", legacyProv, process.env.BENCH_LEGACY_PROPRIETARY_VERSION);
+const curMismatch = versionMismatch("current", currentProv, process.env.BENCH_PROPRIETARY_VERSION);
+if (curMismatch) throw new Error(curMismatch);
+const legMismatch = versionMismatch(
+  "legacy",
+  legacyProv,
+  process.env.BENCH_LEGACY_PROPRIETARY_VERSION
+);
+if (legMismatch) markInvalid(LEGACY_OFF, legMismatch);
 
 const blocks = present.map((n) => files[n].block);
+// The fatal quality gates below grade the main arms (OFF-1/OFF-2 + ON). OFF-legacy
+// runs the same checks but a failure there only invalidates the legacy section.
+const mainPresent = present.filter((n) => n !== LEGACY_OFF);
+const mainBlocks = mainPresent.map((n) => files[n].block);
+const legacyBlock = files[LEGACY_OFF] ? files[LEGACY_OFF].block : null;
 
 // Gesture-param drift gate across the blocks that ran.
-const gp = blocks.map((b) => JSON.stringify(b.gestureParams));
-if (new Set(gp).size !== 1) {
+const gp = mainBlocks.map((b) => JSON.stringify(b.gestureParams));
+if (new Set(gp).size > 1) {
   throw new Error("gesture params drifted across blocks: " + gp.join(" | "));
+}
+if (legacyBlock && gp.length && JSON.stringify(legacyBlock.gestureParams) !== gp[0]) {
+  markInvalid(
+    LEGACY_OFF,
+    `gesture params drifted: ${JSON.stringify(legacyBlock.gestureParams)} vs ${gp[0]}`
+  );
 }
 
 // Tap-timeline parity gate (phase 3h). The bench records the ACTUAL injected tap
@@ -168,17 +243,16 @@ const tls = blocks.map((b) => ({ block: b.block, tl: b.injectedTapTimeline })).f
 if (tls.length) {
   const holdMs0 = tls[0].tl.holdMs;
   for (const { block, tl } of tls) {
-    if (tl.holdMs !== holdMs0) {
-      throw new Error(
-        `tap-timeline parity: ${block} holdMs=${tl.holdMs} != ${tls[0].block} holdMs=${holdMs0}`
-      );
-    }
-    if (tl.hasMoveFrame || tl.frameCount !== 2) {
-      throw new Error(
-        `tap-timeline parity: ${block} (backend ${tl.backend}) is not a clean two-frame ` +
-          `DOWN→UP (frameCount=${tl.frameCount}, hasMoveFrame=${tl.hasMoveFrame})`
-      );
-    }
+    const why =
+      tl.holdMs !== holdMs0
+        ? `tap-timeline parity: ${block} holdMs=${tl.holdMs} != ${tls[0].block} holdMs=${holdMs0}`
+        : tl.hasMoveFrame || tl.frameCount !== 2
+          ? `tap-timeline parity: ${block} (backend ${tl.backend}) is not a clean two-frame ` +
+            `DOWN→UP (frameCount=${tl.frameCount}, hasMoveFrame=${tl.hasMoveFrame})`
+          : null;
+    if (!why) continue;
+    if (block === LEGACY_OFF) markInvalid(LEGACY_OFF, why);
+    else throw new Error(why);
   }
 }
 
@@ -207,7 +281,16 @@ console.log("tap first-attempt landing per block — " + effectLine);
 // single detected+restored navigation before the timed loop has UNTRUSTWORTHY effect
 // rows — a DISTINCT verdict from "a tap did not land" and from "degraded arm". Fatal
 // on any block (ON or OFF) that ran the check.
-const oracleFailed = present.filter((n) => files[n].block.oracleSelfTestPassed === false);
+// Each fatal gate below grades `mainPresent`; `legacyGate` applies the same predicate
+// to OFF-legacy and records the reason instead of throwing (finding 6).
+const legacyGate = (pred, why) => {
+  if (legacyBlock && pred(LEGACY_OFF)) markInvalid(LEGACY_OFF, why(LEGACY_OFF));
+};
+legacyGate(
+  (n) => files[n].block.oracleSelfTestPassed === false,
+  () => "oracle self-test failed"
+);
+const oracleFailed = mainPresent.filter((n) => files[n].block.oracleSelfTestPassed === false);
 if (oracleFailed.length) {
   throw new Error(
     `oracle self-test failed on block(s): ${oracleFailed.join(", ")} — the backend could not ` +
@@ -223,17 +306,21 @@ if (oracleFailed.length) {
 // async injection drop that a hosted x86_64 KVM emulator produces (measured, printed
 // as firstTapLanding, and its latency excluded from the tap percentiles — never
 // retried away). oracleSelfTest already proved the backend CAN land + detect a tap.
-const landingBad = present
-  .filter((n) => {
-    const b = files[n].block;
-    const c = b.effectCheckedTotal || 0;
-    return c > 0 && firstMiss(b) > Math.floor(c * 0.05);
-  })
-  .map((n) => {
-    const b = files[n].block;
-    const c = b.effectCheckedTotal || 0;
-    return `${n}=${firstMiss(b)}/${c} (${(landingRate(b) * 100).toFixed(1)}%, threshold >${Math.floor(c * 0.05)} fails)`;
-  });
+const landingLow = (n) => {
+  const b = files[n].block;
+  const c = b.effectCheckedTotal || 0;
+  return c > 0 && firstMiss(b) > Math.floor(c * 0.05);
+};
+legacyGate(
+  landingLow,
+  (n) =>
+    `first-attempt landing rate below 95% (${firstMiss(files[n].block)}/${files[n].block.effectCheckedTotal})`
+);
+const landingBad = mainPresent.filter(landingLow).map((n) => {
+  const b = files[n].block;
+  const c = b.effectCheckedTotal || 0;
+  return `${n}=${firstMiss(b)}/${c} (${(landingRate(b) * 100).toFixed(1)}%, threshold >${Math.floor(c * 0.05)} fails)`;
+});
 if (landingBad.length) {
   throw new Error(
     `first-attempt landing rate below 95% on block(s): ${landingBad.join(", ")} — the backend ` +
@@ -247,9 +334,10 @@ if (landingBad.length) {
 // > 0) — this holds for OFF too now that the oracle is backend-independent. A block
 // with tap verbs and effectCheckedTotal === 0 fails the merge, ON or OFF.
 const ranTapVerbs = (b) => (b.verbs || []).some((v) => /tap/i.test(v.verb || ""));
-const unarmed = present.filter(
-  (n) => ranTapVerbs(files[n].block) && (files[n].block.effectCheckedTotal || 0) === 0
-);
+const isUnarmed = (n) =>
+  ranTapVerbs(files[n].block) && (files[n].block.effectCheckedTotal || 0) === 0;
+legacyGate(isUnarmed, () => "effect check UNARMED (effectCheckedTotal === 0)");
+const unarmed = mainPresent.filter(isUnarmed);
 if (unarmed.length) {
   throw new Error(
     `effect check UNARMED on block(s) that ran tap verbs: ${unarmed.join(", ")} ` +
@@ -263,13 +351,36 @@ if (unarmed.length) {
 // search field, was on the WRONG screen for part of the run — its rows are not a
 // valid baseline. The bench records the reasons in `degradedReasons`; a non-empty
 // list fails the merge (an unarmed OR degraded OFF block must fail, per the ticket).
-const degraded = present
-  .filter((n) => (files[n].block.degradedReasons || []).length > 0)
+const isDegraded = (n) => (files[n].block.degradedReasons || []).length > 0;
+legacyGate(isDegraded, (n) => `DEGRADED ARM: ${files[n].block.degradedReasons.join("; ")}`);
+const degraded = mainPresent
+  .filter(isDegraded)
   .map((n) => `${n}: ${files[n].block.degradedReasons.join("; ")}`);
 if (degraded.length) {
   throw new Error(
     `DEGRADED ARM on block(s): ${degraded.join(" | ")} — the block was on the wrong ` +
       `screen for part of the run; its rows are not a valid baseline. Rerun.`
+  );
+}
+
+// Open-server fallback gate (review 2026-10-07 finding 3). gesture-tap/swipe/pinch,
+// await-screen-idle, describe, paste … fall back to the proprietary path with a
+// `console.debug("[<tool>] open-device-server … failed, falling back …")` line. The
+// bench captures those lines per block (`openServerFallbacks`, counted over the whole
+// block, untimed calls included) and fails an ON block on any; this gate re-checks
+// it, so an ON number can never be a proprietary number in disguise.
+const fellBack = present
+  .filter((n) => n.startsWith("ON"))
+  .filter((n) => ((files[n].block.openServerFallbacks || {}).count || 0) > 0)
+  .map((n) => {
+    const f = files[n].block.openServerFallbacks;
+    return `${n}=${f.count}${f.samples && f.samples.length ? ` (first: ${f.samples[0]})` : ""}`;
+  });
+if (fellBack.length) {
+  throw new Error(
+    `ON block(s) fell back off the open server (console.debug "falling back" lines): ` +
+      `${fellBack.join(" | ")} — some calls in the block ran on the proprietary path, so its ` +
+      `rows are not open-server numbers.`
   );
 }
 
@@ -303,9 +414,18 @@ if (redirBad.length) {
 // the block JSON's raw counts (carried by bench-open-vs-proprietary.ts), fails on any
 // `unavailable`, and ALSO fails on a missing/zero denominator (a dead or absent counter
 // cannot certify a clean input-manager arm).
+//
+// Review 2026-10-07 finding 3 (Q4 equality): `total > 0 && unavailable == 0` is not
+// enough — a call that fell back to the proprietary path never reaches the on-device
+// injector, so it leaves no trace in the counter at all. The bench counts the gesture
+// tool calls it issued in the block (`expectedInjectRpcs`); the on-device count for
+// the block's strategy must equal it exactly. Mandatory for ON-input-manager; checked
+// on any other ON block that carries the number.
 let strategyUnavailable = null;
 let strategyTotal = null;
 let measuredInjectRpcs = null;
+let strategyExpected = null;
+let strategyMatched = null;
 if (files["ON-input-manager"]) {
   const im = files["ON-input-manager"].block;
   const counts = im.injectStrategyCounts || {};
@@ -329,7 +449,74 @@ if (files["ON-input-manager"]) {
         `clean input-manager arm. Counts: ${JSON.stringify(counts)}`
     );
   }
+  strategyExpected = im.expectedInjectRpcs != null ? im.expectedInjectRpcs : null;
+  if (strategyExpected == null) {
+    throw new Error(
+      "ON-input-manager carries no expectedInjectRpcs (the gesture tool calls the bench issued " +
+        "in the block) — Q4 cannot match the on-device injectStrategyCounts against the " +
+        "injections actually made, so a silent proprietary fallback could pass."
+    );
+  }
+  strategyMatched = counts["input-manager"] || 0;
+  if (strategyMatched !== strategyExpected || strategyTotal !== strategyExpected) {
+    throw new Error(
+      `Q4: ON-input-manager on-device injectStrategyCounts["input-manager"]=${strategyMatched} ` +
+        `(total ${strategyTotal}) but expected ${strategyExpected} injections (gesture tool calls ` +
+        `the bench issued) — the difference did not run through the input-manager injector ` +
+        `(fallback to the proprietary path, a server restart, or an extra RPC). Counts: ` +
+        `${JSON.stringify(counts)}`
+    );
+  }
 }
+for (const n of present.filter((x) => x.startsWith("ON") && x !== "ON-input-manager")) {
+  const b = files[n].block;
+  if (b.expectedInjectRpcs == null || !b.injectStrategyCounts) continue;
+  const key = b.injectStrategy && b.injectStrategy !== "default" ? b.injectStrategy : "default";
+  const got = b.injectStrategyCounts[key] || 0;
+  if (got !== b.expectedInjectRpcs) {
+    throw new Error(
+      `Q4: ${n} on-device injectStrategyCounts["${key}"]=${got} but expected ` +
+        `${b.expectedInjectRpcs} injections (gesture tool calls the bench issued). Counts: ` +
+        `${JSON.stringify(b.injectStrategyCounts)}`
+    );
+  }
+}
+
+// Block order (review 2026-10-07 finding 1): OFF-1 and OFF-2 bracket every ON block,
+// so the OFF-1↔OFF-2 drift floor spans the ON measurements. Read from each block's
+// env.startedAt (set when the bench process starts its block), else the start time
+// the workflow recorded. A violated or unverifiable order makes the run INVALID.
+const runInvalidReasons = [];
+const startOfBlock = (n) =>
+  (files[n] && files[n].env && files[n].env.startedAt) ||
+  (validity[n] && validity[n].startedAt) ||
+  null;
+const onPresent = mainPresent.filter((n) => n.startsWith("ON"));
+const bracketing = CURRENT_OFF.filter((n) => files[n]);
+if (onPresent.length && bracketing.length) {
+  const missingTs = [...bracketing, ...onPresent].filter((n) => !startOfBlock(n));
+  for (const n of missingTs)
+    runInvalidReasons.push(`block order cannot be verified: no start timestamp for ${n}`);
+  if (!missingTs.length) {
+    const t = (n) => Date.parse(startOfBlock(n));
+    for (const on of onPresent) {
+      if (files["OFF-1"] && !(t("OFF-1") < t(on))) {
+        runInvalidReasons.push(
+          `OFF-1 (started ${startOfBlock("OFF-1")}) did not start before ${on} ` +
+            `(started ${startOfBlock(on)}); OFF-1 must start before every ON block`
+        );
+      }
+      if (files["OFF-2"] && !(t("OFF-2") > t(on))) {
+        runInvalidReasons.push(
+          `OFF-2 (started ${startOfBlock("OFF-2")}) started before ${on} ` +
+            `(started ${startOfBlock(on)}); OFF-2 must start after every ON block`
+        );
+      }
+    }
+  }
+}
+const invalidBlocks = mainInvalidBlocks();
+const valid = invalidBlocks.length === 0 && runInvalidReasons.length === 0;
 
 // Fidelity: OFF-1 vs ON-uiautomation, only when both arms ran.
 const jaccard = (a, b) => {
@@ -361,8 +548,8 @@ if (files["OFF-1"] && firstOnName) {
 // open arms against). The bootstrap CI is computed by the scoreboard from the
 // per-sample arrays these blocks carry.
 let legacyArm = null;
-if (files[LEGACY_OFF]) {
-  const lb = files[LEGACY_OFF].block;
+if (files[LEGACY_OFF] || invalid[LEGACY_OFF]) {
+  const lb = files[LEGACY_OFF] ? files[LEGACY_OFF].block : { verbs: [] };
   const cur = currentOffPresent.map((n) => files[n].block);
   const mean = (xs) =>
     xs.length ? Number((xs.reduce((s, x) => s + x, 0) / xs.length).toFixed(1)) : null;
@@ -379,10 +566,14 @@ if (files[LEGACY_OFF]) {
   });
   legacyArm = {
     block: LEGACY_OFF,
-    label: provenanceLabel(legacyProv),
+    label: legacyUnstamped ? "unstamped" : provenanceLabel(legacyProv),
     version: legacyProv && legacyProv !== UNKNOWN ? legacyProv.version : null,
     currentLabel: provenanceLabel(currentProv),
     currentVersion: currentProv && currentProv !== UNKNOWN ? currentProv.version : null,
+    // Finding 6: a failed / degraded / unstamped / wrong-release legacy block
+    // invalidates this section only; the scoreboard prints the reasons, not the table.
+    invalid: Boolean(invalid[LEGACY_OFF]),
+    invalidReasons: invalid[LEGACY_OFF] || [],
     deltaVsCurrent,
   };
 }
@@ -404,8 +595,15 @@ const result = {
   // a file. A partial merge is never a complete result.
   partial,
   emulatorLost,
-  missingBlocks: partial ? missingBlocks : [],
+  missingBlocks: partial ? missingBlocks : missingBlocks.filter((n) => invalid[n]),
   emulator,
+  // Review 2026-10-07 (findings 1, 6): run validity. `valid` covers the main arms
+  // (OFF-1/OFF-2 + ON); OFF-legacy validity lives in `legacyArm.invalid`.
+  valid,
+  invalidBlocks,
+  runInvalidReasons,
+  validity: validityFile ? validity : null,
+  blockStartedAt: Object.fromEntries(present.map((n) => [n, startOfBlock(n)])),
   env: { ...baseEnv, ci: ciEnv },
   envPerBlock: Object.fromEntries(present.map((n) => [n, files[n].env])),
   blocksRan: present,
@@ -418,7 +616,9 @@ const result = {
     current: currentProv,
     legacy: legacyProv,
     byBlock: Object.fromEntries(
-      present.filter((n) => n.startsWith("OFF")).map((n) => [n, provOf(n)])
+      present
+        .filter((n) => n.startsWith("OFF"))
+        .map((n) => [n, n === LEGACY_OFF && legacyUnstamped ? "unstamped" : provOf(n)])
     ),
   },
   legacyArm,
@@ -427,6 +627,10 @@ const result = {
   strategyUnavailable,
   strategyTotal,
   measuredInjectRpcs,
+  // Review 2026-10-07 finding 3: Q4 equality — on-device input-manager count vs the
+  // gesture tool calls the bench issued (the merge refuses any mismatch).
+  strategyExpected,
+  strategyMatched,
   // Phase 3h: parity + effect evidence carried into the scoreboard.
   tapTimelines: Object.fromEntries(tls.map(({ block, tl }) => [block, tl])),
   effectByBlock: Object.fromEntries(
@@ -462,7 +666,8 @@ console.log(
     (strategyUnavailable === null
       ? " (no ON-input-manager arm)"
       : `; ON-input-manager on-device inject fallbacks (injectStrategyCounts.unavailable): ` +
-        `${strategyUnavailable}/${strategyTotal} (gate 0) — OK` +
+        `${strategyUnavailable}/${strategyTotal} (gate 0) — OK; input-manager ` +
+        `${strategyMatched} == expected ${strategyExpected} injections — OK` +
         (measuredInjectRpcs != null ? `; measured gated-inject RPCs: ${measuredInjectRpcs}` : ""))
 );
 console.log("tap effect-check (ON fatal, OFF tolerated) — " + effectLine + " — ON gate OK");
@@ -470,6 +675,14 @@ console.log(
   `proprietary provenance: current ${currentProv ? provenanceLabel(currentProv) : "(no OFF-1/OFF-2)"}` +
     (legacyArm ? `; legacy ${legacyArm.label} (OFF-legacy, own arm)` : "")
 );
+if (legacyArm && legacyArm.invalid) {
+  console.log(
+    `::warning::OFF-legacy INVALID (legacy section only): ${legacyArm.invalidReasons.join("; ")}`
+  );
+}
+for (const x of invalidBlocks) console.log(`INVALID block ${x.block}: ${x.reasons.join("; ")}`);
+for (const why of runInvalidReasons) console.log(`INVALID run: ${why}`);
+if (!valid) console.log("::error::latency run INVALID — see the scoreboard banner");
 if (tls.length) {
   console.log(
     "tap-timeline parity OK: holdMs=" +
