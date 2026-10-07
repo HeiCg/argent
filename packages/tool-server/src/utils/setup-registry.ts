@@ -44,6 +44,7 @@ import { shakeTool } from "../tools/shake";
 import { foldTool } from "../tools/fold";
 import { createTvRemoteTool } from "../tools/tv-remote";
 import { createRunSequenceTool } from "../tools/run-sequence";
+import { createRunOnDevicesTool } from "../tools/run-on-devices";
 import { createGestureSequenceTool } from "../tools/gesture-sequence";
 import { debuggerConnectTool } from "../tools/debugger/debugger-connect";
 import { createDebuggerStatusTool } from "../tools/debugger/debugger-status";
@@ -160,6 +161,7 @@ export function createRegistry(): Registry {
   registry.registerTool(foldTool);
   registry.registerTool(createTvRemoteTool(registry));
   registry.registerTool(createRunSequenceTool(registry));
+  registry.registerTool(createRunOnDevicesTool(registry));
   registry.registerTool(createGestureSequenceTool(registry));
   registry.registerTool(debuggerConnectTool);
   registry.registerTool(createDebuggerStatusTool(registry));
