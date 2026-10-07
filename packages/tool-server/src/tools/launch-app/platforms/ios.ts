@@ -14,6 +14,11 @@ import {
 import { externalClaimForAnyId } from "../../../utils/external-devices";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { simctlArgsForUdid } from "../../../utils/ios-device-sets";
+import {
+  iosOpenServerFallback,
+  iosOpenServerSetTarget,
+  shouldUseIosOpenServer,
+} from "../../../utils/ios-open-server-input";
 import type { LaunchAppParams, LaunchAppResult } from "../types";
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +69,20 @@ export function makeIosImpl(
           },
           { cause: err instanceof Error ? err : new Error(String(err)) }
         );
+      }
+      // `open-ios-device-server` flag: the XCUITest runner refuses every
+      // app-scoped verb until a target is set, so name this app as its target.
+      // simctl stays first: it is what reports an app that is not installed.
+      if (shouldUseIosOpenServer(device)) {
+        try {
+          await iosOpenServerSetTarget(registry, device, params.bundleId);
+        } catch (err) {
+          return {
+            launched: true,
+            bundleId: params.bundleId,
+            ...iosOpenServerFallback("launch-app", err, "simctl launch only"),
+          };
+        }
       }
       return { launched: true, bundleId: params.bundleId };
     },

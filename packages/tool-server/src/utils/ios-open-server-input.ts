@@ -56,6 +56,54 @@ function toPoints(
   };
 }
 
+/**
+ * Set the runner's app-scoped target to `bundleId`, so describe / tap / swipe /
+ * keyboard act on it. The runner's `launchApp` is `XCUIApplication.launch()`,
+ * which terminates a running instance first, so it is skipped when `getInfo`
+ * already reports this target. Resolving the service starts the runner when it
+ * is not up yet, the same path every other verb takes.
+ */
+export function iosOpenServerSetTarget(
+  registry: Registry,
+  device: DeviceInfo,
+  bundleId: string
+): Promise<void> {
+  const ref = iosOpenServerRef(device);
+  return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const server = await registry.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
+    const info = await server.getInfo();
+    if (info.bundleId === bundleId) return;
+    const res = await server.launchApp(bundleId);
+    if (res.success === false) {
+      throw new Error(`open ios-device-server launchApp(${bundleId}) failed`);
+    }
+  });
+}
+
+/**
+ * Marker a tool result carries when the open iOS path failed and the call was
+ * served by the proprietary path instead. Absent when the open path served it or
+ * the flag is off.
+ */
+export interface IosOpenServerFallbackMarker {
+  backend: "proprietary-fallback";
+  fallbackReason: string;
+}
+
+/**
+ * Report an open-path failure at `console.warn` and return the result marker.
+ * Callers keep their fallback; this only makes it visible.
+ */
+export function iosOpenServerFallback(
+  tag: string,
+  err: unknown,
+  fallbackTo: string
+): IosOpenServerFallbackMarker {
+  const reason = err instanceof Error ? err.message : String(err);
+  console.warn(`[${tag}] open ios-device-server failed, falling back to ${fallbackTo}: ${reason}`);
+  return { backend: "proprietary-fallback", fallbackReason: reason };
+}
+
 /** Tap at normalized coordinates via the open iOS server. */
 export function iosOpenServerTap(
   registry: Registry,
@@ -155,12 +203,16 @@ export function captureIosScreenshotViaOpenServer(
  */
 export function describeIosViaOpenServer(
   registry: Registry,
-  device: DeviceInfo
+  device: DeviceInfo,
+  bundleId?: string
 ): Promise<DescribeTreeData> {
   const ref = iosOpenServerRef(device);
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const server = await registry.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
-    const state = await server.getNestedState({});
+    // An explicit `bundleId` scopes the read to that app without touching the
+    // runner's target (which only `launchApp`, a relaunch, can set), so describe
+    // works on an app that was already in the foreground.
+    const state = await server.getNestedState(bundleId ? { bundleId } : {});
     const tree = openServerIosNestedToDescribeNode(
       state.tree,
       state.info.screenWidth,

@@ -21,6 +21,7 @@ import { adaptNativeDescribeToDescribeResult } from "./ios-native-adapter";
 import {
   shouldUseIosOpenServer,
   describeIosViaOpenServer,
+  iosOpenServerFallback,
 } from "../../../../utils/ios-open-server-input";
 
 // `degraded` means the pre-boot accessibility prefs were never written — the one
@@ -190,19 +191,26 @@ export async function describeIos(
   }
 
   // Open iOS server (XCUITest runner) behind the `open-ios-device-server` flag.
-  // Falls back to the ax-service / native-devtools chain below on any failure.
+  // Falls back to the ax-service / native-devtools chain on any failure, and
+  // marks the result so the fallback is not silent.
   if (shouldUseIosOpenServer(device)) {
     try {
-      return await describeIosViaOpenServer(registry, device);
+      return await describeIosViaOpenServer(registry, device, params.bundleId);
     } catch (err) {
-      console.debug(
-        `[describe-ios] open ios-device-server failed, falling back to ax-service: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
+      const marker = iosOpenServerFallback("describe-ios", err, "ax-service");
+      return { ...(await describeIosAxChain(registry, device, params)), ...marker };
     }
   }
 
+  return describeIosAxChain(registry, device, params);
+}
+
+/** The proprietary chain: ax-service, then the native-devtools view hierarchy. */
+async function describeIosAxChain(
+  registry: Registry,
+  device: DeviceInfo,
+  params: DescribeIosParams
+): Promise<DescribeTreeData> {
   let tree: DescribeNode = emptyTree();
   let degraded: boolean;
   // A resolver failure that names its own cause, which outranks the boot caveat.

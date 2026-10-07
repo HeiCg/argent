@@ -140,6 +140,10 @@ export interface DescribeTreeData {
   // into the frame space with this. Absent when the source does not report
   // it, which is when its frames are in the UI's own space.
   uiOrientation?: UiOrientation;
+  // iOS simulator, `open-ios-device-server` flag: the open runner failed and the
+  // tree came from the proprietary chain instead. Set only on that fallback.
+  backend?: "proprietary-fallback";
+  fallbackReason?: string;
 }
 
 export interface DescribeStageTimings {
@@ -212,6 +216,9 @@ export interface DescribeResult {
   // Which host↔device transport carried the open-path reply (phase 3j item 3d):
   // "adb-forward" or "redir". Undefined on the proprietary / dump paths.
   transport?: "adb-forward" | "redir";
+  // The open iOS path fell back to the proprietary chain. See DescribeTreeData.
+  backend?: "proprietary-fallback";
+  fallbackReason?: string;
 }
 
 export function parseDescribeResult(input: unknown): DescribeNode {
