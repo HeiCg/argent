@@ -151,6 +151,20 @@ with every number scoped (platform, environment, gate) and the explicit
 answer to "better and faster than official": per verb, per platform, what is
 driver-attributable. Update memory.
 
+## Amendments
+
+- 2026-10-07, `swipe-scroll-accessibility` (review rounds 1-2): the scroll
+  action is OPT-IN (`gesture-swipe { scrollAction: true }`), never an implicit
+  replacement of `momentum:false`, because flow `scroll-to` and drag depend on
+  "lands where the finger lifts". Direction comes from the swipe vector only
+  (up/left = forward). The motion swipe stays byte-identical to `open/main`
+  plus telemetry (`heldMs`, `injectMs`, `releaseVelocityLsqPxPerS`). The
+  fling defect D1 is NOT fixed by this step: an ease-out release was modelled
+  (LSQ2 over the last 100 ms) to read a backward velocity, so no injector
+  physics ships without a device run. Follow-up step `fling-d1-ci`: change
+  the held-swipe release, prove it with device test 3d green in CI and the
+  `releaseVelocityLsqPxPerS` telemetry, then promote swipe.
+
 ## Rules that hold
 
 Fable plans, Opus implements (one implementor per step, ≤2 agents on the

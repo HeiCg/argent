@@ -15,6 +15,7 @@ import {
   type OpenServerBatchAction,
   type OpenServerBatchStepResult,
   type OpenServerSelector,
+  type OpenSwipeTiming,
 } from "../blueprints/android-open-server";
 import { buildIndexElements } from "../tools/describe/platforms/android/index-tier";
 import { openDeviceServerMutex } from "./device-mutex";
@@ -584,7 +585,7 @@ export function openServerSwipe(
   toYNorm: number,
   steps: number,
   holdEndMs?: number
-): Promise<void> {
+): Promise<OpenSwipeTiming> {
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
@@ -592,11 +593,25 @@ export function openServerSwipe(
     if ((res as { dropped?: boolean }).dropped || res.success === false) {
       throw new Error("open-device-server swipe was dropped by the input dispatcher");
     }
+    return swipeTimingOf(res);
   });
 }
 
+/**
+ * The device-clock timing fields of a swipe reply (APK 0.1.24+, `injectMs`
+ * 0.1.25+), each kept only when the server reported a non-negative number.
+ */
+export function swipeTimingOf(res: OpenSwipeTiming | undefined): OpenSwipeTiming {
+  const out: OpenSwipeTiming = {};
+  for (const k of ["deliveredMs", "heldMs", "injectMs"] as const) {
+    const v = res?.[k];
+    if (typeof v === "number" && v >= 0) out[k] = v;
+  }
+  return out;
+}
+
 /** Screen-graph Phase A: swipe and report the before/after fingerprint delta. */
-export function openServerSwipeWithOutcome(
+export async function openServerSwipeWithOutcome(
   registry: Registry,
   device: DeviceInfo,
   fromXNorm: number,
@@ -607,6 +622,35 @@ export function openServerSwipeWithOutcome(
   holdEndMs?: number,
   idleTimeoutMs?: number
 ): Promise<OpenServerActionOutcome> {
+  const r = await openServerSwipeWithOutcomeTimed(
+    registry,
+    device,
+    fromXNorm,
+    fromYNorm,
+    toXNorm,
+    toYNorm,
+    steps,
+    holdEndMs,
+    idleTimeoutMs
+  );
+  return r.outcome;
+}
+
+/**
+ * {@link openServerSwipeWithOutcome} that also returns the reply's device-clock
+ * swipe timing ({@link swipeTimingOf}) next to the outcome, not inside it.
+ */
+export function openServerSwipeWithOutcomeTimed(
+  registry: Registry,
+  device: DeviceInfo,
+  fromXNorm: number,
+  fromYNorm: number,
+  toXNorm: number,
+  toYNorm: number,
+  steps: number,
+  holdEndMs?: number,
+  idleTimeoutMs?: number
+): Promise<{ outcome: OpenServerActionOutcome; timing: OpenSwipeTiming }> {
   const opts = {
     ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
     ...injectOpt(),
@@ -614,9 +658,9 @@ export function openServerSwipeWithOutcome(
   return withServer(registry, device, async (server, size) => {
     const from = toPixels(size, fromXNorm, fromYNorm);
     const to = toPixels(size, toXNorm, toYNorm);
-    const outcome = toOutcome(
-      await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts)
-    );
+    const reply = await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts);
+    const outcome = toOutcome(reply);
+    const timing = swipeTimingOf(reply);
     await recordOpenServerObservation(
       device,
       server,
@@ -624,7 +668,7 @@ export function openServerSwipeWithOutcome(
       { kind: "swipe", startX: from.x, startY: from.y, endX: to.x, endY: to.y },
       outcome
     );
-    return outcome;
+    return { outcome, timing };
   });
 }
 

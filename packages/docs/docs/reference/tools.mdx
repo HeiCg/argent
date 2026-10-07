@@ -283,6 +283,42 @@ in these cases:
 | `verify_mismatch`    | The x and y fall outside the matched bounds ± `tolerancePx` (default 0). The reply returns the requested coordinates and the matched element. Only when x and y are supplied. |
 | `verify_unsupported` | The device is not on the Android open path (iOS or the proprietary backend). Argent issues no tap.                                                                            |
 
+### Scroll action swipe (Android open server)
+
+`gesture-swipe` accepts an optional `scrollAction` parameter. The default is
+`false`. `scrollAction` applies only on Android when the open device server is
+active. On iOS or the proprietary Android path, Argent refuses the request and
+issues no gesture.
+
+With `scrollAction: true`, Argent sends no touch. Argent finds the smallest
+scrollable container under the start point. The server scrolls that container
+once with an accessibility scroll action. The container moves by about one page.
+The distance does not depend on the swipe length, and no fling follows.
+
+The action scrolls the container on the axis of the container. The axis of the
+swipe does not matter. Only the sense of the swipe matters. Argent uses the
+larger component of the swipe:
+
+| Finger moves  | Scroll direction           |
+| ------------- | -------------------------- |
+| Up or left    | Forward (later content)    |
+| Down or right | Backward (earlier content) |
+
+Argent refuses the request when the start point is in no scrollable container,
+or when `verify` is also set. A server older than APK 0.1.25 does not have the
+action, and the call fails.
+
+The reply carries `method: "scroll-action"` and `scroll { accepted, performed,
+reason? }`. `accepted: false` means that the container did not move. The reason
+is `refused` (no content in that direction) or `no-change` (the action ran and
+the content stayed the same). Every other swipe on the open server returns
+`method: "motion"`. A motion swipe also returns `heldMs` and `injectMs` when the
+server measures them. `heldMs` is the time at rest before the finger lifts.
+`injectMs` is the time from the finger down to the finger up.
+The device server also logs `releaseVelocityLsqPxPerS` in logcat: the speed of
+the finger along the swipe in the last 100 ms before it lifts, from a
+least-squares line through the planned samples. The tool reply does not carry it.
+
 ## JavaScript runtime debugging
 
 | Tool                           | Description                                                               |
