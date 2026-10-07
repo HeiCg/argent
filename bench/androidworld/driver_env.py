@@ -3,9 +3,18 @@
 Shape (b) from research §2: OUR open-device-server is the ONLY thing the agent
 observes and the ONLY thing that acts; AndroidWorld's own env is kept solely for
 ``initialize_task`` / ``is_successful`` / ``tear_down`` / adb (its checkers are
-device-state assertions over adb, not screen assertions). The a11y forwarder is
-never read by the harness, which side-steps the suppression blocker regardless of
-the Step-0 outcome.
+device-state assertions over adb, not screen assertions).
+
+The agent never reads AndroidWorld's a11y forwarder, but the harness still does:
+``aw_env.reset()`` -> ``interface.reset`` -> ``_process_timestep`` ->
+``get_a11y_forest`` reads it on EVERY reset and raises ``Could not get a11y
+tree`` when it is empty. So the forwarder must stay bound while our server is
+alive, which needs our UiAutomation to hold
+``FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`` for its whole lifetime (``-e
+dontSuppressA11y true``). Run 37549293325 showed it does not: UiAutomator's
+``UiDevice`` re-requests ``getUiAutomation(Configurator flags = 0)`` on
+``waitForIdle`` / ``pressKeyCode``, and ``Instrumentation`` reconnects the shared
+connection with flags 0, i.e. suppressing again after the first describe.
 
 ``OpenDriverEnv`` wraps a real AndroidWorld env and overrides exactly two things:
   * ``get_state()`` — reads our tool-server ``describe`` at ``tier=<arm>`` and

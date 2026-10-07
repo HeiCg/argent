@@ -8,6 +8,12 @@
 # its own deps (android_env, absl-py, numpy, pandas, protobuf, grpcio-tools, ...).
 android_world @ git+https://github.com/google-research/android_world@e3fea3ccc69787570e282c99573298f1c3019a34
 
+# Undeclared by the AW pin: pip builds it from pyproject.toml, whose dependency
+# list omits Pillow, yet registry -> task_evals.utils.{user_data_generation,
+# receipt_generator} and agents.infer import PIL at module load (run 37548301499).
+# The rest of the import graph run_aw.py reaches is covered by the pin's list.
+Pillow>=10
+
 # The fixed agent's brain (claude_wrapper.py). Needs output_config.effort support
 # for claude-opus-5; bump the floor if the harness rejects the param.
 anthropic>=0.69.0

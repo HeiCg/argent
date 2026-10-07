@@ -10,9 +10,11 @@ name: bench-androidworld
 #             whether the forest is empty (the a11y-suppression blocker, research
 #             §2). Decides whether DeviceControlInstrumentation needs
 #             FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES.
-#   harness — Step 3 one run: 5 tasks x 2 tiers x 1 model (claude-opus-5) on the
-#             open driver, per-episode JSON. Needs the ANTHROPIC_API_KEY repo
-#             secret; without it the job fails fast with the exact name.
+#   harness — Step 3 one run: 5 tasks x 2 tiers x 1 model on the open driver,
+#             per-episode JSON. The model is the `model` dispatch input (default
+#             claude-opus-5) and the effort the `effort` input. Needs the
+#             ANTHROPIC_API_KEY repo secret; without it the job fails fast with the
+#             exact name.
 #
 # The emulator recipe (KVM + SDK + AVD + boot) is lifted from
 # bench-open-vs-proprietary.yml with three edits the research (§3) requires:
@@ -51,6 +53,21 @@ on:
         description: "task_random_seed (harness; pinned per run)"
         required: false
         default: "30"
+      model:
+        description: "Model name passed to --model (Anthropic-compatible endpoint)"
+        required: false
+        default: "claude-opus-5"
+      effort:
+        description: "Effort passed to --effort (harness)"
+        required: false
+        default: "medium"
+        type: choice
+        options:
+          - low
+          - medium
+          - high
+          - xhigh
+          - max
       emulator_build:
         description: 'Pin an emulator build id (e.g. 13610412 = 35.6.11) from dl.google.com; empty = sdkmanager "emulator" (today)'
         required: false
@@ -275,7 +292,7 @@ jobs:
 
   # ── Step 3: harness run (needs ANTHROPIC_API_KEY) ─────────────────────────
   harness:
-    name: AW harness (5 tasks x 2 tiers x claude-opus-5, API 33)
+    name: AW harness (5 tasks x 2 tiers x ${{ github.event.inputs.model || 'claude-opus-5' }}, API 33)
     if: >-
       github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'harness'
     runs-on: ubuntu-latest
@@ -297,12 +314,19 @@ jobs:
       - name: Fail fast if the model key is missing
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+          AW_MODEL: ${{ github.event.inputs.model }}
+          AW_EFFORT: ${{ github.event.inputs.effort }}
         run: |
           if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
             echo "::error::ANTHROPIC_API_KEY repo secret is not set — the harness cannot run. Add the secret named exactly ANTHROPIC_API_KEY (Settings → Secrets and variables → Actions), then re-dispatch with job=harness."
             exit 1
           fi
           echo "ANTHROPIC_API_KEY present."
+          # Provenance (the key is never printed): empty base URL = Anthropic default.
+          echo "ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-<unset, Anthropic default>}"
+          echo "model: ${AW_MODEL}"
+          echo "effort: ${AW_EFFORT}"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -419,6 +443,7 @@ jobs:
         env:
           AW_CONSOLE_PORT: "5554"
           AW_GRPC_PORT: "8554"
+          PYTHONUNBUFFERED: "1"
         run: |
           set -uo pipefail
           python bench/androidworld/run_aw.py setup \
@@ -428,10 +453,12 @@ jobs:
       - name: Harness — 5 tasks x 2 tiers
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
           OPEN_SERVER_SERIAL: emulator-5554
           AW_CONSOLE_PORT: "5554"
           AW_GRPC_PORT: "8554"
           NODE_OPTIONS: "--max-old-space-size=3072"
+          PYTHONUNBUFFERED: "1"
           AW_OUT: ${{ github.workspace }}/.bench-results/androidworld
         run: |
           set -uo pipefail
@@ -446,7 +473,8 @@ jobs:
             --tiers "${{ github.event.inputs.tiers }}" \
             --task-random-seed "${{ github.event.inputs.seed }}" \
             --n-task-combinations 1 \
-            --model claude-opus-5 \
+            --model "${{ github.event.inputs.model }}" \
+            --effort "${{ github.event.inputs.effort }}" \
             --checkpoint-dir "$AW_OUT/checkpoint" \
             --out-dir "$AW_OUT" \
             --run-id "${{ github.run_id }}" \
