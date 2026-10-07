@@ -107,16 +107,21 @@ import {
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
   decomposeSimInputAck,
+  deviceScreenPoints,
   gesturePath,
   isConnectionError,
   isFallbackResult,
+  openToolTapPoint,
+  proprietaryTapPoint,
   retryLocateOnce,
   sameFileBytes,
+  simInputTapPoint,
   toolLayerRunner,
   waitForStableFrame,
   watchRunnerLifecycle,
   type NPoint,
   type RunnerStart,
+  type ScreenGeometry,
   type SimInputSample,
   type StageSample,
 } from "./bench-ios-harness";
@@ -154,6 +159,13 @@ const KEEP_SHOTS_PER_BLOCK = 3;
 // polled every SETTLE_INTERVAL_MS, at most SETTLE_TIMEOUT_MS (untimed, recorded).
 const SETTLE_INTERVAL_MS = 250;
 const SETTLE_TIMEOUT_MS = 5000;
+// Settled locate (run 37595262694): the oracle re-reads the tree LOCATE_STABLE_MS
+// apart, at most LOCATE_MAX_READS reads, until two consecutive reads put the
+// label's centre at the same place (untimed). Settings inserts its "Ready for
+// Apple Intelligence" banner above "General" ~0.3-0.6 s after the read a single
+// locate made, moving the row 87 pt down.
+const LOCATE_STABLE_MS = Number(process.env.BENCH_LOCATE_STABLE_MS ?? 1000);
+const LOCATE_MAX_READS = Number(process.env.BENCH_LOCATE_MAX_READS ?? 5);
 
 if (!UDID)
   throw new Error("BENCH_UDID / IOS_OPEN_SERVER_UDID must be set (the booted simulator udid)");
@@ -558,6 +570,12 @@ interface RunnerRecord {
   startFailure: string | null;
   /** Oracle RPCs that hit a connection error and succeeded on a retry. */
   oracleRetries: number;
+  /** The block's screen geometry the arms convert the oracle's points with. */
+  geometry: (ScreenGeometry & { screenSource: "framebuffer" | "runner-size" }) | null;
+  /** Consecutive locate reads that disagreed (the layout moved under a locate). */
+  locateShifts: number;
+  /** Locates that never settled within the read bound (counted as misses). */
+  unsettledLocates: number;
 }
 
 /**
@@ -580,6 +598,7 @@ abstract class ArmBase {
   private notesKept: string[] = [];
   private ready: ProprietaryReady | null = null;
   private runnerReadyMs: number | null = null;
+  private geom: RunnerRecord["geometry"] = null;
 
   constructor(
     readonly name: string,
@@ -596,7 +615,37 @@ abstract class ArmBase {
       onCall: (op) => {
         this.callLabel = `oracle:${op}`;
       },
+      locateSettle: { stableMs: LOCATE_STABLE_MS, maxReads: LOCATE_MAX_READS },
     });
+  }
+
+  /**
+   * The block's screen geometry, untimed (run 37595262694): the device screen in
+   * points from a simctl framebuffer and the device scale, and the runner's
+   * `getScreenSize`. The oracle's points become fractions of that screen. Without
+   * a framebuffer or a scale the runner size stands in for the screen (the arms
+   * then convert identically, as before), recorded as `runner-size`.
+   */
+  private async measureGeometry(): Promise<NonNullable<RunnerRecord["geometry"]>> {
+    const runner = await this.oracle.screenSize();
+    let framebuffer: { width: number; height: number } | null = null;
+    try {
+      const shot = await simctlScreenshot("geometry");
+      framebuffer = pngDimensions(readFileSync(shot));
+      rmShot(shot);
+    } catch {
+      /* no framebuffer: the runner size stands in below */
+    }
+    const screen = deviceScreenPoints(framebuffer, DEVICE_SCALE);
+    this.oracle.setDeviceScreen(screen ?? runner);
+    return screen
+      ? { screen, runner, screenSource: "framebuffer" }
+      : { screen: runner, runner, screenSource: "runner-size" };
+  }
+
+  /** The geometry measured in prepare(); before it, the identity geometry. */
+  protected geometry(): ScreenGeometry {
+    return this.geom ?? { screen: { w: 1, h: 1 }, runner: { w: 1, h: 1 } };
   }
 
   protected recordConnectionError(message: string): void {
@@ -667,6 +716,8 @@ abstract class ArmBase {
       this.reg.invokeTool("launch-app", { udid: UDID, bundleId: SETTINGS })
     );
     await this.oracle.ensureTarget();
+    // 4. The screen geometry every oracle point and arm conversion uses.
+    this.geom = await this.measureGeometry();
   }
 
   async describe(): Promise<DescribeSample> {
@@ -745,6 +796,9 @@ abstract class ArmBase {
       startLog: this.lifecycle.startLog(),
       startFailure: this.lease.startFailure(),
       oracleRetries: this.oracle.transientRetries(),
+      geometry: this.geom,
+      locateShifts: this.oracle.locateShiftsSeen(),
+      unsettledLocates: this.oracle.unsettledLocatesSeen(),
     };
   }
   async dispose(): Promise<void> {
@@ -775,10 +829,11 @@ class OffArm extends ArmBase implements Arm {
     return null; // ax-service does not surface snapshot/serialize/encode stages.
   }
   tap(p: NPoint): Promise<Served> {
-    return this.toolTap(p);
+    return this.toolTap(proprietaryTapPoint(p, this.geometry()));
   }
   swipe(from: NPoint, to: NPoint): Promise<Served> {
-    return this.toolSwipe(from, to);
+    const g = this.geometry();
+    return this.toolSwipe(proprietaryTapPoint(from, g), proprietaryTapPoint(to, g));
   }
   async awaitScreenIdle(): Promise<void> {
     await this.reg.invokeTool("await-screen-idle", { udid: UDID, timeoutMs: 4000 });
@@ -812,10 +867,11 @@ class XcuitestArm extends ArmBase implements Arm {
     return this.oracle.stages();
   }
   tap(p: NPoint): Promise<Served> {
-    return this.toolTap(p);
+    return this.toolTap(openToolTapPoint(p, this.geometry()));
   }
   swipe(from: NPoint, to: NPoint): Promise<Served> {
-    return this.toolSwipe(from, to);
+    const g = this.geometry();
+    return this.toolSwipe(openToolTapPoint(from, g), openToolTapPoint(to, g));
   }
   awaitScreenIdle(): Promise<void> {
     throw new Error("await-screen-idle has no open iOS product (N/A)");
@@ -838,14 +894,8 @@ class SimInputArm extends ArmBase implements Arm {
   private sim = new IosSimInputService();
   private ackTimeoutCount = 0;
   private lastTiming: SimInputSample | null = null;
-  private cachedSize: { w: number; h: number } | null = null;
   constructor(name: string) {
     super(name, true);
-  }
-  private async size(): Promise<{ w: number; h: number }> {
-    // Fetched OUT of the timed window (IOS2-M2) and cached per block.
-    if (!this.cachedSize) this.cachedSize = await this.oracle.screenSize();
-    return this.cachedSize;
   }
   describeStages(): Promise<StageSample | null> {
     return this.oracle.stages();
@@ -870,26 +920,27 @@ class SimInputArm extends ArmBase implements Arm {
     return t;
   }
   async tap(p: NPoint): Promise<Served> {
-    const { w, h } = await this.size(); // cached, untimed
+    // Screen points of the device screen (measured in prepare, untimed: IOS2-M2).
+    const pt = simInputTapPoint(p, this.geometry());
     this.lastTiming = null;
-    const ack = await this.withAckTimeout(
-      this.sim.tap(UDID, { x: p.x * w, y: p.y * h, width: w, height: h })
-    );
+    const ack = await this.withAckTimeout(this.sim.tap(UDID, pt));
     this.lastTiming = decomposeSimInputAck(ack);
     return { path: "sim-input", fallback: false };
   }
   async swipe(from: NPoint, to: NPoint): Promise<Served> {
-    const { w, h } = await this.size();
+    const g = this.geometry();
+    const a = simInputTapPoint(from, g);
+    const b = simInputTapPoint(to, g);
     this.lastTiming = null;
     const ack = await this.withAckTimeout(
       this.sim.swipe(UDID, {
-        fromX: from.x * w,
-        fromY: from.y * h,
-        toX: to.x * w,
-        toY: to.y * h,
+        fromX: a.x,
+        fromY: a.y,
+        toX: b.x,
+        toY: b.y,
         durationMs: GESTURE_PARAMS.swipeDurationMs,
-        width: w,
-        height: h,
+        width: a.width,
+        height: a.height,
       })
     );
     this.lastTiming = decomposeSimInputAck(ack);
@@ -2028,6 +2079,8 @@ async function main(): Promise<void> {
         `stageMaxDelta=${r.describeStages ? r.describeStages.maxDelta : "n/a"} ` +
         `scrollMedianPts=${r.scroll ? r.scroll.median : "n/a"}(px=${r.scroll ? r.scroll.medianPx : "n/a"} scale=${r.scroll ? `${r.scroll.rasterScale}/${r.scroll.rasterScaleSource}` : "n/a"} refusals=${r.scroll ? r.scroll.refusals : "n/a"}) ` +
         `oracleRetargets=${r.oracle.retargets} ` +
+        `geometry=${r.runner.geometry ? `screen ${r.runner.geometry.screen.w}x${r.runner.geometry.screen.h}/${r.runner.geometry.screenSource} runner ${r.runner.geometry.runner.w}x${r.runner.geometry.runner.h}` : "n/a"} ` +
+        `locateShifts=${r.runner.locateShifts} unsettledLocates=${r.runner.unsettledLocates} ` +
         `swipeSettle=${r.scroll ? `${r.scroll.settle.stable} stable/${r.scroll.settle.unstable} unstable p50=${r.scroll.settle.waitMsP50}ms` : "n/a"}`
     );
   }

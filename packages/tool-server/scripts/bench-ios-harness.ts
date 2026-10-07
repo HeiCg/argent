@@ -25,6 +25,17 @@
  *   - {@link decomposeSimInputAck} splits one sim-input command's host write→ack
  *     time into the sidecar's receive / per-message send / ack terms.
  *
+ * Run 37595262694 (OFF-1 and ON-siminput self-test on "Siri"): every arm tapped
+ * the same screen point for the same oracle point (y 0.3656 → Siri page, 0.4651 →
+ * General, on all three arms), so the arms' spaces agreed; the oracle's single
+ * early read had located "General" before Settings inserted a banner above it.
+ *   - {@link RunnerOracle} `locateSettle`: a locate returns only once two
+ *     consecutive reads agree.
+ *   - {@link ScreenGeometry} and one conversion per arm ({@link proprietaryTapPoint},
+ *     {@link openToolTapPoint}, {@link simInputTapPoint}) from the canonical
+ *     device-screen fraction, so an app frame that does not start at (0, 0) maps
+ *     to the same screen point on every arm.
+ *
  * Runner lifetime (run 37223296646): the first start of a block missed the
  * runner's 120 s ready budget in OFF-1, ON-siminput and OFF-2, and the oracle's
  * next call made the registry start a second runner, reported as "restarted
@@ -210,10 +221,72 @@ export function watchRunnerLifecycle(
 /* the oracle                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** Normalized 0..1 point on screen. */
+/** Normalized 0..1 point of the DEVICE screen (the canonical oracle point; the
+ * framebuffer's fraction, so also the screenshot's). Each arm converts it into
+ * its own input space ({@link proprietaryTapPoint}, {@link openToolTapPoint},
+ * {@link simInputTapPoint}). */
 export interface NPoint {
   x: number;
   y: number;
+}
+
+/** A width × height in screen points. */
+export interface PointSize {
+  w: number;
+  h: number;
+}
+
+/**
+ * The block's screen geometry (run 37595262694), measured once per block,
+ * untimed. Node bounds and the runner's wire `tap` / `swipe` are in SCREEN points
+ * (absolute: the runner's `point()` cancels `withOffset`'s app-relative base).
+ */
+export interface ScreenGeometry {
+  /** The device screen in points (framebuffer px / scale): the space the
+   * proprietary `gesture-tap`'s 0..1 and sim-input's digitizer 0..1 cover. */
+  screen: PointSize;
+  /** The runner's `getScreenSize`: the target app's frame SIZE (no origin). The
+   * open gesture tools multiply a 0..1 point by it and send the product to the
+   * runner as screen points. */
+  runner: PointSize;
+}
+
+/** The device screen in points from a framebuffer size in px and the device
+ * scale; null when either is missing or unusable. */
+export function deviceScreenPoints(
+  framebufferPx: { width: number; height: number } | null,
+  scale: number | null
+): PointSize | null {
+  if (!framebufferPx || scale === null || !(scale > 0)) return null;
+  const w = framebufferPx.width / scale;
+  const h = framebufferPx.height / scale;
+  return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? { w, h } : null;
+}
+
+/** OFF arm: the proprietary `gesture-tap` / `gesture-swipe` (simulator-server
+ * `touch`) take 0..1 of the device screen, the canonical point itself. */
+export function proprietaryTapPoint(n: NPoint, _g: ScreenGeometry): NPoint {
+  return { x: n.x, y: n.y };
+}
+
+/** ON-xcuitest arm: the open `gesture-tap` / `gesture-swipe` multiply by the
+ * runner's `getScreenSize` (the app frame size), so the canonical point is
+ * rescaled to land on the same screen point. Equal to the canonical point when
+ * the app frame is the whole screen. */
+export function openToolTapPoint(n: NPoint, g: ScreenGeometry): NPoint {
+  return {
+    x: (n.x * g.screen.w) / (g.runner.w || 1),
+    y: (n.y * g.screen.h) / (g.runner.h || 1),
+  };
+}
+
+/** ON-siminput arm: sim-input divides x / screenWidth into the digitizer's 0..1
+ * of the device screen, so it gets screen points and the device screen size. */
+export function simInputTapPoint(
+  n: NPoint,
+  g: ScreenGeometry
+): { x: number; y: number; width: number; height: number } {
+  return { x: n.x * g.screen.w, y: n.y * g.screen.h, width: g.screen.w, height: g.screen.h };
 }
 
 export interface StageSample {
@@ -289,6 +362,19 @@ export function screenOf(st: IosOpenServerState): { w: number; h: number } {
   return { w: st.info.screenWidth, h: st.info.screenHeight };
 }
 
+/**
+ * The device screen as a tree read implies it, when none was measured: the
+ * Application root's far corner (origin + size, so a frame that starts below the
+ * top still spans to the screen's bottom), else the runner's `info` size.
+ */
+function extentOf(st: IosOpenServerState): PointSize {
+  const root = st.tree.length === 1 ? st.tree[0] : undefined;
+  if (root?.type === "Application" && root.bounds.x2 > 0 && root.bounds.y2 > 0) {
+    return { w: root.bounds.x2, h: root.bounds.y2 };
+  }
+  return screenOf(st);
+}
+
 /** Titles of the navigation bars in a tree (identifier, else label), in DFS order. */
 export function navigationTitles(nodes: IosOpenServerNode[]): string[] {
   const titles: string[] = [];
@@ -342,6 +428,15 @@ function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | un
  * oracle never starts a second runner. A connection-class error on an RPC is
  * retried on the same runner (`retries` times, `retryDelayMs` apart; the oracle
  * is untimed) and reported only once the retries are spent.
+ *
+ * Points (run 37595262694): {@link locate} and {@link scrollRegion} are fractions
+ * of the DEVICE screen ({@link setDeviceScreen}, else the root frame's extent),
+ * from the node bounds in screen points; each arm converts them into its own
+ * input space. With `locateSettle`, a locate re-reads the tree `stableMs` apart
+ * until two consecutive reads put the label's centre at the same place: Settings
+ * inserts its "Ready for Apple Intelligence" banner above "General" after launch,
+ * so a single early read located "General" 87 pt high and every arm tapped the
+ * banner (which opens the Siri page) in 16 to 19 of 20 samples.
  */
 export class RunnerOracle {
   private readonly runner: () => Promise<OracleRunner>;
@@ -351,6 +446,10 @@ export class RunnerOracle {
   private readonly retries: number;
   private readonly retryDelayMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly locateSettle: { stableMs: number; maxReads: number; tolerancePt: number } | null;
+  private deviceScreen: PointSize | null = null;
+  private locateShifts = 0;
+  private unsettledLocates = 0;
   private targetSet = false;
   /** The target was set once in this block (the first launchApp is not a re-target). */
   private targeted = false;
@@ -368,8 +467,19 @@ export class RunnerOracle {
     retries?: number;
     retryDelayMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** Settled locate: re-read `stableMs` apart, at most `maxReads` reads, until
+     * two consecutive centres agree within `tolerancePt` (default 1). Absent: one
+     * read per locate. */
+    locateSettle?: { stableMs: number; maxReads: number; tolerancePt?: number };
   }) {
     this.runner = opts.runner;
+    this.locateSettle = opts.locateSettle
+      ? {
+          stableMs: opts.locateSettle.stableMs,
+          maxReads: Math.max(2, opts.locateSettle.maxReads),
+          tolerancePt: opts.locateSettle.tolerancePt ?? 1,
+        }
+      : null;
     this.bundleId = opts.bundleId ?? SETTINGS_BUNDLE_ID;
     this.onConnectionError = opts.onConnectionError;
     this.onCall = opts.onCall;
@@ -446,21 +556,67 @@ export class RunnerOracle {
     return this.call(op, (r) => r.getNestedState({ bundleId: this.bundleId }));
   }
 
-  async locate(label: string): Promise<NPoint | null> {
+  /** The device screen in points, measured by the caller (framebuffer / scale);
+   * every later point is a fraction of it. */
+  setDeviceScreen(screen: PointSize | null): void {
+    this.deviceScreen = screen;
+  }
+
+  private screenFor(st: IosOpenServerState): PointSize {
+    return this.deviceScreen ?? extentOf(st);
+  }
+
+  /** One read: the label's centre in screen points and as a device-screen fraction. */
+  private async locateOnce(
+    label: string
+  ): Promise<{ pt: { x: number; y: number }; n: NPoint } | null> {
     const st = await this.tree("locate");
-    const screen = screenOf(st);
+    const screen = this.screenFor(st);
     const hit = findTappableByLabel(st.tree, label, screen.w, screen.h);
     if (!hit) return null;
-    const cxPt = (hit.bounds.x1 + hit.bounds.x2) / 2;
-    const cyPt = (hit.bounds.y1 + hit.bounds.y2) / 2;
-    return { x: cxPt / screen.w, y: cyPt / screen.h };
+    const pt = { x: (hit.bounds.x1 + hit.bounds.x2) / 2, y: (hit.bounds.y1 + hit.bounds.y2) / 2 };
+    return { pt, n: { x: pt.x / screen.w, y: pt.y / screen.h } };
+  }
+
+  /** The label's centre as a fraction of the device screen; with `locateSettle`,
+   * only once two consecutive reads agree (null when the layout never settles). */
+  async locate(label: string): Promise<NPoint | null> {
+    const settle = this.locateSettle;
+    let prev = await this.locateOnce(label);
+    if (!settle) return prev?.n ?? null;
+    for (let read = 1; read < settle.maxReads; read++) {
+      await this.sleep(settle.stableMs);
+      const cur = await this.locateOnce(label);
+      if (
+        prev &&
+        cur &&
+        Math.abs(prev.pt.x - cur.pt.x) <= settle.tolerancePt &&
+        Math.abs(prev.pt.y - cur.pt.y) <= settle.tolerancePt
+      ) {
+        return cur.n;
+      }
+      if (prev || cur) this.locateShifts++;
+      prev = cur;
+    }
+    this.unsettledLocates++;
+    return null;
+  }
+
+  /** Consecutive locate reads that disagreed (the layout moved under a locate). */
+  locateShiftsSeen(): number {
+    return this.locateShifts;
+  }
+
+  /** Locates that never saw two agreeing reads within `maxReads` (returned null). */
+  unsettledLocatesSeen(): number {
+    return this.unsettledLocates;
   }
 
   async scrollRegion(): Promise<{ y1: number; y2: number }> {
     const st = await this.tree("scrollRegion");
     const c = findScrollContainer(st.tree);
     if (!c) return { y1: 0.2, y2: 0.85 };
-    const { h } = screenOf(st);
+    const { h } = this.screenFor(st);
     // Clamp to [0,1]: a Table can report a content-sized frame taller than the
     // window (IOS2-H5 item 5), which would put a swipe endpoint off-screen.
     const y1 = Math.max(0, Math.min(1, c.bounds.y1 / h));
@@ -495,7 +651,8 @@ export class RunnerOracle {
     return s.screenHeight;
   }
 
-  async screenSize(): Promise<{ w: number; h: number }> {
+  /** The runner's `getScreenSize`: the target app's frame size in points. */
+  async screenSize(): Promise<PointSize> {
     const s = await this.call("getScreenSize", (r) => r.getScreenSize());
     return { w: s.screenWidth, h: s.screenHeight };
   }
