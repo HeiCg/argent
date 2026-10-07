@@ -25,6 +25,21 @@
 //  - OFF-legacy is graded on its own: a failed, degraded, unstamped or wrong-release
 //    legacy block marks only `legacyArm.invalid`, never throws the main merge.
 // `valid` (non-legacy) is false when any of the above holds; scoreboard.js exits 1 on it.
+//
+// Run 37571460849:
+//  - Accounting: every block in BENCH_BLOCKS must have a bench-block-<name>.json or a
+//    validity.json entry (a run, or an explicit `--did-not-run`). A requested block with
+//    neither makes the run INVALID (that run skipped OFF-2 without a trace). Enforced
+//    when validity.json exists or BENCH_REQUIRE_VALIDITY=1 (the workflow sets it).
+//  - Empty describes inside timed verbs no longer invalidate a block. The bench drops
+//    those samples from the verb's latency on both arms; here they become a quality
+//    metric per (block, verb): `emptyRates` (empty / windows that read a describe,
+//    Wilson 95 % CI) graded by P11 (≤ 25 %; stats.p11Gate), verdict in `p11`. ON
+//    fallbacks still fail the merge.
+//
+// Run 37578606526 (review finding 12): `destinationRates` = the tap+describe reads
+// classified correct / stale / empty / other per (block, verb), with Wilson CIs, the
+// correct-only latency and time-to-correct; `p12` = the stale rate per row, report only.
 const fs = require("fs");
 const path = require("path");
 const {
@@ -34,6 +49,8 @@ const {
   provenanceDiff,
 } = require("./proprietary-provenance");
 const { readValidity, entryReasons } = require("./block-validity");
+const { median, round1, p11Gate, p11Verdict, P11_THRESHOLD } = require("./stats");
+const { destinationRates: destinationRatesOf } = require("./tap-describe-destination");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 // Phase 3n: the block universe now includes the three Kotlin injection-strategy
@@ -97,6 +114,19 @@ const markInvalid = (n, why) => {
 };
 for (const [n, e] of Object.entries(validity))
   for (const why of entryReasons(e)) markInvalid(n, why);
+// Run 37571460849: blocks the workflow recorded as not run, and requested blocks that
+// left no trace at all (neither a block file nor a validity entry).
+const notRun = Object.values(validity)
+  .filter((e) => e && e.ran === false)
+  .map((e) => ({ block: e.block, reason: e.notRunReason || "unspecified" }));
+const requireAccounting = Boolean(validityFile) || process.env.BENCH_REQUIRE_VALIDITY === "1";
+const unaccountedReasons = (process.env.BENCH_BLOCKS && requireAccounting ? requestedBlocks : [])
+  .filter((n) => !files[n] && !validity[n])
+  .map(
+    (n) =>
+      `requested block ${n} has no bench-block-${n}.json and no validity entry (it neither ran ` +
+      `nor was recorded as did not run)`
+  );
 const mainInvalidBlocks = () =>
   Object.keys(invalid)
     .filter((n) => n !== LEGACY_OFF)
@@ -113,9 +143,10 @@ if (present.length === 0) {
     missingBlocks,
     emulator,
     env: { ci: readJson(path.join(OUT, "ci-runner-env.json")) || {} },
-    valid: recordedInvalid.length === 0,
+    valid: recordedInvalid.length === 0 && unaccountedReasons.length === 0,
     invalidBlocks: recordedInvalid,
-    runInvalidReasons: [],
+    runInvalidReasons: unaccountedReasons,
+    notRun,
     validity: validityFile ? validity : null,
     blocksRan: [],
     blocks: [],
@@ -124,6 +155,7 @@ if (present.length === 0) {
   fs.writeFileSync(emptyPath, JSON.stringify(empty, null, 2));
   if (partial) console.log(`PARTIAL: emulator lost at ${lostLabel} before any block completed`);
   for (const x of recordedInvalid) console.log(`INVALID block ${x.block}: ${x.reasons.join("; ")}`);
+  for (const why of unaccountedReasons) console.log(`INVALID run: ${why}`);
   console.log("MERGED_JSON=" + emptyPath);
   process.exit(0);
 }
@@ -363,12 +395,89 @@ if (degraded.length) {
   );
 }
 
+// Empty describes inside timed verbs (run 37571460849). The bench counts, per verb, the
+// timed windows that read a describe (`describeWindows`) and those whose describe came
+// back empty (`treeEmpty`: the open server's marker or 0 elements on ON, 0 elements on
+// OFF), and drops the empty windows from the verb's latency on both arms. They no
+// longer invalidate the block. Each (block, verb) with a describe in its timed window is
+// a quality row graded by P11: empty rate ≤ 25 %, Wilson 95 % CI (stats.p11Gate). Empties
+// with no denominator FAIL (fail closed). The verdict covers the main arms; OFF-legacy
+// is graded on its own line.
+const emptyRates = [];
+for (const n of present) {
+  const b = files[n].block;
+  for (const v of b.verbs || []) {
+    const windows = v.describeWindows || 0;
+    const empty = v.treeEmpty || 0;
+    if (windows === 0 && empty === 0) continue;
+    emptyRates.push({
+      block: n,
+      config: b.config,
+      verb: v.verb,
+      ...p11Gate(empty, windows),
+      ...(v.timeToNonEmpty ? { timeToNonEmpty: v.timeToNonEmpty } : {}),
+    });
+  }
+}
+// Run 37578606526 / review finding 12: every timed tap+describe read is classified by the
+// bench (tap-describe-destination.js) as correct / stale / empty / other against the
+// block's own destination markers, and followed by a time-to-correct loop. One row per
+// (block, verb) with the counts, Wilson 95 % CIs, the correct-only latency and the
+// time-to-correct summary. P12 = the stale rate per (block, verb): report only.
+const destinationRates = [];
+for (const n of present) {
+  const b = files[n].block;
+  for (const v of b.verbs || []) {
+    if (!v.destination) continue;
+    const t = v.timeToCorrect || null;
+    destinationRates.push({
+      block: n,
+      config: b.config,
+      verb: v.verb,
+      ...destinationRatesOf(v.destination.counts),
+      correctLatency: v.destination.correctLatency || null,
+      timeToCorrect: t
+        ? {
+            measured: t.measured,
+            reached: t.reached,
+            timedOut: t.timedOut,
+            firstRead: t.firstRead,
+            budgetMs: t.budgetMs,
+            fromTapMs: t.fromTapMs,
+          }
+        : null,
+    });
+  }
+}
+const p12 = {
+  reportOnly: true,
+  rows: destinationRates.map((r) => ({
+    block: r.block,
+    verb: r.verb,
+    stale: r.counts.stale,
+    n: r.n,
+    rate: r.rates.stale.rate,
+    ci: r.rates.stale.ci,
+  })),
+};
+const p11Main = emptyRates.filter((r) => r.block !== LEGACY_OFF);
+const p11Legacy = emptyRates.filter((r) => r.block === LEGACY_OFF);
+const p11 = {
+  threshold: P11_THRESHOLD,
+  verdict: p11Verdict(p11Main),
+  legacyVerdict: p11Legacy.length ? p11Verdict(p11Legacy) : null,
+  fails: p11Main.filter((r) => r.gate === "FAIL").map((r) => `${r.block} ${r.verb}`),
+  inconclusive: p11Main.filter((r) => r.gate === "INCONCLUSIVE").map((r) => `${r.block} ${r.verb}`),
+};
+
 // Open-server fallback gate (review 2026-10-07 finding 3). gesture-tap/swipe/pinch,
 // await-screen-idle, describe, paste … fall back to the proprietary path with a
 // `console.debug("[<tool>] open-device-server … failed, falling back …")` line. The
 // bench captures those lines per block (`openServerFallbacks`, counted over the whole
 // block, untimed calls included) and fails an ON block on any; this gate re-checks
-// it, so an ON number can never be a proprietary number in disguise.
+// it, so an ON number can never be a proprietary number in disguise. Since PR #20 the
+// host logs the describe fallback at console.warn; the bench hooks console.debug,
+// console.warn and console.error (run 37561512651, Review 2026-10-07).
 const fellBack = present
   .filter((n) => n.startsWith("ON"))
   .filter((n) => ((files[n].block.openServerFallbacks || {}).count || 0) > 0)
@@ -378,7 +487,7 @@ const fellBack = present
   });
 if (fellBack.length) {
   throw new Error(
-    `ON block(s) fell back off the open server (console.debug "falling back" lines): ` +
+    `ON block(s) fell back off the open server ("falling back" lines at console.debug/warn/error): ` +
       `${fellBack.join(" | ")} — some calls in the block ran on the proprietary path, so its ` +
       `rows are not open-server numbers.`
   );
@@ -486,7 +595,7 @@ for (const n of present.filter((x) => x.startsWith("ON") && x !== "ON-input-mana
 // so the OFF-1↔OFF-2 drift floor spans the ON measurements. Read from each block's
 // env.startedAt (set when the bench process starts its block), else the start time
 // the workflow recorded. A violated or unverifiable order makes the run INVALID.
-const runInvalidReasons = [];
+const runInvalidReasons = [...unaccountedReasons];
 const startOfBlock = (n) =>
   (files[n] && files[n].env && files[n].env.startedAt) ||
   (validity[n] && validity[n].startedAt) ||
@@ -544,9 +653,10 @@ if (files["OFF-1"] && firstOnName) {
 }
 
 // OFF-legacy as its own arm: per-verb p50/p95 vs the CURRENT OFF arm (OFF-1/OFF-2
-// pooled as the mean of their p50s/p95s, the same pooling the scoreboard grades the
-// open arms against). The bootstrap CI is computed by the scoreboard from the
-// per-sample arrays these blocks carry.
+// pooled). Review 2026-10-07 finding 4: the pooled p50 is the true median of the
+// pooled OFF-1+OFF-2 samples (stats.js), the same point estimate the scoreboard's
+// bootstrap resamples; blocks without per-sample arrays (old artifacts) fall back to
+// the mean of the block p50s. p95 stays the mean of the block p95s (report only).
 let legacyArm = null;
 if (files[LEGACY_OFF] || invalid[LEGACY_OFF]) {
   const lb = files[LEGACY_OFF] ? files[LEGACY_OFF].block : { verbs: [] };
@@ -555,13 +665,23 @@ if (files[LEGACY_OFF] || invalid[LEGACY_OFF]) {
     xs.length ? Number((xs.reduce((s, x) => s + x, 0) / xs.length).toFixed(1)) : null;
   const deltaVsCurrent = (lb.verbs || []).map((v) => {
     const cv = cur.map((b) => (b.verbs || []).find((x) => x.verb === v.verb)).filter(Boolean);
-    const curP50 = cv.length === cur.length ? mean(cv.map((x) => x.latency.p50)) : null;
+    const allSamples = cv.length === cur.length && cv.every((x) => Array.isArray(x.latencySamples));
+    const curP50 =
+      cv.length !== cur.length
+        ? null
+        : allSamples && Array.isArray(v.latencySamples)
+          ? round1(median(cv.flatMap((x) => x.latencySamples)))
+          : mean(cv.map((x) => x.latency.p50));
+    const legP50 =
+      allSamples && Array.isArray(v.latencySamples)
+        ? round1(median(v.latencySamples))
+        : v.latency.p50;
     const curP95 = cv.length === cur.length ? mean(cv.map((x) => x.latency.p95)) : null;
     return {
       verb: v.verb,
       legacy: { p50: v.latency.p50, p95: v.latency.p95 },
       current: { p50: curP50, p95: curP95, blocks: currentOffPresent },
-      delta: curP50 == null ? null : Number((v.latency.p50 - curP50).toFixed(1)),
+      delta: curP50 == null ? null : Number((legP50 - curP50).toFixed(1)),
     };
   });
   legacyArm = {
@@ -602,6 +722,14 @@ const result = {
   valid,
   invalidBlocks,
   runInvalidReasons,
+  // Run 37571460849: blocks recorded as not run (with the reason), and the empty-
+  // describe quality rows + P11 verdict.
+  notRun,
+  emptyRates,
+  p11,
+  // Run 37578606526: tap+describe destination classes per (block, verb) and P12.
+  destinationRates,
+  p12,
   validity: validityFile ? validity : null,
   blockStartedAt: Object.fromEntries(present.map((n) => [n, startOfBlock(n)])),
   env: { ...baseEnv, ci: ciEnv },
@@ -682,6 +810,18 @@ if (legacyArm && legacyArm.invalid) {
 }
 for (const x of invalidBlocks) console.log(`INVALID block ${x.block}: ${x.reasons.join("; ")}`);
 for (const why of runInvalidReasons) console.log(`INVALID run: ${why}`);
+for (const x of notRun) console.log(`did not run: ${x.block} (${x.reason})`);
+console.log(
+  `P11 empty describes ≤ ${P11_THRESHOLD * 100} % per timed verb per block: ${p11.verdict}` +
+    (p11.fails.length ? `; FAIL ${p11.fails.join(", ")}` : "") +
+    (p11.inconclusive.length ? `; INCONCLUSIVE ${p11.inconclusive.join(", ")}` : "")
+);
+if (p12.rows.length) {
+  console.log(
+    "P12 stale tap+describe reads (report only): " +
+      p12.rows.map((r) => `${r.block} ${r.verb} ${r.stale}/${r.n}`).join(", ")
+  );
+}
 if (!valid) console.log("::error::latency run INVALID — see the scoreboard banner");
 if (tls.length) {
   console.log(

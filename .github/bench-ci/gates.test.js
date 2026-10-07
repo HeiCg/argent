@@ -501,13 +501,16 @@ test("scoreboard: renders 'Proprietary baseline: <legacy> vs <current>' with p50
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
   assert.match(r.stdout, /### Proprietary baseline: 0\.22\.1 vs 0\.27\.0/);
-  // tap: legacy 60/68, OFF-1 53/61, OFF-2 53/61, floor 0, Δ +7, CI, reading.
-  assert.match(r.stdout, /\| gesture-tap \| 60\/68 \| 53\/61 \| 53\/61 \| ±0 \| 7 \| \[-?\d/);
+  // tap: legacy 60/68, OFF-1 53/61, OFF-2 53/61, bootstrap margin, Δ +7, CI, reading.
+  assert.match(
+    r.stdout,
+    /\| gesture-tap \| 60\/68 \| 53\/61 \| 53\/61 \| ±[\d.]+ \| 7 \| \[-?[\d.]+, -?[\d.]+\] \| (win|loss|parity|inconclusive) \|/
+  );
   // Provenance is rendered per OFF block.
   assert.match(r.stdout, /### Proprietary provenance/);
   assert.match(r.stdout, /OFF-legacy \| @swmansion\/argent@0\.22\.1/);
   // The P-gates still grade against the CURRENT OFF blocks, never OFF-legacy.
-  assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
+  assert.match(r.stdout, /\| gesture-tap \| 86 \| 55 \| 53 \| 53 \| 0 \| ±[\d.]+ \|/);
 });
 
 test("scoreboard: no legacy block → no baseline section, provenance reads unknown", () => {
@@ -520,27 +523,30 @@ test("scoreboard: no legacy block → no baseline section, provenance reads unkn
   assert.match(r.stdout, /OFF-1 \| unknown/);
 });
 
-test("scoreboard: 3n.1 gates reproduce the review's per-verb table (tap FAILs the inequality by 2, swipe/pinch win) vs proprietary", () => {
+test("scoreboard: RUN2 gates — drift row + bootstrap margin; tap +2 ms is INCONCLUSIVE, not 'FAIL by 2'", () => {
   const out = freshOut();
   writeBlocks(out, RUN2());
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  // Measured floors (P1), never a constant ±2: tap |53−53|=0, swipe |307−300|=7,
-  // pinch |351−356|=5, headline |445−548|=103.
-  assert.match(r.stdout, /gesture-tap \| 86 \| 55 \| 53 \| 53 \| ±0 \|/);
-  assert.match(r.stdout, /gesture-swipe \| 291 \| 268 \| 307 \| 300 \| ±7 \|/);
-  assert.match(r.stdout, /gesture-pinch \| 340 \| 323 \| 351 \| 356 \| ±5 \|/);
-  // Phase 3n.2 (review 3N1-H2): the DECISION RULE is the pre-registered point
-  // inequality, not the retired `CI lo ≤ floor` rule. tap 55 vs max(OFF) 53 at floor
-  // 0 → 55 > 53 → the inequality FAILS by 2 (the CI is reported, not the gate). This
-  // is the honest verdict the review demanded; a planner's acceptance of the sub-floor
-  // miss is a scoreboard note, never a PASS. swipe & pinch still WIN vs proprietary.
-  assert.match(r.stdout, /\*\*P2\*\* — tap RPC non-inferior.*: \*\*FAIL by 2/);
-  assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*PASS/);
-  assert.match(r.stdout, /\*\*P4\*\* — pinch RPC non-inferior.*: \*\*PASS/);
-  // Headline ratio ≤ 1.15 vs each OFF (400/445, 400/548, 400/496.5) → P5 PASS.
-  assert.match(r.stdout, /\*\*P5\*\*.*: \*\*PASS/);
+  // Drift (OFF-1 − OFF-2 p50) stays published; the margin is the bootstrap, never 0.
+  assert.match(r.stdout, /\| gesture-tap \| 86 \| 55 \| 53 \| 53 \| 0 \| ±[1-9][\d.]* \|/);
+  assert.match(r.stdout, /\| gesture-swipe \| 291 \| 268 \| 307 \| 300 \| 7 \| ±[\d.]+ \|/);
+  assert.match(r.stdout, /\| gesture-pinch \| 340 \| 323 \| 351 \| 356 \| -5 \| ±[\d.]+ \|/);
+  // Review 2026-10-07 finding 5: one rule. tap Δ +2 with a CI spanning the margin is
+  // INCONCLUSIVE (not a pass, not a fail); swipe/pinch are clear wins vs pooled OFF.
+  assert.match(r.stdout, /\*\*P2\*\* — tap .*: \*\*INCONCLUSIVE\*\*/);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe .*: \*\*PASS\*\*/);
+  assert.match(r.stdout, /\*\*P4\*\* — pinch .*: \*\*PASS\*\*/);
+  assert.doesNotMatch(r.stdout, /min\(OFF\)|max\(OFF\)/);
+  // Run 37578606526: P5 is time-to-correct; these blocks carry none → N/A. The old
+  // headline (first read, any non-empty) stays as a report-only row with its ratio.
+  assert.match(r.stdout, /\*\*P5\*\*.*no time-to-correct.*: \*\*N\/A\*\*$/m);
+  assert.match(r.stdout, /first-read latency \(any non-empty\) — report only/);
+  assert.match(
+    r.stdout,
+    /\| tap\+describe\(settle:false\) \| 422 \| 400 \| 445 \| 548 \|.*\| 0\.90 \/ 0\.73 \/ 0\.8\d \|/
+  );
 });
 
 test("scoreboard: P1 — a verb with no OFF comparator floors as N/A, never ±2", () => {
@@ -584,7 +590,8 @@ test("scoreboard: 3n.1 gate FAILS when input-manager is distinguishably slower b
   assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
   const r = run(SCOREBOARD, out);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\*\*P3\*\* — swipe RPC non-inferior.*: \*\*FAIL/);
+  assert.match(r.stdout, /\| gesture-swipe \|.*\| loss \|/);
+  assert.match(r.stdout, /\*\*P3\*\* — swipe .*: \*\*FAIL\*\*/);
 });
 
 test("scoreboard: locate source (F5) + no-effect identities (F7) are rendered", () => {
@@ -1179,4 +1186,1081 @@ test("run-bench.js: no strategy-arm self-orchestration (no hidden block before O
   // No child bench block is spawned from the loader (only the FLING harness is).
   assert.doesNotMatch(src, /ARGENT_BENCH_NO_ORCHESTRATE=1 BENCH_ONLY=/);
   assert.doesNotMatch(src, /proceeding \(the child effect gate is authoritative\)/);
+});
+
+/* ------------------- stats (review 2026-10-07 findings 4, 5) ------------------- */
+// Literal require so knip traces the test-only exports.
+const stats = require("./stats");
+const BENCH_TS = path.join(
+  HERE,
+  "..",
+  "..",
+  "packages",
+  "tool-server",
+  "scripts",
+  "bench-open-vs-proprietary.ts"
+);
+// n samples evenly spread over [center - spread, center + spread] (median == center).
+const spreadAround = (center, spread, n = 41) =>
+  Array.from({ length: n }, (_, i) => center - spread + (2 * spread * i) / (n - 1));
+
+test("stats: one median definition — true median (mean of the two middle values for even n)", () => {
+  const { median, summarize } = stats;
+  assert.strictEqual(median([3, 1, 2]), 2);
+  // The old bench pct() returned the lower-middle value (2) here.
+  assert.strictEqual(median([4, 1, 3, 2]), 2.5);
+  // Finding 4's tap+describe case: bimodal even-n samples, lower-middle 382 vs true 396.5.
+  assert.strictEqual(median([380, 381, 382, 411, 412, 413]), 396.5);
+  // p95 uses the same linear-interpolation quantile (h = (n − 1) · 0.95).
+  assert.strictEqual(
+    summarize([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]).p95,
+    19.05
+  );
+  const s = summarize([0.25, 1.5, 2.75, 10.125]);
+  assert.strictEqual(s.p50, 2.125);
+  assert.strictEqual(s.p50, median([0.25, 1.5, 2.75, 10.125]));
+  assert.strictEqual(s.n, 4);
+});
+
+test("stats: the bench script takes its quantiles from stats.js, with sub-ms timing", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const has = (rx) => rx.test(src);
+  assert.ok(has(/from "\.\.\/\.\.\/\.\.\/\.github\/bench-ci\/stats(\.js)?"/), "no stats.js import");
+  assert.ok(!has(/function pct\(/), "local pct() still defined");
+  assert.ok(!has(/function summarize\(/), "local summarize() still defined");
+  // Every timed window is performance.now(); Date.now() survives only for deadlines.
+  assert.ok(!has(/const t[0-2] = Date\.now\(\)/), "a timed window still uses Date.now()");
+  assert.ok(!has(/\.push\(Date\.now\(\) - t0\)/), "a sample still uses Date.now()");
+});
+
+test("stats: readCI — the four readings against ±margin", () => {
+  const { readCI } = stats;
+  assert.strictEqual(readCI([-20, -8], 5), "win");
+  assert.strictEqual(readCI([6, 30], 5), "loss");
+  assert.strictEqual(readCI([-4, 5], 5), "parity");
+  // A wide CI that spans the margin is no longer parity.
+  assert.strictEqual(readCI([-152, 128.5], 29), "inconclusive");
+  assert.strictEqual(readCI([-6, 2], 5), "inconclusive");
+  assert.strictEqual(readCI(null, 5), "N/A");
+  assert.strictEqual(readCI([-1, 1], null), "N/A");
+});
+
+test("stats: gradeFamily produces win / loss / parity / inconclusive from samples", () => {
+  const { gradeFamily } = stats;
+  const fam = gradeFamily([
+    { key: "win", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 },
+    { key: "loss", a: spreadAround(150, 4), b: spreadAround(100, 4), margin: 5 },
+    { key: "parity", a: spreadAround(100, 2), b: spreadAround(100, 2), margin: 10 },
+    { key: "inconclusive", a: spreadAround(104, 60), b: spreadAround(100, 60), margin: 5 },
+  ]);
+  const by = Object.fromEntries(fam.map((r) => [r.key, r]));
+  assert.strictEqual(by.win.reading, "win");
+  assert.strictEqual(by.win.gate, "PASS");
+  assert.strictEqual(by.loss.reading, "loss");
+  assert.strictEqual(by.loss.gate, "FAIL");
+  assert.strictEqual(by.parity.reading, "parity");
+  assert.strictEqual(by.parity.gate, "PASS");
+  assert.strictEqual(by.inconclusive.reading, "inconclusive");
+  assert.strictEqual(by.inconclusive.gate, "INCONCLUSIVE");
+  assert.strictEqual(by.win.delta, -50);
+  for (const r of fam) assert.strictEqual(r.m, 4);
+  // Deterministic: the same input grades to the same numbers.
+  assert.deepStrictEqual(
+    gradeFamily([{ key: "x", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 }]),
+    gradeFamily([{ key: "x", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 }])
+  );
+});
+
+test("stats: Holm — per-verb adjusted alpha by rank, CI widened to 1 - alpha_k", () => {
+  const { gradeFamily, compareOnce } = stats;
+  const fam = gradeFamily([
+    { key: "tight", a: spreadAround(100, 4), b: spreadAround(150, 4), margin: 5 },
+    { key: "mid", a: spreadAround(100, 10), b: spreadAround(130, 10), margin: 5 },
+    { key: "wide", a: spreadAround(104, 60), b: spreadAround(100, 60), margin: 5 },
+    { key: "wider", a: spreadAround(110, 90), b: spreadAround(100, 90), margin: 5 },
+  ]);
+  // Ranked by the CI rule's bootstrap p (ascending); rank k gets 0.05 / (m − k + 1).
+  const byRank = fam.slice().sort((x, y) => x.rank - y.rank);
+  assert.deepStrictEqual(
+    byRank.map((r) => r.rank),
+    [1, 2, 3, 4]
+  );
+  for (let k = 1; k < byRank.length; k++) assert.ok(byRank[k - 1].p <= byRank[k].p, "p ascending");
+  assert.deepStrictEqual(
+    byRank.map((r) => r.alpha),
+    [0.0125, 0.05 / 3, 0.025, 0.05]
+  );
+  for (const r of fam) assert.strictEqual(r.level, 1 - r.alpha);
+  assert.strictEqual(fam.find((r) => r.key === "tight").rank, 1);
+  // A wider level gives a CI that contains the 95% one.
+  const c95 = compareOnce(spreadAround(104, 60), spreadAround(100, 60), { level: 0.95 }).ci;
+  const c99 = compareOnce(spreadAround(104, 60), spreadAround(100, 60), { level: 0.99 }).ci;
+  assert.ok(c99[0] <= c95[0] && c99[1] >= c95[1], `${c99} must contain ${c95}`);
+});
+
+test("stats: Holm step-down — after the first inconclusive verb every later verb is retained", () => {
+  const { gradeFamily, readCI, compareOnce } = stats;
+  // A (p 0.0274) is rank 1 at alpha 0.025: its 97.5% CI is not decisive. B (p 0.0486)
+  // would read win on its own 95% CI, but Holm stops at A, so B is retained.
+  const base = spreadAround(100, 20);
+  const fam = gradeFamily([
+    { key: "A", a: spreadAround(88.5, 20), b: base, margin: 2 },
+    { key: "B", a: spreadAround(89.5, 20), b: base, margin: 2 },
+  ]);
+  const [a, b] = fam;
+  assert.deepStrictEqual(
+    [a.rank, a.alpha, a.reading, a.holmStop],
+    [1, 0.025, "inconclusive", false]
+  );
+  assert.deepStrictEqual([b.rank, b.alpha, b.reading, b.holmStop], [2, 0.05, "inconclusive", true]);
+  assert.strictEqual(readCI(b.ci, 2), "win", "B's own CI is decisive; only Holm retains it");
+  assert.strictEqual(b.gate, "INCONCLUSIVE");
+  assert.deepStrictEqual(compareOnce(spreadAround(89.5, 20), base).ci, b.ci);
+});
+
+test("stats: drift margin is the bootstrap 95th percentile of |Δp50|, not one point difference", () => {
+  const { driftMargin, pooledNullMargin, median } = stats;
+  // Identical blocks: the point difference is 0, the bootstrap margin is not.
+  const a = spreadAround(53, 8, 40);
+  const b = spreadAround(53, 8, 40);
+  assert.strictEqual(median(a) - median(b), 0);
+  const m = driftMargin(a, b);
+  assert.ok(m > 0, `margin ${m} must be > 0 for noisy identical blocks`);
+  // A real block shift widens it.
+  assert.ok(driftMargin(a, spreadAround(63, 8, 40)) > m);
+  // P6's null margin pools the two arms recentred on their own medians: the shift under
+  // test does not inflate it (same margin for a 10 ms and a 30 ms shift, same noise).
+  assert.ok(pooledNullMargin(a, spreadAround(63, 8, 40)) < driftMargin(a, spreadAround(63, 8, 40)));
+  assert.strictEqual(
+    pooledNullMargin(a, spreadAround(63, 8, 40)),
+    pooledNullMargin(a, spreadAround(83, 8, 40))
+  );
+  assert.strictEqual(driftMargin([1], b), null);
+});
+
+/* ------------- scoreboard: one rule for table + P lines (finding 5) ------------- */
+// A verb with explicit per-sample arrays (n=40, evenly spread ± spread around p50).
+const vS = (verb, p50, spread = 8, n = 40) => ({
+  verb,
+  latency: { p50, p95: p50 + spread },
+  latencySamples: spreadAround(p50, spread, n),
+  errors: 0,
+  fallbacks: 0,
+});
+// A tap+describe row that also carries a time-to-correct (run 37578606526): the same
+// evenly spread samples for both, so the P5 headline row reads like the old one did.
+const vTd = (verb, p50, spread) => ({
+  ...vS(verb, p50, spread),
+  timeToCorrect: { samples: spreadAround(p50, spread, 40), censoredAtMs: [], timedOut: 0 },
+});
+// Fixed merged input: tap win, swipe loss, pinch parity, headline inconclusive.
+const FAMILY = () => [
+  block("OFF-1", {
+    verbs: [
+      vS("gesture-tap", 60, 2),
+      vS("gesture-swipe", 300, 2),
+      vS("gesture-pinch", 350, 1),
+      vTd("tap+describe", 400, 80),
+    ],
+  }),
+  block("ON-uiautomation", {
+    verbs: [
+      vS("gesture-tap", 60, 2),
+      vS("gesture-swipe", 300, 2),
+      vS("gesture-pinch", 350, 1),
+      vTd("tap+describe(settle:false)", 400, 80),
+    ],
+  }),
+  block("ON-input-manager", {
+    verbs: [
+      vS("gesture-tap", 40, 2),
+      vS("gesture-swipe", 330, 2),
+      vS("gesture-pinch", 350, 1),
+      vTd("tap+describe(settle:false)", 412, 80),
+    ],
+  }),
+  block("OFF-2", {
+    verbs: [
+      vS("gesture-tap", 60, 2),
+      vS("gesture-swipe", 300, 2),
+      vS("gesture-pinch", 350, 1),
+      vTd("tap+describe", 400, 80),
+    ],
+  }),
+];
+const scoreboardOf = (bs, env = ALLENV) => {
+  const out = freshOut();
+  writeBlocks(out, bs);
+  const m = run(MERGE_BLOCKS, out, env);
+  assert.strictEqual(m.code, 0, m.stderr);
+  const r = run(SCOREBOARD, out);
+  assert.strictEqual(r.code, 0, r.stderr);
+  return r.stdout;
+};
+// Gate table rows: | verb | uia | im | OFF-1 | OFF-2 | drift | margin | Δ | Holm α | CI | reading |
+const gateRows = (md) => {
+  const sec = md.slice(md.indexOf("### Promotion gates"), md.indexOf("- **P2**"));
+  const rows = {};
+  for (const line of sec.split("\n")) {
+    const c = line.split("|").map((x) => x.trim());
+    if (c.length === 13 && /^(gesture-|tap\+)/.test(c[1]))
+      rows[c[1]] = { margin: c[7], delta: c[8], holm: c[9], ci: c[10], reading: c[11] };
+  }
+  return rows;
+};
+const pLine = (md, id) => {
+  const l = md.split("\n").find((x) => x.startsWith(`- **${id}**`));
+  assert.ok(l, `no ${id} line`);
+  return l;
+};
+
+test("scoreboard: table reading and P2/P3/P4 come from the same rule and the same numbers", () => {
+  const md = scoreboardOf(FAMILY());
+  const rows = gateRows(md);
+  // Run 37578606526: the tap+describe headline row is time-to-correct.
+  const TTC = "tap+describe time-to-correct (ON row tap+describe(settle:false))";
+  assert.deepStrictEqual(Object.keys(rows).sort(), [
+    "gesture-pinch",
+    "gesture-swipe",
+    "gesture-tap",
+    TTC,
+  ]);
+  assert.strictEqual(rows["gesture-tap"].reading, "win");
+  assert.strictEqual(rows["gesture-swipe"].reading, "loss");
+  assert.strictEqual(rows["gesture-pinch"].reading, "parity");
+  assert.match(rows[TTC].reading, /^inconclusive/);
+  const { gateOf } = stats;
+  for (const [id, vn] of [
+    ["P2", "gesture-tap"],
+    ["P3", "gesture-swipe"],
+    ["P4", "gesture-pinch"],
+  ]) {
+    const l = pLine(md, id);
+    const row = rows[vn];
+    // Same Δ, margin, CI and reading as the table row; verdict = gateOf(reading).
+    assert.ok(l.includes(`Δ ${row.delta}`), `${id} Δ: ${l}`);
+    assert.ok(l.includes(`CI ${row.ci}`), `${id} CI: ${l}`);
+    assert.ok(l.includes(`vs ${row.margin}`), `${id} margin: ${l}`);
+    assert.ok(l.includes(`reading ${row.reading}`), `${id} reading: ${l}`);
+    assert.ok(l.endsWith(`**${gateOf(row.reading.split(" ")[0])}**`), `${id} verdict: ${l}`);
+  }
+  assert.match(pLine(md, "P2"), /\*\*PASS\*\*$/);
+  assert.match(pLine(md, "P3"), /\*\*FAIL\*\*$/);
+  assert.match(pLine(md, "P4"), /\*\*PASS\*\*$/);
+  // P5: time-to-correct ratio 412/400 = 1.03 passes, the headline row's CI reading is
+  // inconclusive.
+  const p5 = pLine(md, "P5");
+  assert.match(p5, /1\.03 \/ 1\.03 \/ 1\.03/);
+  assert.ok(p5.includes(`CI reading ${rows[TTC].reading.split(" ")[0]}`), p5);
+  assert.match(p5, /\*\*INCONCLUSIVE\*\*$/);
+});
+
+test("scoreboard: Holm alpha per verb is printed in the table and documented in the footer", () => {
+  const md = scoreboardOf(FAMILY());
+  const rows = gateRows(md);
+  const alphas = Object.values(rows)
+    .map((r) => r.holm.match(/α=([\d.]+) \(rank (\d)\/4\)/))
+    .map((m) => {
+      assert.ok(m, "Holm cell");
+      return { a: Number(m[1]), rank: Number(m[2]) };
+    })
+    .sort((x, y) => x.rank - y.rank);
+  assert.deepStrictEqual(
+    alphas.map((x) => x.rank),
+    [1, 2, 3, 4]
+  );
+  assert.deepStrictEqual(
+    alphas.map((x) => x.a),
+    [0.0125, 0.0167, 0.025, 0.05]
+  );
+  assert.match(md, /Holm/);
+  assert.match(md, /α_k = 0\.05 \/ \(m − k \+ 1\)/);
+  assert.match(md, /block-level variance is not captured/i);
+  assert.match(md, /ABBA/);
+});
+
+test("scoreboard: p95 Δ with CI is a report-only row, not gated", () => {
+  const md = scoreboardOf(FAMILY());
+  assert.match(md, /p95 Δ.*report only, not gated/i);
+  assert.match(md, /\| gesture-tap \| [-\d.]+ \| \[-?[\d.]+, -?[\d.]+\] \|/);
+});
+
+test("scoreboard: P6 grades ON-input-manager vs ON-uiautomation at the pair's own null margin", () => {
+  const md = scoreboardOf(FAMILY());
+  // im tap 40 vs uia 60 → win; swipe 330 vs 300 → loss → P6 FAIL naming swipe.
+  const p6 = pLine(md, "P6");
+  assert.match(p6, /null margin/);
+  assert.match(p6, /gesture-swipe/);
+  assert.match(p6, /\*\*FAIL\*\*$/);
+  // RUN2: input-manager is faster than the control on every verb → PASS.
+  const md2 = scoreboardOf(RUN2(), RUN2ENV);
+  assert.match(pLine(md2, "P6"), /\*\*PASS\*\*$/);
+});
+
+test("scoreboard: await-* rows are labelled host-algorithm differences (finding 9)", () => {
+  const bs = FOUR();
+  for (const b of bs)
+    b.block.verbs.push(vS("await-screen-idle", b.block.block.startsWith("OFF") ? 504 : 309, 20));
+  const md = scoreboardOf(bs);
+  assert.match(md, /\| await-screen-idle \(host algorithm\) \|/);
+  assert.match(md, /host-algorithm difference/i);
+});
+
+test("scoreboard: build provenance (git SHA, Node, js-tiktoken, installed APK sha256) per block", () => {
+  const bs = FOUR();
+  for (const b of bs)
+    b.block.buildProvenance = {
+      gitSha: "a1de2cd2aaaabbbbccccddddeeeeffff00001111",
+      node: "v20.19.0",
+      jsTiktoken: "1.0.21",
+      installedApk: {
+        package:
+          b.block.config === "ON" ? "com.argent.devicecontrol" : "com.argent.androiddevtools",
+        files: [
+          {
+            path: "/data/app/x/base.apk",
+            sha256: `${b.block.config === "ON" ? "ab" : "cd"}`.repeat(32),
+          },
+        ],
+      },
+    };
+  const md = scoreboardOf(bs);
+  assert.match(md, /### Build provenance/);
+  assert.match(
+    md,
+    /\| ON-input-manager \| `a1de2cd2aaaa` \| v20\.19\.0 \| 1\.0\.21 \| com\.argent\.devicecontrol \| `(ab){32}` \|/
+  );
+  assert.match(md, /\| OFF-1 \| .* \| com\.argent\.androiddevtools \| `(cd){32}` \|/);
+});
+
+/* ---------- run 37561512651 / Review 2026-10-07: B (fallbacks, empty trees) ---------- */
+
+test("bench: the fallback counter hooks console.warn and console.error, not only console.debug", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  // The open/main host logs open-path fallbacks at console.warn since PR #20.
+  assert.match(src, /console\.warn = /);
+  assert.match(src, /console\.error = /);
+  assert.match(src, /console\.debug = /);
+  // Empty trees are counted per timed sample from the describe result itself.
+  assert.match(src, /treeEmpty === true/);
+  assert.match(src, /openServerEmptyTreeCount\(\)/);
+});
+
+const withTreeEmpty = (b, verb, n) => {
+  b.block.verbs = b.block.verbs.map((v) =>
+    v.verb === verb ? { ...v, treeEmpty: n, treeEmptySamples: [`i=3 verb='${verb}'`] } : v
+  );
+  return b;
+};
+
+// Run 37571460849: an empty describe inside a timed verb no longer invalidates the
+// block (rule d). It is excluded from that verb's latency on both arms (rule a) and
+// graded by P11 (empty rate per timed verb per block, Wilson 95 % CI vs 25 %).
+test("merge-blocks: a timed treeEmpty alone no longer makes a block INVALID, on either arm", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withTreeEmpty(bs[2], "gesture-tap", 9);
+  withTreeEmpty(bs[0], "gesture-tap", 2);
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const m = mergedOf(r);
+  assert.strictEqual(m.valid, true, JSON.stringify(m.invalidBlocks));
+  assert.deepStrictEqual(m.invalidBlocks, []);
+});
+
+test("merge-blocks: treeEmpty 0 on every timed verb keeps the run valid", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  for (const b of bs) withTreeEmpty(b, "gesture-tap", 0);
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(mergedOf(r).valid, true);
+});
+
+test("merge-blocks: an ON fallback line logged at console.warn still FIRES the fallback gate", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  bs[2].block.openServerFallbacks = {
+    count: 1,
+    samples: ["[describe.android] open-device-server failed, falling back: ECONNRESET"],
+  };
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /ON-input-manager=1/);
+});
+
+test("scoreboard: treeEmpty column per verb and resetWaitMs mean/max per block", () => {
+  const bs = FOUR();
+  for (const b of bs) {
+    withTreeEmpty(b, "gesture-tap", 0);
+    b.block.resetWait = { n: 4, meanMs: 312.5, maxMs: 1840.25, timeouts: 0, relaunches: 1 };
+  }
+  const md = scoreboardOf(bs);
+  assert.match(md, /### Fallbacks, empty trees and resets/);
+  assert.match(md, /\| verb \| block \| fallbacks \| treeEmpty \|/);
+  assert.match(md, /\| gesture-tap \| ON-input-manager \| 0 \| 0 \|/);
+  assert.match(
+    md,
+    /\| block \| resets \| resetWaitMs mean \| resetWaitMs max \| timeouts \| relaunches \|/
+  );
+  assert.match(md, /\| OFF-2 \| 4 \| 312\.5 \| 1840\.3 \| 0 \| 1 \|/);
+});
+
+/* ------------- run 37561512651 / Review 2026-10-07: C (practical margin) ------------- */
+
+test("stats: equivalenceMargin = max(bootstrap OFF drift margin, 2 % of pooled OFF p50, 1 ms)", () => {
+  const { equivalenceMargin, driftMargin } = stats;
+  // Bootstrap binding: two OFF blocks 10 ms apart, p50 ~58 ms (2 % = 1.2 ms).
+  const a = spreadAround(53, 8, 40);
+  const b = spreadAround(63, 8, 40);
+  const boot = equivalenceMargin(a, b);
+  assert.strictEqual(boot.bootstrap, driftMargin(a, b));
+  assert.strictEqual(boot.margin, boot.bootstrap);
+  assert.strictEqual(boot.binding, "bootstrap");
+  // 2 % binding: tight blocks at 1000 ms, bootstrap well under 20 ms.
+  const t = spreadAround(1000, 1, 40);
+  const pct = equivalenceMargin(t, t.slice());
+  assert.ok(pct.bootstrap < 20, `bootstrap ${pct.bootstrap}`);
+  assert.strictEqual(pct.pctOfP50, 20);
+  assert.strictEqual(pct.margin, 20);
+  assert.strictEqual(pct.binding, "2% of p50");
+  // 1 ms floor: tight blocks at 20 ms (2 % = 0.4 ms).
+  const f = spreadAround(20, 0.2, 40);
+  const floor = equivalenceMargin(f, f.slice());
+  assert.strictEqual(floor.margin, 1);
+  assert.strictEqual(floor.binding, "1 ms floor");
+  // No samples: no margin (the gate reads N/A, never a default).
+  assert.strictEqual(equivalenceMargin([1], b), null);
+  assert.strictEqual(equivalenceMargin(null, b), null);
+});
+
+test("stats: the four readings against the equivalence margin (parity no longer needs a sub-ms CI)", () => {
+  const { equivalenceMargin, compareOnce, readCI, driftMargin } = stats;
+  const off = spreadAround(1000, 1, 40);
+  const M = equivalenceMargin(off, off.slice()).margin; // 20 ms, the 2 % term
+  const pooled = off.concat(off);
+  const read = (cand) => readCI(compareOnce(cand, pooled).ci, M);
+  assert.strictEqual(read(spreadAround(950, 1, 40)), "win");
+  assert.strictEqual(read(spreadAround(1050, 1, 40)), "loss");
+  assert.strictEqual(read(spreadAround(1010, 1, 40)), "parity");
+  assert.strictEqual(read(spreadAround(1000, 400, 40)), "inconclusive");
+  // The same +10 ms on 1000 ms read against the bootstrap margin alone was a "loss".
+  const bootOnly = driftMargin(off, off.slice());
+  assert.strictEqual(readCI(compareOnce(spreadAround(1010, 1, 40), pooled).ci, bootOnly), "loss");
+});
+
+test("stats: Holm over a family graded at the equivalence margin", () => {
+  const { equivalenceMargin, gradeFamily } = stats;
+  const off = spreadAround(1000, 1, 40);
+  const pooled = off.concat(off);
+  const M = equivalenceMargin(off, off.slice()).margin;
+  const fam = gradeFamily([
+    { key: "win", a: spreadAround(950, 1, 40), b: pooled, margin: M },
+    { key: "loss", a: spreadAround(1050, 1, 40), b: pooled, margin: M },
+    { key: "parity", a: spreadAround(1010, 1, 40), b: pooled, margin: M },
+    { key: "inconclusive", a: spreadAround(1000, 400, 40), b: pooled, margin: M },
+  ]);
+  const by = Object.fromEntries(fam.map((r) => [r.key, r]));
+  assert.deepStrictEqual(
+    ["win", "loss", "parity", "inconclusive"].map((k) => by[k].reading),
+    ["win", "loss", "parity", "inconclusive"]
+  );
+  assert.deepStrictEqual(
+    ["win", "loss", "parity", "inconclusive"].map((k) => by[k].gate),
+    ["PASS", "FAIL", "PASS", "INCONCLUSIVE"]
+  );
+  for (const r of fam) assert.strictEqual(r.margin, 20);
+  // The undecided verb ranks last; Holm alphas by rank are 0.05 / (m − k + 1).
+  assert.strictEqual(by.inconclusive.rank, 4);
+  assert.deepStrictEqual(
+    fam
+      .slice()
+      .sort((x, y) => x.rank - y.rank)
+      .map((r) => r.alpha),
+    [0.0125, 0.05 / 3, 0.025, 0.05]
+  );
+});
+
+test("scoreboard: gate margin is the equivalence margin; footer states the pre-registered rule", () => {
+  const md = scoreboardOf(FAMILY());
+  const rows = gateRows(md);
+  // OFF swipe 300 ± 2 and pinch 350 ± 1: the 2 % term (6, 7 ms) binds.
+  assert.strictEqual(rows["gesture-swipe"].margin, "±6");
+  assert.strictEqual(rows["gesture-pinch"].margin, "±7");
+  assert.strictEqual(rows["gesture-pinch"].reading, "parity");
+  assert.match(
+    md,
+    /pre-registered equivalence margin: 2 % of the proprietary p50 or 1 ms, whichever is larger, never below the measured OFF drift/
+  );
+  // The drift table publishes the bootstrap margin and the equivalence margin side by side.
+  assert.match(
+    md,
+    /\| verb \| OFF-1 p50 \| OFF-2 p50 \| drift \| bootstrap margin \| equivalence margin \|/
+  );
+  assert.match(md, /\| gesture-pinch \| 350 \| 350 \| 0 \| ±[\d.]+ \| ±7 \(2% of p50\) \|/);
+});
+
+/* ------- run 37571460849: empty describes as a quality metric (P11), TTNE ------- */
+
+test("stats: wilsonCI matches the Wilson score interval (95 %)", () => {
+  const { wilsonCI } = stats;
+  assert.deepStrictEqual(wilsonCI(0, 40), [0, 0.0876]);
+  assert.deepStrictEqual(wilsonCI(4, 40), [0.0396, 0.2305]);
+  assert.deepStrictEqual(wilsonCI(9, 40), [0.1232, 0.375]);
+  assert.deepStrictEqual(wilsonCI(23, 40), [0.422, 0.7149]);
+  assert.strictEqual(wilsonCI(0, 0), null);
+});
+
+test("stats: p11Gate — PASS if the CI upper bound ≤ 25 %, FAIL if the lower > 25 %, else INCONCLUSIVE; no denominator FAILs", () => {
+  const { p11Gate, P11_THRESHOLD } = stats;
+  assert.strictEqual(P11_THRESHOLD, 0.25);
+  assert.strictEqual(p11Gate(0, 40).gate, "PASS");
+  assert.strictEqual(p11Gate(4, 40).gate, "PASS");
+  assert.strictEqual(p11Gate(5, 40).gate, "INCONCLUSIVE");
+  assert.strictEqual(p11Gate(15, 40).gate, "INCONCLUSIVE");
+  assert.strictEqual(p11Gate(16, 40).gate, "FAIL");
+  assert.strictEqual(p11Gate(23, 40).gate, "FAIL");
+  // Fail closed: empties counted with no denominator, or no denominator at all.
+  assert.strictEqual(p11Gate(3, 0).gate, "FAIL");
+  assert.strictEqual(p11Gate(0, 0).gate, "FAIL");
+  const r = p11Gate(9, 40);
+  assert.strictEqual(r.rate, 0.225);
+  assert.deepStrictEqual(r.ci, [0.1232, 0.375]);
+});
+
+// A verb whose timed window reads a describe: `describeWindows` is the P11 denominator,
+// `treeEmpty` the windows with an empty describe (excluded from latencySamples).
+const withEmpties = (b, verb, empty, n = 40, extra = {}) => {
+  const has = b.block.verbs.some((v) => v.verb === verb);
+  if (!has) b.block.verbs.push(mkVerb(verb, 400));
+  b.block.verbs = b.block.verbs.map((v) =>
+    v.verb === verb ? { ...v, treeEmpty: empty, describeWindows: n, ...extra } : v
+  );
+  return b;
+};
+const TD_ON = "tap+describe(settle:false)";
+const TD_OFF = "tap+describe";
+const p11Run = (offEmpty, onEmpty) => {
+  const bs = FOUR();
+  for (const b of bs)
+    withEmpties(
+      b,
+      b.block.config === "ON" ? TD_ON : TD_OFF,
+      b.block.config === "ON" ? onEmpty : offEmpty
+    );
+  return bs;
+};
+
+test("merge-blocks: P11 grades every timed describe verb per block and fails closed on either arm", () => {
+  const cases = [
+    [2, 1, "PASS"],
+    [2, 9, "INCONCLUSIVE"], // ON 9/40: CI [12.3 %, 37.5 %] straddles 25 %
+    [2, 23, "FAIL"], // ON-uiautomation's run 37571460849 rate
+    [16, 1, "FAIL"], // the OFF arm alone fails it
+  ];
+  for (const [offE, onE, want] of cases) {
+    const out = freshOut();
+    writeBlocks(out, p11Run(offE, onE));
+    const r = run(MERGE_BLOCKS, out, ALLENV);
+    assert.strictEqual(r.code, 0, r.stderr);
+    const m = mergedOf(r);
+    assert.strictEqual(m.valid, true, "P11 is a gate, not run validity");
+    assert.strictEqual(m.p11.verdict, want, `off ${offE} on ${onE}: ${JSON.stringify(m.p11)}`);
+    const row = m.emptyRates.find((x) => x.block === "ON-input-manager" && x.verb === TD_ON);
+    assert.deepStrictEqual([row.empty, row.n], [onE, 40]);
+    // gesture-tap reads no describe in its timed window: not graded.
+    assert.ok(!m.emptyRates.some((x) => x.verb === "gesture-tap"));
+  }
+});
+
+test("merge-blocks: P11 counts empties with no denominator as FAIL (fail closed)", () => {
+  const out = freshOut();
+  const bs = FOUR();
+  withTreeEmpty(bs[1], "gesture-tap", 3); // old shape: no describeWindows
+  writeBlocks(out, bs);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.p11.verdict, "FAIL");
+  const row = m.emptyRates.find((x) => x.block === "ON-uiautomation");
+  assert.strictEqual(row.gate, "FAIL");
+  assert.strictEqual(row.n, 0);
+});
+
+test("merge-blocks: an ON fallback still throws with P11 in place (fallbacks invalidate, empties do not)", () => {
+  const out = freshOut();
+  const bs = p11Run(0, 0);
+  bs[1].block.openServerFallbacks = {
+    count: 2,
+    samples: ["[describe.android] open-device-server failed, falling back: x"],
+  };
+  writeBlocks(out, bs);
+  const r = run(MERGE_BLOCKS, out, ALLENV);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /ON-uiautomation=2/);
+});
+
+test("scoreboard: empty-rate rows with Wilson CI, the P11 line, and the time-to-non-empty table", () => {
+  const bs = p11Run(9, 23);
+  const ttne = {
+    measured: 23,
+    reached: 22,
+    timedOut: 1,
+    fromTapMs: { p50: 912.4, p95: 1480.2 },
+    afterEmptyMs: { p50: 401.3, p95: 960 },
+    fromTapSamples: [],
+    afterEmptySamples: [],
+  };
+  for (const b of bs) for (const v of b.block.verbs) if (v.verb === TD_ON) v.timeToNonEmpty = ttne;
+  const md = scoreboardOf(bs);
+  assert.match(md, /### Empty describes in timed verbs — quality metric \(P11\)/);
+  assert.match(
+    md,
+    /\| verb \| block \| empty \/ windows \| rate \| Wilson 95% CI \| P11 \(≤ 25 %\) \|/
+  );
+  assert.match(
+    md,
+    /\| tap\+describe\(settle:false\) \| ON-uiautomation \| 23\/40 \| 57\.5% \| \[42\.2%, 71\.5%\] \| FAIL \|/
+  );
+  assert.match(
+    md,
+    /\| tap\+describe \| OFF-1 \| 9\/40 \| 22\.5% \| \[12\.3%, 37\.5%\] \| INCONCLUSIVE \|/
+  );
+  assert.match(md, /- \*\*P11\*\* — empty rate ≤ 25 % per timed verb per block.*: \*\*FAIL\*\*/);
+  assert.match(md, /excluded from that verb's latency/);
+  assert.match(md, /### tap\+describe time-to-non-empty/);
+  assert.match(
+    md,
+    /\| ON-input-manager \| tap\+describe\(settle:false\) \| 23 \| 22 \| 1 \| 912\.4\/1480\.2 \| 401\.3\/960 \|/
+  );
+  // treeEmpty no longer reads as invalidating.
+  assert.doesNotMatch(md, /Any treeEmpty or ON fallback invalidates the block/);
+});
+
+test("scoreboard: the reset table carries the probe's decision-reason histogram", () => {
+  const bs = FOUR();
+  for (const b of bs)
+    b.block.resetWait = {
+      n: 4,
+      meanMs: 900,
+      maxMs: 1200,
+      timeouts: 0,
+      relaunches: 1,
+      reasons: {
+        "wait:kill-guard": 30,
+        "wait:dead-record": 3,
+        "relaunch:dead-record": 1,
+        "outcome:ready": 4,
+      },
+    };
+  const md = scoreboardOf(bs);
+  assert.match(
+    md,
+    /\| block \| resets \| resetWaitMs mean \| resetWaitMs max \| timeouts \| relaunches \| probe reasons \|/
+  );
+  assert.match(
+    md,
+    /\| OFF-1 \| 4 \| 900 \| 1200 \| 0 \| 1 \| wait:kill-guard=30, outcome:ready=4, wait:dead-record=3, relaunch:dead-record=1 \|/
+  );
+});
+
+test("bench: empty samples leave the latency stats on both arms; TTNE from the 50 ms / 3 s loop; no treeEmpty fatal", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  assert.doesNotMatch(src, /assertNoTimedTreeEmpty\(blocks\)/);
+  assert.match(src, /emptyLatencySamples/);
+  assert.match(src, /describeWindows/);
+  // Run 37578606526: time-to-non-empty is the first non-empty read of the time-to-correct
+  // loop (tap-describe-destination.js: 50 ms apart, up to 3 s, was 2 s).
+  assert.strictEqual(require("./tap-describe-destination").TTC_POLL_MS, 50);
+  assert.strictEqual(require("./tap-describe-destination").TTC_BUDGET_MS, 3000);
+  // TTNE runs for every tap+describe variant, through the same timeTapEffect hook.
+  assert.match(src, /timeToNonEmpty/);
+});
+
+/* ---------- run 37571460849: every requested block runs or says it did not ---------- */
+
+test("block-validity: --did-not-run records an explicit not-run entry that is not INVALID by itself", () => {
+  const out = freshOut();
+  execFileSync(
+    "node",
+    [
+      VALIDITY,
+      "record",
+      path.join(out, "validity.json"),
+      "--block",
+      "OFF-2",
+      "--did-not-run",
+      "emulator lost",
+    ],
+    { encoding: "utf8" }
+  );
+  const v = JSON.parse(fs.readFileSync(path.join(out, "validity.json"), "utf8"));
+  assert.strictEqual(v.blocks["OFF-2"].ran, false);
+  assert.strictEqual(v.blocks["OFF-2"].notRunReason, "emulator lost");
+  const { entryReasons } = require(VALIDITY);
+  assert.deepStrictEqual(entryReasons(v.blocks["OFF-2"]), []);
+});
+
+test("merge-blocks: a requested block with neither a JSON nor a validity entry makes the run INVALID", () => {
+  const out = freshOut();
+  const bs = FOUR().filter((b) => b.block.block !== "OFF-2");
+  writeBlocks(out, bs);
+  recordValidity(
+    out,
+    ALL_OK(["OFF-1", "ON-uiautomation", "ON-input-manager"]).map((e) => ({ ...e, stamped: "n/a" }))
+  );
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.strictEqual(m.valid, false);
+  assert.match(
+    m.runInvalidReasons.join(" "),
+    /requested block OFF-2 has no bench-block-OFF-2\.json and no validity entry/
+  );
+});
+
+test("merge-blocks: the same gap with BENCH_REQUIRE_VALIDITY=1 and no validity.json at all is INVALID", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    FOUR().filter((b) => b.block.block !== "OFF-2")
+  );
+  const m = mergedOf(run(MERGE_BLOCKS, out, { ...ALLENV, BENCH_REQUIRE_VALIDITY: "1" }));
+  assert.strictEqual(m.valid, false);
+  assert.match(m.runInvalidReasons.join(" "), /requested block OFF-2/);
+});
+
+test("merge-blocks: an explicit did-not-run entry accounts for the block and is listed in notRun", () => {
+  const out = freshOut();
+  writeBlocks(
+    out,
+    FOUR().filter((b) => b.block.block !== "OFF-2")
+  );
+  recordValidity(
+    out,
+    ALL_OK(["OFF-1", "ON-uiautomation", "ON-input-manager"]).map((e) => ({ ...e, stamped: "n/a" }))
+  );
+  execFileSync("node", [
+    VALIDITY,
+    "record",
+    path.join(out, "validity.json"),
+    "--block",
+    "OFF-2",
+    "--did-not-run",
+    "proprietary not executable on this runner",
+  ]);
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  assert.ok(
+    !m.runInvalidReasons.some((x) => /requested block OFF-2/.test(x)),
+    JSON.stringify(m.runInvalidReasons)
+  );
+  assert.deepStrictEqual(m.notRun, [
+    { block: "OFF-2", reason: "proprietary not executable on this runner" },
+  ]);
+});
+
+test("workflow: OFF-2 runs regardless of an earlier block's failure; every skip records did-not-run", () => {
+  const y = fs.readFileSync(WORKFLOW, "utf8");
+  const step = y.slice(y.indexOf("- name: Latency bench"), y.indexOf("- name: Scoreboard"));
+  // Run 37571460849: `[ "$OFF_FAILED" = "0" ] && … grep -q "OFF-2"` skipped OFF-2 after
+  // OFF-1 exited 1.
+  const off2 = step.split("\n").find((l) => l.includes('grep -q "OFF-2"'));
+  assert.ok(off2, "no OFF-2 condition");
+  assert.doesNotMatch(off2, /_FAILED/);
+  // No block condition reads an earlier block's result.
+  for (const m of step.matchAll(/^\s*(?:el)?if .*grep -q "([A-Za-z0-9-]+)".*$/gm))
+    assert.doesNotMatch(m[0], /_FAILED/, m[0]);
+  // The emulator-lost early return, the ON-only downgrade and the legacy skips record it.
+  assert.ok((step.match(/--did-not-run/g) || []).length >= 1);
+  assert.ok((step.match(/record_not_run /g) || []).length >= 4, "record_not_run call sites");
+  assert.match(step, /BENCH_REQUIRE_VALIDITY: "1"/);
+});
+
+/* ------ run 37578606526 / finding 12: tap+describe destination check, P5 time-to-correct ------ */
+
+// Literal require so knip traces the test-only exports.
+const dest = require("./tap-describe-destination");
+const HEADER =
+  "Source: open-device-server\nMode: nested\nCoordinates are normalized [0,1] fractions of the screen.\n\n";
+// Settings root (homepage) and the Network & internet sub-screen, formatDescribeTree shape.
+const ROOT_TREE =
+  HEADER +
+  "ROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n" +
+  '  ScrollView id="settings_homepage_container" [scrollable]  (0.000, 0.053, 1.000, 0.921)\n' +
+  '  TextView "Search settings" id="search_action_bar_title"  (0.100, 0.080, 0.600, 0.030)\n' +
+  '  StaticText "Network & internet" id="title"  (0.175, 0.200, 0.400, 0.030)\n' +
+  '  StaticText "Mobile, Wi‑Fi, hotspot" id="summary"  (0.175, 0.230, 0.400, 0.021)\n' +
+  '  StaticText "Connected devices" id="title"  (0.175, 0.300, 0.400, 0.030)\n' +
+  '  StaticText "Apps" id="title"  (0.175, 0.400, 0.400, 0.030)\n';
+const DEST_TREE =
+  HEADER +
+  "ROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n" +
+  '  FrameLayout "Network & internet" id="collapsing_toolbar"  (0.000, 0.000, 1.000, 0.249)\n' +
+  '  Button "Navigate up" [clickable]  (0.000, 0.053, 0.136, 0.061)\n' +
+  '  StaticText "Internet" id="title"  (0.175, 0.267, 0.167, 0.030)\n' +
+  '  StaticText "AndroidWifi" id="summary"  (0.175, 0.296, 0.178, 0.021)\n' +
+  '  StaticText "SIMs" id="title"  (0.175, 0.438, 0.109, 0.030)\n';
+const EMPTY_TREE = HEADER + "ROOT  Screen (0.000, 0.000, 1.000, 1.000)\n\n";
+
+test("destination: markers are the id+text keys on one settled tree and not the other", () => {
+  const m = dest.deriveDestinationMarkers(ROOT_TREE, DEST_TREE);
+  assert.strictEqual(m.valid, true);
+  // On both screens (the root row and the sub-screen title; the shared ids): neither.
+  for (const k of ["text:Network & internet", "id:title", "id:summary"]) {
+    assert.ok(!m.dest.includes(k) && !m.root.includes(k), k);
+  }
+  for (const k of ["text:Navigate up", "text:Internet", "text:SIMs", "id:collapsing_toolbar"])
+    assert.ok(m.dest.includes(k), k);
+  for (const k of ["text:Connected devices", "text:Apps", "id:settings_homepage_container"])
+    assert.ok(m.root.includes(k), k);
+  // A destination read that was still the root yields no markers: invalid, re-derive.
+  assert.strictEqual(dest.deriveDestinationMarkers(ROOT_TREE, ROOT_TREE).valid, false);
+  assert.strictEqual(dest.classifyDestination({ description: EMPTY_TREE }, m), "empty");
+});
+
+test("destination: classifier — correct / stale / empty / other on fixed trees", () => {
+  const m = dest.deriveDestinationMarkers(ROOT_TREE, DEST_TREE);
+  const c = (description, extra = {}) => dest.classifyDestination({ description, ...extra }, m);
+  assert.strictEqual(c(DEST_TREE), "correct");
+  assert.strictEqual(c(ROOT_TREE), "stale");
+  assert.strictEqual(c(EMPTY_TREE), "empty");
+  // The open server's marker counts as empty even with a window line.
+  assert.strictEqual(c(DEST_TREE, { treeEmpty: true }), "empty");
+  // Mixed (both windows in the tree mid-transition): a root-only marker present → stale.
+  assert.strictEqual(
+    c(DEST_TREE + '  StaticText "Apps" id="title"  (0.1, 0.9, 0.2, 0.03)\n'),
+    "stale"
+  );
+  // Neither marker set: a dialog or another app.
+  const dialog =
+    HEADER +
+    "ROOT  Screen (0, 0, 1, 1)\n\n" +
+    '  StaticText "Settings keeps stopping" id="alertTitle"  (0.1, 0.4, 0.8, 0.05)\n';
+  assert.strictEqual(c(dialog), "other");
+  // Only the shared title, nothing screen-specific: other, never correct.
+  assert.strictEqual(
+    c(
+      HEADER +
+        'ROOT  Screen (0, 0, 1, 1)\n\n  StaticText "Network & internet" id="title"  (0, 0, 1, 0.1)\n'
+    ),
+    "other"
+  );
+  // A failed call or no markers: other.
+  assert.strictEqual(dest.classifyDestination(undefined, m), "other");
+  assert.strictEqual(dest.classifyDestination({ description: DEST_TREE }, null), "other");
+  // Same selector on the OFF rendering (different id spelling): its own markers classify it.
+  const offRoot = ROOT_TREE.replace(/id="/g, 'id="com.android.settings:id/');
+  const offDest = DEST_TREE.replace(/id="/g, 'id="com.android.settings:id/');
+  const mo = dest.deriveDestinationMarkers(offRoot, offDest);
+  assert.strictEqual(dest.classifyDestination({ description: offDest }, mo), "correct");
+  assert.strictEqual(dest.classifyDestination({ description: offRoot }, mo), "stale");
+});
+
+test("destination: rates with Wilson CIs; correct-only latency; time-to-correct per sample", () => {
+  const r = dest.destinationRates({ correct: 19, stale: 0, empty: 21 });
+  assert.strictEqual(r.n, 40);
+  assert.deepStrictEqual(r.counts, { correct: 19, stale: 0, empty: 21, other: 0 });
+  assert.strictEqual(r.rates.correct.rate, 0.475);
+  assert.deepStrictEqual(r.rates.correct.ci, stats.wilsonCI(19, 40));
+  assert.deepStrictEqual(r.rates.stale.ci, [0, 0.0876]);
+  assert.deepStrictEqual(r.rates.empty.ci, stats.wilsonCI(21, 40));
+  assert.strictEqual(dest.destinationRates({}).rates.correct.ci, null);
+
+  const s = dest.summarizeDestination([
+    { cls: "correct", latencyMs: 300, ttcMs: 300, censoredAtMs: null, polls: 0 },
+    { cls: "stale", latencyMs: 200, ttcMs: 1100, censoredAtMs: null, polls: 12 },
+    { cls: "empty", latencyMs: 700, ttcMs: 900, censoredAtMs: null, polls: 3 },
+    { cls: "correct", latencyMs: 500, ttcMs: 500, censoredAtMs: null, polls: 0 },
+    { cls: "other", latencyMs: 250, ttcMs: null, censoredAtMs: 3260, polls: 50 },
+  ]);
+  assert.deepStrictEqual(s.destination.counts, { correct: 2, stale: 1, empty: 1, other: 1 });
+  // The honest headline: latency over CORRECT reads only (the 200 ms stale read is out).
+  assert.deepStrictEqual(s.destination.correctLatencySamples, [300, 500]);
+  assert.strictEqual(s.destination.correctLatency.p50, 400);
+  const t = s.timeToCorrect;
+  assert.deepStrictEqual([t.measured, t.reached, t.timedOut, t.firstRead], [5, 4, 1, 2]);
+  assert.strictEqual(t.fromTapMs.p50, 700);
+  assert.deepStrictEqual([t.pollMs, t.budgetMs], [50, 3000]);
+  // A timed-out sample enters a gate at the give-up time and is counted.
+  assert.deepStrictEqual(dest.ttcGateSamples(t), {
+    samples: [300, 1100, 900, 500, 3260],
+    timedOut: 1,
+  });
+  assert.strictEqual(dest.ttcGateSamples(null), null);
+});
+
+// A tap+describe verb with a first-read latency centre and a time-to-correct centre.
+const tdVerb = (verb, firstRead, ttc, o = {}) => {
+  const n = o.n || 40;
+  const v = vS(verb, firstRead, o.spread || 8, n);
+  const t = spreadAround(ttc, o.spread || 8, n);
+  const timedOut = o.timedOut || 0;
+  const counts = o.counts || { correct: n, stale: 0, empty: 0, other: 0 };
+  const samples = t.map((x, i) => (i < timedOut ? null : x));
+  v.destination = {
+    classes: [],
+    ...dest.destinationRates(counts),
+    correctLatency: { p50: firstRead, p95: firstRead + 8 },
+    correctLatencySamples: [],
+  };
+  v.timeToCorrect = {
+    pollMs: 50,
+    budgetMs: 3000,
+    measured: n,
+    reached: n - timedOut,
+    timedOut,
+    firstRead: counts.correct,
+    fromTapMs: { p50: ttc, p95: ttc + 8 },
+    samples,
+    censoredAtMs: samples.map((x, i) => (x == null ? t[i] : null)),
+    polls: [],
+  };
+  return v;
+};
+// Run 37578606526's shape: OFF reads first at ~265 ms but its destination arrives late;
+// ON settle:false reads first at ~330 ms, settle:true at ~810 ms.
+const TTC_RUN = (o = {}) => {
+  const tap = (p50) => vS("gesture-tap", p50, 2);
+  const swipe = vS("gesture-swipe", 300, 2);
+  const pinch = vS("gesture-pinch", 350, 1);
+  const off = (name, ttc) =>
+    block(name, {
+      verbs: [
+        tap(60),
+        swipe,
+        pinch,
+        tdVerb("tap+describe", 265, ttc, {
+          counts: { correct: 14, stale: 17, empty: 8, other: 1 },
+          ...(o.offTd || {}),
+        }),
+      ],
+    });
+  const on = (name) =>
+    block(name, {
+      verbs: [
+        tap(60),
+        swipe,
+        pinch,
+        tdVerb("tap+describe(settle:false)", 330, o.onFalse ?? 800, {
+          counts: { correct: 15, stale: 4, empty: 21, other: 0 },
+          ...(o.onTd || {}),
+        }),
+        tdVerb("tap+describe(settle:true)", 810, o.onTrue ?? 900, {
+          counts: { correct: 33, stale: 6, empty: 1, other: 0 },
+        }),
+      ],
+    });
+  return [
+    off("OFF-1", o.off1 ?? 1000),
+    on("ON-uiautomation"),
+    on("ON-input-manager"),
+    off("OFF-2", o.off2 ?? 1000),
+  ];
+};
+
+test("merge-blocks: destination rows (correct/stale/empty/other + Wilson CIs) and P12 stale rates per block", () => {
+  const out = freshOut();
+  writeBlocks(out, TTC_RUN());
+  const m = mergedOf(run(MERGE_BLOCKS, out, ALLENV));
+  const row = m.destinationRates.find((x) => x.block === "OFF-1" && x.verb === "tap+describe");
+  assert.deepStrictEqual(row.counts, { correct: 14, stale: 17, empty: 8, other: 1 });
+  assert.strictEqual(row.n, 40);
+  assert.deepStrictEqual(row.rates.stale.ci, stats.wilsonCI(17, 40));
+  assert.strictEqual(row.timeToCorrect.reached, 40);
+  // Both ON rows carry it.
+  assert.ok(
+    m.destinationRates.some(
+      (x) => x.block === "ON-input-manager" && x.verb === "tap+describe(settle:true)"
+    )
+  );
+  // P12: report only, one stale rate per (block, verb).
+  assert.strictEqual(m.p12.reportOnly, true);
+  const p12 = m.p12.rows.find(
+    (x) => x.block === "ON-uiautomation" && x.verb === "tap+describe(settle:false)"
+  );
+  assert.deepStrictEqual([p12.stale, p12.n, p12.rate], [4, 40, 0.1]);
+  assert.deepStrictEqual(p12.ci, stats.wilsonCI(4, 40));
+  assert.strictEqual(m.valid, true, "P12 is report only");
+});
+
+test("scoreboard: P5 is time-to-correct ON ÷ OFF on the ON row with the smaller time-to-correct; first-read row report only", () => {
+  const md = scoreboardOf(TTC_RUN());
+  const rows = gateRows(md);
+  // The family: tap, swipe, pinch and the time-to-correct row; the first-read row is out.
+  const ttcKey = Object.keys(rows).find((k) => k.startsWith("tap+describe time-to-correct"));
+  assert.ok(ttcKey, Object.keys(rows).join(", "));
+  assert.match(
+    ttcKey,
+    /tap\+describe\(settle:false\)/,
+    "settle:false has the smaller time-to-correct"
+  );
+  assert.ok(!rows["tap+describe(settle:false)"], "first-read row is not gated");
+  const p5 = pLine(md, "P5");
+  assert.match(p5, /time-to-correct/);
+  assert.match(
+    p5,
+    /ON row tap\+describe\(settle:false\) \(time-to-correct p50 800 ms; tap\+describe\(settle:true\) 900 ms\)/
+  );
+  assert.match(p5, /0\.80 \/ 0\.80 \/ 0\.80/);
+  assert.match(p5, /ratio PASS/);
+  assert.ok(p5.includes(`CI reading ${rows[ttcKey].reading.split(" ")[0]}`), p5);
+  assert.match(p5, /\*\*PASS\*\*$/);
+  // The old headline stays, report only, labelled as any non-empty first read.
+  assert.match(md, /first-read latency \(any non-empty\) — report only/);
+  assert.match(md, /\| tap\+describe\(settle:false\) \| 330 \| 330 \| 265 \| 265 \|/);
+  // P6 compares the same time-to-correct row ON-im vs ON-uia.
+  assert.match(md, /\| P6 verb \|[\s\S]*\| tap\+describe time-to-correct/);
+});
+
+test("scoreboard: P5 picks settle:true when its time-to-correct is smaller, and FAILs a ratio > 1.15", () => {
+  const md = scoreboardOf(TTC_RUN({ onFalse: 1400, onTrue: 1300 }));
+  const p5 = pLine(md, "P5");
+  assert.match(
+    p5,
+    /ON row tap\+describe\(settle:true\) \(time-to-correct p50 1300 ms; tap\+describe\(settle:false\) 1400 ms\)/
+  );
+  assert.match(p5, /1\.30 \/ 1\.30 \/ 1\.30/);
+  assert.match(p5, /ratio FAIL/);
+  assert.match(p5, /\*\*FAIL\*\*$/);
+});
+
+test("scoreboard: a time-to-correct timeout cannot carry a P5 PASS; no time-to-correct → N/A", () => {
+  const md = scoreboardOf(TTC_RUN({ onTd: { timedOut: 2 } }));
+  const p5 = pLine(md, "P5");
+  assert.match(p5, /timed out: ON 2\/40, OFF 0\/80/);
+  assert.doesNotMatch(p5, /\*\*PASS\*\*$/);
+  // Old artifacts without the loop.
+  const old = scoreboardOf(RUN2(), RUN2ENV);
+  assert.match(pLine(old, "P5"), /no time-to-correct.*: \*\*N\/A\*\*$/);
+});
+
+test("scoreboard: P12 stale rates printed next to P11; a stale read is a wrong answer (footer)", () => {
+  const md = scoreboardOf(TTC_RUN());
+  const lines = md.split("\n");
+  const i11 = lines.findIndex((l) => l.startsWith("- **P11**"));
+  const i12 = lines.findIndex((l) => l.startsWith("- **P12**"));
+  assert.ok(i11 >= 0 && i12 === i11 + 1, `P12 right after P11 (${i11}, ${i12})`);
+  assert.match(lines[i12], /report only/);
+  assert.match(lines[i12], /OFF-1 tap\+describe 17\/40 = 42\.5% \[/);
+  assert.match(md, /### tap\+describe destination check/);
+  assert.match(
+    md,
+    /\| OFF-1 \| tap\+describe \| 40 \| 14 \| 17 \| 8 \| 1 \| 35% \[[\d.]+%, [\d.]+%\] \| 42\.5% \[[\d.]+%, [\d.]+%\] \| 20% \[[\d.]+%, [\d.]+%\] \|/
+  );
+  assert.match(md, /a stale read is a wrong answer to the user/i);
+  const footer = md.slice(md.indexOf("_Method"));
+  assert.match(footer, /stale read is a wrong answer to the user/i);
+});
+
+test("bench: tap+describe classifies every timed read and runs time-to-correct on ALL samples (50 ms / 3 s)", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  assert.match(src, /from "\.\.\/\.\.\/\.\.\/\.github\/bench-ci\/tap-describe-destination(\.js)?"/);
+  assert.match(src, /classifyDestination\(/);
+  assert.match(src, /deriveDestinationMarkers\(/);
+  assert.match(src, /summarizeDestination\(/);
+  assert.match(src, /TTC_POLL_MS/);
+  assert.match(src, /TTC_BUDGET_MS/);
+  // The loop no longer runs only after an empty window.
+  assert.doesNotMatch(src, /if \(wasEmpty && onEmpty\)/);
+  assert.strictEqual(dest.TTC_POLL_MS, 50);
+  assert.strictEqual(dest.TTC_BUDGET_MS, 3000);
 });

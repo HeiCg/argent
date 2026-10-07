@@ -63,6 +63,12 @@ jobs:
         # command runners, no adb or emulator.
         run: node --test .github/bench-ci/emulator-diagnostics.test.js
 
+      - name: Test bench Settings reset wait
+        # Run 37561512651: the latency bench waits after every Settings am start until
+        # Settings is resumed, focused, not finishing and on a stable pid (relaunched if
+        # the delayed post-pm-clear kill took it). Injected probe/clock, no adb.
+        run: node --test .github/bench-ci/settings-reset.test.js
+
   # Typechecking needs the same install and build as the tests but none of their
   # output, so running it alongside them takes its ~60s off the critical path
   # rather than adding to it.

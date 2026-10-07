@@ -10,7 +10,15 @@
 // CLI (workflow):
 //   node block-validity.js record <validity.json> --block OFF-1 --ready-gate pass|fail \
 //     [--exit-code N] [--stamped yes|no|n/a] [--started-at ISO]
+//   node block-validity.js record <validity.json> --block OFF-2 --did-not-run "<reason>"
 // --exit-code is omitted when the block never ran (ready-gate failure).
+//
+// Run 37571460849: OFF-2 was skipped silently (an earlier OFF-1 failure gated it) and
+// nothing said so. Every requested block now either runs or is recorded with
+// --did-not-run (emulator lost, proprietary not executable, legacy release unset);
+// merge-blocks.js marks the run INVALID for a requested block with neither a block
+// file nor an entry here. A did-not-run entry is not INVALID by itself: what a missing
+// block means is decided by the merge (ON-only downgrade, partial run, missing ON).
 const fs = require("fs");
 const path = require("path");
 
@@ -29,7 +37,7 @@ function readValidity(out) {
 
 /** Reasons a recorded block is INVALID (empty array = valid). */
 function entryReasons(e) {
-  if (!e) return [];
+  if (!e || e.ran === false) return [];
   const r = [];
   if (e.readyGate === "fail") r.push("ready-gate failed (block not run)");
   if (e.exitCode != null && e.exitCode !== 0) r.push(`bench exited ${e.exitCode}`);
@@ -70,11 +78,25 @@ if (require.main === module) {
   if (cmd !== "record" || !file) {
     console.error(
       "usage: block-validity.js record <validity.json> --block B --ready-gate pass|fail " +
-        "[--exit-code N] [--stamped yes|no|n/a] [--started-at ISO]"
+        "[--exit-code N] [--stamped yes|no|n/a] [--started-at ISO] | --block B --did-not-run REASON"
     );
     process.exit(2);
   }
   const a = parseArgs(rest);
+  if (a.block && a["did-not-run"] !== undefined) {
+    const entry = {
+      block: a.block,
+      ran: false,
+      notRunReason: a["did-not-run"] || "unspecified",
+      startedAt: a["started-at"] || null,
+      readyGate: "n/a",
+      exitCode: null,
+      stamped: "n/a",
+    };
+    record(file, entry);
+    console.log(`[validity] ${entry.block}: did not run (${entry.notRunReason})`);
+    process.exit(0);
+  }
   if (!a.block || !["pass", "fail"].includes(a["ready-gate"])) {
     console.error("block-validity: --block and --ready-gate pass|fail are required");
     process.exit(2);

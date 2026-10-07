@@ -382,6 +382,9 @@ jobs:
           # an open-server fallback to the proprietary path fails instead of
           # succeeding silently on the 0.27.0 binaries.
           BENCH_SERIAL: emulator-5554
+          # Run 37571460849: merge-blocks.js marks the run INVALID for a requested block
+          # with neither a block JSON nor a validity entry, even if validity.json is absent.
+          BENCH_REQUIRE_VALIDITY: "1"
           # Phase 3j (3d shipped): the on-device server now decides the 0.0.0.0 bind
           # itself from the qemu system properties (EmulatorDetect), so redir engages
           # on this emulator with NO host env — this run validates that shipped path.
@@ -465,10 +468,20 @@ jobs:
               --block "$1" --ready-gate "$2" --exit-code "$3" --stamped "$4" --started-at "$5" \
               2>&1 | tee -a "$BENCH_OUT/bench-log-$1.txt" || true
           }
+          # Run 37571460849: OFF-2 was skipped without a trace. A requested block that is
+          # not run records why; merge-blocks.js fails the run for a requested block with
+          # neither a block JSON nor a validity entry.
+          record_not_run () {
+            # $1 block  $2 reason
+            echo "::warning::block $1 did not run: $2"
+            node .github/bench-ci/block-validity.js record "$BENCH_OUT/validity.json" \
+              --block "$1" --did-not-run "$2" 2>&1 | tee -a "$BENCH_OUT/bench-log-$1.txt" || true
+          }
           run_block () {
             local b="$1" pkg="${2:-}" ver="${3:-}" rc=0 src=0 started
             if emu_lost; then
               echo "::warning::block $b skipped: emulator lost (no restart — results would not be comparable)"
+              record_not_run "$b" "emulator lost before the block (no restart: results would not be comparable)"
               return 1
             fi
             echo "block $b" > "$BENCH_CONTEXT_FILE"
@@ -523,6 +536,11 @@ jobs:
           # OFF-1, ON-uiautomation, ON-input-manager, OFF-2, OFF-legacy. OFF-1 and OFF-2
           # bracket every ON block; merge-blocks.js re-checks it from the block start
           # timestamps and marks the run INVALID otherwise.
+          #
+          # Run 37571460849: every requested block runs whatever happened to the blocks
+          # before it (OFF-2 used to be gated on OFF_FAILED=0 and was skipped when OFF-1
+          # exited 1). validity.json and the merge grade each block; the *_FAILED flags
+          # only decide the step's exit code at the end.
           RUN_OFF=0
           if [ "${PROP_EXECUTABLE:-0}" = "1" ]; then
             RUN_OFF=1
@@ -531,12 +549,17 @@ jobs:
           fi
           OFF_FAILED=0
           ON_FAILED=0
-          if [ "$RUN_OFF" = "1" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
-            if run_block "OFF-1" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
-              OFF_FAILED=1
-              echo "::error::OFF-1 proprietary baseline FAILED though the binary is executable — a missing baseline fails the run (F13)"
+          OFF_DOWNGRADE="proprietary simulator-server not executable on this runner (documented ON-only downgrade)"
+          if echo "$BENCH_BLOCKS" | grep -q "OFF-1"; then
+            if [ "$RUN_OFF" != "1" ]; then
+              record_not_run "OFF-1" "$OFF_DOWNGRADE"
+            else
+              if run_block "OFF-1" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
+                OFF_FAILED=1
+                echo "::error::OFF-1 proprietary baseline FAILED though the binary is executable — a missing baseline fails the run (F13)"
+              fi
+              sleep 3
             fi
-            sleep 3
           fi
           # ON blocks — hard requirement: a failure is recorded, the remaining blocks
           # and the merge still run (diagnostics + INVALID scoreboard), the step fails.
@@ -554,12 +577,16 @@ jobs:
             fi
             sleep 3
           fi
-          if [ "$RUN_OFF" = "1" ] && [ "$OFF_FAILED" = "0" ] && echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
-            if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
-              OFF_FAILED=1
-              echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
+          if echo "$BENCH_BLOCKS" | grep -q "OFF-2"; then
+            if [ "$RUN_OFF" != "1" ]; then
+              record_not_run "OFF-2" "$OFF_DOWNGRADE"
+            else
+              if run_block "OFF-2" "$PROP_PKG" "$BENCH_PROPRIETARY_VERSION"; then :; else
+                OFF_FAILED=1
+                echo "::error::OFF-2 proprietary drift arm FAILED though the binary is executable — a missing baseline fails the run (F13)"
+              fi
+              sleep 3
             fi
-            sleep 3
           fi
           # Re-baseline (0.27): OFF-legacy — the proprietary arm on the OLDER release's
           # binaries (legacy_proprietary_version), its own BENCH_ONLY invocation in this
@@ -574,8 +601,10 @@ jobs:
           if echo "$BENCH_BLOCKS" | grep -q "OFF-legacy"; then
             if [ -z "$BENCH_LEGACY_PROPRIETARY_VERSION" ]; then
               echo "::notice::OFF-legacy requested but legacy_proprietary_version is empty — skipped"
+              record_not_run "OFF-legacy" "legacy_proprietary_version is empty"
             elif [ "${PROP_LEGACY_EXECUTABLE:-0}" != "1" ]; then
               echo "::warning::legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner — OFF-legacy skipped"
+              record_not_run "OFF-legacy" "legacy proprietary simulator-server ($BENCH_LEGACY_PROPRIETARY_VERSION) not executable on this runner"
             elif run_block "OFF-legacy" "$PROP_PKG_LEGACY" "$BENCH_LEGACY_PROPRIETARY_VERSION"; then
               sleep 3
             else
