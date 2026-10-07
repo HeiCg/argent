@@ -121,7 +121,11 @@ export function iosOpenServerTap(
   });
 }
 
-/** Swipe between two normalized points; `holdEndMs > 0` suppresses the fling. */
+/**
+ * Swipe between two normalized points over `durationMs`; the runner maps the
+ * duration to drag velocity. `holdEndMs > 0` suppresses the fling. No `steps`:
+ * XCUITest interpolates its own drag and the runner ignores it.
+ */
 export function iosOpenServerSwipe(
   registry: Registry,
   device: DeviceInfo,
@@ -129,14 +133,14 @@ export function iosOpenServerSwipe(
   fromYNorm: number,
   toXNorm: number,
   toYNorm: number,
-  steps: number,
+  durationMs: number,
   holdEndMs?: number
 ): Promise<void> {
   return withServer(registry, device, async (server, size) => {
     const from = toPoints(size, fromXNorm, fromYNorm);
     const to = toPoints(size, toXNorm, toYNorm);
     await server.swipe(from.x, from.y, to.x, to.y, {
-      steps,
+      durationMs,
       ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
     });
   });

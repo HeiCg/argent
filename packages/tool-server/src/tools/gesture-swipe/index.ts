@@ -281,7 +281,6 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
       let iosFallback: IosOpenServerFallbackMarker | undefined;
       if (shouldUseIosOpenServer(device)) {
         try {
-          const steps = Math.max(1, Math.round(duration / 16));
           await iosOpenServerSwipe(
             registry,
             device,
@@ -289,7 +288,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             fromY,
             params.toX,
             params.toY,
-            steps,
+            duration,
             momentumFree ? MOMENTUM_FREE_HOLD_MS : undefined
           );
           return { swiped: true, timestampMs };

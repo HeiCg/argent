@@ -32,6 +32,8 @@ The agent uses the same tools. Only the backend they reach changes.
   **`screenshot`** dispatch through the runner instead of the simulator-server.
 - **`launch-app`** also makes the launched app the runner target. The runner
   acts on this app until the agent launches a different app.
+- **`gesture-swipe`** keeps the requested duration. The runner converts the
+  duration to a drag speed, so a slow scroll and a fast fling stay different.
 
 ## Automatic fallback
 
