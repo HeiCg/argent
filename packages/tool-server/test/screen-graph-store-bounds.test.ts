@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ScreenGraphStore } from "../src/screen-graph/store";
+import { BYTE_CHECK_EVERY_FLUSHES, ScreenGraphStore } from "../src/screen-graph/store";
 import { isNodeVolatile, type CanonicalAction } from "../src/screen-graph/types";
 
 let tmpDir: string;
@@ -181,5 +181,46 @@ describe("bounds OFF is byte-for-byte the pre-E behaviour (E1-G5 non-regression)
     expect(Object.keys(persisted.nodes).length).toBe(401); // nothing evicted
     expect(persisted.nodes.churny.compact).toBe("keepme"); // compact kept
     expect(persisted.nodes.churny.volatility).toBeUndefined(); // not tracked
+  });
+});
+
+describe("byte-bound check runs only near a cap or every N flushes (review E-1 finding 8)", () => {
+  it("does not serialise the store for the byte check on a flush far below the caps", async () => {
+    const store = boundedStore({ maxNodes: 300, maxEdges: 600 });
+    const spy = vi.spyOn(store, "byteSize");
+    store.upsertNode({ hash: "A", compact: "a", stateHash: "sa", index: {} });
+    await store.flush();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("checks the byte bound when the node count is within 10 % of the cap", async () => {
+    const store = boundedStore({ maxNodes: 10, maxBytes: 1 });
+    const spy = vi.spyOn(store, "byteSize");
+    for (let i = 0; i < 9; i++) {
+      clock += 1;
+      store.upsertNode({ hash: `n${i}`, compact: "x", stateHash: `s${i}`, index: {} });
+    }
+    await store.flush();
+    expect(spy).toHaveBeenCalled();
+    // Over the (tiny) byte cap: unpinned LRU nodes were evicted.
+    expect(store.pruneStats().evictedNodes).toBeGreaterThan(0);
+  });
+
+  it("checks the byte bound every BYTE_CHECK_EVERY_FLUSHES flushes even far below the caps", async () => {
+    const store = boundedStore({ maxNodes: 300, maxEdges: 600 });
+    const spy = vi.spyOn(store, "byteSize");
+    for (let i = 0; i < BYTE_CHECK_EVERY_FLUSHES; i++) {
+      clock += 1;
+      store.upsertNode({ hash: `n${i}`, compact: "x", stateHash: `s${i}`, index: {} });
+      await store.flush();
+    }
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("a direct enforceBounds() still checks bytes (the harness call)", () => {
+    const store = boundedStore({ maxNodes: 300 });
+    const spy = vi.spyOn(store, "byteSize");
+    store.enforceBounds();
+    expect(spy).toHaveBeenCalled();
   });
 });

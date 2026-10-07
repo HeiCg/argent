@@ -23,6 +23,16 @@ const DEFAULT_MAX_NODES = 300;
 const DEFAULT_MAX_EDGES = 600;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Review E-1 2026-10-07 finding 8: the byte cap is checked by serialising the
+ * whole store, so `flush()` only does it when the node or edge count is within
+ * BYTE_CHECK_NEAR_CAP of its cap, or on every BYTE_CHECK_EVERY_FLUSHES-th flush
+ * (bytes can grow with few nodes when compacts are large). A direct
+ * `enforceBounds()` call always checks.
+ */
+const BYTE_CHECK_NEAR_CAP = 0.9;
+export const BYTE_CHECK_EVERY_FLUSHES = 16;
+
 /** Phase E (design D2 R3): edge success-ratio decay + staleness thresholds. */
 const EDGE_DECAY_MIN_COUNT = 5;
 const EDGE_DECAY_MIN_RATIO = 0.2;
@@ -144,6 +154,8 @@ export class ScreenGraphStore {
 
   private writeTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingWrite = false;
+  /** Bounded flushes so far (drives the every-N byte check). */
+  private boundedFlushes = 0;
 
   /** Phase E: what the most recent `flush()` pruned (harness record). */
   private lastPrune: PruneStats = {
@@ -457,7 +469,14 @@ export class ScreenGraphStore {
     }
     if (!this.pendingWrite) return;
     this.pendingWrite = false;
-    if (this.boundsEnabled) this.enforceBounds();
+    if (this.boundsEnabled) {
+      this.boundedFlushes += 1;
+      const nearCap =
+        this.nodesMap.size >= BYTE_CHECK_NEAR_CAP * this.maxNodes ||
+        this.edgesMap.size >= BYTE_CHECK_NEAR_CAP * this.maxEdges;
+      const periodic = this.boundedFlushes % BYTE_CHECK_EVERY_FLUSHES === 0;
+      this.enforceBounds({ checkBytes: nearCap || periodic });
+    }
     await this.persistNow();
   }
 
@@ -490,8 +509,11 @@ export class ScreenGraphStore {
    * referential-integrity sweep (G-I4). Amortized: it does the O(n) scans only
    * when actually over a cap, so a healthy store pays a couple of cheap checks.
    * Public so the harness can force it between sessions and read `pruneStats`.
+   * `checkBytes: false` skips the byte cap (it serialises the store); `flush()`
+   * passes it except near a cap or every BYTE_CHECK_EVERY_FLUSHES flushes.
    */
-  enforceBounds(): void {
+  enforceBounds(opts: { checkBytes?: boolean } = {}): void {
+    const checkBytes = opts.checkBytes ?? true;
     const now = this.now();
     let decayedEdges = 0;
     let evictedNodes = 0;
@@ -556,7 +578,7 @@ export class ScreenGraphStore {
 
     // R1 — byte cap: while over `maxBytes` and an unpinned node remains, evict LRU.
     let guard = 0;
-    while (this.byteSize() > this.maxBytes && guard < this.nodesMap.size + 1) {
+    while (checkBytes && this.byteSize() > this.maxBytes && guard < this.nodesMap.size + 1) {
       if (!evictLruUnpinned()) break;
       guard += 1;
     }
