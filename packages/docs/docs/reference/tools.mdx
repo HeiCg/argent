@@ -84,6 +84,18 @@ When no window is active, the open device server reads the screen again for up t
 `describe` uses another backend and returns `backend: "proprietary-fallback"` and
 `fallbackReason`.
 
+When the tree has a root but no elements, `describe` reads the screen again up to
+2 times, 50 ms apart. If all 3 reads have no elements, `describe` returns the
+root with no elements and a hint, without `treeEmpty`. The hint tells the agent
+that the screen can be mid-transition. It also tells the agent to run `describe`
+again or `await-screen-idle`. A `settle` of `true` or of more than 0 ms gives one
+read only.
+
+The `settle` parameter makes `describe` wait for UiAutomator idle before the
+read, for a maximum of 500 ms. A number sets a different maximum in ms. This
+wait does not confirm that the screen is quiet. To wait for the end of a
+transition, use `await-screen-idle`.
+
 ## Interacting
 
 | Tool                     | Description                                                      |
