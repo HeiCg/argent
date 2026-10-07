@@ -88,6 +88,53 @@ describe("summary tier", () => {
     expect(tokens(text)).toBeLessThanOrEqual(200);
   });
 
+  it("keeps an unlabelled 1-hop screen past the reachable cap as an affordance", () => {
+    // 9 labelled 1-hop screens fill the cap of 8; the unlabelled one sorts by its
+    // hash ("zz…") after them. A labelled screen past the cap stays addressable by
+    // its label, an unlabelled one has no label to type, so its edge stays listed.
+    const nodes: Record<string, ScreenNode> = { root: node("root", { label: "Settings" }) };
+    const edges: Edge[] = [];
+    for (const name of ["A", "B", "C", "D", "E", "F", "G", "H", "I"]) {
+      nodes[`n_${name}`] = node(`n_${name}`, { label: `Screen ${name}` });
+      edges.push(edge("root", `n_${name}`, 1, `Row ${name}`));
+    }
+    nodes["zz_unlabelled_screen"] = node("zz_unlabelled_screen");
+    edges.push(edge("root", "zz_unlabelled_screen", 1, "Row Z"));
+    const summary = buildSummary(nodes.root!, edges, nodes, { edges });
+    expect(summary.reachable).toHaveLength(8);
+    expect(summary.reachable!.some((r) => r.address.startsWith("zz_unlab"))).toBe(false);
+    expect(summary.affordances).toEqual([{ action: 'tap "Row Z"', to: "zz_unlab", count: 1 }]);
+    const text = renderSummary(summary);
+    expect(text).toContain('- tap "Row Z" -> zz_unlab (1)');
+    // The labelled screen past the cap is still left out (reachable by its label).
+    expect(text).not.toContain("Row I");
+  });
+
+  it("fills the reachable list by increasing hop count, 3-hop screens included", () => {
+    // root -> a1, a2 (1 hop) -> b1, b2 (2 hops) -> c1, c2 (3 hops): 6 under the cap.
+    const nodes: Record<string, ScreenNode> = { root: node("root", { label: "Settings" }) };
+    const edges: Edge[] = [];
+    const link = (from: string, to: string) => {
+      nodes[to] = node(to, { label: `Screen ${to}` });
+      edges.push(edge(from, to, 1, `Row ${to}`));
+    };
+    link("root", "a1");
+    link("root", "a2");
+    link("a1", "b1");
+    link("a2", "b2");
+    link("b1", "c1");
+    link("b2", "c2");
+    const summary = buildSummary(nodes.root!, edges.slice(0, 2), nodes, { edges });
+    expect(summary.reachable!.map((r) => [r.label, r.hops])).toEqual([
+      ["Screen a1", 1],
+      ["Screen a2", 1],
+      ["Screen b1", 2],
+      ["Screen b2", 2],
+      ["Screen c1", 3],
+      ["Screen c2", 3],
+    ]);
+  });
+
   it("uses hash8 when a screen has no label and reports changedSince", () => {
     const bare = node("abcdef0123456789", { visits: 1 });
     const summary = buildSummary(bare, [], {}, { changedSince: 3 });

@@ -209,3 +209,35 @@ describe("ScreenGraphStore hashed item texts (review E-1 finding 8b, R5)", () =>
     expect(raw.toLowerCase()).not.toContain("private story");
   });
 });
+
+describe("ScreenGraphStore clear (MULTIHOP: start the warm-up from an empty graph)", () => {
+  it("forgets this package's nodes and edges and persists the empty graph, other packages untouched", async () => {
+    const other = newStore("com.example.other", "1");
+    other.upsertNode({ hash: "cccc", compact: "other", stateHash: "s", index: {} });
+    await other.flush();
+    const store = newStore();
+    store.upsertNode({ hash: "aaaa", compact: "root", stateHash: "s1", index: {} });
+    store.upsertNode({ hash: "bbbb", compact: "net", stateHash: "s2", index: {} });
+    store.observe("aaaa", TAP, "bbbb");
+    await store.flush();
+
+    store.clear();
+    expect(store.nodes).toEqual({});
+    expect(store.edges).toEqual([]);
+    await store.flush();
+
+    const reloaded = await ScreenGraphStore.load({
+      packageName: "com.android.settings",
+      versionCode: "35",
+      baseDir: tmpDir,
+    });
+    expect(Object.keys(reloaded.nodes)).toEqual([]);
+    expect(reloaded.edges).toEqual([]);
+    const otherReloaded = await ScreenGraphStore.load({
+      packageName: "com.example.other",
+      versionCode: "1",
+      baseDir: tmpDir,
+    });
+    expect(otherReloaded.hasNode("cccc")).toBe(true);
+  });
+});

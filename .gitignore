@@ -79,3 +79,6 @@ xcuserdata/
 .demerzel/memory/.lock
 .demerzel/memory/HANDOFF.jsonl
 .demerzel/memory/.scan
+
+# AndroidWorld harness unit tests (python3 -m unittest)
+bench/androidworld/__pycache__/

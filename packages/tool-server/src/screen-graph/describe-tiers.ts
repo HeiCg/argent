@@ -6,7 +6,7 @@
  *   labels, and (when the caller passes the graph edges) up to 8 screens
  *   `navigate-to` can reach from here (address, label cut to 40 characters,
  *   hops). With that list, an edge to another screen (a 1-hop destination) is
- *   not an affordance.
+ *   not an affordance, unless that screen has no label and fell past the cap.
  *   ≤ ~100 tokens without the list, ≤ ~200 with it.
  * - `compact`: served from the node's cached rendering when the device
  *   `stateHash` still matches; patched from a device `diff` when only text
@@ -86,9 +86,11 @@ export function buildSummary(
 ): ScreenSummary {
   const topN = opts.topN ?? DEFAULT_TOP_N;
   const reachable: NonNullable<ScreenSummary["reachable"]> = [];
+  const listed = new Set<string>();
   if (opts.edges && opts.edges.length > 0) {
     const graph = { edges: opts.edges, nodes };
     for (const r of reachableScreens(graph, node.hash)) {
+      listed.add(r.hash);
       reachable.push({
         address: screenAddress(graph, r.hash),
         hops: r.hops,
@@ -98,10 +100,15 @@ export function buildSummary(
   }
   // With a reachable list, a plain edge to another screen is a 1-hop
   // destination: listed there, or past the list's cap and reachable by its
-  // label. Leave every one out so the tier stays within ~200 tokens however many
-  // destinations the screen has; self-loops and template edges stay.
+  // label. Leave those out so the tier stays within ~200 tokens however many
+  // labelled destinations the screen has; self-loops and template edges stay.
+  // A screen past the cap with no label has no name to pass back, so its edge
+  // stays as an affordance (target printed as its hash8).
   const oneHop = (e: Edge): boolean =>
-    !e.template && e.to !== node.hash && nodes[e.to]?.template !== true;
+    !e.template &&
+    e.to !== node.hash &&
+    nodes[e.to]?.template !== true &&
+    (listed.has(e.to) || nodes[e.to]?.label !== undefined);
   const affordances = [...outgoing]
     .filter((e) => reachable.length === 0 || !oneHop(e))
     .sort((a, b) => b.count - a.count)

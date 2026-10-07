@@ -683,6 +683,16 @@ export class ScreenGraphStore {
     await fsp.rename(tmp, file);
   }
 
+  /**
+   * Forget every node and edge of THIS package's graph (bench reset). Only this
+   * store's own document is affected: the empty graph replaces it on the next flush.
+   */
+  clear(): void {
+    this.nodesMap.clear();
+    this.edgesMap.clear();
+    this.markDirty();
+  }
+
   /** Drop the debounce timer without flushing (test / shutdown teardown). */
   dispose(): void {
     if (this.writeTimer) {

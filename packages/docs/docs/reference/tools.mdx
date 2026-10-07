@@ -364,8 +364,9 @@ On Android with the open device server active, `describe` takes a `tier`:
 
 `summary` and the `compact` cache need the `screen-graph` flag. The `summary` output
 ends with a `reachable screens:` list when the graph has a route from the current
-screen. With that list, `affordances:` does not show an action to another screen.
-These screens are 1 hop away, and the list or `navigate-to` reaches them:
+screen. With that list, `affordances:` does not show an action to another screen,
+except to a screen without a label that is not in the list. That action shows the
+screen id. The other screens are 1 hop away, and the list or `navigate-to` reaches them:
 
 ```
 screen: Settings  visits: 4
