@@ -713,3 +713,67 @@ test("E: simulator-server not ready marks an OFF block INVALID", () => {
     /VALIDITY: OFF-1 INVALID \(simulator-server not ready: Timed out waiting for simulator-server to become ready\)/
   );
 });
+
+test("same standard both arms: an empty timed describe makes an OFF or ON block INVALID, counted per verb", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  // Run 37223296646 OFF-1: ax-service returned 0 elements.
+  blocks[0].block.verbs.find((v) => v.verb === "describe").emptyDescribes = 2;
+  blocks[1].block.verbs.find((v) => v.verb === "tap+describe").emptyDescribes = 1;
+  for (const b of blocks.slice(2)) {
+    for (const v of b.block.verbs) {
+      if (v.verb === "describe" || v.verb === "tap+describe") v.emptyDescribes = 0;
+    }
+  }
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: OFF-1 INVALID \(empty describe \(0 elements\) in timed verbs: describe=2\)/
+  );
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-xcuitest INVALID \(empty describe \(0 elements\) in timed verbs: tap\+describe=1\)/
+  );
+  assert.doesNotMatch(r.stderr, /VALIDITY: (ON-siminput|OFF-2)/);
+  const m = mergedOf(r);
+  assert.deepEqual(m.validity["OFF-1"].perVerb.emptyDescribes, { describe: 2 });
+  assert.deepEqual(m.validity["OFF-2"].perVerb.emptyDescribes, {});
+  assert.match(r.stdout, /OFF-1: INVALID .* timedEmptyDescribes=describe=2 timedFallbacks=0/);
+  const sb = scoreboard(out);
+  assert.match(rowOf(sb, "### Block validity", "OFF-1"), /\| describe=2 \| 0 \|/);
+  assert.match(rowOf(sb, "### Block validity", "OFF-2"), /\| 0 \| 0 \| valid \|/);
+});
+
+test("a fallback inside a timed verb makes an ON block INVALID even when servedBy stayed on the open path", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  blocks[2].block.verbs.find((v) => v.verb === "describe").fallbacks = 1;
+  blocks[2].block.verbs.find((v) => v.verb === "gesture-swipe").fallbacks = 3;
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-siminput INVALID \(fallback inside timed verbs: describe=1, gesture-swipe=3\)/
+  );
+  const m = mergedOf(r);
+  assert.deepEqual(m.validity["ON-siminput"].perVerb.fallbacks, {
+    "describe": 1,
+    "gesture-swipe": 3,
+  });
+  assert.match(
+    rowOf(scoreboard(out), "### Block validity", "ON-siminput"),
+    /\| 0 \| describe=1, gesture-swipe=3 \| INVALID/
+  );
+});
+
+test("pre-repair blocks without the per-verb counters keep their verdict", () => {
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const m = mergedOf(r);
+  assert.deepEqual(m.validity["ON-xcuitest"].perVerb, { emptyDescribes: {}, fallbacks: {} });
+});

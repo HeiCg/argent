@@ -14,7 +14,7 @@
 // `INVALID (<reasons>)` and none of its latency / landing / scroll numbers.
 const fs = require("fs");
 const path = require("path");
-const { blockValidity, validityLabel } = require("./ios-validity");
+const { blockValidity, perVerbText, validityLabel } = require("./ios-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -144,18 +144,20 @@ L.push(`| blocks ran | ${present.join(", ") || "—"} |\n`);
 // the backend label, not the arm.
 L.push("### Block validity\n");
 L.push(
-  "| block | intended backend | observed tree | observed input | samples on the other arm's path | connection errors | verdict |"
+  "| block | intended backend | observed tree | observed input | samples on the other arm's path | connection errors | empty describes (timed) | fallbacks (timed) | verdict |"
 );
-L.push("|---|---|---|---|---|---|---|");
+L.push("|---|---|---|---|---|---|---|---|---|");
 for (const n of present) {
   const v = validity[n];
   const sb = v.servedBy || {};
+  const pv = v.perVerb || {};
+  const count = (c) => (c ? perVerbText(c) : "—");
   L.push(
-    `| ${n} | ${v.intendedBackend} | ${v.observedTreeBackend} | ${v.observedInput} | ${sb.crossed ?? "—"} / ${sb.total ?? "—"} | ${v.connectionErrors} | ${validityLabel(v)} |`
+    `| ${n} | ${v.intendedBackend} | ${v.observedTreeBackend} | ${v.observedInput} | ${sb.crossed ?? "—"} / ${sb.total ?? "—"} | ${v.connectionErrors} | ${count(pv.emptyDescribes)} | ${count(pv.fallbacks)} | ${validityLabel(v)} |`
   );
 }
 L.push(
-  "\n_INVALID blocks render no numbers below and are excluded from G2/G4/fidelity. ON blocks must be served only by the open runner (xcuitest-runner tree, open-device-server or sim-input input); OFF blocks only by ax-service + simulator-server._\n"
+  "\n_INVALID blocks render no numbers below and are excluded from G2/G4/fidelity. ON blocks must be served only by the open runner (xcuitest-runner tree, open-device-server or sim-input input); OFF blocks only by ax-service + simulator-server. A timed describe with 0 elements invalidates either arm; a fallback inside a timed verb invalidates an ON block._\n"
 );
 
 // Verb table per block.

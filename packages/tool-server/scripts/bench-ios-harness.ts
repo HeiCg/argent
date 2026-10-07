@@ -17,12 +17,24 @@
  *   - A stable-frame settle before the swipe "before" capture
  *     ({@link waitForStableFrame}), replacing a fixed 900 ms sleep that left the
  *     "before" frames blank.
+ *
+ * Runner lifetime (run 37223296646): the first start of a block missed the
+ * runner's 120 s ready budget in OFF-1, ON-siminput and OFF-2, and the oracle's
+ * next call made the registry start a second runner, reported as "restarted
+ * mid-block (starts=2, terminations=none)". Now the oracle goes through ONE
+ * {@link RunnerLease} per block (a failed start stays failed), retries a
+ * transient connection error on the same runner instead of resolving it again,
+ * and {@link watchRunnerLifecycle} records which call started each runner.
  */
 import { readFileSync } from "node:fs";
 import { ServiceState, type Registry } from "@argent/registry";
 import { iosOpenServerRef, type IosOpenDeviceServerApi } from "../src/blueprints/ios-open-server";
 import { resolveDevice } from "../src/utils/device-info";
-import type { IosOpenServerNode, IosOpenServerState } from "../src/utils/ios-open-server-client";
+import type {
+  IosOpenServerInfo,
+  IosOpenServerNode,
+  IosOpenServerState,
+} from "../src/utils/ios-open-server-client";
 
 export const SETTINGS_BUNDLE_ID = "com.apple.Preferences";
 
@@ -53,28 +65,135 @@ export function toolLayerRunner(
   return reg.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
 }
 
-/** Starts and mid-block terminations of the tool layer's runner on `reg`. A block
- * expects exactly one start and no termination before its own dispose. */
+/**
+ * ONE start of the tool layer's runner per block: the first `ensure()` runs
+ * `start`, every later call (concurrent or not) shares that promise. A failed
+ * start stays failed: later calls reject with the same error and never start a
+ * second runner, so the oracle cannot restart the measured instrument mid-block.
+ */
+export class RunnerLease<T> {
+  private pending: Promise<T> | null = null;
+  private failure: Error | null = null;
+
+  constructor(private readonly start: () => Promise<T>) {}
+
+  ensure(): Promise<T> {
+    if (!this.pending) {
+      this.pending = this.start().catch((e: unknown) => {
+        this.failure = e instanceof Error ? e : new Error(String(e));
+        throw this.failure;
+      });
+    }
+    return this.pending;
+  }
+
+  /** The start's error message, or null when it has not failed. */
+  startFailure(): string | null {
+    return this.failure?.message ?? null;
+  }
+}
+
+/** One start of the tool layer's runner: the call that triggered it and how it
+ * ended (`pending` while starting). */
+export interface RunnerStart {
+  n: number;
+  trigger: string;
+  outcome: "pending" | "running" | "error";
+  ms: number | null;
+  error?: string;
+}
+
+interface RunnerTermination {
+  edge: string;
+  trigger: string;
+  error?: string;
+}
+
+/** The registry's ERROR event wraps the cause; keep the cause's own message. */
+function errorText(err: Error): string {
+  const cause = (err as Error & { cause?: unknown }).cause;
+  return cause instanceof Error ? cause.message : err.message;
+}
+
+/**
+ * Starts and mid-block terminations of the tool layer's runner on `reg`. A block
+ * expects exactly one start and no termination before its own dispose. Each
+ * start and termination records `trigger()` (the call in flight: `prepare`,
+ * `oracle:<op>`, `tool:<name>`), so a second start names who caused it.
+ */
 export function watchRunnerLifecycle(
   reg: Pick<Registry, "events">,
-  udid: string
-): { starts(): number; terminations(): string[]; dispose(): void } {
+  udid: string,
+  opts: { trigger?: () => string; clock?: () => number } = {}
+): {
+  starts(): number;
+  terminations(): string[];
+  startLog(): RunnerStart[];
+  /** Null for one start and no termination; otherwise what happened, by whom. */
+  restartCause(): string | null;
+  dispose(): void;
+} {
   const urn = iosOpenServerRef(resolveDevice(udid)).urn;
-  let starts = 0;
-  const terminations: string[] = [];
-  const listener = (id: string, from: ServiceState, to: ServiceState): void => {
+  const trigger = opts.trigger ?? (() => "unattributed");
+  const clock = opts.clock ?? Date.now;
+  const starts: RunnerStart[] = [];
+  const terminations: RunnerTermination[] = [];
+  let startedAt = 0;
+  // Where the registry's ERROR event (emitted right after the transition) lands.
+  let awaitingError: { error?: string } | null = null;
+
+  const onState = (id: string, from: ServiceState, to: ServiceState): void => {
     if (id !== urn) return;
-    if (to === ServiceState.STARTING) starts++;
+    awaitingError = null;
+    if (to === ServiceState.STARTING) {
+      startedAt = clock();
+      starts.push({ n: starts.length + 1, trigger: trigger(), outcome: "pending", ms: null });
+      return;
+    }
+    const last = starts[starts.length - 1];
+    if (from === ServiceState.STARTING && last) {
+      last.outcome = to === ServiceState.RUNNING ? "running" : "error";
+      last.ms = clock() - startedAt;
+      if (to === ServiceState.ERROR) awaitingError = last;
+    }
     if (from === ServiceState.RUNNING && to !== ServiceState.RUNNING) {
-      terminations.push(`${from}→${to}`);
+      const t: RunnerTermination = { edge: `${from}→${to}`, trigger: trigger() };
+      terminations.push(t);
+      awaitingError = t;
+    } else if (to === ServiceState.ERROR && from === ServiceState.TERMINATING) {
+      awaitingError = terminations[terminations.length - 1] ?? null;
     }
   };
-  reg.events.on("serviceStateChange", listener);
+  const onError = (id: string, err: Error): void => {
+    if (id !== urn || !awaitingError || awaitingError.error) return;
+    awaitingError.error = errorText(err);
+  };
+  reg.events.on("serviceStateChange", onState);
+  reg.events.on("serviceError", onError);
+
   return {
-    starts: () => starts,
-    terminations: () => terminations.slice(),
+    starts: () => starts.length,
+    terminations: () => terminations.map((t) => t.edge),
+    startLog: () => starts.map((s) => ({ ...s })),
+    restartCause: () => {
+      if (starts.length <= 1 && terminations.length === 0) return null;
+      const startText = starts
+        .map(
+          (s) =>
+            `#${s.n} by ${s.trigger}: ${s.outcome}` +
+            `${s.ms !== null ? ` after ${s.ms} ms` : ""}${s.error ? ` (${s.error})` : ""}`
+        )
+        .join("; ");
+      const termText = terminations.length
+        ? terminations
+            .map((t) => `${t.edge} during ${t.trigger}${t.error ? ` (${t.error})` : ""}`)
+            .join(", ")
+        : "none";
+      return `tool-layer runner: ${starts.length} starts in the block [${startText}]; terminations=${termText}`;
+    },
     dispose: () => {
-      reg.events.off("serviceStateChange", listener);
+      reg.events.off("serviceStateChange", onState);
+      reg.events.off("serviceError", onError);
     },
   };
 }
@@ -101,7 +220,7 @@ export interface StageSample {
 /** The runner calls the oracle makes. */
 export type OracleRunner = Pick<
   IosOpenDeviceServerApi,
-  "launchApp" | "getNestedState" | "getScreenSize"
+  "getInfo" | "launchApp" | "getNestedState" | "getScreenSize"
 >;
 
 function walk(
@@ -161,47 +280,94 @@ function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | un
  * coordinate every arm taps, the scroll region, the screen height in points and
  * the G3 stage timings, all read from the tool layer's runner, untimed.
  *
- * Target app (B): `launchApp(bundleId)` runs once per block before the first tree
- * read; it also sets the runner's stored target, which the product `describe` /
- * `gesture-*` calls (no bundleId) rely on with the flag on. Every tree read then
+ * Target app (B): before the first tree read, once per block, the runner's
+ * stored target is set to `bundleId` the way the product `launch-app` sets it
+ * (`iosOpenServerSetTarget`): `getInfo`, and `launchApp` only when the runner
+ * does not already target the app. The product `describe` / `gesture-*` calls
+ * (no bundleId) rely on that stored target with the flag on. Every tree read then
  * passes `bundleId` explicitly, so a simctl relaunch between iterations can never
  * leave a read without a target. A second `launchApp` per relaunch is not used:
  * XCUIApplication.launch() terminates and relaunches the app, doubling every
  * root restore.
+ *
+ * Runner lifetime: `runner` should be one {@link RunnerLease}'s `ensure`, so the
+ * oracle never starts a second runner. A connection-class error on an RPC is
+ * retried on the same runner (`retries` times, `retryDelayMs` apart; the oracle
+ * is untimed) and reported only once the retries are spent.
  */
 export class RunnerOracle {
   private readonly runner: () => Promise<OracleRunner>;
   private readonly bundleId: string;
   private readonly onConnectionError?: (message: string) => void;
+  private readonly onCall?: (op: string) => void;
+  private readonly retries: number;
+  private readonly retryDelayMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
   private targetSet = false;
   private relaunches = 0;
+  private retried = 0;
   private cachedHeightPoints: number | null = null;
 
   constructor(opts: {
     runner: () => Promise<OracleRunner>;
     bundleId?: string;
     onConnectionError?: (message: string) => void;
+    /** Called with the oracle operation before each runner call. */
+    onCall?: (op: string) => void;
+    retries?: number;
+    retryDelayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
   }) {
     this.runner = opts.runner;
     this.bundleId = opts.bundleId ?? SETTINGS_BUNDLE_ID;
     this.onConnectionError = opts.onConnectionError;
+    this.onCall = opts.onCall;
+    this.retries = opts.retries ?? 2;
+    this.retryDelayMs = opts.retryDelayMs ?? 500;
+    this.sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   }
 
-  private async call<T>(fn: (r: OracleRunner) => Promise<T>): Promise<T> {
+  private report(e: unknown): void {
+    if (isConnectionError(e)) this.onConnectionError?.(e instanceof Error ? e.message : String(e));
+  }
+
+  private async call<T>(op: string, fn: (r: OracleRunner) => Promise<T>): Promise<T> {
+    this.onCall?.(op);
+    let runner: OracleRunner;
     try {
-      return await fn(await this.runner());
+      runner = await this.runner();
     } catch (e) {
-      if (isConnectionError(e))
-        this.onConnectionError?.(e instanceof Error ? e.message : String(e));
+      // No runner (a failed start): not retried, the lease keeps it failed.
+      this.report(e);
       throw e;
+    }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn(runner);
+      } catch (e) {
+        if (!isConnectionError(e) || attempt >= this.retries) {
+          this.report(e);
+          throw e;
+        }
+        this.retried++;
+        await this.sleep(this.retryDelayMs);
+      }
     }
   }
 
-  /** `launchApp(bundleId)` on the runner, once per block. */
+  /** The runner targets `bundleId`, once per block (launchApp only if needed). */
   async ensureTarget(): Promise<void> {
     if (this.targetSet) return;
-    await this.call((r) => r.launchApp(this.bundleId));
+    const info: IosOpenServerInfo = await this.call("getInfo", (r) => r.getInfo());
+    if (info.bundleId !== this.bundleId) {
+      await this.call("launchApp", (r) => r.launchApp(this.bundleId));
+    }
     this.targetSet = true;
+  }
+
+  /** Connection errors that succeeded on a retry (same runner, no restart). */
+  transientRetries(): number {
+    return this.retried;
   }
 
   /** The app was relaunched outside the runner (simctl). Reads keep naming it. */
@@ -213,13 +379,13 @@ export class RunnerOracle {
     return this.relaunches;
   }
 
-  private async tree(): Promise<IosOpenServerState> {
+  private async tree(op: string): Promise<IosOpenServerState> {
     await this.ensureTarget();
-    return this.call((r) => r.getNestedState({ bundleId: this.bundleId }));
+    return this.call(op, (r) => r.getNestedState({ bundleId: this.bundleId }));
   }
 
   async locate(label: string): Promise<NPoint | null> {
-    const st = await this.tree();
+    const st = await this.tree("locate");
     const hit = findTappableByLabel(st.tree, label, st.info.screenWidth, st.info.screenHeight);
     if (!hit) return null;
     const cxPt = (hit.bounds.x1 + hit.bounds.x2) / 2;
@@ -228,7 +394,7 @@ export class RunnerOracle {
   }
 
   async scrollRegion(): Promise<{ y1: number; y2: number }> {
-    const st = await this.tree();
+    const st = await this.tree("scrollRegion");
     const c = findScrollContainer(st.tree);
     if (!c) return { y1: 0.2, y2: 0.85 };
     // Clamp to [0,1]: a Table can report a content-sized frame taller than the
@@ -239,7 +405,7 @@ export class RunnerOracle {
   }
 
   async stages(): Promise<StageSample> {
-    const t = (await this.tree()).timings;
+    const t = (await this.tree("stages")).timings;
     const sum = t.snapshotMs + t.serializeMs + t.encodeMs;
     return {
       snapshotMs: t.snapshotMs,
@@ -253,13 +419,13 @@ export class RunnerOracle {
 
   async screenHeightPoints(): Promise<number> {
     if (this.cachedHeightPoints !== null) return this.cachedHeightPoints;
-    const s = await this.call((r) => r.getScreenSize());
+    const s = await this.call("getScreenSize", (r) => r.getScreenSize());
     this.cachedHeightPoints = s.screenHeight;
     return s.screenHeight;
   }
 
   async screenSize(): Promise<{ w: number; h: number }> {
-    const s = await this.call((r) => r.getScreenSize());
+    const s = await this.call("getScreenSize", (r) => r.getScreenSize());
     return { w: s.screenWidth, h: s.screenHeight };
   }
 }
@@ -268,25 +434,40 @@ export class RunnerOracle {
 /* serving path                                                               */
 /* -------------------------------------------------------------------------- */
 
-// The notes the tool layer logs (console.debug) when the open iOS path fails and
-// it falls back: `[describe-ios] … falling back to ax-service: …`,
-// `[gesture-tap] / [gesture-swipe] … falling back to simulator-server: …`.
+// The notes the tool layer logs when an open iOS path fails and it falls back.
+// Before PR #16 at console.debug (`[gesture-tap] ios open-device-server failed,
+// falling back to simulator-server: …`); since PR #16 at console.warn
+// (`[<tool>] open ios-device-server failed, falling back to <path>: …`, also for
+// launch-app, keyboard and screenshot). Both levels and both wordings count.
 const FALLBACK_NOTE =
-  /^\[(describe-ios|gesture-tap|gesture-swipe)\].*falling back to (ax-service|simulator-server)/;
+  /^\[(describe-ios|gesture-tap|gesture-swipe|launch-app|keyboard|screenshot)\].*falling back to /;
 
-/** Records the tool layer's fallback notes while forwarding every console.debug. */
+type ConsoleLike = {
+  debug: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+};
+
+/** Records the tool layer's fallback notes while forwarding every console.debug
+ * and console.warn line. */
 export class FallbackNotes {
   private notes: string[] = [];
 
-  install(target: { debug: (...args: unknown[]) => void } = console): () => void {
-    const original = target.debug;
-    target.debug = (...args: unknown[]): void => {
-      const line = args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
-      if (FALLBACK_NOTE.test(line)) this.notes.push(line);
-      original.apply(target, args);
-    };
+  install(target: ConsoleLike = console): () => void {
+    const restore: Array<() => void> = [];
+    for (const level of ["debug", "warn"] as const) {
+      const original = target[level];
+      if (typeof original !== "function") continue;
+      target[level] = (...args: unknown[]): void => {
+        const line = args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
+        if (FALLBACK_NOTE.test(line)) this.notes.push(line);
+        original.apply(target, args);
+      };
+      restore.push(() => {
+        target[level] = original;
+      });
+    }
     return () => {
-      target.debug = original;
+      for (const r of restore) r();
     };
   }
 
@@ -298,14 +479,25 @@ export class FallbackNotes {
   }
 }
 
+/** A tool result's fallback marker (PR #16): `backend: "proprietary-fallback"`. */
+export function isFallbackResult(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { backend?: unknown }).backend === "proprietary-fallback"
+  );
+}
+
 /** The injector a `gesture-tap` / `gesture-swipe` tool call was served by: with
  * the flag on, the open runner unless the tool logged a fallback note during the
- * call; with the flag off, simulator-server. */
+ * call or marked its result as a fallback; with the flag off, simulator-server. */
 export function gesturePath(
   flagOn: boolean,
-  notes: string[]
+  notes: string[],
+  result?: unknown
 ): "open-device-server" | "simulator-server" {
   if (!flagOn) return "simulator-server";
+  if (isFallbackResult(result)) return "simulator-server";
   return notes.some((n) => /^\[gesture-(tap|swipe)\].*falling back to simulator-server/.test(n))
     ? "simulator-server"
     : "open-device-server";
