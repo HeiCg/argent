@@ -261,3 +261,89 @@ test("settings-reset: the bench waits for Settings after every am start, logs re
   }
   assert.match(src, /resetWaitMs/);
 });
+
+/* ---- run 37591260027 finding 6: the focus read never matched (489/489 timeouts) ---- */
+
+test("settings-reset: PROBE_CMD reads focus from the WINDOWS section and the input dispatcher, not grep -m1 of the full dump", () => {
+  const { PROBE_CMD } = require("./settings-reset");
+  // The full `dumpsys window` starts with the LAST ANR section's copy of the window state.
+  assert.doesNotMatch(PROBE_CMD, /dumpsys window \| grep -m1/);
+  assert.match(PROBE_CMD, /dumpsys window windows \| grep -E 'mCurrentFocus\|mFocusedApp'/);
+  assert.match(PROBE_CMD, /dumpsys input \| grep -A1 FocusedWindows/);
+});
+
+// The probe output with explicit focus sections (window manager lines, input lines).
+function probeText2({ wm = [], input = [] } = {}) {
+  const base = probeText({ focus: "" }).split("\n");
+  // Drop the default focus line written by probeText.
+  base.pop();
+  return [...base, ...wm, require("./settings-reset").INPUT_MARK, ...input].join("\n");
+}
+
+test("settings-reset: every window-manager focus line counts, not only the first", () => {
+  const p = parseResetProbe(
+    probeText2({
+      wm: [
+        "  mCurrentFocus=Window{1 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity}",
+        "  mFocusedApp=ActivityRecord{2 u0 com.android.settings/.Settings t12}",
+        "  mCurrentFocus=Window{3 u0 com.android.settings/com.android.settings.Settings}",
+      ],
+    })
+  );
+  assert.strictEqual(p.settingsFocused, true);
+  assert.strictEqual(p.focusWm, "com.android.settings/com.android.settings.Settings");
+  assert.strictEqual(p.clean, true);
+});
+
+test("settings-reset: the input dispatcher's focused window is a second source", () => {
+  const p = parseResetProbe(
+    probeText2({
+      wm: ["  mCurrentFocus=null"],
+      input: [
+        "  FocusedWindows:",
+        "    displayId=0, name='4f2a1 com.android.settings/com.android.settings.Settings'",
+      ],
+    })
+  );
+  assert.strictEqual(p.focusWm, "null");
+  assert.strictEqual(p.focusInput, "com.android.settings/com.android.settings.Settings");
+  assert.strictEqual(p.settingsFocused, true);
+  // Neither source names Settings: not focused, and the histogram values say what was read.
+  const q = parseResetProbe(
+    probeText2({
+      wm: ["  mCurrentFocus=Window{9 u0 com.android.launcher3/.Launcher}"],
+      input: ["  FocusedWindows: <none>"],
+    })
+  );
+  assert.strictEqual(q.settingsFocused, false);
+  assert.strictEqual(q.focusWm, "com.android.launcher3/.Launcher");
+  assert.strictEqual(q.focusInput, "absent");
+});
+
+test("settings-reset: focus reads are in the reasons histogram; a focused Settings is ready in ~1 s", async () => {
+  let t = 0;
+  const r = await waitSettingsReady({
+    startedAt: 0,
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+    probe: () => {
+      t += 30;
+      return probeText2({
+        wm: ["  mCurrentFocus=Window{3 u0 com.android.settings/com.android.settings.Settings}"],
+        input: ["  FocusedWindows:", "    displayId=0, name='3 com.android.settings/.Settings'"],
+      });
+    },
+    relaunch: () => {},
+  });
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.waitMs <= 1200, `wait ${r.waitMs}`);
+  assert.strictEqual(
+    r.reasons["focus:com.android.settings/com.android.settings.Settings"],
+    r.polls,
+    JSON.stringify(r.reasons)
+  );
+  assert.strictEqual(r.reasons["focus-input:com.android.settings/.Settings"], r.polls);
+  assert.strictEqual(r.reasons["outcome:ready"], 1);
+});
