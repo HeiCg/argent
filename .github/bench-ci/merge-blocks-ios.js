@@ -20,7 +20,13 @@
 // (no redir transport, no input-manager strategy arms).
 const fs = require("fs");
 const path = require("path");
-const { blockValidity, connectionErrorsOf, perVerbText, validityLabel } = require("./ios-validity");
+const {
+  blockValidity,
+  connectionErrorsOf,
+  perVerbText,
+  treeReferences,
+  validityLabel,
+} = require("./ios-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -99,8 +105,12 @@ function verbSamples(block, verb) {
 const files = readBlocks();
 const present = ALL.filter((n) => files[n]);
 // Fail-closed validity per block (C.1–C.4, E). Computed from the recorded serving
-// paths, never from the arm's fixed label.
-const validity = Object.fromEntries(present.map((n) => [n, blockValidity(files[n].block)]));
+// paths, never from the arm's fixed label. treeSuspect (iOS-4) judges each block's
+// describe element counts against the other config's pooled median.
+const treeRefs = treeReferences(present.map((n) => files[n].block));
+const validity = Object.fromEntries(
+  present.map((n) => [n, blockValidity(files[n].block, treeRefs)])
+);
 const isValid = (n) => Boolean(validity[n] && validity[n].valid);
 console.log(`iOS blocks present: ${present.join(", ") || "(none)"}`);
 for (const n of present) {

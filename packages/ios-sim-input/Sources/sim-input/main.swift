@@ -10,24 +10,33 @@ import Foundation
 //
 // Command schemas (coords are POINTS in the simulator screen space,
 // not pixels — baguette's convention; no scaling applied here):
-//   {"id":<int>,"type":"tap","x":<f>,"y":<f>}
-//   {"id":<int>,"type":"swipe","fromX":<f>,"fromY":<f>,"toX":<f>,"toY":<f>,"durationMs":<int>}
+//   {"id":<int>,"type":"tap","x":<f>,"y":<f>,"holdMs":<f>}   // holdMs optional, default 50
+//   {"id":<int>,"type":"swipe","fromX":<f>,"fromY":<f>,"toX":<f>,"toY":<f>,"durationMs":<int>,"holdEndMs":<f>}   // holdEndMs optional
 //   {"id":<int>,"type":"press","key":<int>}     // key = HID usage on page 7
 //   {"id":<int>,"type":"release","key":<int>}
 //   {"id":<int>,"type":"text","text":"..."}      // ASCII; decomposed via KeyboardKey
 //
 // Ack schemas:
-//   {"id":<int>,"ok":true}
-//   {"id":<int>,"ok":false,"error":"..."}
-// A tap/swipe ack also carries its pacing (iOS-4 ticket 3), in ms:
+//   {"id":<int>,"ok":true,"timing":{...}}
+//   {"id":<int>,"ok":false,"error":"...","timing":{...}}
+//
+// `timing` (iOS-4 ticket 1), monotonic ms on this process's clock:
+//   {"recvAt":<f>,"sends":[{"sendStart":<f>,"sendEnd":<f>},...],"ackAt":<f>}
+// recvAt = the line was read off stdin; one sends entry per HID message, in
+// order; ackAt = just before the ack is written. Only differences are
+// meaningful. The ack is still written after the last message (Up) is sent.
+//
+// A tap/swipe ack also carries its pacing (iOS-4 ticket 3), top level, in ms:
 //   "scheduledMs" (last frame deadline after the Down), "actualMs" (Down→Up
 //   measured), "overshootMs" (actual − scheduled), "maxFrameLateMs" (worst
-//   frame wake past its deadline). The ack is still written after the Up.
+//   frame wake past its deadline).
 //
-// Threading: this (main) thread only reads stdin and enqueues each line on the
-// serial `sim-input.send` queue (QoS userInteractive), which runs one command
-// at a time in arrival order. The process holds a latencyCritical activity for
-// its whole life so App Nap / timer coalescing do not stretch frame waits.
+// Threading: this (main) thread only reads stdin, stamps `recvAt`, and
+// enqueues each line on the serial `sim-input.send` queue (QoS
+// userInteractive), which runs one command at a time in arrival order. With a
+// backlog, `ackAt − recvAt` includes the queue wait. The process holds a
+// latencyCritical activity for its whole life so App Nap / timer coalescing
+// do not stretch frame waits.
 //
 // Screen size is required for `tap`/`swipe`'s normalisation step
 // (IOHIDDigitizerDispatch expects 0..1 coords). The caller can supply
@@ -87,18 +96,32 @@ let ackQueue = DispatchQueue(label: "sim-input.ack")
     }
 }
 
-/// The ack plus the pacing of the gesture this command ran, if any.
-@Sendable func withPacing(_ obj: [String: Any]) -> [String: Any] {
-    guard let pacing = PacingRecorder.shared.take() else { return obj }
-    return obj.merging(pacing.ackFields) { current, _ in current }
+/// The ack's timing block: the line's receive time, the HID messages sent
+/// since (drained from `SendTimeline`), and the ack time.
+@Sendable func timing(recvAt: Double) -> [String: Any] {
+    let sends: [[String: Double]] = SendTimeline.shared.drain().map {
+        ["sendStart": $0.start, "sendEnd": $0.end]
+    }
+    return ["recvAt": recvAt, "sends": sends, "ackAt": monotonicMs()]
 }
 
-@Sendable func ackOk(_ id: Int) {
-    writeAck(withPacing(["id": id, "ok": true]))
+/// The ack plus the pacing of the gesture this command ran (if any) and the
+/// timing block.
+@Sendable func ackFields(_ obj: [String: Any], recvAt: Double) -> [String: Any] {
+    var out = obj
+    if let pacing = PacingRecorder.shared.take() {
+        out.merge(pacing.ackFields) { current, _ in current }
+    }
+    out["timing"] = timing(recvAt: recvAt)
+    return out
 }
 
-@Sendable func ackErr(_ id: Int, _ message: String) {
-    writeAck(withPacing(["id": id, "ok": false, "error": message]))
+@Sendable func ackOk(_ id: Int, recvAt: Double) {
+    writeAck(ackFields(["id": id, "ok": true], recvAt: recvAt))
+}
+
+@Sendable func ackErr(_ id: Int, _ message: String, recvAt: Double) {
+    writeAck(ackFields(["id": id, "ok": false, "error": message], recvAt: recvAt))
 }
 
 // MARK: - dispatch
@@ -120,32 +143,40 @@ let defaultSize = Size(width: 1.0, height: 1.0)
     return nil
 }
 
-@Sendable func handle(_ obj: [String: Any]) {
+@Sendable func handle(_ obj: [String: Any], recvAt: Double) {
     PacingRecorder.shared.reset()
+    SendTimeline.shared.reset()
     let id = (obj["id"] as? Int) ?? -1
     guard let type = obj["type"] as? String else {
-        ackErr(id, "missing type"); return
+        ackErr(id, "missing type", recvAt: recvAt); return
     }
     switch type {
     case "tap":
         guard let x = double(obj, "x"), let y = double(obj, "y") else {
-            ackErr(id, "tap: missing x/y"); return
+            ackErr(id, "tap: missing x/y", recvAt: recvAt); return
         }
-        let ok = input.tap(at: Point(x: x, y: y), size: sizeFrom(obj), duration: 0)
-        ok ? ackOk(id) : ackErr(id, "tap failed")
+        // `holdMs` (optional): Down→Up hold. Absent or ≤ 0 keeps the default
+        // 50 ms (`duration: 0`); IOHIDDigitizerDispatch floors it at 20 ms.
+        let holdMs = double(obj, "holdMs") ?? 0
+        let ok = input.tap(at: Point(x: x, y: y), size: sizeFrom(obj),
+                           duration: holdMs > 0 ? holdMs / 1000.0 : 0)
+        ok ? ackOk(id, recvAt: recvAt) : ackErr(id, "tap failed", recvAt: recvAt)
 
     case "swipe":
         guard let fx = double(obj, "fromX"), let fy = double(obj, "fromY"),
               let tx = double(obj, "toX"),   let ty = double(obj, "toY") else {
-            ackErr(id, "swipe: missing fromX/fromY/toX/toY"); return
+            ackErr(id, "swipe: missing fromX/fromY/toX/toY", recvAt: recvAt); return
         }
         let durationMs = (obj["durationMs"] as? Int) ?? Int(double(obj, "durationMs") ?? 250)
         let durationS = max(0.01, Double(durationMs) / 1000.0)
+        // `holdEndMs` (optional): hold at the end point before the lift.
+        let holdEndMs = max(0, double(obj, "holdEndMs") ?? 0)
         let ok = input.swipe(
             from: Point(x: fx, y: fy), to: Point(x: tx, y: ty),
-            size: sizeFrom(obj), duration: durationS
+            size: sizeFrom(obj), duration: durationS,
+            dwellMs: UInt32(min(holdEndMs, 10_000))
         )
-        ok ? ackOk(id) : ackErr(id, "swipe failed")
+        ok ? ackOk(id, recvAt: recvAt) : ackErr(id, "swipe failed", recvAt: recvAt)
 
     case "press", "release":
         // HID usage on page 7 (keyboard). Down/up are dispatched
@@ -154,7 +185,7 @@ let defaultSize = Size(width: 1.0, height: 1.0)
         // here as discrete press/release so callers can stage
         // multi-key combos (e.g. shift held while typing).
         guard let usage = obj["key"] as? Int else {
-            ackErr(id, "\(type): missing key (HID usage)"); return
+            ackErr(id, "\(type): missing key (HID usage)", recvAt: recvAt); return
         }
         let key = KeyboardKey(hidUsage: HIDUsage(page: 7, usage: UInt32(usage)))
         // `IndigoHIDInput.key()` brackets down+up internally; for a
@@ -165,21 +196,22 @@ let defaultSize = Size(width: 1.0, height: 1.0)
         // `press` re-bracket. This matches baguette's exposed surface.
         if type == "press" {
             let ok = input.key(key, modifiers: [], duration: 0)
-            ok ? ackOk(id) : ackErr(id, "press failed")
+            ok ? ackOk(id, recvAt: recvAt) : ackErr(id, "press failed", recvAt: recvAt)
         } else {
             // No-op: `key()` already releases. Ack so the wire
             // stays in lockstep with the caller.
-            ackOk(id)
+            ackOk(id, recvAt: recvAt)
         }
 
     case "text":
         guard let text = obj["text"] as? String else {
-            ackErr(id, "text: missing text"); return
+            ackErr(id, "text: missing text", recvAt: recvAt); return
         }
         var anyFail = false
         for c in text {
             guard let (key, mods) = KeyboardKey.decompose(character: c) else {
-                logErr("text: unsupported character '\(c)'")
+                // The character itself is not logged: the text can be a secret.
+                logErr("text: unsupported input, skipped")
                 anyFail = true
                 continue
             }
@@ -187,22 +219,22 @@ let defaultSize = Size(width: 1.0, height: 1.0)
                 anyFail = true
             }
         }
-        anyFail ? ackErr(id, "text: one or more characters failed") : ackOk(id)
+        anyFail ? ackErr(id, "text: one or more characters failed", recvAt: recvAt) : ackOk(id, recvAt: recvAt)
 
     default:
-        ackErr(id, "unknown type: \(type)")
+        ackErr(id, "unknown type: \(type)", recvAt: recvAt)
     }
 }
 
 /// Parse one stdin line and run it. Called on `sendQueue` only.
-@Sendable func handleLine(_ lineData: Data) {
+@Sendable func handleLine(_ lineData: Data, recvAt: Double) {
     do {
         let parsed = try JSONSerialization.jsonObject(with: lineData, options: [])
         guard let obj = parsed as? [String: Any] else {
             logErr("ignoring non-object JSON line")
             return
         }
-        handle(obj)
+        handle(obj, recvAt: recvAt)
     } catch {
         logErr("JSON parse error: \(error)")
     }
@@ -223,8 +255,9 @@ while true {
         let lineData = buffer[..<nlIdx]
         buffer.removeSubrange(...nlIdx)
         if lineData.isEmpty { continue }
+        let recvAt = monotonicMs()
         let line = Data(lineData)
-        sendQueue.async { handleLine(line) }
+        sendQueue.async { handleLine(line, recvAt: recvAt) }
     }
 }
 

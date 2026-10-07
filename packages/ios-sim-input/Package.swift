@@ -3,8 +3,10 @@
 // Copied VERBATIM (with this provenance banner prepended) from the owner's
 // device-farm/device-stream `tools/sim-input` for the argent fork's open iOS
 // driver bench (ticket iOS-2). The four Swift sources under Sources/sim-input/
-// are byte-identical to that source and carry their own Apache-2.0 provenance
-// banners pointing at baguette (https://github.com/tddworks/baguette).
+// carry their own Apache-2.0 provenance banners pointing at baguette
+// (https://github.com/tddworks/baguette); they match that source except for the
+// iOS-4 changes (per-message send timing on the ack, tap `holdMs`, the
+// tap/swipe frame pacer), which each changed file notes in its banner.
 // Nothing here is reverse-engineered from any closed argent binary.
 
 import PackageDescription

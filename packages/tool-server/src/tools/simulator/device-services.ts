@@ -7,6 +7,7 @@ import { CHROMIUM_JS_RUNTIME_DEBUGGER_NAMESPACE } from "../../blueprints/chromiu
 import { TV_CONTROL_NAMESPACE } from "../../blueprints/tv-control";
 import { ANDROID_TV_CONTROL_NAMESPACE } from "../../blueprints/android-tv-control";
 import { AX_SERVICE_NAMESPACE } from "../../blueprints/ax-service";
+import { IOS_SIM_INPUT_NAMESPACE } from "../../blueprints/ios-sim-input";
 import { SCREEN_RECORDING_SESSION_NAMESPACE } from "../../blueprints/screen-recording-session";
 import { NATIVE_PROFILER_SESSION_NAMESPACE } from "../../blueprints/native-profiler-session";
 import { JS_RUNTIME_DEBUGGER_NAMESPACE } from "../../blueprints/js-runtime-debugger";
@@ -85,6 +86,8 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
   AX_SERVICE_NAMESPACE,
   SCREEN_RECORDING_SESSION_NAMESPACE,
   NATIVE_PROFILER_SESSION_NAMESPACE,
+  // The sim-input HID process of an iOS simulator (open-iOS flag).
+  IOS_SIM_INPUT_NAMESPACE,
   ...PORT_KEYED_NAMESPACES,
 ];
 
@@ -108,8 +111,14 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
 export function transportNamespacesForPlatform(platform: string): readonly string[] {
   if (platform === "chromium") return [CHROMIUM_CDP_NAMESPACE];
   if (platform === "android") return [SIMULATOR_SERVER_NAMESPACE, ANDROID_TV_CONTROL_NAMESPACE];
-  // Shape cannot tell tvOS from iOS or a simulator from a physical device here. Cover all three namespaces.
-  return [SIMULATOR_SERVER_NAMESPACE, IOS_DEVICE_RUNNER_NAMESPACE, TV_CONTROL_NAMESPACE];
+  // Shape cannot tell tvOS from iOS or a simulator from a physical device here. Cover all of them;
+  // sim-input is the simulator's input transport under the open-iOS flag.
+  return [
+    SIMULATOR_SERVER_NAMESPACE,
+    IOS_DEVICE_RUNNER_NAMESPACE,
+    TV_CONTROL_NAMESPACE,
+    IOS_SIM_INPUT_NAMESPACE,
+  ];
 }
 
 /**

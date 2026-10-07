@@ -164,6 +164,18 @@ driver-attributable. Update memory.
   physics ships without a device run. Follow-up step `fling-d1-ci`: change
   the held-swipe release, prove it with device test 3d green in CI and the
   `releaseVelocityLsqPxPerS` telemetry, then promote swipe.
+- 2026-10-07, `siminput-registry-route` (review rounds 1-2): under the
+  `open-ios-device-server` flag, tap / swipe / ASCII text go to sim-input
+  first, but a `momentum:false` swipe stays on the runner by default. The
+  sim-input end hold (`holdEndMs` 120, the dispatch's dwell pulses) routes only
+  with the experimental `ARGENT_SIM_INPUT_MOMENTUM_FREE=1`, because no
+  simulator run has measured its fling (same rule: no injector physics ships
+  without a device run). The bench ON-siminput arm sets it, ON-xcuitest sets
+  `ARGENT_SIM_INPUT=off`; promotion needs a bench-ios CI run with ON-siminput
+  VALID and `simInputAckTimeouts` 0. Secret text never goes to sim-input;
+  per-key HID logging is removed and forwarded stderr is filtered. A sim-input
+  timeout kills the process and rejects all pending calls (no late landing);
+  `ARGENT_SIM_INPUT=off` is the kill switch.
 
 - 2026-10-07, `sg-multihop-bench` (review rounds 1-3): the pre-registration is
   split. Cost claims (observation tokens ≤ 0.7× nograph, success non-inferior,
@@ -178,15 +190,6 @@ driver-attributable. Update memory.
   unchanged. nograph uses `describe {tier:"compact"}` so both arms share one
   renderer. AW graph arms run the tool-server on a temporary HOME (emulator
   console token copied in); the real `~/.argent` is never touched.
-- 2026-10-07, `siminput-registry-route` (review rounds 1-2): product
-  `gesture-swipe {momentum:false}` on iOS simulators stays on the XCUITest
-  runner; routing it to sim-input with an end hold (`holdEndMs`) is behind
-  `ARGENT_SIM_INPUT_MOMENTUM_FREE=1` (default off) until a simulator run
-  measures the fling. The bench ON-siminput arm sets that env, which is the
-  measurement. Text that resolved a `{{secret:}}` never goes to sim-input;
-  per-key HID logging is removed and forwarded stderr is filtered. A sim-input
-  timeout kills the process and rejects all pending calls (no late landing).
-  `ARGENT_SIM_INPUT=off` is the kill switch.
 
 ## Rules that hold
 

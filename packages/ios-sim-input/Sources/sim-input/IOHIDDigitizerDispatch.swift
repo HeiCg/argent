@@ -1,9 +1,12 @@
 // Ported VERBATIM from baguette (Apache-2.0). Upstream: https://github.com/tddworks/baguette
 // Original: Sources/Baguette/Infrastructure/Input/IOHIDDigitizerDispatch.swift
 // DO NOT modify byte layouts, timing constants, or HID event ordering — they are the iOS 26.4 recipe.
-// Local change (iOS-4 ticket 3): `tap` / `swipe` wait on `GesturePacer`
-// (absolute deadlines) instead of chained `usleep`, at the same offsets, and
-// record the gesture's pacing for the ack. Nothing else differs from the port.
+// Local changes: (iOS-4 ticket 1) `sendMessage` records its start/end into
+// `SendTimeline` for the ack's timing block; (iOS-4 ticket 3) `tap` / `swipe`
+// wait on `GesturePacer` (absolute deadlines) instead of chained `usleep`, at
+// the same offsets (computed by the pure `GestureFrames`, which the pacing
+// selftest also runs), and record the gesture's pacing for the ack. Nothing
+// else differs from the port.
 
 import Foundation
 
@@ -87,8 +90,9 @@ enum IOHIDDigitizerDispatch {
         let pacer = GesturePacer()
         guard send(point: point, identifier: identifier, phase: .down,
                    edge: edge, on: client) else { return false }
-        let holdUs = UInt32(max(0.02, holdSeconds) * 1_000_000)
-        pacer.wait(untilMs: Double(holdUs) / 1000)
+        for at in GestureFrames.tap(holdSeconds: holdSeconds) {
+            pacer.wait(untilMs: at)
+        }
         let up = send(point: point, identifier: identifier, phase: .up,
                       edge: edge, on: client)
         PacingRecorder.shared.record(pacer.finish())
@@ -107,11 +111,11 @@ enum IOHIDDigitizerDispatch {
         let pacer = GesturePacer()
         guard send(point: start, identifier: identifier, phase: .down,
                    edge: edge, on: client) else { return false }
-        let step = Double(stepMs)
+        let plan = GestureFrames.swipe(steps: steps, stepMs: stepMs, dwellMs: dwellMs)
         var ok = 0
-        for i in 1...steps {
-            pacer.wait(untilMs: Double(i) * step)
-            let t = Double(i) / Double(steps)
+        for (index, at) in plan.moves.enumerated() {
+            pacer.wait(untilMs: at)
+            let t = Double(index + 1) / Double(steps)
             let p = CGPoint(x: start.x + (end.x - start.x) * t,
                             y: start.y + (end.y - start.y) * t)
             if send(point: p, identifier: identifier, phase: .move,
@@ -121,18 +125,12 @@ enum IOHIDDigitizerDispatch {
         // drags from the bottom edge. Resending move events at the
         // same point keeps the touch alive across the recogniser's
         // decision window.
-        var at = Double(steps) * step
-        if dwellMs > 0 {
-            let pulses = max(1, Int(dwellMs / 50))
-            for _ in 0..<pulses {
-                pacer.wait(untilMs: at)
-                _ = send(point: end, identifier: identifier, phase: .move,
-                         edge: edge, on: client)
-                at += 50
-            }
+        for at in plan.dwell {
+            pacer.wait(untilMs: at)
+            _ = send(point: end, identifier: identifier, phase: .move,
+                     edge: edge, on: client)
         }
-        at += step
-        pacer.wait(untilMs: at)
+        pacer.wait(untilMs: plan.up)
         let up = send(point: end, identifier: identifier, phase: .up,
                       edge: edge, on: client)
         PacingRecorder.shared.record(pacer.finish())
@@ -248,7 +246,9 @@ enum IOHIDDigitizerDispatch {
         typealias Fn = @convention(c) (
             AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, AnyObject?, AnyObject?
         ) -> Void
+        let start = monotonicMs()
         unsafeBitCast(imp, to: Fn.self)(client, sel, message, ObjCBool(true), nil, nil)
+        SendTimeline.shared.record(start: start, end: monotonicMs())
     }
 
     // MARK: - private — symbol resolution

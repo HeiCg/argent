@@ -10,6 +10,15 @@ import {
   iosOpenServerKey,
   iosOpenServerFallback,
 } from "../../../utils/ios-open-server-input";
+import {
+  shouldUseIosSimInput,
+  isSimInputText,
+  iosSimInputTypeText,
+  simInputResultFields,
+  simInputFallbackReason,
+  simInputMayHaveTyped,
+  chainFallbackReason,
+} from "../../../blueprints/ios-sim-input";
 
 // Named keys the open iOS server's `key` method supports; others fall back to
 // the proprietary simulator-server path.
@@ -56,14 +65,53 @@ export function makeIosImpl(
       if (await isTvOsSimulator(device.id)) {
         return typeTv(registry, device, params);
       }
-      // Open iOS server behind the flag; falls back on any failure or an
-      // unsupported key, and marks the result so the fallback is not silent.
+      // Behind the flag: printable-ASCII text goes to sim-input first; then
+      // the open iOS server (named keys, other text, or a sim-input failure);
+      // then the simulator-server. Each fallback is marked on the result.
       if (shouldUseIosOpenServer(device)) {
+        let simInputReason: string | undefined;
+        let partialTextPossible = false;
+        // Text resolved from a `{{secret:...}}` placeholder never goes to
+        // sim-input: it stays on the runner, which has no per-key process log.
+        if (
+          params.text !== undefined &&
+          params.containsSecret !== true &&
+          isSimInputText(params.text) &&
+          shouldUseIosSimInput(device)
+        ) {
+          try {
+            const ack = await iosSimInputTypeText(registry, device, params.text);
+            return {
+              typed: params.text,
+              keys: 0,
+              inputBackend: "sim-input",
+              simInput: simInputResultFields(ack),
+            };
+          } catch (err) {
+            // A failure after the command reached sim-input (a timeout kills the
+            // process, an ack error) can follow some typed characters; the next
+            // backend types the whole text again. The result says so.
+            simInputReason = simInputFallbackReason("keyboard", err);
+            partialTextPossible = simInputMayHaveTyped(err);
+          }
+        }
+        const partial = partialTextPossible ? { partialTextPossible: true as const } : {};
         try {
-          return await typeIosOpenServer(registry, device, params);
+          return {
+            ...(await typeIosOpenServer(registry, device, params)),
+            inputBackend: "runner",
+            ...(simInputReason !== undefined ? { fallbackReason: simInputReason } : {}),
+            ...partial,
+          };
         } catch (err) {
           const marker = iosOpenServerFallback("keyboard", err, "simulator-server");
-          return { ...(await typeSimulatorServer(registry, device, params)), ...marker };
+          return {
+            ...(await typeSimulatorServer(registry, device, params)),
+            ...marker,
+            fallbackReason: chainFallbackReason(simInputReason, marker.fallbackReason),
+            inputBackend: "simulator-server",
+            ...partial,
+          };
         }
       }
       return typeSimulatorServer(registry, device, params);

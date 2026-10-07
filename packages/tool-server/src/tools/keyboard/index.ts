@@ -200,7 +200,7 @@ One call does one action: pass text OR key, never both. To type and then press a
       const { text, secrets } = resolveSecretPlaceholders(params.text);
       if (secrets.length === 0) return dispatch(services, params, options);
       try {
-        const result = await dispatch(services, { ...params, text }, options);
+        const result = await dispatch(services, { ...params, text, containsSecret: true }, options);
         // Echo the placeholder form, never the resolved value.
         return { ...result, typed: params.text };
       } catch (err) {

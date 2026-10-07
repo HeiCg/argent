@@ -316,9 +316,11 @@ describe("a fallback from the open path is visible", () => {
     const runner = fakeRunner(APP);
     const impl = makeKeyboardIosImpl(stubRegistry(runner));
 
-    const result = await impl.handler({}, { udid: UDID, text: "hi" }, resolveDevice(UDID));
+    // Non-ASCII text goes to the runner directly; printable ASCII would try
+    // sim-input first (see ios-open-server-input-routing.test.ts).
+    const result = await impl.handler({}, { udid: UDID, text: "hé" }, resolveDevice(UDID));
 
-    expect(result).toEqual({ typed: "hi", keys: 0 });
+    expect(result).toEqual({ typed: "hé", keys: 0, inputBackend: "runner" });
     expect(warn).not.toHaveBeenCalled();
   });
 });

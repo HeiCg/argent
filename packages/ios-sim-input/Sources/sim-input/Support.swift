@@ -8,10 +8,11 @@
 // reference `Input`, `DeviceHost`, `Point`, `Size`, `GesturePhase`,
 // `DeviceEdge`, `KeyboardKey`, `KeyModifier`, `HIDUsage`, `DeviceButton`,
 // `CoreSimulators.developerDir()`, and the free functions `log`,
-// `logErr`, `dlerrorString`. This file provides those, plus the gesture
-// frame pacer (`GesturePacer`, `PacingRecorder`, `LatencyActivity`; iOS-4
-// ticket 3) that IOHIDDigitizerDispatch's tap/swipe wait on instead of
-// chained `usleep`.
+// `logErr`, `dlerrorString`. This file provides those, plus two local
+// additions: the per-message send timeline (`SendTimeline`, iOS-4 ticket 1)
+// that the two HID files' send helpers record into, and the gesture frame
+// pacer (`GesturePacer`, `PacingRecorder`, `LatencyActivity`; iOS-4 ticket 3)
+// that IOHIDDigitizerDispatch's tap/swipe wait on instead of chained `usleep`.
 
 import Darwin
 import Foundation
@@ -29,9 +30,62 @@ enum LatencyActivity {
     static func begin() {
         guard token == nil else { return }
         token = ProcessInfo.processInfo.beginActivity(
-            options: [.latencyCritical, .userInitiated],
+            // AllowingIdleSystemSleep: the activity keeps timers precise but
+            // does not keep the Mac awake while sim-input idles between commands.
+            options: [.latencyCritical, .userInitiatedAllowingIdleSystemSleep],
             reason: "sim-input HID pacing"
         )
+    }
+}
+
+/// The frame plan of a gesture: the deadlines, in ms after the Down, that
+/// IOHIDDigitizerDispatch's tap / swipe wait on before each send. Pure, so
+/// `selftest-pacing` paces the same plans the real gestures use.
+enum GestureFrames {
+    /// IndigoHIDInput.tap's hold when the command has no `holdMs`.
+    static let defaultTapHoldSeconds = 0.05
+
+    /// Tap: one deadline, the Up, at the hold (floored at 20 ms; whole µs).
+    static func tap(holdSeconds: Double) -> [Double] {
+        let holdUs = UInt32(max(0.02, holdSeconds) * 1_000_000)
+        return [Double(holdUs) / 1000]
+    }
+
+    /// IndigoHIDInput.swipe's split of a duration (seconds; ≤ 0 = 250 ms) into
+    /// 10 moves, each `duration / 12` apart (floored at 8 ms, whole ms).
+    static func swipeSteps(duration: Double) -> (steps: Int, stepMs: UInt32) {
+        let total = duration > 0 ? duration : 0.25
+        let steps = 10
+        let stepMs = UInt32((total * 1000) / Double(steps + 2))
+        return (steps, max(8, stepMs))
+    }
+
+    struct Swipe {
+        /// One per interpolated move, `i * stepMs` for i in 1...steps.
+        let moves: [Double]
+        /// End-point holds, 50 ms apart after the last move (`dwellMs` > 0 only).
+        let dwell: [Double]
+        /// The Up, one step after the last move or dwell deadline.
+        let up: Double
+
+        var all: [Double] { moves + dwell + [up] }
+    }
+
+    /// Swipe: the move, dwell and Up deadlines. `steps` must be ≥ 1.
+    static func swipe(steps: Int, stepMs: UInt32, dwellMs: UInt32) -> Swipe {
+        let step = Double(stepMs)
+        let moves = (1...steps).map { Double($0) * step }
+        var at = Double(steps) * step
+        var dwell: [Double] = []
+        if dwellMs > 0 {
+            let pulses = max(1, Int(dwellMs / 50))
+            for _ in 0..<pulses {
+                dwell.append(at)
+                at += 50
+            }
+        }
+        at += step
+        return Swipe(moves: moves, dwell: dwell, up: at)
     }
 }
 
@@ -138,37 +192,87 @@ final class PacingRecorder: @unchecked Sendable {
     }
 }
 
-/// `sim-input selftest-pacing`: paces synthetic frames (no simulator, no HID)
-/// on `queue` and prints one JSON line with what it measured. Returns true when
-/// every case lands in its range. `frames-12x20-stall60` stalls 60 ms inside
-/// frame 3: with deadlines the gesture still ends near 240 ms; with chained
-/// sleeps it would end near 300 ms.
+// MARK: - Wire timing (iOS-4 ticket 1)
+
+/// Monotonic milliseconds (CLOCK_MONOTONIC_RAW, sub-µs resolution). Only
+/// differences between two readings are meaningful; the host clock is a
+/// different one.
+func monotonicMs() -> Double {
+    Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000
+}
+
+/// The HID messages sent while one command runs: `sendStart` / `sendEnd` of
+/// each `sendWithMessage:` call, in order. main.swift resets it when a line is
+/// read and drains it into the ack. Locked because the send helpers are not
+/// actor-isolated.
+final class SendTimeline: @unchecked Sendable {
+    static let shared = SendTimeline()
+
+    private let lock = NSLock()
+    private var sends: [(start: Double, end: Double)] = []
+
+    func reset() {
+        lock.lock()
+        sends.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+
+    func record(start: Double, end: Double) {
+        lock.lock()
+        sends.append((start: start, end: end))
+        lock.unlock()
+    }
+
+    func drain() -> [(start: Double, end: Double)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let out = sends
+        sends.removeAll(keepingCapacity: true)
+        return out
+    }
+}
+
+/// `sim-input selftest-pacing`: paces the real tap / swipe frame plans
+/// (`GestureFrames`, the same deadlines IOHIDDigitizerDispatch waits on) on
+/// `queue`, with no simulator and no HID sends, and prints one JSON line with
+/// what it measured. Returns true when every case lands in its range.
+/// `swipe-250-stall60` stalls 60 ms inside frame 3: with deadlines the gesture
+/// still ends near 220 ms; with chained sleeps it would end near 280 ms.
+/// `swipe-250-dwell120` adds the 120 ms end hold: dwell pulses at 200 and 250 ms
+/// (120 / 50 = 2), the Up one step later at 320 ms.
 func runPacingSelftest(on queue: DispatchQueue) -> Bool {
     struct Case {
         let name: String
-        let frames: Int
-        let frameMs: Double
+        let offsets: [Double]
         let stallAtFrame: Int?
         let minMs: Double
         let maxMs: Double
         let minLateMs: Double
     }
+    // The plans `{"type":"tap"}` (no holdMs) and `{"type":"swipe","durationMs":250}` run.
+    let tapPlan = GestureFrames.tap(holdSeconds: GestureFrames.defaultTapHoldSeconds)
+    let split = GestureFrames.swipeSteps(duration: 0.25)
+    let swipePlan = GestureFrames.swipe(steps: split.steps, stepMs: split.stepMs, dwellMs: 0).all
+    // `{"type":"swipe","durationMs":250,"holdEndMs":120}`: the momentum-free end hold.
+    let dwellPlan = GestureFrames.swipe(steps: split.steps, stepMs: split.stepMs, dwellMs: 120).all
     let cases = [
-        Case(name: "frames-12x20", frames: 12, frameMs: 20, stallAtFrame: nil,
-             minMs: 240, maxMs: 290, minLateMs: 0),
-        Case(name: "frames-1x50", frames: 1, frameMs: 50, stallAtFrame: nil,
+        Case(name: "tap-default", offsets: tapPlan, stallAtFrame: nil,
              minMs: 50, maxMs: 60, minLateMs: 0),
-        Case(name: "frames-12x20-stall60", frames: 12, frameMs: 20, stallAtFrame: 3,
-             minMs: 240, maxMs: 290, minLateMs: 30),
+        Case(name: "swipe-250", offsets: swipePlan, stallAtFrame: nil,
+             minMs: 220, maxMs: 270, minLateMs: 0),
+        Case(name: "swipe-250-stall60", offsets: swipePlan, stallAtFrame: 3,
+             minMs: 220, maxMs: 270, minLateMs: 30),
+        Case(name: "swipe-250-dwell120", offsets: dwellPlan, stallAtFrame: nil,
+             minMs: 320, maxMs: 370, minLateMs: 0),
     ]
     var rows: [[String: Any]] = []
     var allPass = true
     for c in cases {
         let pacing: GesturePacing = queue.sync {
             let pacer = GesturePacer()
-            for i in 1...c.frames {
-                pacer.wait(untilMs: Double(i) * c.frameMs)
-                if i == c.stallAtFrame {
+            for (i, at) in c.offsets.enumerated() {
+                pacer.wait(untilMs: at)
+                if i + 1 == c.stallAtFrame {
                     // Busy stall: a sleep here would itself be stretched by a
                     // QoS clamp (usleep(60 ms) measured ~190 ms under utility).
                     let until = DispatchTime.now().uptimeNanoseconds + 60_000_000
@@ -182,8 +286,8 @@ func runPacingSelftest(on queue: DispatchQueue) -> Bool {
         allPass = allPass && pass
         var row: [String: Any] = pacing.ackFields
         row["name"] = c.name
-        row["frames"] = c.frames
-        row["frameMs"] = c.frameMs
+        row["frames"] = c.offsets.count
+        row["offsetsMs"] = c.offsets
         row["minMs"] = c.minMs
         row["maxMs"] = c.maxMs
         row["pass"] = pass

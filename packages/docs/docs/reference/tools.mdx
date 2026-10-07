@@ -453,6 +453,108 @@ actions. When the action reply
 confirmed the final screen and the graph holds its tree for the same state, Argent
 returns that tree with no read. Otherwise, Argent reads the final screen one time.
 
+### Input on iOS simulators (open server)
+
+This section applies when the `open-ios-device-server` flag is on and the target
+is an iOS simulator. A physical iPhone and the flag-off path do not change.
+
+`gesture-tap`, `gesture-swipe` and `keyboard` text try the backends in this order:
+
+1. sim-input, a Swift process that sends HID events to the simulator.
+2. The open XCUITest runner.
+3. The simulator-server.
+
+Some calls go to the runner directly and do not try sim-input:
+
+- Text with a character outside printable ASCII (`0x20` to `0x7E`). A newline is
+  outside this range.
+- A named key, for example `enter`.
+- Text that contains a `{{secret:...}}` placeholder. These results carry no
+  `fallbackReason`.
+- Every call when the environment variable `ARGENT_SIM_INPUT` is `off`, `0` or
+  `false`.
+
+A swipe with `momentum: false` goes to the runner by default. The environment
+variable `ARGENT_SIM_INPUT_MOMENTUM_FREE=1` sends it to sim-input, which holds the
+finger at the end point for 120 ms before it lifts the finger. This variable is
+experimental: the effect of this end hold on the fling of the simulator is not
+measured yet.
+
+The result carries these fields:
+
+| Field                 | When                            | Value                                             |
+| --------------------- | ------------------------------- | ------------------------------------------------- |
+| `inputBackend`        | Always                          | `"sim-input"`, `"runner"` or `"simulator-server"` |
+| `simInput`            | sim-input served it             | The ack of sim-input (see the next table)         |
+| `fallbackReason`      | A backend failed                | Why each failed backend did not serve the call    |
+| `backend`             | The simulator-server            | `"proprietary-fallback"`                          |
+| `partialTextPossible` | Text, after a sim-input failure | `true`                                            |
+| `partialTapsPossible` | Multi-tap, after a landed tap   | `true`                                            |
+
+`fallbackReason` has one of these two forms:
+
+- `sim-input: <error>` when the runner served the call.
+- `sim-input: <error>; runner: <error>` when the simulator-server served the call.
+  When Argent did not try sim-input, the reason is the runner error only.
+
+`simInput` has these fields. All times are in milliseconds.
+
+| Field             | Value                                                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `scheduledMs`     | Tap and swipe only. The deadline of the last frame after the finger down                                       |
+| `actualMs`        | Tap and swipe only. The measured time from finger down to finger up                                            |
+| `overshootMs`     | Tap and swipe only. `actualMs` minus `scheduledMs`                                                             |
+| `maxFrameLateMs`  | Tap and swipe only. The latest frame wake after its deadline                                                   |
+| `timing`          | `{ recvAt, sends: [{ sendStart, sendEnd }], ackAt }` on the clock of sim-input, or `null` from an older binary |
+| `hostRoundTripMs` | The time from the command write to the ack on the tool-server                                                  |
+
+Only differences between two `timing` values have a meaning. For a double tap,
+`simInput` is the ack of the last tap.
+
+#### Process, timeout and crashes
+
+- Argent starts one sim-input process for each simulator.
+  `stop-simulator-server` and `stop-all-simulator-servers` stop it.
+- A tap or swipe call has a timeout of 5 seconds. A text call has a timeout of
+  5 seconds plus 200 ms for each character.
+- At a timeout, Argent stops the sim-input process and rejects every call that
+  waits for it. No command lands after the fallback. The next call starts a new
+  process.
+- A timeout counts as a crash. After 4 crashes in 60 seconds, Argent does not
+  start sim-input again until that window ends. The calls then go to the runner.
+
+#### Partial input after a fallback
+
+- Text: when sim-input fails after it received the text, some characters can be
+  in the field already. The runner then types the whole text again. The result
+  then carries `partialTextPossible: true`.
+- Double tap: when the second tap fails, the first tap has landed. The runner
+  then sends the full double tap again. The result then carries
+  `partialTapsPossible: true`.
+- A timeout can stop sim-input between the finger down and the finger up of a
+  gesture. Argent does not send a finger up for that gesture.
+
+#### The sim-input binary
+
+Argent uses the first binary that it finds in this order:
+
+1. The path in the environment variable `ARGENT_SIM_INPUT_BIN`, or else in
+   `IOS_SIM_INPUT_BINARY`. If that file is not executable, sim-input fails.
+2. `packages/ios-sim-input/.build/release/sim-input`.
+3. `packages/ios-sim-input/bin/sim-input`.
+
+The two paths in the package resolve only from the tool-server sources or its
+`dist` folder. A bundled install, for example `@swmansion/argent`, has no Swift
+package there. A bundled install must set `ARGENT_SIM_INPUT_BIN`. Without it,
+sim-input fails and the calls go to the runner.
+
+If no binary exists and the Swift package exists, the first call builds sim-input with `swift build -c
+release`. The build can take some minutes, and Argent logs a warning when it
+starts. The build needs a full Xcode, not only the Command Line Tools. Argent
+sets `DEVELOPER_DIR` from the environment, or else from `xcode-select -p`. If
+the build fails, Argent does not build again until the tool-server restarts.
+The calls then go to the runner.
+
 ## JavaScript runtime debugging
 
 | Tool                           | Description                                                               |

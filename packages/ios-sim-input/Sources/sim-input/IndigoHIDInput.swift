@@ -1,6 +1,18 @@
 // Ported VERBATIM from baguette (Apache-2.0). Upstream: https://github.com/tddworks/baguette
 // Original: Sources/Baguette/Infrastructure/Input/IndigoHIDInput.swift
 // DO NOT modify byte layouts, timing constants, or HID event ordering — they are the iOS 26.4 recipe.
+// Local changes: (iOS-4 ticket 1) `send(message:to:)` records its start/end
+// into `SendTimeline` for the ack's timing block; (iOS-4 ticket 6) `tap`'s
+// default hold and `swipe`'s duration split come from `GestureFrames` (same
+// values as the port) so the pacing selftest runs the same plans. Nothing else
+// differs from the port. Also local: `key` writes no per-key log (it named the
+// HID usage of every typed character), and a `swipe` overload takes `dwellMs`
+// (the dispatch's existing end-point hold) for momentum-free swipes.
+//
+// Not paced: `key` / `button` / `twoFingerPath` / the edge and mouse helpers
+// still hold with `usleep`, so a `press` or `text` ack carries `timing` but no
+// pacing fields, and a slow wake there stretches the hold. Only `tap` / `swipe`
+// (IOHIDDigitizerDispatch) are in the iOS-4 pacing contract.
 
 import Foundation
 import ObjectiveC
@@ -118,24 +130,30 @@ final class IndigoHIDInput: Input, @unchecked Sendable {
                                  y: clamp01(point.y / size.height))
         return IOHIDDigitizerDispatch.tap(
             point: normalised,
-            holdSeconds: duration > 0 ? duration : 0.05,
+            holdSeconds: duration > 0 ? duration : GestureFrames.defaultTapHoldSeconds,
             edge: .none, identifier: nextTouchIdentifier(),
             on: c
         )
     }
 
     func swipe(from start: Point, to end: Point, size: Size, duration: Double) -> Bool {
+        swipe(from: start, to: end, size: size, duration: duration, dwellMs: 0)
+    }
+
+    /// `swipe`, holding the finger at `end` for `dwellMs` before the lift
+    /// (IOHIDDigitizerDispatch's dwell pulses, 50 ms apart): the release
+    /// velocity is then ~0, a momentum-free swipe.
+    func swipe(from start: Point, to end: Point, size: Size, duration: Double,
+               dwellMs: UInt32) -> Bool {
         guard let c = ensureWarm() else { return false }
-        let total = duration > 0 ? duration : 0.25
-        let steps = 10
-        let stepMs = UInt32((total * 1000) / Double(steps + 2))
+        let (steps, stepMs) = GestureFrames.swipeSteps(duration: duration)
         let normStart = CGPoint(x: clamp01(start.x / size.width),
                                 y: clamp01(start.y / size.height))
         let normEnd = CGPoint(x: clamp01(end.x / size.width),
                               y: clamp01(end.y / size.height))
         return IOHIDDigitizerDispatch.swipe(
             from: normStart, to: normEnd,
-            steps: steps, stepMs: max(8, stepMs),
+            steps: steps, stepMs: stepMs, dwellMs: dwellMs,
             edge: .none, identifier: nextTouchIdentifier(),
             on: c
         )
@@ -284,7 +302,8 @@ final class IndigoHIDInput: Input, @unchecked Sendable {
         // Sort modifiers so the down/up order is deterministic; iOS
         // doesn't care, but tests + logs become reproducible.
         let mods = modifiers.sorted { $0.rawValue < $1.rawValue }
-        log("[hid] key page=\(key.hidUsage.page) usage=\(key.hidUsage.usage) modifiers=\(mods.map(\.rawValue)) hold=\(holdUs)us")
+        // No per-key log: page/usage + modifiers map one-to-one back to the
+        // typed character, and stderr reaches the tool-server log.
 
         // Modifier-down → key-down → hold → key-up → modifier-up.
         for m in mods {
@@ -572,7 +591,9 @@ final class IndigoHIDInput: Input, @unchecked Sendable {
         typealias Fn = @convention(c) (
             AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, AnyObject?, AnyObject?
         ) -> Void
+        let start = monotonicMs()
         unsafeBitCast(imp, to: Fn.self)(client, sel, message, ObjCBool(true), nil, nil)
+        SendTimeline.shared.record(start: start, end: monotonicMs())
     }
 
     /// Lazy resolve + warm. Synchronised because gestures might come from

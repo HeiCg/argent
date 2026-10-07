@@ -18,6 +18,24 @@
  *     ({@link waitForStableFrame}), replacing a fixed 900 ms sleep that left the
  *     "before" frames blank.
  *
+ * iOS-4 (run 37572773799, docs/open-server/2026-10-07-ios4-siminput-plan.md):
+ *   - After each simctl relaunch the oracle re-checks the runner's target before
+ *     its next read and relaunches it only when the runner lost it
+ *     ({@link RunnerOracle.noteRelaunch}).
+ *   - {@link decomposeSimInputAck} splits one sim-input command's host write→ack
+ *     time into the sidecar's receive / per-message send / ack terms.
+ *
+ * Run 37595262694 (OFF-1 and ON-siminput self-test on "Siri"): every arm tapped
+ * the same screen point for the same oracle point (y 0.3656 → Siri page, 0.4651 →
+ * General, on all three arms), so the arms' spaces agreed; the oracle's single
+ * early read had located "General" before Settings inserted a banner above it.
+ *   - {@link RunnerOracle} `locateSettle`: a locate returns only once two
+ *     consecutive reads agree.
+ *   - {@link ScreenGeometry} and one conversion per arm ({@link proprietaryTapPoint},
+ *     {@link openToolTapPoint}, {@link simInputTapPoint}) from the canonical
+ *     device-screen fraction, so an app frame that does not start at (0, 0) maps
+ *     to the same screen point on every arm.
+ *
  * Runner lifetime (run 37223296646): the first start of a block missed the
  * runner's 120 s ready budget in OFF-1, ON-siminput and OFF-2, and the oracle's
  * next call made the registry start a second runner, reported as "restarted
@@ -30,6 +48,7 @@ import { readFileSync } from "node:fs";
 import { ServiceState, type Registry } from "@argent/registry";
 import { iosOpenServerRef, type IosOpenDeviceServerApi } from "../src/blueprints/ios-open-server";
 import { resolveDevice } from "../src/utils/device-info";
+import type { SimInputAck } from "../src/utils/ios-sim-input-service";
 import type {
   IosOpenServerInfo,
   IosOpenServerNode,
@@ -202,10 +221,72 @@ export function watchRunnerLifecycle(
 /* the oracle                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** Normalized 0..1 point on screen. */
+/** Normalized 0..1 point of the DEVICE screen (the canonical oracle point; the
+ * framebuffer's fraction, so also the screenshot's). Each arm converts it into
+ * its own input space ({@link proprietaryTapPoint}, {@link openToolTapPoint},
+ * {@link simInputTapPoint}). */
 export interface NPoint {
   x: number;
   y: number;
+}
+
+/** A width × height in screen points. */
+export interface PointSize {
+  w: number;
+  h: number;
+}
+
+/**
+ * The block's screen geometry (run 37595262694), measured once per block,
+ * untimed. Node bounds and the runner's wire `tap` / `swipe` are in SCREEN points
+ * (absolute: the runner's `point()` cancels `withOffset`'s app-relative base).
+ */
+export interface ScreenGeometry {
+  /** The device screen in points (framebuffer px / scale): the space the
+   * proprietary `gesture-tap`'s 0..1 and sim-input's digitizer 0..1 cover. */
+  screen: PointSize;
+  /** The runner's `getScreenSize`: the target app's frame SIZE (no origin). The
+   * open gesture tools multiply a 0..1 point by it and send the product to the
+   * runner as screen points. */
+  runner: PointSize;
+}
+
+/** The device screen in points from a framebuffer size in px and the device
+ * scale; null when either is missing or unusable. */
+export function deviceScreenPoints(
+  framebufferPx: { width: number; height: number } | null,
+  scale: number | null
+): PointSize | null {
+  if (!framebufferPx || scale === null || !(scale > 0)) return null;
+  const w = framebufferPx.width / scale;
+  const h = framebufferPx.height / scale;
+  return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? { w, h } : null;
+}
+
+/** OFF arm: the proprietary `gesture-tap` / `gesture-swipe` (simulator-server
+ * `touch`) take 0..1 of the device screen, the canonical point itself. */
+export function proprietaryTapPoint(n: NPoint, _g: ScreenGeometry): NPoint {
+  return { x: n.x, y: n.y };
+}
+
+/** ON-xcuitest arm: the open `gesture-tap` / `gesture-swipe` multiply by the
+ * runner's `getScreenSize` (the app frame size), so the canonical point is
+ * rescaled to land on the same screen point. Equal to the canonical point when
+ * the app frame is the whole screen. */
+export function openToolTapPoint(n: NPoint, g: ScreenGeometry): NPoint {
+  return {
+    x: (n.x * g.screen.w) / (g.runner.w || 1),
+    y: (n.y * g.screen.h) / (g.runner.h || 1),
+  };
+}
+
+/** ON-siminput arm: sim-input divides x / screenWidth into the digitizer's 0..1
+ * of the device screen, so it gets screen points and the device screen size. */
+export function simInputTapPoint(
+  n: NPoint,
+  g: ScreenGeometry
+): { x: number; y: number; width: number; height: number } {
+  return { x: n.x * g.screen.w, y: n.y * g.screen.h, width: g.screen.w, height: g.screen.h };
 }
 
 export interface StageSample {
@@ -281,6 +362,19 @@ export function screenOf(st: IosOpenServerState): { w: number; h: number } {
   return { w: st.info.screenWidth, h: st.info.screenHeight };
 }
 
+/**
+ * The device screen as a tree read implies it, when none was measured: the
+ * Application root's far corner (origin + size, so a frame that starts below the
+ * top still spans to the screen's bottom), else the runner's `info` size.
+ */
+function extentOf(st: IosOpenServerState): PointSize {
+  const root = st.tree.length === 1 ? st.tree[0] : undefined;
+  if (root?.type === "Application" && root.bounds.x2 > 0 && root.bounds.y2 > 0) {
+    return { w: root.bounds.x2, h: root.bounds.y2 };
+  }
+  return screenOf(st);
+}
+
 /** Titles of the navigation bars in a tree (identifier, else label), in DFS order. */
 export function navigationTitles(nodes: IosOpenServerNode[]): string[] {
   const titles: string[] = [];
@@ -324,7 +418,9 @@ function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | un
  * does not already target the app. The product `describe` / `gesture-*` calls
  * (no bundleId) rely on that stored target with the flag on. Every tree read then
  * passes `bundleId` explicitly, so a simctl relaunch between iterations can never
- * leave a read without a target. A second `launchApp` per relaunch is not used:
+ * leave a read without a target. After a relaunch ({@link noteRelaunch}) the next
+ * read re-runs that check (`getInfo`), so a runner that lost its target is
+ * re-targeted; an unconditional `launchApp` per relaunch is not used:
  * XCUIApplication.launch() terminates and relaunches the app, doubling every
  * root restore.
  *
@@ -332,6 +428,15 @@ function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | un
  * oracle never starts a second runner. A connection-class error on an RPC is
  * retried on the same runner (`retries` times, `retryDelayMs` apart; the oracle
  * is untimed) and reported only once the retries are spent.
+ *
+ * Points (run 37595262694): {@link locate} and {@link scrollRegion} are fractions
+ * of the DEVICE screen ({@link setDeviceScreen}, else the root frame's extent),
+ * from the node bounds in screen points; each arm converts them into its own
+ * input space. With `locateSettle`, a locate re-reads the tree `stableMs` apart
+ * until two consecutive reads put the label's centre at the same place: Settings
+ * inserts its "Ready for Apple Intelligence" banner above "General" after launch,
+ * so a single early read located "General" 87 pt high and every arm tapped the
+ * banner (which opens the Siri page) in 16 to 19 of 20 samples.
  */
 export class RunnerOracle {
   private readonly runner: () => Promise<OracleRunner>;
@@ -341,7 +446,14 @@ export class RunnerOracle {
   private readonly retries: number;
   private readonly retryDelayMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly locateSettle: { stableMs: number; maxReads: number; tolerancePt: number } | null;
+  private deviceScreen: PointSize | null = null;
+  private locateShifts = 0;
+  private unsettledLocates = 0;
   private targetSet = false;
+  /** The target was set once in this block (the first launchApp is not a re-target). */
+  private targeted = false;
+  private retargets = 0;
   private relaunches = 0;
   private retried = 0;
   private cachedHeightPoints: number | null = null;
@@ -355,8 +467,19 @@ export class RunnerOracle {
     retries?: number;
     retryDelayMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** Settled locate: re-read `stableMs` apart, at most `maxReads` reads, until
+     * two consecutive centres agree within `tolerancePt` (default 1). Absent: one
+     * read per locate. */
+    locateSettle?: { stableMs: number; maxReads: number; tolerancePt?: number };
   }) {
     this.runner = opts.runner;
+    this.locateSettle = opts.locateSettle
+      ? {
+          stableMs: opts.locateSettle.stableMs,
+          maxReads: Math.max(2, opts.locateSettle.maxReads),
+          tolerancePt: opts.locateSettle.tolerancePt ?? 1,
+        }
+      : null;
     this.bundleId = opts.bundleId ?? SETTINGS_BUNDLE_ID;
     this.onConnectionError = opts.onConnectionError;
     this.onCall = opts.onCall;
@@ -393,14 +516,23 @@ export class RunnerOracle {
     }
   }
 
-  /** The runner targets `bundleId`, once per block (launchApp only if needed). */
+  /** The runner targets `bundleId`: checked once per block and again after each
+   * relaunch (launchApp only if the runner does not target it). */
   async ensureTarget(): Promise<void> {
     if (this.targetSet) return;
     const info: IosOpenServerInfo = await this.call("getInfo", (r) => r.getInfo());
     if (info.bundleId !== this.bundleId) {
       await this.call("launchApp", (r) => r.launchApp(this.bundleId));
+      if (this.targeted) this.retargets++;
     }
     this.targetSet = true;
+    this.targeted = true;
+  }
+
+  /** launchApp calls after the block's first targeting: the runner lost its
+   * target across a relaunch that many times. */
+  retargetsSeen(): number {
+    return this.retargets;
   }
 
   /** Connection errors that succeeded on a retry (same runner, no restart). */
@@ -408,9 +540,11 @@ export class RunnerOracle {
     return this.retried;
   }
 
-  /** The app was relaunched outside the runner (simctl). Reads keep naming it. */
+  /** The app was relaunched outside the runner (simctl). Reads keep naming it,
+   * and the next one re-checks the runner's target first. */
   noteRelaunch(): void {
     this.relaunches++;
+    this.targetSet = false;
   }
 
   relaunchesSeen(): number {
@@ -422,21 +556,67 @@ export class RunnerOracle {
     return this.call(op, (r) => r.getNestedState({ bundleId: this.bundleId }));
   }
 
-  async locate(label: string): Promise<NPoint | null> {
+  /** The device screen in points, measured by the caller (framebuffer / scale);
+   * every later point is a fraction of it. */
+  setDeviceScreen(screen: PointSize | null): void {
+    this.deviceScreen = screen;
+  }
+
+  private screenFor(st: IosOpenServerState): PointSize {
+    return this.deviceScreen ?? extentOf(st);
+  }
+
+  /** One read: the label's centre in screen points and as a device-screen fraction. */
+  private async locateOnce(
+    label: string
+  ): Promise<{ pt: { x: number; y: number }; n: NPoint } | null> {
     const st = await this.tree("locate");
-    const screen = screenOf(st);
+    const screen = this.screenFor(st);
     const hit = findTappableByLabel(st.tree, label, screen.w, screen.h);
     if (!hit) return null;
-    const cxPt = (hit.bounds.x1 + hit.bounds.x2) / 2;
-    const cyPt = (hit.bounds.y1 + hit.bounds.y2) / 2;
-    return { x: cxPt / screen.w, y: cyPt / screen.h };
+    const pt = { x: (hit.bounds.x1 + hit.bounds.x2) / 2, y: (hit.bounds.y1 + hit.bounds.y2) / 2 };
+    return { pt, n: { x: pt.x / screen.w, y: pt.y / screen.h } };
+  }
+
+  /** The label's centre as a fraction of the device screen; with `locateSettle`,
+   * only once two consecutive reads agree (null when the layout never settles). */
+  async locate(label: string): Promise<NPoint | null> {
+    const settle = this.locateSettle;
+    let prev = await this.locateOnce(label);
+    if (!settle) return prev?.n ?? null;
+    for (let read = 1; read < settle.maxReads; read++) {
+      await this.sleep(settle.stableMs);
+      const cur = await this.locateOnce(label);
+      if (
+        prev &&
+        cur &&
+        Math.abs(prev.pt.x - cur.pt.x) <= settle.tolerancePt &&
+        Math.abs(prev.pt.y - cur.pt.y) <= settle.tolerancePt
+      ) {
+        return cur.n;
+      }
+      if (prev || cur) this.locateShifts++;
+      prev = cur;
+    }
+    this.unsettledLocates++;
+    return null;
+  }
+
+  /** Consecutive locate reads that disagreed (the layout moved under a locate). */
+  locateShiftsSeen(): number {
+    return this.locateShifts;
+  }
+
+  /** Locates that never saw two agreeing reads within `maxReads` (returned null). */
+  unsettledLocatesSeen(): number {
+    return this.unsettledLocates;
   }
 
   async scrollRegion(): Promise<{ y1: number; y2: number }> {
     const st = await this.tree("scrollRegion");
     const c = findScrollContainer(st.tree);
     if (!c) return { y1: 0.2, y2: 0.85 };
-    const { h } = screenOf(st);
+    const { h } = this.screenFor(st);
     // Clamp to [0,1]: a Table can report a content-sized frame taller than the
     // window (IOS2-H5 item 5), which would put a swipe endpoint off-screen.
     const y1 = Math.max(0, Math.min(1, c.bounds.y1 / h));
@@ -471,7 +651,8 @@ export class RunnerOracle {
     return s.screenHeight;
   }
 
-  async screenSize(): Promise<{ w: number; h: number }> {
+  /** The runner's `getScreenSize`: the target app's frame size in points. */
+  async screenSize(): Promise<PointSize> {
     const s = await this.call("getScreenSize", (r) => r.getScreenSize());
     return { w: s.screenWidth, h: s.screenHeight };
   }
@@ -528,22 +709,37 @@ export class FallbackNotes {
 
 /** A tool result's fallback marker (PR #16): `backend: "proprietary-fallback"`. */
 export function isFallbackResult(result: unknown): boolean {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    (result as { backend?: unknown }).backend === "proprietary-fallback"
-  );
+  if (typeof result !== "object" || result === null) return false;
+  const r = result as { backend?: unknown; fallbackReason?: unknown };
+  // iOS-4 ticket 6: a sim-input → runner fallback carries `fallbackReason` with
+  // no proprietary marker.
+  return r.backend === "proprietary-fallback" || typeof r.fallbackReason === "string";
 }
 
-/** The injector a `gesture-tap` / `gesture-swipe` tool call was served by: with
- * the flag on, the open runner unless the tool logged a fallback note during the
+/** The serving-path token of each `inputBackend` a tool result names. */
+const INPUT_BACKEND_PATH = {
+  "sim-input": "sim-input",
+  "runner": "open-device-server",
+  "simulator-server": "simulator-server",
+} as const;
+
+/** The injector a `gesture-tap` / `gesture-swipe` tool call was served by: the
+ * result's `inputBackend` when it names one (iOS-4 ticket 6); else, with the
+ * flag on, the open runner unless the tool logged a fallback note during the
  * call or marked its result as a fallback; with the flag off, simulator-server. */
 export function gesturePath(
   flagOn: boolean,
   notes: string[],
   result?: unknown
-): "open-device-server" | "simulator-server" {
+): "open-device-server" | "simulator-server" | "sim-input" {
   if (!flagOn) return "simulator-server";
+  const backend =
+    typeof result === "object" && result !== null
+      ? (result as { inputBackend?: unknown }).inputBackend
+      : undefined;
+  if (typeof backend === "string" && backend in INPUT_BACKEND_PATH) {
+    return INPUT_BACKEND_PATH[backend as keyof typeof INPUT_BACKEND_PATH];
+  }
   if (isFallbackResult(result)) return "simulator-server";
   return notes.some((n) => /^\[gesture-(tap|swipe)\].*falling back to simulator-server/.test(n))
     ? "simulator-server"
@@ -598,6 +794,20 @@ export async function waitForStableFrame(opts: {
   return { stable: false, frame: prev, frames, waitedMs: clock() - t0 };
 }
 
+/**
+ * Run an untimed locate, and once more when it misses (null or a throw). A miss
+ * on both tries excludes the sample (M4 still fails the block); one retry keeps a
+ * single transient miss (run 37584719906: ON-siminput tap+describe locateFailed=1,
+ * 19 of 20 samples) from costing a sample. `retried` is recorded per verb.
+ */
+export async function retryLocateOnce<T>(
+  locate: () => Promise<T | null>
+): Promise<{ value: T | null; retried: boolean }> {
+  const first = await locate().catch(() => null);
+  if (first !== null) return { value: first, retried: false };
+  return { value: await locate().catch(() => null), retried: true };
+}
+
 /** Byte-identical PNG files (simctl encodes identical pixels identically). */
 export function sameFileBytes(a: string, b: string): boolean {
   try {
@@ -605,4 +815,75 @@ export function sameFileBytes(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* sim-input decomposition (iOS-4 ticket 1)                                    */
+/* -------------------------------------------------------------------------- */
+
+/** One sim-input command's time, split by where it went (ms). The host terms are
+ * on the host clock, the rest on sim-input's own; only differences are used. */
+export interface SimInputSample {
+  /** Host `performance.now()` at the stdin write → at the ack line. */
+  hostWriteToAck: number;
+  /** sim-input read the line → started the first HID message (null: none sent). */
+  recvToFirstSend: number | null;
+  /** Each HID message's `sendWithMessage:` call, in order. */
+  perMessageSendMs: number[];
+  /** The last message returned → the ack was written (null: none sent). */
+  lastSendToAck: number | null;
+  /** sim-input read the line → wrote the ack. */
+  sidecarMs: number;
+  /** Time between messages inside sim-input (the gesture's sleeps): sidecar
+   * minus the three terms above (null: none sent). */
+  gapsMs: number | null;
+  /** Host write→ack minus the sidecar time: pipes, JSON, event loop. */
+  hostPipeMs: number;
+}
+
+const ms3 = (v: number): number => Number(v.toFixed(3));
+
+/**
+ * {@link SimInputSample} of a gesture tool result served by sim-input (its
+ * `simInput` fields: the ack timing and the host round trip); null when the
+ * result carries no sim-input timing.
+ */
+export function simInputSampleOfResult(result: unknown): SimInputSample | null {
+  if (typeof result !== "object" || result === null) return null;
+  const f = (result as { simInput?: { timing?: SimInputAck["timing"]; hostRoundTripMs?: number } })
+    .simInput;
+  if (!f || !f.timing || typeof f.hostRoundTripMs !== "number") return null;
+  return decomposeSimInputAck({
+    id: 0,
+    hostWriteAt: 0,
+    hostAckAt: f.hostRoundTripMs,
+    timing: f.timing,
+  });
+}
+
+/** Split one ack into {@link SimInputSample}; null when it carried no timing. */
+export function decomposeSimInputAck(ack: SimInputAck): SimInputSample | null {
+  const t = ack.timing;
+  if (!t) return null;
+  const hostWriteToAck = ack.hostAckAt - ack.hostWriteAt;
+  const sidecarMs = t.ackAt - t.recvAt;
+  const perMessageSendMs = t.sends.map((m) => ms3(m.sendEnd - m.sendStart));
+  const first = t.sends[0];
+  const last = t.sends[t.sends.length - 1];
+  const recvToFirstSend = first ? first.sendStart - t.recvAt : null;
+  const lastSendToAck = last ? t.ackAt - last.sendEnd : null;
+  const sendSum = t.sends.reduce((a, m) => a + (m.sendEnd - m.sendStart), 0);
+  const gapsMs =
+    recvToFirstSend !== null && lastSendToAck !== null
+      ? sidecarMs - recvToFirstSend - sendSum - lastSendToAck
+      : null;
+  return {
+    hostWriteToAck: ms3(hostWriteToAck),
+    recvToFirstSend: recvToFirstSend === null ? null : ms3(recvToFirstSend),
+    perMessageSendMs,
+    lastSendToAck: lastSendToAck === null ? null : ms3(lastSendToAck),
+    sidecarMs: ms3(sidecarMs),
+    gapsMs: gapsMs === null ? null : ms3(gapsMs),
+    hostPipeMs: ms3(hostWriteToAck - sidecarMs),
+  };
 }

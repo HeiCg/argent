@@ -9,12 +9,14 @@
 //   - landing rates with denominators;
 //   - optical scroll offsets per arm (median, IQR, refusals);
 //   - G4 tokens per tree backend at the stated cap (+ denominators);
-//   - G3 stage sums; gate verdicts.
+//   - G3 stage sums; gate verdicts;
+//   - the ON-siminput decomposition (iOS-4 ticket 1): p50 of each term of the
+//     sim-input ack timing per verb (`verbs[].inputTimings`).
 // A block the validity check (ios-validity.js) marks INVALID renders as
 // `INVALID (<reasons>)` and none of its latency / landing / scroll numbers.
 const fs = require("fs");
 const path = require("path");
-const { blockValidity, perVerbText, validityLabel } = require("./ios-validity");
+const { blockValidity, perVerbText, treeReferences, validityLabel } = require("./ios-validity");
 
 const OUT = process.env.BENCH_OUT || path.join(process.cwd(), ".bench-results");
 const ALL = ["OFF-1", "ON-xcuitest", "ON-siminput", "OFF-2"];
@@ -49,10 +51,11 @@ const merged = latestMerged();
 const bl = blocks();
 const present = ALL.filter((n) => bl[n]);
 // The merge's verdict when there is one; otherwise the same check on the block file.
+const treeRefs = treeReferences(present.map((n) => bl[n].block));
 const validity = Object.fromEntries(
   present.map((n) => [
     n,
-    (merged && merged.validity && merged.validity[n]) || blockValidity(bl[n].block),
+    (merged && merged.validity && merged.validity[n]) || blockValidity(bl[n].block, treeRefs),
   ])
 );
 const invalid = (n) => !validity[n].valid;
@@ -230,7 +233,11 @@ for (const n of present) {
   }
   const c = b.effectCheckedTotal || 0;
   const landed = c - (b.firstTapNoEffectTotal || 0);
-  const inputPath = b.inputIsProductTool ? "gesture-tap tool" : "sim-input HID (bench-local)";
+  const inputPath = !b.inputIsProductTool
+    ? "sim-input HID (bench-local)"
+    : b.intendedInput === "sim-input"
+      ? "gesture-tap tool (sim-input)"
+      : "gesture-tap tool";
   const nav = b.oracle && Number.isFinite(b.oracle.navDiff) ? b.oracle.navDiff : "—";
   const thr =
     b.oracle && Number.isFinite(b.oracle.landingThreshold) ? b.oracle.landingThreshold : "—";
@@ -242,28 +249,69 @@ L.push(
   "\n_Landing = neutral-pixel diff ratio ≥ 0.5 × the block's own G0 navDiff (IOS2-H4). The per-tap ratio, coordinate and poll index are persisted in the block JSON `tapRecords`; the OFF and ON arms locate the target with the SAME shared open-tree code (IOS2-H3)._\n"
 );
 
+// sim-input decomposition (iOS-4 ticket 1): where an ON-siminput command's time
+// goes, p50 of each term over the measured samples of each verb.
+{
+  const p50 = (xs) => {
+    const s = xs.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    return s.length ? s[Math.max(0, Math.ceil(0.5 * s.length) - 1)] : NaN;
+  };
+  const sum = (xs) => xs.reduce((a, v) => a + v, 0);
+  const rows = [];
+  for (const n of present) {
+    for (const v of bl[n].block.verbs || []) {
+      const xs = Array.isArray(v.inputTimings) ? v.inputTimings : [];
+      if (!xs.length) continue;
+      const label = invalid(n) ? `${n} (INVALID block: diagnostic only)` : n;
+      const msgs = xs.map((x) => x.perMessageSendMs || []);
+      rows.push(
+        `| ${label} | ${v.verb} | ${xs.length} | ${fx(p50(xs.map((x) => x.hostWriteToAck)))} | ` +
+          `${fx(p50(xs.map((x) => x.recvToFirstSend)))} | ${fx(p50(msgs.flat()))} | ` +
+          `${String(p50(msgs.map((m) => m.length)))} | ${fx(p50(msgs.map(sum)))} | ` +
+          `${fx(p50(xs.map((x) => x.gapsMs)))} | ${fx(p50(xs.map((x) => x.lastSendToAck)))} | ` +
+          `${fx(p50(xs.map((x) => x.sidecarMs)))} | ${fx(p50(xs.map((x) => x.hostPipeMs)))} |`
+      );
+    }
+  }
+  L.push("### sim-input decomposition (ON-siminput, p50 ms)\n");
+  if (!rows.length) {
+    L.push(
+      "_No sim-input timings recorded (no ON-siminput block, or a sim-input binary without ack timing)._\n"
+    );
+  } else {
+    L.push(
+      "| block | verb | n | host write→ack | recv→first send | per-message send | messages | Σ send | gaps (sleeps) | last send→ack | sidecar recv→ack | host + pipe |"
+    );
+    L.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
+    L.push(...rows);
+    L.push(
+      "\n_Per measured tap / swipe (tap+describe: its tap). host write→ack is `performance.now()` around the stdin write and the ack line; the other terms come from the ack's `timing` (sim-input's monotonic clock). per-message send is the p50 over every HID message's `sendWithMessage:` call; gaps = sidecar − recv→first send − Σ send − last send→ack (the gesture's sleeps); host + pipe = host write→ack − sidecar. Per-sample values are in the block JSON `verbs[].inputTimings`._\n"
+    );
+  }
+}
+
 // Optical scroll offsets (IOS2-H5: screen POINTS, full-res NCC, no half-window clamp).
 L.push("### Optical scroll offset per arm (full-res NCC on simctl screenshots; screen POINTS)\n");
 L.push(
-  "| block | median dyPts | IQR (q1–q3) | raster scale (px/pt) | confidence refusals | n (accepted) |"
+  "| block | median dyPts | IQR (q1–q3) | median dyPx | raster scale (px/pt) | scale source | confidence refusals | n (accepted) |"
 );
-L.push("|---|---|---|---|---|---|");
+L.push("|---|---|---|---|---|---|---|---|");
 for (const n of present) {
   const s = bl[n].block.scroll;
   if (invalid(n)) {
-    L.push(`| ${n} | INVALID | INVALID | INVALID | INVALID | INVALID |`);
+    L.push(`| ${n} | INVALID | INVALID | INVALID | INVALID | INVALID | INVALID | INVALID |`);
     continue;
   }
   if (!s) {
-    L.push(`| ${n} | — | — | — | — | — |`);
+    L.push(`| ${n} | — | — | — | — | — | — | — |`);
     continue;
   }
   L.push(
-    `| ${n} | ${fx(s.median)} | ${fx(s.q1)}–${fx(s.q3)} (IQR ${fx(s.iqr)}) | ${fx(s.rasterScale, 3)} | ${s.refusals} | ${s.n} |`
+    `| ${n} | ${fx(s.median)} | ${fx(s.q1)}–${fx(s.q3)} (IQR ${fx(s.iqr)}) | ${fx(s.medianPx)} | ${fx(s.rasterScale, 3)} | ${s.rasterScaleSource || "runner-screen-height"} | ${s.refusals} | ${s.n} |`
   );
 }
 L.push(
-  "\n_Offsets are in SCREEN POINTS via `optical-scroll.ts` (full-resolution NCC, maxShift 0.9 of the region, refuse only on confidence < 0.6 — no half-window clamp); the framebuffer-px→points scale is stated. Per-swipe `from`/`to`/`scrollRegion`/`dyPx`/`confidence` are persisted in the block JSON `scroll.records`, with a few before/after PNG pairs under `.bench-results/shots/<block>/`. No ratio gate this phase (the fling gate is 3o/iOS-3)._\n"
+  "\n_Offsets are in SCREEN POINTS via `optical-scroll.ts` (full-resolution NCC over the scroll region clipped to the chrome-free band y 0.13–0.90, shifts up to 0.9 of it scored down to a 10 % overlap, refuse only on confidence < 0.6); the framebuffer-px→points scale and its source are stated (`device-profile` = the device type's `mainScreenScale`). Per-swipe `from`/`to`/`region`/`opticalRegion`/`dyPx`/`confidence` are persisted in the block JSON `scroll.records`, with a few before/after PNG pairs under `.bench-results/shots/<block>/`. No ratio gate this phase (the fling gate is 3o/iOS-3)._\n"
 );
 
 // G4 tokens.
