@@ -40,6 +40,14 @@ const MAX_NODE_DELTA = 2;
 const MAX_EDGE_DELTA = 4;
 const MAX_ON_BYTES = 64 * 1024;
 const NAV_PASS_MIN = 38;
+const NAV_PASS_OF = 40;
+/**
+ * Feed readiness before a nav attempt. Run 37572199458's logcat shows
+ * `Displayed .../.FeedActivity: +1s464ms` after a force-stop relaunch, longer
+ * than the fixed 1.2 s sleep, so an attempt could start on the splash window.
+ */
+const FEED_READY_TIMEOUT_MS = 6000;
+const FEED_READY_POLL_MS = 250;
 
 type Condition = "churn100" | "churn0";
 
@@ -78,6 +86,20 @@ interface NavAttempt {
   scrolls: number;
   tapped: boolean;
   arrived: boolean;
+  /**
+   * The target row existed in the feed at attempt time. Ground truth from the
+   * app's content model (`Items.rowTitle`): rows are `Story 0..items-1`, never
+   * deleted, renamed or reordered (the seed churns only the summary and the
+   * detail headline), so this is `target < ITEMS`. Attempts on an absent target
+   * are excluded from the present-only E1-G3 denominator.
+   */
+  targetPresent: boolean;
+  /** ms the feed took to show `Story 0` after the relaunch; -1 when it never did. */
+  feedReadyMs: number;
+  /** `executeTemplateStep` telemetry: end-of-list turnarounds, gapped scrolls, clean sweep. */
+  reversals?: number;
+  gaps?: number;
+  swept?: boolean;
   reason?: string;
 }
 
@@ -97,6 +119,9 @@ interface ChurnResult {
   gates: Record<string, { pass: boolean | null; detail: string }>;
   navSuccess: number;
   navTotal: number;
+  /** E1-G3 over attempts whose target was present at attempt time (the gated number). */
+  navSuccessPresent: number;
+  navTotalPresent: number;
   navAttempts: NavAttempt[];
   misattributionRows: number;
   misattributionRowTotal: number;
@@ -242,6 +267,21 @@ async function findExact(
   } catch {
     return null;
   }
+}
+
+/** The app's row model (`Items.rowTitle`): is `Story <target>` in the feed? */
+function targetInFeed(target: number): boolean {
+  return Number.isInteger(target) && target >= 0 && target < ITEMS;
+}
+
+/** Poll until the feed shows `Story 0` (the list is drawn); ms waited, or -1. */
+async function waitForFeed(server: OpenDeviceServerApi): Promise<number> {
+  const start = Date.now();
+  while (Date.now() - start < FEED_READY_TIMEOUT_MS) {
+    if (await findExact(server, "Story 0")) return Date.now() - start;
+    await sleep(FEED_READY_POLL_MS);
+  }
+  return -1;
 }
 
 async function swipeUp(server: OpenDeviceServerApi, snap: StateSnapshot): Promise<void> {
@@ -426,8 +466,10 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
       if (condition === "churn100") {
         for (const target of NAV_TARGETS) {
           navTotal += 1;
+          const targetPresent = targetInFeed(target);
           launchFeed(seed);
           await sleep(1200);
+          const feedReadyMs = await waitForFeed(server);
           const cur = await snapshot(server);
           if (!cur) {
             navAttempts.push({
@@ -436,6 +478,8 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
               scrolls: -1,
               tapped: false,
               arrived: false,
+              targetPresent,
+              feedReadyMs,
               reason: "no snapshot",
             });
             continue;
@@ -449,6 +493,8 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
               scrolls: -1,
               tapped: false,
               arrived: false,
+              targetPresent,
+              feedReadyMs,
               reason: "no template route",
             });
             continue;
@@ -470,12 +516,18 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
             scrolls: out.scrolls,
             tapped: out.tapped,
             arrived,
+            targetPresent,
+            feedReadyMs,
+            reversals: out.reversals,
+            gaps: out.gaps,
+            swept: out.swept,
             ...(arrived ? {} : { reason: out.reason ?? "arrival" }),
           });
+          const tele = `scrolls=${out.scrolls}, reversals=${out.reversals}, gaps=${out.gaps}, swept=${out.swept}, feedReadyMs=${feedReadyMs}, present=${targetPresent}`;
           log(
             arrived
-              ? `[churn] nav to Story ${target} ok (scrolls=${out.scrolls})`
-              : `[churn] nav to Story ${target} failed (tapped=${out.tapped}, scrolls=${out.scrolls}, reason=${out.reason ?? "arrival"})`
+              ? `[churn] nav to Story ${target} ok (${tele})`
+              : `[churn] nav to Story ${target} failed (tapped=${out.tapped}, ${tele}, reason=${out.reason ?? "arrival"})`
           );
           await back(server);
           await sleep(400);
@@ -495,6 +547,29 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
     on,
     off,
   });
+}
+
+/**
+ * E1-G3: navigate-to success >= 38/40, over attempts whose target was present at
+ * attempt time (an absent target's `unresolved` is the correct answer). The bar
+ * scales with the present-only denominator; the raw number is reported too.
+ */
+export function gradeNavG3(attempts: Array<Pick<NavAttempt, "arrived" | "targetPresent">>): {
+  pass: boolean;
+  presentOk: number;
+  presentTotal: number;
+  detail: string;
+} {
+  const present = attempts.filter((a) => a.targetPresent);
+  const presentOk = present.filter((a) => a.arrived).length;
+  const rawOk = attempts.filter((a) => a.arrived).length;
+  const bar = Math.ceil((NAV_PASS_MIN / NAV_PASS_OF) * present.length);
+  return {
+    pass: present.length > 0 && presentOk >= bar,
+    presentOk,
+    presentTotal: present.length,
+    detail: `present-only ${presentOk}/${present.length} (bar ${bar}/${present.length} = ${NAV_PASS_MIN}/${NAV_PASS_OF}); raw ${rawOk}/${attempts.length}; D.4.1 O5 baseline 59/60`,
+  };
 }
 
 function grade(
@@ -546,12 +621,9 @@ function grade(
       : "no churn100 metric",
   };
 
-  // E1-G3: navigate-to success >= 38/40.
-  const g3 = ctx.navTotal > 0 && ctx.navSuccess >= NAV_PASS_MIN;
-  gates["E1-G3"] = {
-    pass: g3,
-    detail: `${ctx.navSuccess}/${ctx.navTotal} (bar ${NAV_PASS_MIN}/40; D.4.1 O5 baseline 59/60)`,
-  };
+  // E1-G3: present-only navigate-to success (see gradeNavG3).
+  const g3 = gradeNavG3(ctx.navAttempts);
+  gates["E1-G3"] = { pass: g3.pass, detail: g3.detail };
 
   // E1-G4: invariants on the ON arm; OFF duplicateEdgeTargets RECORDED.
   const dupScreens = ctx.on.duplicateScreens().length;
@@ -595,6 +667,8 @@ function grade(
     gates,
     navSuccess: ctx.navSuccess,
     navTotal: ctx.navTotal,
+    navSuccessPresent: g3.presentOk,
+    navTotalPresent: g3.presentTotal,
     navAttempts: ctx.navAttempts,
     misattributionRows: ctx.misRows,
     misattributionRowTotal: ctx.misRowTotal,
@@ -644,13 +718,19 @@ function renderMarkdown(
     `- Row taps attributed to \`#list\`: ${ctx.misRowTotal - ctx.misRows}/${ctx.misRowTotal} (misattributed ${ctx.misRows}).`
   );
   L.push(`- Carousel taps attributed to \`#carousel\`: ${ctx.carouselAttr}/${ctx.carouselTotal}.`);
-  L.push(`- navigate-to (template step): ${ctx.navSuccess}/${ctx.navTotal}.`);
+  const present = ctx.navAttempts.filter((a) => a.targetPresent);
+  L.push(
+    `- navigate-to (template step): raw ${ctx.navSuccess}/${ctx.navTotal}; target present ${present.filter((a) => a.arrived).length}/${present.length}.`
+  );
   L.push("\n## navigate-to attempts (churn100)\n");
-  L.push("| session | target | scrolls | tapped | arrived | reason |");
-  L.push("| --- | --- | --- | --- | --- | --- |");
+  L.push(
+    "| session | target | present | feed ready ms | scrolls | reversals | gaps | swept | tapped | arrived | reason |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  const opt = (v: number | boolean | undefined) => (v === undefined ? "-" : String(v));
   for (const a of ctx.navAttempts) {
     L.push(
-      `| ${a.session} | Story ${a.target} | ${a.scrolls < 0 ? "-" : a.scrolls} | ${a.tapped} | ${a.arrived} | ${a.reason ?? ""} |`
+      `| ${a.session} | Story ${a.target} | ${a.targetPresent} | ${a.feedReadyMs} | ${a.scrolls < 0 ? "-" : a.scrolls} | ${opt(a.reversals)} | ${opt(a.gaps)} | ${opt(a.swept)} | ${a.tapped} | ${a.arrived} | ${a.reason ?? ""} |`
     );
   }
   L.push("");

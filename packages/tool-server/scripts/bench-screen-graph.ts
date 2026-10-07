@@ -3024,6 +3024,8 @@ async function main(): Promise<void> {
             gates: result.gates,
             navSuccess: result.navSuccess,
             navTotal: result.navTotal,
+            navSuccessPresent: result.navSuccessPresent,
+            navTotalPresent: result.navTotalPresent,
             navAttempts: result.navAttempts,
             misattributionRows: result.misattributionRows,
             misattributionRowTotal: result.misattributionRowTotal,
@@ -3038,10 +3040,12 @@ async function main(): Promise<void> {
         gates: result.gates,
         navSuccess: result.navSuccess,
         navTotal: result.navTotal,
+        navSuccessPresent: result.navSuccessPresent,
+        navTotalPresent: result.navTotalPresent,
       };
       const churnFail = Object.entries(result.gates).some(([, g]) => g.pass === false);
       process.stdout.write(
-        `[bench-sg] churn experiment done (run ${runId}): nav ${result.navSuccess}/${result.navTotal}; gates ${Object.entries(
+        `[bench-sg] churn experiment done (run ${runId}): nav ${result.navSuccess}/${result.navTotal} (target present ${result.navSuccessPresent}/${result.navTotalPresent}); gates ${Object.entries(
           result.gates
         )
           .map(([id, g]) => `${id}=${g.pass === null ? "desc" : g.pass ? "pass" : "FAIL"}`)

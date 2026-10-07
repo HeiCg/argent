@@ -158,6 +158,63 @@ ceil(5168 / 819) = 7 scrolls and the last row 9. `executeTemplateStep` returns
 resolves held (Story 39 at 7, max 9); the old flinging scroll misses rows 11-13,
 25-27, 39 in the same model.
 
+### Run 3 (37572199458)
+
+Branch @ 93cbf758. **nav 30/40, E1-G3 FAIL**; E1-G1/G2/G4 pass. All 10 misses
+are `tapped=false, selector unresolved on live tree`, at 9, 4, 9, 5, 7, 9, 6, 2,
+5, 9 scrolls.
+
+Diagnosis:
+
+- Every target was present. The churn app never deletes, renames or reorders a
+  row (`Items.rowTitle(i) = "Story i"`; the seed churns only the summary and the
+  detail headline), so a miss is never a correct "absent".
+- The list did not start scrolled. `launchFeed` runs `am force-stop` then
+  `am start` before every attempt, so each attempt starts at the top of a cold
+  feed.
+- The held swipe still flung on CI. Drag-only, Story 33 needs 5 scrolls, 34
+  needs 6 and 38 needs 7, yet run 3 reached 33, 34 and 38 in 2 scrolls and 39 in 3. A swipe moved two to three drags, more than a viewport, so rows fell
+  between two windows. `MotionInjector` paces frames against `downTime + slot`
+  and injects late frames back to back, so a stall on the loaded emulator (Davey
+  frames of 785 and 822 ms in the logcat tail) can collapse the 120 ms hold and
+  lift with velocity. This is the likely cause; the device side was not changed.
+- The search only scrolled down. Once a flung swipe skipped the item, the
+  search ran to the end of the list and stopped after two `changed:false`
+  swipes: 9 scrolls when it got there by drag, 4 to 7 when flings got there
+  sooner.
+- The end detection trusted the server's `changed`. It is `false` whenever no AX
+  event lands within the 600 ms first-event window (`settled:"no-event"`), even
+  if the list moved. The 2-scroll miss (s4, Story 36) stopped at the top, so
+  both swipes reported no change. Either they ran before the feed was drawn
+  (logcat: `Displayed .../.FeedActivity: +1s464ms`, against the harness's
+  1.2 s sleep) or the AX event came too late.
+
+There was no per-swipe telemetry, so each miss is attributed by its scroll
+count, not observed.
+
+Fix (this branch):
+
+- The template search is bidirectional. It scrolls down until the list stops
+  moving, turns around, and keeps going between the two ends until the item
+  resolves, until a pass from one end to the other has no gap, or until the
+  30-scroll cap.
+- "Moved" is decided from settled reads. The step reads the container's visible
+  texts until two consecutive reads agree, then compares that window with the
+  one before the swipe. A moved window that shares no text with the previous one
+  counts as a gap. The server's `changed` is only a fallback, for a container
+  with no readable text.
+- `executeTemplateStep` returns `reversals`, `gaps` and `swept`.
+- The harness waits until the feed shows `Story 0` (up to 6 s) before each nav
+  attempt.
+- Each attempt records `targetPresent`, taken from the app's row model.
+- E1-G3 is graded over present targets only, with the 38/40 bar scaled to that
+  denominator. The raw number is published next to it.
+
+Unit tests replay the 50-row geometry with the list starting at the bottom,
+down swipes that fling, an outcome that always says `changed:false`, and a
+screen that trails the list by two reads. All 50 rows resolve in each case. An
+absent row stops after one clean sweep (22 scrolls).
+
 Original pre-run gate table (outcomes appended from this run):
 
 ### Pre-registered gates (written before the run grades anything)

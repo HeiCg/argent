@@ -354,16 +354,28 @@ export async function resolveTapPoint(
 /**
  * Phase E (design D1): safety cap on how many times `navigate-to` scrolls the
  * container while looking for the concrete item behind a template step. The
- * search normally ends earlier, when the item shows up or the list stops moving
- * (TEMPLATE_END_UNCHANGED swipes in a row change nothing), so the scrolls spent
- * track the list's real length. 30 held scrolls cover ~148 rows of the churn
- * app's ~179 px rows in its 1908 px viewport; run 2 (34970043301) needed 7 to
- * reach Story 39 and 9 to reach the end of its 50-row list.
+ * search normally ends earlier: when the item shows up, or after one gap-free
+ * pass from one end of the list to the other (the item is not in the list).
+ * On the churn app's 50 rows a held scroll moves ~819 px, so a pass is 9 moving
+ * scrolls + TEMPLATE_END_UNCHANGED still ones, and down + back up is 22.
  */
 const TEMPLATE_MAX_SCROLLS = 30;
 
 /** Consecutive no-change swipes that mean the container is at its end. */
 const TEMPLATE_END_UNCHANGED = 2;
+
+/**
+ * Settled read of the container after a swipe (run 37572199458): the server's
+ * `changed` outcome is `false` whenever no AX event lands within its 600 ms
+ * first-event window (`settled:"no-event"`), which a janky emulator misses
+ * (Davey frames of ~800 ms in that run), so it is not trusted to mean "the list
+ * did not move". Instead the step reads the container's visible texts until two
+ * consecutive reads agree (at most TEMPLATE_SETTLE_MAX_READS, TEMPLATE_SETTLE_PAUSE_MS
+ * apart; the pause exceeds Android's 100 ms scroll-event throttle) and compares
+ * that stable window with the one before the swipe.
+ */
+const TEMPLATE_SETTLE_MAX_READS = 5;
+const TEMPLATE_SETTLE_PAUSE_MS = 150;
 
 /**
  * The template scroll is momentum-free, with the steps and hold `gesture-swipe`
@@ -380,35 +392,89 @@ const TEMPLATE_SCROLL_HOLD_MS = 120;
 
 const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
 
-/**
- * Swipe up inside the largest live scrollable's bounds (else the screen).
- * Returns false only when the server reported the swipe changed nothing (the
- * container is at its end); an unknown outcome counts as moved.
- */
-async function scrollContainerUp(
-  server: OpenDeviceServerApi,
-  size: { width: number; height: number }
-): Promise<boolean> {
-  let sx = Math.round(size.width / 2);
-  let sy = Math.round(size.height * 0.72);
-  let ey = Math.round(size.height * 0.28);
+type Box = { x1: number; y1: number; x2: number; y2: number };
+
+/** One read of the scroll container: where it is and what it shows. */
+interface ContainerRead {
+  /** The largest live scrollable's bounds; null when the tree has none. */
+  bounds: Box | null;
+  /**
+   * The visible texts inside the container with their top edge, in tree order.
+   * Empty when nothing readable is inside (the step then falls back to the
+   * server's `changed` outcome).
+   */
+  sig: string;
+  /** Texts that appear once in the window (the overlap test's keys). */
+  texts: Set<string>;
+}
+
+async function readContainer(server: OpenDeviceServerApi): Promise<ContainerRead> {
+  let tree: OpenServerElement[] = [];
   try {
     const st = await server.getState({ includeScreenshot: false });
-    let bestArea = -1;
-    for (const el of st.tree as OpenServerElement[]) {
-      if (!isScrollingElement(el)) continue;
-      const b = el.bounds;
-      const a = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
-      if (a > bestArea) {
-        bestArea = a;
-        sx = Math.round((b.x1 + b.x2) / 2);
-        sy = Math.round(b.y1 + (b.y2 - b.y1) * 0.72);
-        ey = Math.round(b.y1 + (b.y2 - b.y1) * 0.28);
-      }
-    }
+    tree = (st?.tree ?? []) as OpenServerElement[];
   } catch {
-    /* fall back to the screen-centre swipe */
+    return { bounds: null, sig: "", texts: new Set() };
   }
+  let bounds: Box | null = null;
+  let bestArea = -1;
+  for (const el of tree) {
+    if (!isScrollingElement(el)) continue;
+    const b = el.bounds;
+    const a = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+    if (a > bestArea) {
+      bestArea = a;
+      bounds = b;
+    }
+  }
+  if (!bounds) return { bounds: null, sig: "", texts: new Set() };
+  const parts: string[] = [];
+  const counts = new Map<string, number>();
+  for (const el of tree) {
+    const label = (el.text ?? "").trim() || (el.contentDesc ?? "").trim();
+    if (!label) continue;
+    const cx = (el.bounds.x1 + el.bounds.x2) / 2;
+    const cy = (el.bounds.y1 + el.bounds.y2) / 2;
+    if (cx < bounds.x1 || cx > bounds.x2 || cy < bounds.y1 || cy > bounds.y2) continue;
+    parts.push(`${label}@${el.bounds.y1}`);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const texts = new Set<string>();
+  for (const [t, n] of counts) if (n === 1) texts.add(t);
+  return { bounds, sig: parts.join("|"), texts };
+}
+
+/**
+ * Read the container until two consecutive reads agree (the list is no longer
+ * animating), bounded by TEMPLATE_SETTLE_MAX_READS; returns the last read.
+ */
+async function stableRead(server: OpenDeviceServerApi, pauseMs: number): Promise<ContainerRead> {
+  let prev = await readContainer(server);
+  for (let i = 1; i < TEMPLATE_SETTLE_MAX_READS; i++) {
+    if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
+    const cur = await readContainer(server);
+    if (cur.sig === prev.sig) return cur;
+    prev = cur;
+  }
+  return prev;
+}
+
+/**
+ * Swipe the container held (momentum-free) inside its bounds (else the screen).
+ * `down` reveals later items (the finger moves up); `up` reveals earlier ones.
+ * Returns the server's `changed` outcome (undefined when it gave none).
+ */
+async function scrollContainer(
+  server: OpenDeviceServerApi,
+  size: { width: number; height: number },
+  bounds: Box | null,
+  dir: "down" | "up"
+): Promise<boolean | undefined> {
+  const b = bounds ?? { x1: 0, y1: 0, x2: size.width, y2: size.height };
+  const sx = Math.round((b.x1 + b.x2) / 2);
+  const low = Math.round(b.y1 + (b.y2 - b.y1) * 0.72);
+  const high = Math.round(b.y1 + (b.y2 - b.y1) * 0.28);
+  const [sy, ey] = dir === "down" ? [low, high] : [high, low];
   const out = await server.swipeWithOutcome(
     sx,
     sy,
@@ -417,7 +483,7 @@ async function scrollContainerUp(
     TEMPLATE_SCROLL_STEPS,
     TEMPLATE_SCROLL_HOLD_MS
   );
-  return out?.changed !== false;
+  return out?.changed;
 }
 
 /** The result of resolving a template step's concrete item on the live tree. */
@@ -427,25 +493,57 @@ interface TemplateStepOutcome {
   afterResourceIds: string[];
   /** Container scrolls spent before the item resolved (or the search gave up). */
   scrolls: number;
+  /** Times the search reached an end of the list and turned around. */
+  reversals: number;
+  /**
+   * Scrolls whose settled window shared no text with the window before it: rows
+   * may have been skipped (a swipe that still flung, run 37572199458).
+   */
+  gaps: number;
+  /**
+   * The search covered the list end to end in one direction with no gap and did
+   * not see the item: on an unresolved outcome, the item is not in the list.
+   */
+  swept: boolean;
   reason?: string;
+}
+
+export interface TemplateStepOptions {
+  /** Pause between the settle reads after a swipe (tests pass 0). */
+  settlePauseMs?: number;
 }
 
 /**
  * Phase E (design D1): resolve the concrete item for a template step. Query the
  * live tree for `wantedText`, requiring exactly one EXACT match (the same
  * uniqueness discipline as D.1 Fix A); when it is not yet on screen, scroll the
- * container (momentum-free, less than a viewport) and re-query, until the item
- * shows up, the container stops moving, or `TEMPLATE_MAX_SCROLLS`; fail closed
- * (never tap) on an ambiguous or unresolved item.
+ * container (momentum-free, less than a viewport) and re-query. The search is
+ * bidirectional: it scrolls toward the end first and, when the list stops moving
+ * (TEMPLATE_END_UNCHANGED settled reads in a row equal the one before the
+ * swipe), turns around, so an item ABOVE the starting window, or one a flung
+ * swipe skipped, is still reached. It stops when the item resolves, after one
+ * gap-free pass from end to end (`swept`), or at TEMPLATE_MAX_SCROLLS; it fails
+ * closed (never taps) on an ambiguous or unresolved item.
  */
 export async function executeTemplateStep(
   server: OpenDeviceServerApi,
   size: { width: number; height: number },
-  wantedText: string
+  wantedText: string,
+  opts: TemplateStepOptions = {}
 ): Promise<TemplateStepOutcome> {
+  const pauseMs = opts.settlePauseMs ?? TEMPLATE_SETTLE_PAUSE_MS;
   const want = norm(wantedText);
   let scrolls = 0;
   let unchanged = 0;
+  let reversals = 0;
+  let gaps = 0;
+  let swept = false;
+  let dir: "down" | "up" = "down";
+  // A pass is clean when it started at an end and no scroll in it left a gap.
+  let passFromEnd = false;
+  let passGap = false;
+  let prev = await stableRead(server, pauseMs);
+  const telemetry = () => ({ scrolls, reversals, gaps, swept });
   for (;;) {
     const q = await server.query(
       { text: { contains: wantedText, caseInsensitive: true }, visible: true },
@@ -466,7 +564,7 @@ export async function executeTemplateStep(
         // the live side the SAME way — else the live `statusBar`/`navigationBar`
         // decor ids drop the score below 0.9 (run 34957934222: 7/9 = 0.78).
         afterResourceIds: nonScrollRids(after.tree as unknown as TemplateElement[], ""),
-        scrolls,
+        ...telemetry(),
       };
     }
     if (exact.length > 1) {
@@ -475,21 +573,48 @@ export async function executeTemplateStep(
         tapped: false,
         afterHash: idOf(cur),
         afterResourceIds: resourceIdsOf(cur.tree),
-        scrolls,
+        ...telemetry(),
         reason: "selector ambiguous on live tree",
       };
     }
-    if (scrolls >= TEMPLATE_MAX_SCROLLS || unchanged >= TEMPLATE_END_UNCHANGED) break;
-    const moved = await scrollContainerUp(server, size);
+    if (swept || scrolls >= TEMPLATE_MAX_SCROLLS) break;
+    const reported = await scrollContainer(server, size, prev.bounds, dir);
     scrolls += 1;
-    unchanged = moved ? 0 : unchanged + 1;
+    const cur = await stableRead(server, pauseMs);
+    // Trust the settled window when the container shows readable content;
+    // without it, fall back to the server's outcome (unknown counts as moved).
+    const readable = prev.sig !== "" || cur.sig !== "";
+    const moved = readable ? cur.sig !== prev.sig : reported !== false;
+    if (moved) {
+      unchanged = 0;
+      const overlap = readable && [...cur.texts].some((t) => prev.texts.has(t));
+      if (!overlap) {
+        gaps += 1;
+        passGap = true;
+      }
+    } else {
+      unchanged += 1;
+    }
+    prev = cur;
+    if (unchanged >= TEMPLATE_END_UNCHANGED) {
+      // At an end. A pass that ran end to end without a gap saw every row.
+      if (passFromEnd && !passGap) {
+        swept = true;
+        continue;
+      }
+      dir = dir === "down" ? "up" : "down";
+      reversals += 1;
+      unchanged = 0;
+      passFromEnd = true;
+      passGap = false;
+    }
   }
   const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
   return {
     tapped: false,
     afterHash: idOf(cur),
     afterResourceIds: resourceIdsOf(cur.tree),
-    scrolls,
+    ...telemetry(),
     reason: "selector unresolved on live tree",
   };
 }
