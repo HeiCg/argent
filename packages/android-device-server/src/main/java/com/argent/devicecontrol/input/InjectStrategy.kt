@@ -61,12 +61,18 @@ enum class InjectStrategy(val wire: String) {
  *   `"unavailable"` (always `"uia-async"`), else null.
  * @property error the reflection exception text when [strategy] is
  *   `"unavailable"`, else null.
+ * @property deliveredMs device-clock span from the first DOWN's dispatch to the
+ *   final UP's dispatch ([MotionInjector.inject] only), else -1.
+ * @property heldMs device-clock span from the hold anchor's dispatch (the last
+ *   travel frame of a held swipe) to the final UP's dispatch, else -1.
  */
 data class InjectOutcome(
     val dropped: Boolean,
     val strategy: String,
     val fellBackTo: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val deliveredMs: Long = -1L,
+    val heldMs: Long = -1L
 ) {
     companion object {
         const val UNAVAILABLE = "unavailable"
