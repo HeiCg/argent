@@ -74,10 +74,143 @@ is measured but the overlap stress is E-2).
 
 ## Result
 
-Current result: **run 4 (37584222236)**. Runs 1 to 3 are kept below for the
-record. Not yet adversarially reviewed.
+Final result: **run 5 (37600322190)**, the E-1.1 rerun after the adversarial
+review of run 4 (`2026-10-07-review-e1-findings.md`). Runs 1 to 4 are kept below
+for the record.
 
-### Run 4 (37584222236), current
+### Run 5 (37600322190), final
+
+Run **37600322190** (`HeiCg/argent`, `bench-open-vs-proprietary.yml`,
+`workflow_dispatch`, `suite=screen-graph`, `sg_mode=matrix`, `blocks=churn`),
+branch `feat/screen-graph-e1-templates` @ `03dab1e3`, 2026-10-07 (job started
+09:23:55Z). Emulator 36.4.10.0 (build 15004761, pinned), sysimg
+`android-34;google_apis;x86_64` r14, gpu `swiftshader_indirect`, runner image
+20260927.320.1, device server APK 0.1.24 (versionCode 28). Job conclusion
+**success**. Outcomes are read from this run's artifact only (`churn-results.md`,
+`churn.json`).
+
+Churn setup: `com.argent.churnapp`, items=50, sessions=5, taps/session=8,
+scrolls/session=10. New in E-1.1: an OFF-nograph arm that runs the same
+scroll-and-exact-text search with no store and no template; arrival checked on
+the detail headline (`Headline <seed>-<target>`) plus the layout; matching
+scoped to the template's container and routed by the requested item; per-attempt
+wall time and per-swipe device timing; 4 deliberately absent targets; presence
+observed by a sweep instead of taken from the app model; E1-G5 graded in code.
+
+Gates, verbatim from `churn-results.md`:
+
+| gate          | statistic                                                       | verdict           | detail                                                                                                                       |
+| ------------- | --------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| E1-G1         | store growth per session (ON, churn100)                         | PASS              | ON [k2: +0n/+0e, k3: +0n/+0e, k4: +0n/+0e, k5: +0n/+0e] (<= 2n/4e); OFF [k2: +9n/+9e, k3: +9n/+9e, k4: +9n/+9e, k5: +9n/+9e] |
+| E1-G2         | store bytes at K=5 (ON)                                         | PASS              | ON 23300 B (<= 65536); OFF 203334 B                                                                                          |
+| E1-G3         | template-step search reliability (ON)                           | PASS              | ON present-only 37/37 (bar 36/37 = 38/40); raw 40/40; vs OFF-nograph 37/37                                                   |
+| E1-G3-nograph | same search without store or template (OFF-nograph, comparator) | PASS (comparator) | OFF-nograph present-only 37/37 (bar 36/37 = 38/40); raw 40/40                                                                |
+| E1-G4         | invariants G-I1..G-I6 (ON)                                      | PASS              | ON dupScreens=0 dupEdges=0 dangling=0 hygiene=0 nodes=3 edges=2; OFF dupEdgeTargets=9 (recorded, not gated)                  |
+| E1-G5         | D.4.1 matrix non-regression (templates OFF)                     | PASS              | store 10n/9e in 10-11n/9-11e; O1 179 in 138-179; O4 21 in 20-22 (pre-registered, 2026-09-15-screen-graph-phase-e1.md)        |
+| E1-G6         | feed summary tokens/step, ON vs OFF                             | DESCRIPTIVE       | mean of per-session p50s: ON ~82 vs OFF ~111 (descriptive; cap-bound, topN=6 caps both)                                      |
+
+Template-step search, ON vs OFF-nograph (same targets, same sessions, same
+relaunch; the 4 absent probes excluded), verbatim from `churn-results.md`:
+
+| arm         | present ok / present | raw ok / attempts | wallMs p50 / max    | swipeMs p50 / max   | deliveredMs p50 / max | attempts with gaps | scrolls p50 / max |
+| ----------- | -------------------- | ----------------- | ------------------- | ------------------- | --------------------- | ------------------ | ----------------- |
+| ON          | 37/37                | 40/40             | 8704 / 37128 (n=40) | 1011 / 1760 (n=216) | 277 / 387 (n=216)     | 39/40              | 4 / 22 (n=40)     |
+| OFF-nograph | 37/37                | 40/40             | 8907 / 31926 (n=40) | 1028 / 1770 (n=207) | 277 / 338 (n=207)     | 39/40              | 4 / 18 (n=40)     |
+
+Totals over the 40 attempts per arm (absent probes excluded): ON 216 swipes with
+81 gaps (38 %), reversals in 11/40; OFF-nograph 207 swipes with 86 gaps (42 %),
+reversals in 9/40. Run 4 had 90 gaps over 204 swipes (44 %).
+
+#### Reading
+
+- **The template step's search reliability equals the no-graph search.** ON
+  37/37 present-only and 40/40 raw; OFF-nograph the same, with the same median
+  wall time (8704 vs 8907 ms). The template edge decides which container to
+  search and which detail layout to expect; it does not make the search find the
+  row more often.
+- **E-1's demonstrated benefit is the bounded store and the non-regression.**
+  E1-G1: +0 nodes / +0 edges per session ON against +9n/+9e OFF. E1-G2: 23 300 B
+  against 203 334 B at K=5. E1-G5: with templates OFF the D.4.1 matrix stays in
+  its pre-registered range (store 10n/9e, O1 179, O4 21), now graded in code.
+- **Navigation speed is not improved by templates.** A navigation takes 8.7 s at
+  the median (37 s worst case) on both arms. The time goes to scrolling and
+  reading: median 4 scrolls, each a ~1 s swipe RPC plus at least two settled
+  container reads. The graph plays no part in that loop.
+- **The swipe still skips rows.** 39/40 attempts recorded at least one gap on
+  both arms, and targets 32 to 39 are reached in a median 4 scrolls, fewer than a
+  drag-only scroll needs (run 2 estimate: ~819 px per drag, Story 39 at 7). The
+  search succeeds because it turns around and re-scans, not because the swipe
+  stopped flinging. See open defect D1 below.
+- **Absent targets cost ~49 s.** Each of the 4 deliberately absent probes ran to
+  the 30-scroll cap: give-up wall time p50 / max 49 254 / 50 320 ms ON and
+  49 395 / 50 782 ms OFF-nograph, `swept` 0/4 on both arms. The search stops
+  early only after a gap-free end-to-end pass, and with gaps in nearly every
+  attempt that pass never happens.
+- Presence sweeps observed 48, 50, 45, 48 and 50 of 50 rows (none completed a
+  gap-free pass). Session 3 missed rows 34 to 36, so its targets 34 to 36 count as
+  not present: hence 37 present targets, while all 40 were reached (raw 40/40).
+- Containment audit: row taps attributed to `#list` 80/80 (0 misattributed),
+  carousel taps to `#carousel` 10/10.
+
+#### Open defect D1: the held swipe still moves more than one drag
+
+Numbers (run 37600322190): gaps in 39/40 attempts on both arms; 81/216 (ON) and
+86/207 (OFF-nograph) swipes with a gap; swipe RPC p50 1011 / 1028 ms;
+`deliveredMs` p50 277 ms, min 271 ms, max 387 ms (ON) / 338 ms (OFF-nograph);
+absent-target give-up ~49 s, `swept` 0/8. APK 0.1.24 was installed (it is the
+first APK that reports `deliveredMs`).
+
+Code check (read-only, 2026-10-07). `deliveredMs` is the device-clock span from
+the first DOWN's `eventTime` to the final UP's `eventTime`
+(`MotionInjector.inject`, `HoldAnchor.spanMs(firstDownAt, upAt)`). Each
+`eventTime` is taken just before that event is dispatched, so it is DOWN-to-UP
+send time: it includes the hold but not the synchronous dispatch of the final
+UP. The held path is taken for the template scroll: `scrollContainer` sends
+`steps: 19, holdEndMs: 120` (`navigate-to/index.ts:396-397`, `:575-582`), the
+blueprint forwards `holdEndMs` when > 0, and `SwipeHandler.execute` routes
+`holdEndMs > 0` to `injectHeldSwipe` with `holdAnchorFrame = travelSteps`. The
+held path paces frames at a fixed 8 ms (`STEP_MS`), so the schedule is 19 × 8 =
+152 ms of travel plus 15 × 8 = 120 ms of hold, **272 ms DOWN to UP**, not
+250 + 120 ms. The flinging path would schedule 19 × 16 = 304 ms. Observed
+`deliveredMs` is 272 to 273 ms in 191 of the 663 swipes in `churn.json` and
+277 ms at the median, so the gesture is injected on schedule with the full
+120 ms hold on the injector's clock. The anchor only adds delay after a late
+travel frame, which accounts for the tail up to 387 ms. `deliveredMs` therefore
+does not show the hold collapsing at injection. The previous suspect (late
+frames sent back to back collapse the hold, run 3 diagnosis) does not explain
+the skipping in this run. What the app receives is not measured: `heldMs` comes
+back in the swipe reply but the host does not record it (`SwipeTiming` has no
+`heldMs`), the intermediate MOVEs are dispatched async, and the app's input
+consumer batches by frame. The open question is why a list that receives a
+120 ms stationary tail before the UP still moves more than the drag on this
+emulator.
+
+#### Review findings (`2026-10-07-review-e1-findings.md`)
+
+| finding                                                            | state  | where                                                                                             |
+| ------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------- |
+| 1 G5 labelled descriptive                                          | closed | graded in code, PASS (gate table above)                                                           |
+| 2 G3 measures the search, not the edge                             | closed | OFF-nograph comparator arm; G3 renamed "template-step search reliability"; result: equal (37/37)  |
+| 3 arrival accepts any detail page                                  | closed | headline check, container-scoped match, routing by the requested item                             |
+| 4 momentum-free scroll still flings                                | open   | wall time now logged; device fling not fixed (D1 above)                                           |
+| 5 present-only grading inert                                       | closed | presence observed by a sweep per session                                                          |
+| 6 churn app lacks insert/delete/reorder, no eviction exercised     | open   | E-2                                                                                               |
+| 7 G6 cap-bound, "p50" is a mean of per-session p50s                | open   | relabelled in the gate detail; still cap-bound and descriptive                                    |
+| 8 flag check in `navigate-to`, byte check on every flush           | closed | template route behind `ARGENT_SG_TEMPLATES` (`bcdb3ff7`); byte check near a cap only (`02b59662`) |
+| 8 NUL bytes in `store.ts`, `lastItemTexts` persists item text (R5) | open   | not addressed; pinned template nodes and the `results-ci.md` `[object Object]` not rechecked      |
+| 9 tests pin numbers CI contradicts                                 | closed | tests updated                                                                                     |
+
+#### What this proves and does not prove
+
+On the churn app, one emulator image and N=5 sessions, template edges keep the
+store constant in content states and the D.4.1 matrix does not regress with
+templates OFF. Navigation through a template step is as reliable as a plain
+scroll-and-text search and no faster. Nothing here claims a navigation speed or
+a tokens/step win from templates. It does not cover a real app (E-2), another
+emulator or a physical device, rows that are inserted, deleted or reordered, or
+store eviction (3 nodes against a 300 cap). n=40 detects gross failure only.
+
+### Run 4 (37584222236)
 
 Run **37584222236** (`HeiCg/argent`, `bench-open-vs-proprietary.yml`,
 `workflow_dispatch`, `suite=screen-graph`, `sg_mode=matrix`, `blocks=churn`),
