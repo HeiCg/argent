@@ -352,18 +352,43 @@ export async function resolveTapPoint(
 }
 
 /**
- * Phase E (design D1): how many times `navigate-to` scrolls the container while
- * looking for the concrete item behind a template step before giving up.
+ * Phase E (design D1): safety cap on how many times `navigate-to` scrolls the
+ * container while looking for the concrete item behind a template step. The
+ * search normally ends earlier, when the item shows up or the list stops moving
+ * (TEMPLATE_END_UNCHANGED swipes in a row change nothing), so the scrolls spent
+ * track the list's real length. 30 held scrolls cover ~148 rows of the churn
+ * app's ~179 px rows in its 1908 px viewport; run 2 (34970043301) needed 7 to
+ * reach Story 39 and 9 to reach the end of its 50-row list.
  */
-const TEMPLATE_MAX_SCROLLS = 8;
+const TEMPLATE_MAX_SCROLLS = 30;
+
+/** Consecutive no-change swipes that mean the container is at its end. */
+const TEMPLATE_END_UNCHANGED = 2;
+
+/**
+ * The template scroll is momentum-free, with the steps and hold `gesture-swipe`
+ * sends for `momentum: false` at its default 300 ms (19 steps, 120 ms held at the
+ * end point before the lift): the OS reads ~0
+ * release velocity, so the list moves by the drag alone (0.44 of the container,
+ * less than one viewport) and consecutive queries see overlapping windows. Run 2
+ * used a flinging swipe: the lift carried ~5 px/ms, the fling added ~1700 px to
+ * the 840 px drag, one swipe moved more than the 1908 px viewport, and rows
+ * between two windows were never queried (12/40 `selector unresolved`).
+ */
+const TEMPLATE_SCROLL_STEPS = 19;
+const TEMPLATE_SCROLL_HOLD_MS = 120;
 
 const norm = (s: string | undefined): string => (s ?? "").trim().toLowerCase();
 
-/** Swipe up inside the largest live scrollable's bounds (else the screen). */
+/**
+ * Swipe up inside the largest live scrollable's bounds (else the screen).
+ * Returns false only when the server reported the swipe changed nothing (the
+ * container is at its end); an unknown outcome counts as moved.
+ */
 async function scrollContainerUp(
   server: OpenDeviceServerApi,
   size: { width: number; height: number }
-): Promise<void> {
+): Promise<boolean> {
   let sx = Math.round(size.width / 2);
   let sy = Math.round(size.height * 0.72);
   let ey = Math.round(size.height * 0.28);
@@ -384,7 +409,15 @@ async function scrollContainerUp(
   } catch {
     /* fall back to the screen-centre swipe */
   }
-  await server.swipeWithOutcome(sx, sy, sx, ey, 10);
+  const out = await server.swipeWithOutcome(
+    sx,
+    sy,
+    sx,
+    ey,
+    TEMPLATE_SCROLL_STEPS,
+    TEMPLATE_SCROLL_HOLD_MS
+  );
+  return out?.changed !== false;
 }
 
 /** The result of resolving a template step's concrete item on the live tree. */
@@ -392,15 +425,18 @@ interface TemplateStepOutcome {
   tapped: boolean;
   afterHash: string;
   afterResourceIds: string[];
+  /** Container scrolls spent before the item resolved (or the search gave up). */
+  scrolls: number;
   reason?: string;
 }
 
 /**
  * Phase E (design D1): resolve the concrete item for a template step. Query the
  * live tree for `wantedText`, requiring exactly one EXACT match (the same
- * uniqueness discipline as D.1 Fix A); scroll the container up to
- * `TEMPLATE_MAX_SCROLLS` times, re-querying after each, when it is not yet on
- * screen; fail closed (never tap) on an ambiguous or unresolved item.
+ * uniqueness discipline as D.1 Fix A); when it is not yet on screen, scroll the
+ * container (momentum-free, less than a viewport) and re-query, until the item
+ * shows up, the container stops moving, or `TEMPLATE_MAX_SCROLLS`; fail closed
+ * (never tap) on an ambiguous or unresolved item.
  */
 export async function executeTemplateStep(
   server: OpenDeviceServerApi,
@@ -408,7 +444,9 @@ export async function executeTemplateStep(
   wantedText: string
 ): Promise<TemplateStepOutcome> {
   const want = norm(wantedText);
-  for (let attempt = 0; attempt <= TEMPLATE_MAX_SCROLLS; attempt++) {
+  let scrolls = 0;
+  let unchanged = 0;
+  for (;;) {
     const q = await server.query(
       { text: { contains: wantedText, caseInsensitive: true }, visible: true },
       { limit: 20 }
@@ -428,6 +466,7 @@ export async function executeTemplateStep(
         // the live side the SAME way — else the live `statusBar`/`navigationBar`
         // decor ids drop the score below 0.9 (run 34957934222: 7/9 = 0.78).
         afterResourceIds: nonScrollRids(after.tree as unknown as TemplateElement[], ""),
+        scrolls,
       };
     }
     if (exact.length > 1) {
@@ -436,16 +475,21 @@ export async function executeTemplateStep(
         tapped: false,
         afterHash: idOf(cur),
         afterResourceIds: resourceIdsOf(cur.tree),
+        scrolls,
         reason: "selector ambiguous on live tree",
       };
     }
-    if (attempt < TEMPLATE_MAX_SCROLLS) await scrollContainerUp(server, size);
+    if (scrolls >= TEMPLATE_MAX_SCROLLS || unchanged >= TEMPLATE_END_UNCHANGED) break;
+    const moved = await scrollContainerUp(server, size);
+    scrolls += 1;
+    unchanged = moved ? 0 : unchanged + 1;
   }
   const cur = await server.getState({ includeScreenshot: false, fingerprints: true });
   return {
     tapped: false,
     afterHash: idOf(cur),
     afterResourceIds: resourceIdsOf(cur.tree),
+    scrolls,
     reason: "selector unresolved on live tree",
   };
 }

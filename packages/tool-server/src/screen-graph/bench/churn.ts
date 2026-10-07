@@ -70,6 +70,17 @@ interface SessionMetric {
   summaryTokensOff: number;
 }
 
+/** One `navigate-to` template-step attempt (the E1-G3 denominator). */
+interface NavAttempt {
+  session: number;
+  target: number;
+  /** Container scrolls `executeTemplateStep` spent; -1 when it never ran. */
+  scrolls: number;
+  tapped: boolean;
+  arrived: boolean;
+  reason?: string;
+}
+
 interface ChurnDeps {
   server: OpenDeviceServerApi;
   /** Launch the feed with a seed (adb `am start ... --ei seed <n>`). */
@@ -86,6 +97,7 @@ interface ChurnResult {
   gates: Record<string, { pass: boolean | null; detail: string }>;
   navSuccess: number;
   navTotal: number;
+  navAttempts: NavAttempt[];
   misattributionRows: number;
   misattributionRowTotal: number;
   carouselAttributed: number;
@@ -271,6 +283,7 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
   const metrics: SessionMetric[] = [];
   let navSuccess = 0;
   let navTotal = 0;
+  const navAttempts: NavAttempt[] = [];
   let misRows = 0;
   let misRowTotal = 0;
   let carouselAttr = 0;
@@ -416,10 +429,28 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
           launchFeed(seed);
           await sleep(1200);
           const cur = await snapshot(server);
-          if (!cur) continue;
+          if (!cur) {
+            navAttempts.push({
+              session,
+              target,
+              scrolls: -1,
+              tapped: false,
+              arrived: false,
+              reason: "no snapshot",
+            });
+            continue;
+          }
           const plan = planToTemplate({ nodes: on.nodes, edges: on.edges }, cur.idHash);
           if (!plan) {
             log(`[churn] no template route from feed for target ${target}`);
+            navAttempts.push({
+              session,
+              target,
+              scrolls: -1,
+              tapped: false,
+              arrived: false,
+              reason: "no template route",
+            });
             continue;
           }
           const out = await executeTemplateStep(
@@ -433,10 +464,19 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
             !!tplNode &&
             multisetJaccard(out.afterResourceIds, nodeResourceIds(tplNode)) >= 0.9;
           if (arrived) navSuccess += 1;
-          else
-            log(
-              `[churn] nav to Story ${target} failed (tapped=${out.tapped}, reason=${out.reason ?? "arrival"})`
-            );
+          navAttempts.push({
+            session,
+            target,
+            scrolls: out.scrolls,
+            tapped: out.tapped,
+            arrived,
+            ...(arrived ? {} : { reason: out.reason ?? "arrival" }),
+          });
+          log(
+            arrived
+              ? `[churn] nav to Story ${target} ok (scrolls=${out.scrolls})`
+              : `[churn] nav to Story ${target} failed (tapped=${out.tapped}, scrolls=${out.scrolls}, reason=${out.reason ?? "arrival"})`
+          );
           await back(server);
           await sleep(400);
         }
@@ -447,6 +487,7 @@ export async function runChurnExperiment(deps: ChurnDeps): Promise<ChurnResult> 
   return grade(metrics, {
     navSuccess,
     navTotal,
+    navAttempts,
     misRows,
     misRowTotal,
     carouselAttr,
@@ -461,6 +502,7 @@ function grade(
   ctx: {
     navSuccess: number;
     navTotal: number;
+    navAttempts: NavAttempt[];
     misRows: number;
     misRowTotal: number;
     carouselAttr: number;
@@ -553,6 +595,7 @@ function grade(
     gates,
     navSuccess: ctx.navSuccess,
     navTotal: ctx.navTotal,
+    navAttempts: ctx.navAttempts,
     misattributionRows: ctx.misRows,
     misattributionRowTotal: ctx.misRowTotal,
     carouselAttributed: ctx.carouselAttr,
@@ -567,6 +610,7 @@ function renderMarkdown(
   ctx: {
     navSuccess: number;
     navTotal: number;
+    navAttempts: NavAttempt[];
     misRows: number;
     misRowTotal: number;
     carouselAttr: number;
@@ -601,6 +645,14 @@ function renderMarkdown(
   );
   L.push(`- Carousel taps attributed to \`#carousel\`: ${ctx.carouselAttr}/${ctx.carouselTotal}.`);
   L.push(`- navigate-to (template step): ${ctx.navSuccess}/${ctx.navTotal}.`);
+  L.push("\n## navigate-to attempts (churn100)\n");
+  L.push("| session | target | scrolls | tapped | arrived | reason |");
+  L.push("| --- | --- | --- | --- | --- | --- |");
+  for (const a of ctx.navAttempts) {
+    L.push(
+      `| ${a.session} | Story ${a.target} | ${a.scrolls < 0 ? "-" : a.scrolls} | ${a.tapped} | ${a.arrived} | ${a.reason ?? ""} |`
+    );
+  }
   L.push("");
   return L.join("\n");
 }

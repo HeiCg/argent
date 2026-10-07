@@ -122,6 +122,42 @@ re-run — the planner decides on a second CI run.**
 - Containment audit: row taps attributed to `#list` 10/10 (0 misattributed);
   carousel taps 0/0 (the defect stopped the carousel tap from running).
 
+### Run 2 (34970043301)
+
+Branch @ 117d8f5a (the ce4793b5 fixes in). Graded from the job log; the
+artifact had expired. **nav 28/40, E1-G3 FAIL**; E1-G1/G2/G4 pass, G5/G6
+descriptive. All 12 misses are `tapped=false, selector unresolved on live
+tree`, on targets 33-39 (Story 32 5/5): s1 36, 38, 39; s2 34, 36; s3 33, 35,
+37; s4 39; s5 33, 36, 37. The job concluded success because the harness at
+117d8f5a ended with `process.exit(0)`; open/main exits with `process.exitCode`,
+so a gate FAIL now turns the job red.
+
+Diagnosis: not the scroll count. The misses are not a prefix (s1 missed 36 and
+reached 37; s3 missed 33 and reached 34), and at the estimate below the list
+bottoms out in ~3 of the 8 scrolls. `executeTemplateStep` scrolled with a flinging swipe
+(`swipeWithOutcome(..., 10)`: 10 frames x 16 ms, no hold). Estimated from the
+churn app's layout on the pixel_6 AVD (1080x2400, 420 dpi): rows ~179 px, list
+viewport ~1908 px (y 366..2274), 50 rows, so ~7042 px of scroll range. The drag
+is 0.44 x 1908 = 840 px in 160 ms; the lift carries ~5.3 px/ms and the fling
+adds ~1700 px, so one swipe moves ~2500 px, more than a viewport. The rows
+between two queried windows (~3 rows per swipe) are never seen, and where the
+gap falls moves with the fling's timing (the next touch-down or query cuts it
+short). The selector itself is not the problem: the template step queries the
+caller's item text on the live tree, nothing per row comes from the capture.
+
+Fix (this branch, after the rebase onto open/main): the template scroll is
+momentum-free (19 steps, 120 ms held before the lift, the `gesture-swipe`
+`momentum: false` values), so each scroll moves the list by the drag minus the
+touch slop, ~819 px < 1908 px, and consecutive windows overlap. The search stops
+when the item resolves, when two swipes in a row report `changed: false` (end of
+the list), or at a cap of 30 scrolls. At the estimate above, Story 39 needs
+ceil(5168 / 819) = 7 scrolls and the last row 9. `executeTemplateStep` returns
+`scrolls`; the churn harness logs it per attempt and writes `navAttempts`
+(session, target, scrolls, tapped, arrived, reason) to `churn.json` and
+`churn-results.md`. A unit test replays the 50-row geometry: every row
+resolves held (Story 39 at 7, max 9); the old flinging scroll misses rows 11-13,
+25-27, 39 in the same model.
+
 Original pre-run gate table (outcomes appended from this run):
 
 ### Pre-registered gates (written before the run grades anything)

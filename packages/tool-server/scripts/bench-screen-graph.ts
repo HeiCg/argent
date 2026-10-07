@@ -3024,6 +3024,7 @@ async function main(): Promise<void> {
             gates: result.gates,
             navSuccess: result.navSuccess,
             navTotal: result.navTotal,
+            navAttempts: result.navAttempts,
             misattributionRows: result.misattributionRows,
             misattributionRowTotal: result.misattributionRowTotal,
             carouselAttributed: result.carouselAttributed,
