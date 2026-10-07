@@ -6,6 +6,7 @@
  */
 import type { CanonicalAction, Edge, EdgeSelector, GraphSelector, ScreenNode } from "./types";
 import { parseSelectorKey, selectorKeys } from "./types";
+import { fnv1aHex } from "./template";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -177,6 +178,15 @@ export function planToSelector(
 }
 
 /**
+ * Review E-1 finding 8b (R5): how a template edge remembers a tapped item — the
+ * 64-bit FNV-1a hex of the trimmed, lower-cased text — so the persisted store
+ * never holds the item text and `planToTemplate` still matches it.
+ */
+export function itemTextHash(text: string): string {
+  return fnv1aHex(text.trim().toLowerCase());
+}
+
+/**
  * Phase E (design D1): the shortest path from `from` to any TEMPLATE node — the
  * destination of a template edge — so `navigate-to` can route to "an item in a
  * scrollable container" and resolve the concrete item on the live tree. The last
@@ -189,7 +199,8 @@ export function planToSelector(
  *  - `want.containerId` (the item's container, resolved on the live tree when the
  *    item is on screen): only that container's template edges; `null` when it
  *    has none (fail closed);
- *  - else `want.itemText` among a template edge's recently tapped item texts;
+ *  - else `itemTextHash(want.itemText)` among a template edge's recently tapped
+ *    item hashes (the store keeps hashes, never the text: R5);
  *  - else (item never seen) the container with the most recorded distinct items,
  *    then the next one, until one is reachable.
  */
@@ -211,11 +222,9 @@ export function planToTemplate(
   if (want.containerId !== undefined) {
     return run(all.filter((e) => e.template!.containerId === want.containerId));
   }
-  const text = (want.itemText ?? "").trim().toLowerCase();
-  if (text !== "") {
-    const seen = all.filter((e) =>
-      (e.template!.lastItemTexts ?? []).some((t) => t.trim().toLowerCase() === text)
-    );
+  if ((want.itemText ?? "").trim() !== "") {
+    const wanted = itemTextHash(want.itemText!);
+    const seen = all.filter((e) => (e.template!.lastItemHashes ?? []).includes(wanted));
     const res = seen.length ? run(seen) : null;
     if (res) return res;
   }

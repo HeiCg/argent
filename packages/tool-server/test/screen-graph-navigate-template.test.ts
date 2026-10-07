@@ -6,7 +6,7 @@ import {
   sweepContainer,
 } from "../src/tools/navigate-to";
 import { multisetJaccard, planToTemplate } from "../src/screen-graph/plan";
-import { nonScrollRids, type TemplateElement } from "../src/screen-graph/template";
+import { fnv1aHex, nonScrollRids, type TemplateElement } from "../src/screen-graph/template";
 import type { Edge, ScreenNode } from "../src/screen-graph/types";
 
 const size = { width: 1080, height: 2400 };
@@ -764,7 +764,7 @@ describe("planToTemplate routes by the requested item's container (review E-1 fi
     to: string,
     containerId: string,
     instances: number,
-    lastItemTexts?: string[]
+    itemTexts?: string[]
   ): Edge => ({
     from: "FEED",
     action: { kind: "tap", template: { containerKey: `CK_${containerId}`, itemTemplate: "IT" } },
@@ -777,7 +777,10 @@ describe("planToTemplate routes by the requested item's container (review E-1 fi
       itemTemplate: "IT",
       instances,
       containerId,
-      ...(lastItemTexts ? { lastItemTexts } : {}),
+      // Review E-1 finding 8b (R5): the store keeps fnv1a(normalized text), never the text.
+      ...(itemTexts
+        ? { lastItemHashes: itemTexts.map((t) => fnv1aHex(t.trim().toLowerCase())) }
+        : {}),
     },
   });
   const graph = {

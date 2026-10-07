@@ -224,3 +224,80 @@ describe("byte-bound check runs only near a cap or every N flushes (review E-1 f
     expect(spy).toHaveBeenCalled();
   });
 });
+
+describe("pins expire after 10 sessions without a visit (review E-1 finding 8c)", () => {
+  // Each `load` opens a session; the counter persists with the next write.
+  const loadSession = () =>
+    ScreenGraphStore.load({
+      packageName: "com.churn",
+      versionCode: "1",
+      baseDir: tmpDir,
+      now,
+      enforceBounds: true,
+      bounds: { maxNodes: 4 },
+      debounceMs: 10_000_000,
+    });
+
+  it("a saturated store of expired pins respects the node cap", async () => {
+    // Session 1: four pinned nodes fill the cap — three by visits, one template.
+    let s = await loadSession();
+    for (const h of ["P1", "P2", "P3"]) {
+      for (let i = 0; i < 5; i++) {
+        clock += 1;
+        s.upsertNode({ hash: h, compact: h, stateHash: `${h}${i}`, index: {} });
+      }
+    }
+    clock += 1;
+    s.upsertNode({ hash: "T", template: true, compact: "t", index: {} });
+    await s.flush();
+    expect(Object.keys(s.nodes)).toHaveLength(4);
+
+    // Sessions 2..10: each records a fresh node "A". Every pin is younger than 10
+    // sessions without a visit, so the only evictable node is A itself.
+    for (let session = 2; session <= 10; session++) {
+      s = await loadSession();
+      clock += 1;
+      s.upsertNode({ hash: "A", compact: "a", stateHash: `a${session}`, index: {} });
+      await s.flush();
+      expect(s.hasNode("A")).toBe(false);
+      expect(s.hasNode("P1")).toBe(true);
+    }
+
+    // Session 11: ten sessions without a visit — the pins expired, so the LRU
+    // evicts the oldest former pin and the new node fits under the cap.
+    s = await loadSession();
+    clock += 1;
+    s.upsertNode({ hash: "A", compact: "a", stateHash: "a11", index: {} });
+    await s.flush();
+    expect(Object.keys(s.nodes).length).toBeLessThanOrEqual(4);
+    expect(s.hasNode("A")).toBe(true);
+    expect(s.hasNode("P1")).toBe(false);
+    expect(s.pruneStats().pinnedNodes).toBe(0);
+  });
+
+  it("a visit refreshes a pin; template pins expire like any other", async () => {
+    let s = await loadSession();
+    for (const h of ["P1", "P2"]) {
+      for (let i = 0; i < 5; i++) {
+        clock += 1;
+        s.upsertNode({ hash: h, compact: h, stateHash: `${h}${i}`, index: {} });
+      }
+    }
+    clock += 1;
+    s.upsertNode({ hash: "T", template: true, compact: "t", index: {} });
+    await s.flush();
+
+    for (let session = 2; session <= 11; session++) {
+      s = await loadSession();
+      // P1 is visited in session 6 — its pin restarts there.
+      if (session === 6) s.recordVisit("P1");
+      clock += 1;
+      s.upsertNode({ hash: `X${session}`, compact: "x", stateHash: "x", index: {} });
+      await s.flush();
+    }
+    // Session 11: P2 and T are 10 sessions stale (unpinned); P1 only 5 (pinned).
+    s.enforceBounds();
+    expect(s.pruneStats().pinnedNodes).toBe(1);
+    expect(s.hasNode("P1")).toBe(true);
+  });
+});

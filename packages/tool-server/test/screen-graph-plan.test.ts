@@ -3,6 +3,7 @@ import {
   bestNodeByResourceIds,
   edgeWeight,
   isVolatileText,
+  itemTextHash,
   localizeFrom,
   multisetJaccard,
   nodeIndexesSelectorTolerant,
@@ -10,8 +11,10 @@ import {
   plan,
   planToSelector,
   planToSelectorStable,
+  planToTemplate,
   type PlanGraph,
 } from "../src/screen-graph/plan";
+import { fnv1aHex } from "../src/screen-graph/template";
 import {
   selectorKeyForId,
   selectorKeyForText,
@@ -325,5 +328,42 @@ describe("isVolatileText", () => {
     expect(isVolatileText("Sep 3")).toBe(true);
     expect(isVolatileText("Network & internet")).toBe(false);
     expect(isVolatileText("Brightness level")).toBe(false);
+  });
+});
+
+describe("planToTemplate matches item hashes (review E-1 finding 8b, R5)", () => {
+  const tplEdge = (to: string, containerKey: string, instances: number, hashes: string[]): Edge =>
+    edge("FEED", to, {
+      action: { kind: "tap", template: { containerKey, itemTemplate: "IT" } },
+      count: instances,
+      successes: instances,
+      template: { containerKey, itemTemplate: "IT", instances, lastItemHashes: hashes },
+    });
+  const graph: PlanGraph = {
+    nodes: {
+      FEED: node("FEED"),
+      TPL_BIG: { ...node("TPL_BIG"), template: true },
+      TPL_SMALL: { ...node("TPL_SMALL"), template: true },
+    },
+    edges: [
+      tplEdge("TPL_BIG", "CK_BIG", 40, [fnv1aHex("story 7")]),
+      tplEdge("TPL_SMALL", "CK_SMALL", 1, [fnv1aHex("card 0")]),
+    ],
+  };
+
+  it("itemTextHash is fnv1a of the trimmed, lower-cased text", () => {
+    expect(itemTextHash("  Card 0 ")).toBe(fnv1aHex("card 0"));
+  });
+
+  it("routes a known item by its hash, whatever its case or padding", () => {
+    expect(planToTemplate(graph, "FEED", NOW, { itemText: " CARD 0" })?.templateNode).toBe(
+      "TPL_SMALL"
+    );
+  });
+
+  it("an unknown item falls back to the container with the most items", () => {
+    expect(planToTemplate(graph, "FEED", NOW, { itemText: "Story 99" })?.templateNode).toBe(
+      "TPL_BIG"
+    );
   });
 });

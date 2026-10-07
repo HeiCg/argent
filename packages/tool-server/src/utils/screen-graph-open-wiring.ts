@@ -48,10 +48,9 @@ import {
 const SCREEN_GRAPH_FLAG = "screen-graph";
 
 /**
- * Phase E (design D1): template edges + the bounded store are additionally gated
- * behind `ARGENT_SG_TEMPLATES=1`, so every D.4.1 arm reproduces unchanged in the
- * same job (non-regression gate E1-G5) and the churn OFF/control arm behaves
- * exactly like today (E-0 §F4). Recording must also be enabled.
+ * Phase E (design D1): template edges are additionally gated behind
+ * `ARGENT_SG_TEMPLATES=1`. Recording must also be enabled. The bounded store is
+ * NOT gated by it any more (review E-1 finding 8): see `getStore`.
  */
 export function screenGraphTemplatesEnabled(): boolean {
   return screenGraphRecordingEnabled() && process.env.ARGENT_SG_TEMPLATES === "1";
@@ -166,14 +165,12 @@ function getStore(serial: string, pkg: string, versionCode: string): Promise<Scr
   const key = `${serial}|${pkg}|${versionCode}`;
   let store = storeCache.get(key);
   if (!store) {
-    // Phase E: turn on the bounded-store behaviour (caps / LRU / decay /
-    // volatility) only under `ARGENT_SG_TEMPLATES=1` — off, the store persists
-    // byte-for-byte as before (D.4.1 non-regression, E1-G5).
-    store = ScreenGraphStore.load({
-      packageName: pkg,
-      versionCode,
-      enforceBounds: screenGraphTemplatesEnabled(),
-    });
+    // Review E-1 finding 8: the bounded-store behaviour (300 nodes / 600 edges /
+    // 2 MB caps, LRU with expiring pins, decay, volatility) is always on when the
+    // graph records. It used to follow `ARGENT_SG_TEMPLATES=1`, which left the
+    // plain `screen-graph` store growing without limit (E-1 OFF arm: 203 KB,
+    // +9 nodes / +9 edges per session). Templates stay behind the env.
+    store = ScreenGraphStore.load({ packageName: pkg, versionCode, enforceBounds: true });
     storeCache.set(key, store);
   }
   return store;

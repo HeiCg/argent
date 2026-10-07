@@ -11,9 +11,23 @@ import * as path from "node:path";
 import { argentHomeDir } from "@argent/configuration-core";
 import type { CanonicalAction, Edge, EdgeSelector, ScreenGraphData, ScreenNode } from "./types";
 import { FLAG_PASSWORD, actionSignature, isNodeVolatile } from "./types";
-import { edgeWeight } from "./plan";
+import { edgeWeight, itemTextHash } from "./plan";
 
-const SCHEMA_VERSION = 1 as const;
+/**
+ * 2 since review E-1 finding 8: template edges keep `lastItemHashes` (not item
+ * text) and the document carries `sessionSeq` / per-node `lastSession`. A
+ * schema-1 document is migrated on load (see `hydrate`).
+ */
+const SCHEMA_VERSION = 2 as const;
+const LEGACY_SCHEMA_VERSION = 1;
+
+/**
+ * Review E-1 finding 8a: the one separator for in-memory composite keys (edge
+ * key, duplicate-screen / duplicate-target group keys) — U+001F UNIT SEPARATOR,
+ * the same one `types.ts` uses for selector keys. A literal NUL here made git
+ * treat this file as binary. Keys are never persisted; `hydrate` rebuilds them.
+ */
+const KEY_SEP = "\u001f";
 const DEFAULT_DEBOUNCE_MS = 500;
 
 const MS_PER_DAY = 86_400_000;
@@ -41,10 +55,16 @@ const EDGE_STALE_MS = 30 * MS_PER_DAY;
 /** Phase E (design D2 R2): never-evict pin thresholds. */
 const PIN_VISITS = 5;
 const PIN_EDGE_SUCCESSES = 3;
+/**
+ * Review E-1 finding 8c: a pin (any reason, template nodes included) lapses once
+ * the store has run this many sessions without visiting the node; otherwise a
+ * store saturated with pins can never get back under its caps.
+ */
+const PIN_EXPIRY_SESSIONS = 10;
 
 /** Phase E (design D1): caps on the additive template edge accounting. */
 const MAX_TEMPLATE_TARGETS = 256;
-const MAX_TEMPLATE_ITEM_TEXTS = 8;
+const MAX_TEMPLATE_ITEM_HASHES = 8;
 
 interface ScreenGraphBounds {
   maxNodes?: number;
@@ -64,10 +84,12 @@ interface ScreenGraphStoreOptions {
   /** Phase E: override the store size caps (tests force small caps). */
   bounds?: ScreenGraphBounds;
   /**
-   * Phase E: enable the new bounded-store behaviour — caps + LRU + edge decay +
-   * volatility tracking / compact drop + referential integrity. OFF by default so
-   * the `screen-graph`-only path (and the D.4.1 arms) persist byte-for-byte as
-   * before; the wiring turns it on only under `ARGENT_SG_TEMPLATES=1`.
+   * Phase E: enable the bounded-store behaviour — caps + LRU + edge decay +
+   * volatility tracking / compact drop + referential integrity. OFF by default
+   * for a bare store (tests, the churn bench's control arm); the open-server
+   * wiring turns it on whenever it records (review E-1 finding 8: before, only
+   * under `ARGENT_SG_TEMPLATES=1`, so the plain `screen-graph` store grew without
+   * limit).
    */
   enforceBounds?: boolean;
 }
@@ -75,7 +97,8 @@ interface ScreenGraphStoreOptions {
 /**
  * Phase E (design D1): the template accounting a template-edge observation folds
  * in. `concreteTo` is the real destination `H_id` (counted for `instances`);
- * `itemText` is the tapped item's label (kept in a small ring for the summary).
+ * `itemText` is the tapped item's label; only `itemTextHash(itemText)` is kept
+ * (a small ring), never the text (R5).
  */
 interface TemplateObservation {
   containerKey: string;
@@ -138,6 +161,14 @@ function nodeHoldsSecret(node: ScreenNode): boolean {
   return false;
 }
 
+/** The in-memory key of an edge: one per `(from, action signature, to)`. */
+function edgeKey(from: string, action: CanonicalAction, to: string): string {
+  return [from, actionSignature(action), to].join(KEY_SEP);
+}
+
+/** Schema-1 template accounting: item labels were stored in clear. */
+type LegacyEdgeTemplate = NonNullable<Edge["template"]> & { lastItemTexts?: string[] };
+
 export class ScreenGraphStore {
   readonly packageName: string;
   readonly versionCode: string;
@@ -156,6 +187,12 @@ export class ScreenGraphStore {
   private pendingWrite = false;
   /** Bounded flushes so far (drives the every-N byte check). */
   private boundedFlushes = 0;
+  /**
+   * Review E-1 finding 8c: sessions this store has been loaded in. `load` opens
+   * a new one; the count persists with the next write, so a session that records
+   * nothing does not age the pins.
+   */
+  private sessionSeq = 0;
 
   /** Phase E: what the most recent `flush()` pruned (harness record). */
   private lastPrune: PruneStats = {
@@ -230,7 +267,7 @@ export class ScreenGraphStore {
       const compact = n.compact ?? "";
       const stateHash = n.stateHash ?? "";
       if (compact === "" && stateHash === "") continue;
-      const key = `${compact} ${(n.resourceIds ?? []).join(",")} ${stateHash}`;
+      const key = [compact, (n.resourceIds ?? []).join(","), stateHash].join(KEY_SEP);
       const arr = groups.get(key);
       if (arr) arr.push(hash);
       else groups.set(key, [hash]);
@@ -248,7 +285,7 @@ export class ScreenGraphStore {
   duplicateEdgeTargets(): Array<{ key: string; tos: string[] }> {
     const groups = new Map<string, Set<string>>();
     for (const e of this.edgesMap.values()) {
-      const key = `${e.from} ${actionSignature(e.action)}`;
+      const key = `${e.from}${KEY_SEP}${actionSignature(e.action)}`;
       const set = groups.get(key) ?? new Set<string>();
       set.add(e.to);
       groups.set(key, set);
@@ -321,12 +358,13 @@ export class ScreenGraphStore {
     const t = this.now();
     const existing = this.nodesMap.get(input.hash);
     const node: ScreenNode = existing
-      ? { ...existing, lastSeen: t, visits: existing.visits + 1 }
+      ? { ...existing, lastSeen: t, visits: existing.visits + 1, lastSession: this.sessionSeq }
       : {
           hash: input.hash,
           firstSeen: t,
           lastSeen: t,
           visits: 1,
+          lastSession: this.sessionSeq,
           compact: "",
           index: {},
         };
@@ -381,6 +419,7 @@ export class ScreenGraphStore {
     if (!node) return;
     node.lastSeen = this.now();
     node.visits += 1;
+    node.lastSession = this.sessionSeq;
     this.markDirty();
   }
 
@@ -395,7 +434,7 @@ export class ScreenGraphStore {
     opts: { success?: boolean; selector?: EdgeSelector; template?: TemplateObservation } = {}
   ): Edge {
     const success = opts.success ?? true;
-    const key = `${from} ${actionSignature(action)} ${to}`;
+    const key = edgeKey(from, action, to);
     const t = this.now();
     const existing = this.edgesMap.get(key);
     // Keep the freshest non-empty selector (phase D §2) — a later observation of
@@ -429,10 +468,11 @@ export class ScreenGraphStore {
         targets.push(opts.template.concreteTo);
         if (targets.length > MAX_TEMPLATE_TARGETS) targets.shift();
       }
-      const lastItemTexts = [...(t0?.lastItemTexts ?? [])];
+      // Review E-1 finding 8b (R5): keep the item's hash, never its text.
+      const lastItemHashes = [...(t0?.lastItemHashes ?? [])];
       if (opts.template.itemText) {
-        lastItemTexts.push(opts.template.itemText);
-        while (lastItemTexts.length > MAX_TEMPLATE_ITEM_TEXTS) lastItemTexts.shift();
+        lastItemHashes.push(itemTextHash(opts.template.itemText));
+        while (lastItemHashes.length > MAX_TEMPLATE_ITEM_HASHES) lastItemHashes.shift();
       }
       edge.template = {
         containerKey: opts.template.containerKey,
@@ -440,7 +480,7 @@ export class ScreenGraphStore {
         instances: targets.length,
         ...(opts.template.containerId ? { containerId: opts.template.containerId } : {}),
         targets,
-        ...(lastItemTexts.length > 0 ? { lastItemTexts } : {}),
+        ...(lastItemHashes.length > 0 ? { lastItemHashes } : {}),
       };
     }
     this.edgesMap.set(key, edge);
@@ -480,10 +520,15 @@ export class ScreenGraphStore {
     await this.persistNow();
   }
 
-  /** Whether a node is pinned against LRU eviction (design D2 R2). */
+  /**
+   * Whether a node is pinned against LRU eviction (design D2 R2). Every pin
+   * lapses after PIN_EXPIRY_SESSIONS sessions without a visit (finding 8c).
+   */
   private isPinned(hash: string, pinnedByEdge: Set<string>): boolean {
     const node = this.nodesMap.get(hash);
     if (!node) return false;
+    const idle = this.sessionSeq - (node.lastSession ?? this.sessionSeq);
+    if (idle >= PIN_EXPIRY_SESSIONS) return false;
     if (node.template) return true;
     if (node.visits >= PIN_VISITS) return true;
     return pinnedByEdge.has(hash);
@@ -623,6 +668,7 @@ export class ScreenGraphStore {
       version: SCHEMA_VERSION,
       packageName: this.packageName,
       versionCode: this.versionCode,
+      sessionSeq: this.sessionSeq,
       nodes,
       edges: this.edges,
     };
@@ -647,14 +693,47 @@ export class ScreenGraphStore {
 
   // ---- loading ------------------------------------------------------------
 
-  /** Hydrate this store from disk, if a document exists. */
-  private hydrate(data: ScreenGraphData): void {
+  /**
+   * Hydrate this store from a parsed document. A schema-1 document is migrated
+   * in place (review E-1 finding 8): plaintext `lastItemTexts` become
+   * `lastItemHashes`, nodes without `lastSession` are stamped with the loaded
+   * session (their pins get the full expiry window), and the store is marked
+   * dirty so the next write replaces the file as schema 2 without the text.
+   * Edge keys are always rebuilt with KEY_SEP — they are never persisted.
+   */
+  private hydrate(data: ScreenGraphData, legacy: boolean): void {
+    let migrated = legacy;
+    this.sessionSeq = data.sessionSeq ?? 0;
     this.nodesMap = new Map(Object.entries(data.nodes ?? {}));
+    for (const node of this.nodesMap.values()) {
+      if (node.lastSession === undefined) node.lastSession = this.sessionSeq;
+    }
     this.edgesMap = new Map();
     for (const edge of data.edges ?? []) {
-      const key = `${edge.from} ${actionSignature(edge.action)} ${edge.to}`;
-      this.edgesMap.set(key, edge);
+      const tpl = edge.template as LegacyEdgeTemplate | undefined;
+      if (tpl?.lastItemTexts) {
+        const hashes = [...(tpl.lastItemHashes ?? []), ...tpl.lastItemTexts.map(itemTextHash)];
+        delete tpl.lastItemTexts;
+        tpl.lastItemHashes = hashes.slice(-MAX_TEMPLATE_ITEM_HASHES);
+        migrated = true;
+      }
+      this.edgesMap.set(edgeKey(edge.from, edge.action, edge.to), edge);
     }
+    if (migrated) this.markDirty();
+  }
+
+  /** Parse a persisted document; hydrate it when its schema is loadable. */
+  private hydrateRaw(raw: string): void {
+    const parsed = JSON.parse(raw) as { version?: unknown } | null;
+    if (!parsed) return;
+    if (parsed.version === SCHEMA_VERSION || parsed.version === LEGACY_SCHEMA_VERSION) {
+      this.hydrate(parsed as ScreenGraphData, parsed.version === LEGACY_SCHEMA_VERSION);
+    }
+  }
+
+  /** Open a new session (finding 8c): pins age by one. */
+  private beginSession(): void {
+    this.sessionSeq += 1;
   }
 
   /**
@@ -665,12 +744,11 @@ export class ScreenGraphStore {
   static async load(options: ScreenGraphStoreOptions): Promise<ScreenGraphStore> {
     const store = new ScreenGraphStore(options);
     try {
-      const raw = await fsp.readFile(store.filePath(), "utf8");
-      const parsed = JSON.parse(raw) as ScreenGraphData;
-      if (parsed && parsed.version === SCHEMA_VERSION) store.hydrate(parsed);
+      store.hydrateRaw(await fsp.readFile(store.filePath(), "utf8"));
     } catch {
       /* missing or corrupt — start empty */
     }
+    store.beginSession();
     return store;
   }
 
@@ -678,12 +756,11 @@ export class ScreenGraphStore {
   static loadSync(options: ScreenGraphStoreOptions): ScreenGraphStore {
     const store = new ScreenGraphStore(options);
     try {
-      const raw = fs.readFileSync(store.filePath(), "utf8");
-      const parsed = JSON.parse(raw) as ScreenGraphData;
-      if (parsed && parsed.version === SCHEMA_VERSION) store.hydrate(parsed);
+      store.hydrateRaw(fs.readFileSync(store.filePath(), "utf8"));
     } catch {
       /* missing or corrupt — start empty */
     }
+    store.beginSession();
     return store;
   }
 }

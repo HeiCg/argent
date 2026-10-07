@@ -268,14 +268,80 @@
         }
       ],
       "commitMessage": "fix(screen-graph): text-safe separators, hashed item texts, pin expiry, bounded store by default",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "agent:impl:sg-store-hygiene:1",
+      "review": {
+        "at": "2026-10-07T18:39:58.428Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          },
+          {
+            "cmd": "test -z \"$(git diff --numstat open/main -- packages/tool-server/src/screen-graph/store.ts | grep '^-')\"",
+            "exitCode": 0,
+            "outputFile": "3-test-z-git-diff-numstat-open-main-packag.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/screen-graph/bench/churn.ts",
+            "note": "L7: header still calls the OFF arm 'today's unbounded store'; since this step the production wiring is always bounded (enforceBounds: true), so OFF (L446-451 enforceBounds:false) is a synthetic unbounded control, no longer 'today'. Reword the comment; behaviour of the arm is intended."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/test/screen-graph-store-bounds.test.ts",
+            "note": "L160: describe 'bounds OFF is byte-for-byte the pre-E behaviour (E1-G5 non-regression)' is stale: serialize now always writes version 2 + sessionSeq + per-node lastSession, and the wiring no longer runs bounds OFF. Rename to what it checks (bare store with enforceBounds unset does not evict/decay/drop compact)."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/test/screen-graph-store-migration.test.ts",
+            "note": "L316-438: migration suite covers v1->hash, re-key and v1->v2 rewrite, but not (a) unknown version (e.g. 3) loads as an empty store without throwing and (b) a v2 document with lastItemHashes/sessionSeq/lastSession reloads unchanged (roundtrip). Both hold by reading store.ts hydrateRaw/hydrate; add the two cases so they stay true."
+          },
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/utils/screen-graph-open-wiring.ts",
+            "note": "L164-176: one ScreenGraphStore.load (= one pin-aging session) per serial|pkg|versionCode per process, storeCache never evicts, so a 'session' is a tool-server process lifetime. Not verifiable from the diff: if the tool-server outlives MCP sessions (daemon), pins almost never age and a pin-saturated store still beats the cap; check the tool-server lifecycle and, if long-lived, open a session per MCP session/idle gap. Loads are not over-counted (1 per key), so pins do not age too fast."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/utils/screen-graph-open-wiring.ts",
+            "note": "L165: the cache key includes serial but filePath() is per pkg+versionCode, so two devices on the same app (run-on-devices) hold two instances on one file: both start from the same sessionSeq (no double aging) but the last flush wins and drops the other device's nodes/edges. This predates the step; record it for the multi-device work (key the cache by pkg+versionCode or merge on write)."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/screen-graph/store.ts",
+            "note": "L727-733 hydrateRaw: any version other than 1/2 loads empty and the next write overwrites the file. With the bump to 2, rolling back to a pre-step build (which only accepts version 1) silently wipes a v2 graph on its next write. Accept or document; a refuse-to-write-unknown-version guard would prevent it going forward."
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/screen-graph/bench/churn.ts",
+            "note": "L914-917: gate E1-G5 'D.4.1 matrix non-regression (templates OFF)' was defined with the bounded store off in the templates-off path; the D.4.1 arms that go through the wiring now get caps, LRU, volatility tracking and volatile-compact drop on persist. Not verifiable from the diff: rerun the D.4.1 arms / re-baseline E1-G5 in sg-multihop-bench."
+          },
+          {
+            "severity": "note",
+            "file": "docs/plans/2026-10-07-beat-official.md",
+            "note": "verify 'grep -c $'\\x00' store.ts' is broken: the shell passes an empty pattern (NUL ends the C string), so it matches every line (got 766, the line count). The real NUL count is 0 (python -I: d.count(b'\\x00') == 0; store.test L171 checks the same). Replace it with a python or LC_ALL=C grep -P '\\x00' check."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:sg-store-hygiene:1"
+      },
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-07T18:40:24.545Z"
     },
     {
       "id": "swipe-scroll-accessibility",
