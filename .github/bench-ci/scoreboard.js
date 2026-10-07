@@ -735,11 +735,20 @@ if (la && la.invalid) {
         L.push(`- \`${String(l).replace(/`/g, "'")}\``);
     }
   }
+  if (pb && pb.cpuDeltaCaveat) {
+    L.push("");
+    L.push(`- ${pb.cpuDeltaCaveat}`);
+  }
+  // Review run 37609765062 findings 2 and 6: state only what the run proves. The stream
+  // is on without a client; the OFF guest is more loaded; the cause is not isolated.
   if (pb && pb.stream && pb.stream !== "not-seen") {
     L.push(
-      "- The stream is part of what an upstream headless agent runs, so the extra guest load is a " +
-        "cost of the proprietary driver: read the driver-call rows (P2–P5) together with the " +
-        "transition timeline below, which is the under-load timeline of each arm."
+      "- The stream opens at spawn with no client, so an upstream headless agent runs with it. " +
+        "The guest is more loaded in OFF: read the CPU per phase table and the transition " +
+        "timeline below, which is the under-load timeline of each arm. This run does not isolate " +
+        "the cause (the stream, the on-device helper `com.argent.androiddevtools` or another " +
+        "component of the proprietary stack). The arms that would isolate it, not run here: " +
+        "`ON-im + simulator-server idle` (spawned, no calls) and a crossed-await arm."
     );
   }
   L.push("");

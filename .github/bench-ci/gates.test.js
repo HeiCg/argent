@@ -2518,8 +2518,10 @@ test("merge + scoreboard: transition timeline from the BENCH markers, CPU per ph
         streamLineSamples: [
           "B: spawned, no call: [sim emulator] DEBUG Requesting screenshot stream",
         ],
+        qemuDeltaVsNoServerPct: { spawnedIdle: -24.2, afterScreenshot: -36.2 },
         stream: "on-at-spawn",
         verdict: "stream=on: simulator-server opens its screen stream at spawn",
+        cpuDeltaCaveat: "The per-window CPU deltas are not evidence of load (fixture caveat).",
       },
     })
   );
@@ -2529,6 +2531,8 @@ test("merge + scoreboard: transition timeline from the BENCH markers, CPU per ph
   assert.strictEqual(tl.firstFrameMs.p50, 939);
   assert.strictEqual(m.loadByBlock["OFF-1"]["tap+describe"].qemuCpuPct.p50, 250);
   assert.strictEqual(m.propBackground.stream, "on-at-spawn");
+  // Review run 37609765062 findings 2 and 6: the caveat travels through the merge.
+  assert.match(m.propBackground.cpuDeltaCaveat, /not evidence of load/);
   const sb = run(SCOREBOARD, out);
   assert.strictEqual(sb.code, 0, sb.stderr);
   assert.match(
@@ -2536,6 +2540,12 @@ test("merge + scoreboard: transition timeline from the BENCH markers, CPU per ph
     /proprietary stack background: stream=on\*\* because stream=on: simulator-server opens/
   );
   assert.match(sb.stdout, /\| B: spawned, no call \| 12 \| 210 \| 30 \| yes \| 9 \| 2 \|/);
+  // Only what the run proves: stream on at spawn, OFF guest more loaded, cause not isolated.
+  assert.doesNotMatch(sb.stdout, /cost of the proprietary driver/);
+  assert.match(sb.stdout, /CPU deltas are not evidence of load \(fixture caveat\)/);
+  assert.match(sb.stdout, /does not isolate the cause/);
+  assert.match(sb.stdout, /`ON-im \+ simulator-server idle`/);
+  assert.match(sb.stdout, /crossed-await arm/);
   assert.match(sb.stdout, /under-load timeline of each arm/);
   assert.match(sb.stdout, /### CPU per phase \(10 s intervals\)/);
   assert.match(
@@ -2624,6 +2634,28 @@ test("bench: ABBA blocks, interleaved tap+describe variants, screenshot after th
   );
   assert.match(src, /if \(only === PROBE_BG\)/);
   assert.match(src, /SIMSERVER_LOG = "simulator_server=debug"/);
+  // Review run 37609765062 findings 2 and 6: the PROBE-BG verdict is the log conclusion
+  // only; the CPU deltas stay in the JSON as raw data, next to a fixed caveat.
+  const probe = src.slice(
+    src.indexOf("async function runPropBackgroundProbe("),
+    src.indexOf("function assertNoOpenServerFallback(")
+  );
+  const vAt = probe.indexOf("const verdict =");
+  const verdict = probe.slice(vAt, probe.indexOf("return {", vAt));
+  assert.ok(vAt > 0 && verdict.length > 0, "verdict expression found");
+  assert.doesNotMatch(verdict, /qemu CPU vs/);
+  assert.doesNotMatch(verdict, /\bpp\b/);
+  assert.doesNotMatch(verdict, /delta\.|CPU windows/);
+  assert.match(probe, /qemuDeltaVsNoServerPct: delta,/);
+  assert.match(probe, /cpuDeltaCaveat: PROBE_CPU_DELTA_CAVEAT,/);
+  const caveat = src.slice(
+    src.indexOf("const PROBE_CPU_DELTA_CAVEAT ="),
+    src.indexOf("const PROBE_SWIPES")
+  );
+  assert.match(caveat, /not evidence of load/);
+  assert.match(caveat, /am start/);
+  assert.match(caveat, /slower guest/);
+  assert.match(caveat, /lifecycle line/);
 });
 
 test("workflow: PROBE-BG runs before the first block on the current release; the load sampler runs across the blocks", () => {

@@ -3665,6 +3665,14 @@ async function runBlock(
 const PROBE_BG = "PROBE-BG";
 const STREAM_LINE =
   /Requesting screenshot stream|Starting GRPC stream receiver|Starting screenshot service/i;
+// Review run 37609765062 findings 2 and 6: the per-window qemu CPU deltas stay in the
+// JSON as raw data but never in the verdict.
+const PROBE_CPU_DELTA_CAVEAT =
+  "The per-window qemu CPU deltas (qemuDeltaVsNoServerPct) are not evidence of load: " +
+  "window A includes the warm-up right after `am start`, and with qemu saturating the " +
+  "host cores (4 on CI) extra work shows as a slower guest, not as higher CPU. The " +
+  "verdict rests only on the window of the first stream lifecycle line in the " +
+  "simulator-server log.";
 const PROBE_SWIPES = 8;
 
 interface ProbeWindow {
@@ -3682,9 +3690,12 @@ interface PropBackground {
   firstStreamLineWindow: string | null;
   debugLogHonoured: boolean;
   streamLineSamples: string[];
+  // Raw, not evidence of load: see cpuDeltaCaveat.
   qemuDeltaVsNoServerPct: { spawnedIdle: number | null; afterScreenshot: number | null };
   stream: "on-at-spawn" | "on-after-screenshot" | "not-seen";
+  // From the simulator-server log only (window of the first stream lifecycle line).
   verdict: string;
+  cpuDeltaCaveat: string;
 }
 
 function pidsOf(pattern: string): number[] {
@@ -3815,14 +3826,13 @@ async function runPropBackgroundProbe(): Promise<PropBackground> {
       : "on-after-screenshot";
   const delta = { spawnedIdle: dOf("B"), afterScreenshot: dOf("C") };
   const verdict =
-    (stream === "on-at-spawn"
+    stream === "on-at-spawn"
       ? "stream=on: simulator-server opens its screen stream at spawn (first lifecycle line in window B, before any screenshot), so every headless agent that taps runs it"
       : stream === "on-after-screenshot"
         ? "stream=on after the first screenshot: spawn alone does not open it (first lifecycle line in window C)"
         : debugLogHonoured
           ? "stream=not seen: debug log honoured but no stream lifecycle line"
-          : "stream=undetermined from the log (the debug filter was not honoured); read the CPU windows") +
-    `; qemu CPU vs no simulator-server: spawned ${delta.spawnedIdle ?? "?"} pp, after a screenshot ${delta.afterScreenshot ?? "?"} pp`;
+          : "stream=undetermined from the log (the debug filter was not honoured)";
   return {
     workload: `${PROBE_SWIPES}× adb input swipe up+down on the Settings root, 0.7 s apart`,
     windows,
@@ -3835,6 +3845,7 @@ async function runPropBackgroundProbe(): Promise<PropBackground> {
     qemuDeltaVsNoServerPct: delta,
     stream,
     verdict,
+    cpuDeltaCaveat: PROBE_CPU_DELTA_CAVEAT,
   };
 }
 
