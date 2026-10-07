@@ -1,0 +1,1 @@
+{"digest":"sha256:fce3fc7fed03","text":"2026-10-07: demerzel init; ABBA 37609765062 P3/P4 PASS, P2 tap +1.2ms, P5 só vitória de stack (guest OFF 2x lento, causa não isolada), settle:true é cap 500ms, vazio ON não é regressão; arquitetura: settle na ação, describe imediato+retry"}

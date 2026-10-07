@@ -1,0 +1,484 @@
+{
+  "schemaVersion": 5,
+  "id": "beat-official-2026-10",
+  "title": "Beat argent 0.27.0 on our bench, multi-device from one session, screen-graph navigation (docs/plans/2026-10-07-beat-official.md)",
+  "status": "approved",
+  "steps": [
+    {
+      "id": "ios-siminput-send-queue",
+      "title": "iOS-4 ticket 3: sim-input runs latency-critical, frames paced on a monotonic deadline, serial send queue with per-message timing on the ack; host-side hold 50 ms measures 50-60 ms, 12 swipe frames at 20 ms land in 240-290 ms",
+      "files": [
+        "packages/ios-sim-input/Sources/sim-input/main.swift",
+        "packages/ios-sim-input/Sources/sim-input/IndigoHIDInput.swift",
+        "packages/ios-sim-input/Sources/sim-input/IOHIDDigitizerDispatch.swift",
+        "packages/ios-sim-input/Sources/sim-input/Support.swift",
+        "packages/ios-sim-input/README.md",
+        "packages/tool-server/src/utils/ios-sim-input-service.ts",
+        "packages/tool-server/test/ios-sim-input-service.test.ts"
+      ],
+      "dependsOn": [],
+      "verify": [
+        {
+          "cmd": "swift build --package-path packages/ios-sim-input",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "perf(ios-sim-input): latency-critical activity, deadline-paced frames, serial send queue with per-message timing",
+      "status": "implementing",
+      "implementer": "agent:impl:ios-siminput-send-queue:1",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "describe-retry-empty",
+      "title": "Android describe: re-read up to 2x 50 ms apart when the open server returns a root with 0 elements, hint on a 0-element root, docs say settle is a waitForIdle(500) cap",
+      "files": [
+        "packages/tool-server/src/tools/describe/platforms/android/index.ts",
+        "packages/tool-server/src/tools/describe/index.ts",
+        "packages/tool-server/test/android-describe-screen.test.ts",
+        "packages/tool-server/test/android-describe-retry-empty.test.ts"
+      ],
+      "dependsOn": [],
+      "verify": [
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/android-describe-screen.test.ts test/android-describe-retry-empty.test.ts test/screen-graph-open-wiring-empty-tree.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "fix(describe): retry a 0-element root on Android, hint the agent, document settle as a 500 ms cap",
+      "status": "implementing",
+      "implementer": "agent:impl:describe-retry-empty:1",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "mcp-use-device",
+      "title": "argent-mcp: per-session default device (use-device tool, learned from boot-device/any id), device id optional in the exposed schema and injected when missing, list-devices marks the default; docs",
+      "files": [
+        "packages/argent-mcp/src/mcp-server.ts",
+        "packages/argent-mcp/src/tool-mapping.ts",
+        "packages/argent-mcp/src/auto-capture.ts",
+        "packages/argent-mcp/src/session-device.ts",
+        "packages/argent-mcp/test/tool-mapping.test.ts",
+        "packages/argent-mcp/test/use-device.test.ts",
+        "packages/argent-mcp/test/auto-capture.test.ts",
+        "packages/docs/docs/reference/tools.mdx",
+        "packages/docs/docs/features/interacting-with-apps.mdx"
+      ],
+      "dependsOn": [],
+      "verify": [
+        {
+          "cmd": "cd packages/argent-mcp && npx vitest run --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/argent-mcp && npx tsc --noEmit",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx prettier --check packages/docs/docs/reference/tools.mdx packages/docs/docs/features/interacting-with-apps.mdx",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "feat(mcp): per-session default device with use-device; device id optional and injected",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "sg-store-hygiene",
+      "title": "screen-graph store: unit-separator instead of NUL, hashed item texts (R5), pin expiry, bounded store default under the screen-graph flag",
+      "files": [
+        "packages/tool-server/src/screen-graph/store.ts",
+        "packages/tool-server/src/screen-graph/plan.ts",
+        "packages/tool-server/src/utils/screen-graph-open-wiring.ts",
+        "packages/tool-server/test/screen-graph-store-bounds.test.ts",
+        "packages/tool-server/test/screen-graph-navigate-template.test.ts",
+        "packages/tool-server/test/screen-graph-plan.test.ts"
+      ],
+      "dependsOn": [
+        "describe-retry-empty"
+      ],
+      "verify": [
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "test -z \"$(git diff --numstat open/main -- packages/tool-server/src/screen-graph/store.ts | grep '^-')\"",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "fix(screen-graph): text-safe separators, hashed item texts, pin expiry, bounded store by default",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "swipe-scroll-accessibility",
+      "title": "Fling D1: device RPC scrollContainer (ACTION_SCROLL_FORWARD/BACKWARD, stable hash after) with heldMs in the swipe reply; gesture-swipe momentum:false and navigate-to template search prefer it on scrollable containers; versionCode bump",
+      "files": [
+        "packages/android-device-server/src/main/java/com/argent/devicecontrol/handlers/SwipeHandler.kt",
+        "packages/android-device-server/src/main/java/com/argent/devicecontrol/handlers/ScrollHandler.kt",
+        "packages/android-device-server/src/main/java/com/argent/devicecontrol/JsonRpcHandler.kt",
+        "packages/android-device-server/build.gradle.kts",
+        "packages/tool-server/src/blueprints/android-open-server.ts",
+        "packages/tool-server/src/tools/gesture-swipe/index.ts",
+        "packages/tool-server/src/tools/navigate-to/index.ts",
+        "packages/tool-server/test/open-server-swipe-hold.test.ts",
+        "packages/tool-server/test/open-server-scroll-container.test.ts",
+        "packages/tool-server/test/screen-graph-navigate-template.test.ts",
+        "packages/tool-server/test/blueprints/android-open-server.device.test.ts",
+        "packages/docs/docs/features/open-device-server.mdx"
+      ],
+      "dependsOn": [],
+      "verify": [
+        {
+          "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/open-server-swipe-hold.test.ts test/open-server-scroll-container.test.ts test/screen-graph-navigate-template.test.ts test/tools/gesture-swipe.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "feat(open-server): accessibility scroll RPC for momentum-free swipes and template search",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "settle-on-action",
+      "title": "OWNER APPROVAL FIRST. Settle on the action: gesture-tap/gesture-swipe/key settle:true waits first a11y event (<=600 ms) then 80 ms quiet, cap 1500 ms via settleAfterAction; reply carries settledMs/timedOut; bench variant tap(settle)+describe",
+      "files": [
+        "packages/tool-server/src/tools/gesture-tap/index.ts",
+        "packages/tool-server/src/tools/gesture-swipe/index.ts",
+        "packages/tool-server/src/blueprints/android-open-server.ts",
+        "packages/android-device-server/src/main/java/com/argent/devicecontrol/JsonRpcHandler.kt",
+        "packages/android-device-server/src/main/java/com/argent/devicecontrol/TreeStore.kt",
+        "packages/tool-server/test/open-server-settle-on-action.test.ts",
+        "packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+        ".github/bench-ci/gates.test.js",
+        "packages/docs/docs/reference/tools.mdx"
+      ],
+      "dependsOn": [
+        "describe-retry-empty",
+        "bench-harness-p11-arms",
+        "navigate-to-addressable"
+      ],
+      "verify": [
+        {
+          "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/open-server-settle-on-action.test.ts test/tools/gesture-swipe.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "node --test --test-concurrency=2 .github/bench-ci/gates.test.js",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "feat(open-server): settle on the action with event-gated quiet window",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "siminput-registry-route",
+      "title": "iOS-4 tickets 5+6: ios-sim-input as a registry service per simulator (start, crash-restart, per-call timeout, stop with device); product gesture-tap/gesture-swipe/ASCII type-text routed to it under the open-iOS flag with visible fallback; physical devices excluded",
+      "files": [
+        "packages/tool-server/src/utils/ios-sim-input-service.ts",
+        "packages/tool-server/src/blueprints/ios-sim-input.ts",
+        "packages/tool-server/src/blueprints/ios-open-server.ts",
+        "packages/tool-server/src/tools/gesture-tap/index.ts",
+        "packages/tool-server/src/tools/gesture-swipe/index.ts",
+        "packages/tool-server/src/tools/type-text/index.ts",
+        "packages/tool-server/test/ios-sim-input-service.test.ts",
+        "packages/tool-server/test/ios-sim-input-blueprint.test.ts",
+        "packages/tool-server/test/ios-open-server-input-routing.test.ts",
+        "packages/docs/docs/features/open-ios-device-server.mdx"
+      ],
+      "dependsOn": [
+        "ios-siminput-send-queue"
+      ],
+      "verify": [
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts test/ios-open-server-input-routing.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx prettier --check packages/docs/docs/features/open-ios-device-server.mdx",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "feat(ios): sim-input registry service and product input routing under the open-iOS flag",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "bench-harness-p11-arms",
+      "title": "Bench harness: P11 graded on wrong reads (empty + pre-transition); arms ON-im-bg (idle proprietary simulator-server) and OFF-devawait; qemu per-thread CPU and host idle/steal in the load sampler; P5 decomposition in the scoreboard",
+      "files": [
+        "packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+        ".github/bench-ci/block-arms.js",
+        ".github/bench-ci/stats.js",
+        ".github/bench-ci/scoreboard.js",
+        ".github/bench-ci/merge-blocks.js",
+        ".github/bench-ci/load-sampler.js",
+        ".github/bench-ci/load-sampler.test.js",
+        ".github/bench-ci/gates.test.js",
+        ".github/workflows/bench-open-vs-proprietary.yml",
+        "docs/open-server/2026-10-07-review-abba-run-37609765062.md"
+      ],
+      "dependsOn": [
+        "describe-retry-empty"
+      ],
+      "verify": [
+        {
+          "cmd": "node --test --test-concurrency=2 .github/bench-ci/gates.test.js .github/bench-ci/load-sampler.test.js .github/bench-ci/logcat-timeline.test.js",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx tsc --noEmit -p packages/tool-server/scripts/tsconfig.json",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx prettier --check .github/bench-ci/*.js packages/tool-server/scripts/bench-open-vs-proprietary.ts",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "bench(android): P11 on wrong reads, ON-im-bg and OFF-devawait arms, per-thread qemu CPU, P5 decomposition",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "navigate-to-addressable",
+      "title": "navigate-to by label and hash8 (ambiguity fails closed), summary lists reachable destinations with hops, no redundant getState after a hop, compact of the final screen only; features/screen-graph.mdx + tools reference",
+      "files": [
+        "packages/tool-server/src/tools/navigate-to/index.ts",
+        "packages/tool-server/src/screen-graph/plan.ts",
+        "packages/tool-server/src/tools/describe/platforms/android/describe-tiers.ts",
+        "packages/tool-server/test/screen-graph-navigate.test.ts",
+        "packages/tool-server/test/screen-graph-navigate-targets.test.ts",
+        "packages/tool-server/test/screen-graph-plan.test.ts",
+        "packages/tool-server/test/screen-graph-describe.test.ts",
+        "packages/tool-server/test/screen-graph-label.test.ts",
+        "packages/docs/docs/features/screen-graph.mdx",
+        "packages/docs/docs/reference/tools.mdx"
+      ],
+      "dependsOn": [
+        "sg-store-hygiene"
+      ],
+      "verify": [
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx prettier --check packages/docs/docs/features/screen-graph.mdx packages/docs/docs/reference/tools.mdx",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "feat(screen-graph): navigate-to by label or hash8, summary lists destinations, one read per hop; docs",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "run-on-devices",
+      "title": "run-on-devices {udids[], steps[], screenshots}: run-sequence fan-out per device with Promise.allSettled, serialised per device by device-mutex, per-device results; docs",
+      "files": [
+        "packages/tool-server/src/tools/run-on-devices/index.ts",
+        "packages/tool-server/src/tools/run-sequence/index.ts",
+        "packages/tool-server/src/tools/index.ts",
+        "packages/tool-server/test/tools/run-on-devices.test.ts",
+        "packages/tool-server/test/tools/run-sequence.test.ts",
+        "packages/docs/docs/reference/tools.mdx",
+        "packages/docs/docs/features/interacting-with-apps.mdx"
+      ],
+      "dependsOn": [
+        "mcp-use-device"
+      ],
+      "verify": [
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/tools/run-on-devices.test.ts test/tools/run-sequence.test.ts test/utils/device-mutex.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx prettier --check packages/docs/docs/reference/tools.mdx packages/docs/docs/features/interacting-with-apps.mdx",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "feat(tools): run-on-devices fan-out of a sequence across several devices",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "sg-multihop-bench",
+      "title": "Multi-hop screen-graph bench block (depth >= 3, n >= 20: hops, RPCs, wall, success) and AndroidWorld navigate_to action + summary tier with a warm-vs-cold arm, pre-registered tokens/steps <= 0.7x",
+      "files": [
+        "packages/tool-server/scripts/bench-screen-graph.ts",
+        "packages/tool-server/src/screen-graph/bench/tasks.ts",
+        "packages/tool-server/src/screen-graph/bench/report.ts",
+        "packages/tool-server/test/screen-graph-bench-tasks.test.ts",
+        "packages/tool-server/test/screen-graph-bench-report.test.ts",
+        "bench/androidworld/tiered_agent.py",
+        "bench/androidworld/driver_env.py",
+        "bench/androidworld/run_aw.py",
+        "bench/androidworld/README.md",
+        ".github/workflows/bench-androidworld.yml",
+        ".github/workflows/bench-screen-graph.yml"
+      ],
+      "dependsOn": [
+        "navigate-to-addressable",
+        "swipe-scroll-accessibility"
+      ],
+      "verify": [
+        {
+          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-bench-*.test.ts --poolOptions.threads.maxThreads=2",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "python3 -I -m py_compile bench/androidworld/tiered_agent.py bench/androidworld/driver_env.py bench/androidworld/run_aw.py",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "bench(screen-graph): multi-hop block and AndroidWorld navigate_to arm",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-tdd",
+        "demerzel-causa-raiz",
+        "demerzel-evidencia"
+      ]
+    },
+    {
+      "id": "bench-final-scoreboard",
+      "title": "Run the CI benches (Android ABBA with new arms, iOS, screen-graph churn+multihop, AndroidWorld), adversarial review, publish the scoreboard vs 0.27.0 with every number scoped and driver-attributable wins separated",
+      "files": [
+        "docs/open-server/2026-10-scoreboard-vs-0.27.0.md",
+        "docs/open-server/2026-10-review-final-runs.md"
+      ],
+      "dependsOn": [
+        "settle-on-action",
+        "siminput-registry-route",
+        "bench-harness-p11-arms",
+        "run-on-devices",
+        "sg-multihop-bench"
+      ],
+      "verify": [
+        {
+          "cmd": "test -s docs/open-server/2026-10-scoreboard-vs-0.27.0.md && test -s docs/open-server/2026-10-review-final-runs.md",
+          "expect": "exit0"
+        },
+        {
+          "cmd": "npx prettier --check docs/open-server/2026-10-scoreboard-vs-0.27.0.md docs/open-server/2026-10-review-final-runs.md",
+          "expect": "exit0"
+        }
+      ],
+      "commitMessage": "docs(open-server): final scoreboard vs argent 0.27.0 and review of the final runs",
+      "status": "pending",
+      "reviewRounds": 0,
+      "waivers": [],
+      "skills": [
+        "demerzel-evidencia"
+      ]
+    }
+  ]
+}

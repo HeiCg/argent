@@ -1,0 +1,3 @@
+{"digest":"sha256:d80bba46bacc","text":"Projeto iniciado 2026-10-07; ABBA Android 37609765062 (PR #26): stream proprietário on-at-spawn, P3/P4/P5 PASS, P2 tap +1.2ms falhou, P11 settle:false 35-45% vazios, fling D1 falha device-test"}
+{"digest":"sha256:22636ee794cb","text":"Revisão ABBA 37609765062: P5 vitória de stack, não do driver (guest OFF 2x lento, causa não isolada; probe CPU=ruído); settle:true é cap waitForIdle(500); vazio ON não é regressão; arquitetura: settle na ação, describe imediato+retry"}
+{"digest":"sha256:0727b49cb4eb","text":"Plano beat-official-2026-10 aprovado (12 steps/5 ondas); operação: worktree por step (step/<id>, node_modules symlink), implementor+reviewer separados, merge --squash na raiz + step commit"}
