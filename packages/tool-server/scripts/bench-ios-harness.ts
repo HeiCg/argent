@@ -18,6 +18,13 @@
  *     ({@link waitForStableFrame}), replacing a fixed 900 ms sleep that left the
  *     "before" frames blank.
  *
+ * iOS-4 (run 37572773799, docs/open-server/2026-10-07-ios4-siminput-plan.md):
+ *   - After each simctl relaunch the oracle re-checks the runner's target before
+ *     its next read and relaunches it only when the runner lost it
+ *     ({@link RunnerOracle.noteRelaunch}).
+ *   - {@link decomposeSimInputAck} splits one sim-input command's host write→ack
+ *     time into the sidecar's receive / per-message send / ack terms.
+ *
  * Runner lifetime (run 37223296646): the first start of a block missed the
  * runner's 120 s ready budget in OFF-1, ON-siminput and OFF-2, and the oracle's
  * next call made the registry start a second runner, reported as "restarted
@@ -30,6 +37,7 @@ import { readFileSync } from "node:fs";
 import { ServiceState, type Registry } from "@argent/registry";
 import { iosOpenServerRef, type IosOpenDeviceServerApi } from "../src/blueprints/ios-open-server";
 import { resolveDevice } from "../src/utils/device-info";
+import type { SimInputAck } from "../src/utils/ios-sim-input-service";
 import type {
   IosOpenServerInfo,
   IosOpenServerNode,
@@ -324,7 +332,9 @@ function findScrollContainer(nodes: IosOpenServerNode[]): IosOpenServerNode | un
  * does not already target the app. The product `describe` / `gesture-*` calls
  * (no bundleId) rely on that stored target with the flag on. Every tree read then
  * passes `bundleId` explicitly, so a simctl relaunch between iterations can never
- * leave a read without a target. A second `launchApp` per relaunch is not used:
+ * leave a read without a target. After a relaunch ({@link noteRelaunch}) the next
+ * read re-runs that check (`getInfo`), so a runner that lost its target is
+ * re-targeted; an unconditional `launchApp` per relaunch is not used:
  * XCUIApplication.launch() terminates and relaunches the app, doubling every
  * root restore.
  *
@@ -342,6 +352,9 @@ export class RunnerOracle {
   private readonly retryDelayMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private targetSet = false;
+  /** The target was set once in this block (the first launchApp is not a re-target). */
+  private targeted = false;
+  private retargets = 0;
   private relaunches = 0;
   private retried = 0;
   private cachedHeightPoints: number | null = null;
@@ -393,14 +406,23 @@ export class RunnerOracle {
     }
   }
 
-  /** The runner targets `bundleId`, once per block (launchApp only if needed). */
+  /** The runner targets `bundleId`: checked once per block and again after each
+   * relaunch (launchApp only if the runner does not target it). */
   async ensureTarget(): Promise<void> {
     if (this.targetSet) return;
     const info: IosOpenServerInfo = await this.call("getInfo", (r) => r.getInfo());
     if (info.bundleId !== this.bundleId) {
       await this.call("launchApp", (r) => r.launchApp(this.bundleId));
+      if (this.targeted) this.retargets++;
     }
     this.targetSet = true;
+    this.targeted = true;
+  }
+
+  /** launchApp calls after the block's first targeting: the runner lost its
+   * target across a relaunch that many times. */
+  retargetsSeen(): number {
+    return this.retargets;
   }
 
   /** Connection errors that succeeded on a retry (same runner, no restart). */
@@ -408,9 +430,11 @@ export class RunnerOracle {
     return this.retried;
   }
 
-  /** The app was relaunched outside the runner (simctl). Reads keep naming it. */
+  /** The app was relaunched outside the runner (simctl). Reads keep naming it,
+   * and the next one re-checks the runner's target first. */
   noteRelaunch(): void {
     this.relaunches++;
+    this.targetSet = false;
   }
 
   relaunchesSeen(): number {
@@ -605,4 +629,57 @@ export function sameFileBytes(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* sim-input decomposition (iOS-4 ticket 1)                                    */
+/* -------------------------------------------------------------------------- */
+
+/** One sim-input command's time, split by where it went (ms). The host terms are
+ * on the host clock, the rest on sim-input's own; only differences are used. */
+export interface SimInputSample {
+  /** Host `performance.now()` at the stdin write → at the ack line. */
+  hostWriteToAck: number;
+  /** sim-input read the line → started the first HID message (null: none sent). */
+  recvToFirstSend: number | null;
+  /** Each HID message's `sendWithMessage:` call, in order. */
+  perMessageSendMs: number[];
+  /** The last message returned → the ack was written (null: none sent). */
+  lastSendToAck: number | null;
+  /** sim-input read the line → wrote the ack. */
+  sidecarMs: number;
+  /** Time between messages inside sim-input (the gesture's sleeps): sidecar
+   * minus the three terms above (null: none sent). */
+  gapsMs: number | null;
+  /** Host write→ack minus the sidecar time: pipes, JSON, event loop. */
+  hostPipeMs: number;
+}
+
+const ms3 = (v: number): number => Number(v.toFixed(3));
+
+/** Split one ack into {@link SimInputSample}; null when it carried no timing. */
+export function decomposeSimInputAck(ack: SimInputAck): SimInputSample | null {
+  const t = ack.timing;
+  if (!t) return null;
+  const hostWriteToAck = ack.hostAckAt - ack.hostWriteAt;
+  const sidecarMs = t.ackAt - t.recvAt;
+  const perMessageSendMs = t.sends.map((m) => ms3(m.sendEnd - m.sendStart));
+  const first = t.sends[0];
+  const last = t.sends[t.sends.length - 1];
+  const recvToFirstSend = first ? first.sendStart - t.recvAt : null;
+  const lastSendToAck = last ? t.ackAt - last.sendEnd : null;
+  const sendSum = t.sends.reduce((a, m) => a + (m.sendEnd - m.sendStart), 0);
+  const gapsMs =
+    recvToFirstSend !== null && lastSendToAck !== null
+      ? sidecarMs - recvToFirstSend - sendSum - lastSendToAck
+      : null;
+  return {
+    hostWriteToAck: ms3(hostWriteToAck),
+    recvToFirstSend: recvToFirstSend === null ? null : ms3(recvToFirstSend),
+    perMessageSendMs,
+    lastSendToAck: lastSendToAck === null ? null : ms3(lastSendToAck),
+    sidecarMs: ms3(sidecarMs),
+    gapsMs: gapsMs === null ? null : ms3(gapsMs),
+    hostPipeMs: ms3(hostWriteToAck - sidecarMs),
+  };
 }

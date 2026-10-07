@@ -17,6 +17,7 @@ import {
   RunnerLease,
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
+  decomposeSimInputAck,
   gesturePath,
   landedOn,
   navigationTitles,
@@ -368,6 +369,8 @@ describe("target app before any tree read (B)", () => {
 
     expect(runner.calls.slice(0, 2)).toEqual(["getInfo", `launchApp:${SETTINGS_BUNDLE_ID}`]);
     expect(runner.calls.filter((c) => c.startsWith("launchApp"))).toHaveLength(1);
+    // The block's first targeting is not a re-target.
+    expect(oracle.retargetsSeen()).toBe(0);
     const reads = runner.calls.filter((c) => c.startsWith("getNestedState"));
     expect(reads).toHaveLength(4);
     for (const r of reads) expect(r).toBe(`getNestedState:${SETTINGS_BUNDLE_ID}`);
@@ -380,6 +383,31 @@ describe("target app before any tree read (B)", () => {
     await oracle.ensureTarget();
     await oracle.locate("General");
     expect(runner.calls).toEqual(["getInfo", `getNestedState:${SETTINGS_BUNDLE_ID}`]);
+  });
+
+  it("after a simctl relaunch the next read re-checks the target and relaunches it only when lost (iOS-4 ticket 2)", async () => {
+    const runner = fakeRunner(SETTINGS_BUNDLE_ID);
+    const oracle = new RunnerOracle({ runner: async () => runner });
+    await oracle.ensureTarget();
+    oracle.noteRelaunch();
+    // Target intact: one getInfo, no launchApp.
+    await oracle.ensureTarget();
+    expect(runner.calls).toEqual(["getInfo", "getInfo"]);
+    expect(oracle.retargetsSeen()).toBe(0);
+    // The runner lost its target across the relaunch: launchApp re-targets it.
+    oracle.noteRelaunch();
+    const lost = runner.getInfo;
+    runner.getInfo = async () => ({ ...(await lost()), bundleId: "" });
+    await oracle.locate("General");
+    expect(runner.calls.slice(2)).toEqual([
+      "getInfo",
+      `launchApp:${SETTINGS_BUNDLE_ID}`,
+      `getNestedState:${SETTINGS_BUNDLE_ID}`,
+    ]);
+    expect(oracle.retargetsSeen()).toBe(1);
+    // No relaunch since: the next read does not re-check.
+    await oracle.locate("General");
+    expect(runner.calls.filter((c) => c === "getInfo")).toHaveLength(3);
   });
 
   it("retries a transient connection error on the SAME runner, bounded, without re-resolving it", async () => {
@@ -629,5 +657,52 @@ describe("oracle geometry and landing (run 37572773799: 480 pt runner, wrong row
       landed: false,
       titles: ["Apple Intelligence & Siri"],
     });
+  });
+});
+
+describe("sim-input ack decomposition (iOS-4 ticket 1)", () => {
+  it("splits host write→ack into receive→first send, per-message sends and last send→ack", () => {
+    const sample = decomposeSimInputAck({
+      id: 7,
+      hostWriteAt: 5000,
+      hostAckAt: 5190,
+      timing: {
+        recvAt: 100,
+        sends: [
+          { sendStart: 100.5, sendEnd: 167.5 },
+          { sendStart: 217.5, sendEnd: 284.5 },
+        ],
+        ackAt: 285,
+      },
+    });
+    expect(sample).toEqual({
+      hostWriteToAck: 190,
+      recvToFirstSend: 0.5,
+      perMessageSendMs: [67, 67],
+      lastSendToAck: 0.5,
+      sidecarMs: 185,
+      gapsMs: 50,
+      hostPipeMs: 5,
+    });
+  });
+
+  it("a command with no HID message has no send terms; no timing block yields null", () => {
+    expect(
+      decomposeSimInputAck({
+        id: 1,
+        hostWriteAt: 0,
+        hostAckAt: 2,
+        timing: { recvAt: 10, sends: [], ackAt: 10.5 },
+      })
+    ).toEqual({
+      hostWriteToAck: 2,
+      recvToFirstSend: null,
+      perMessageSendMs: [],
+      lastSendToAck: null,
+      sidecarMs: 0.5,
+      gapsMs: null,
+      hostPipeMs: 1.5,
+    });
+    expect(decomposeSimInputAck({ id: 1, hostWriteAt: 0, hostAckAt: 2, timing: null })).toBeNull();
   });
 });

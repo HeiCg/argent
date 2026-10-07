@@ -1,6 +1,8 @@
 // Ported VERBATIM from baguette (Apache-2.0). Upstream: https://github.com/tddworks/baguette
 // Original: Sources/Baguette/Infrastructure/Input/IndigoHIDInput.swift
 // DO NOT modify byte layouts, timing constants, or HID event ordering — they are the iOS 26.4 recipe.
+// Local change (iOS-4 ticket 1): `send(message:to:)` records its start/end into
+// `SendTimeline` for the ack's timing block. Nothing else differs from the port.
 
 import Foundation
 import ObjectiveC
@@ -572,7 +574,9 @@ final class IndigoHIDInput: Input, @unchecked Sendable {
         typealias Fn = @convention(c) (
             AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, AnyObject?, AnyObject?
         ) -> Void
+        let start = monotonicMs()
         unsafeBitCast(imp, to: Fn.self)(client, sel, message, ObjCBool(true), nil, nil)
+        SendTimeline.shared.record(start: start, end: monotonicMs())
     }
 
     /// Lazy resolve + warm. Synchronised because gestures might come from

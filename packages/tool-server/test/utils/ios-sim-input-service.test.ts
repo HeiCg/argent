@@ -86,8 +86,24 @@ describe("IosSimInputService — framing", () => {
     // Resolve both so no unhandled rejection.
     pushAck(children[0]!, { id: 1, ok: true });
     pushAck(children[0]!, { id: 2, ok: true });
-    await expect(p1).resolves.toBeUndefined();
-    await expect(p2).resolves.toBeUndefined();
+    await expect(p1).resolves.toMatchObject({ id: 1, timing: null });
+    await expect(p2).resolves.toMatchObject({ id: 2, timing: null });
+  });
+
+  it("carries holdMs on tap only when given", async () => {
+    const { svc, children, written } = serviceWithChild();
+    const p1 = svc.tap("UDID-A", { x: 1, y: 2, width: 10, height: 10 });
+    const p2 = svc.tap("UDID-A", { x: 1, y: 2, width: 10, height: 10, holdMs: 80 });
+    const [cmd1, cmd2] = written[0]!
+      .join("")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    expect(cmd1).not.toHaveProperty("holdMs");
+    expect(cmd2).toMatchObject({ type: "tap", holdMs: 80 });
+    pushAck(children[0]!, { id: 1, ok: true });
+    pushAck(children[0]!, { id: 2, ok: true });
+    await Promise.all([p1, p2]);
   });
 
   it("swipe defaults durationMs to 250 and carries screen dims when given", async () => {
@@ -103,7 +119,7 @@ describe("IosSimInputService — framing", () => {
       screenHeight: 844,
     });
     pushAck(children[0]!, { id: cmd.id, ok: true });
-    await expect(p).resolves.toBeUndefined();
+    await expect(p).resolves.toMatchObject({ id: cmd.id });
   });
 
   it("reassembles acks split across stdout chunks", async () => {
@@ -112,7 +128,58 @@ describe("IosSimInputService — framing", () => {
     // Ack arrives in two partial chunks with the newline in the second.
     children[0]!.stdout.write('{"id":1,"o');
     children[0]!.stdout.write('k":true}\n');
-    await expect(p).resolves.toBeUndefined();
+    await expect(p).resolves.toMatchObject({ id: 1 });
+  });
+});
+
+describe("IosSimInputService — ack timing (iOS-4 ticket 1)", () => {
+  it("resolves with the sim-input timing block and host write/ack times", async () => {
+    const { svc, children } = serviceWithChild();
+    const before = performance.now();
+    const p = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 });
+    const timing = {
+      recvAt: 1000.25,
+      sends: [
+        { sendStart: 1000.5, sendEnd: 1067.5 },
+        { sendStart: 1118, sendEnd: 1185 },
+      ],
+      ackAt: 1185.25,
+    };
+    pushAck(children[0]!, { id: 1, ok: true, timing });
+    const ack = await p;
+    const after = performance.now();
+    expect(ack.id).toBe(1);
+    expect(ack.timing).toEqual(timing);
+    expect(ack.hostWriteAt).toBeGreaterThanOrEqual(before);
+    expect(ack.hostAckAt).toBeGreaterThanOrEqual(ack.hostWriteAt);
+    expect(ack.hostAckAt).toBeLessThanOrEqual(after);
+  });
+
+  it("an ack without a well-formed timing block resolves with timing null", async () => {
+    const { svc, children } = serviceWithChild();
+    const p1 = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 });
+    const p2 = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 });
+    const p3 = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 });
+    pushAck(children[0]!, { id: 1, ok: true });
+    pushAck(children[0]!, {
+      id: 2,
+      ok: true,
+      timing: { recvAt: 1, sends: [{ sendStart: "x" }], ackAt: 2 },
+    });
+    pushAck(children[0]!, { id: 3, ok: true, timing: { sends: [], ackAt: 2 } });
+    expect((await p1).timing).toBeNull();
+    expect((await p2).timing).toBeNull();
+    expect((await p3).timing).toBeNull();
+  });
+
+  it("the FIFO fallback also resolves with the timing block", async () => {
+    const { svc, children } = serviceWithChild();
+    const p = svc.swipe("UDID-A", { fromX: 1, fromY: 2, toX: 3, toY: 4 });
+    const timing = { recvAt: 5, sends: [{ sendStart: 6, sendEnd: 7 }], ackAt: 8 };
+    pushAck(children[0]!, { ok: true, timing });
+    const ack = await p;
+    expect(ack.id).toBe(1);
+    expect(ack.timing).toEqual(timing);
   });
 });
 

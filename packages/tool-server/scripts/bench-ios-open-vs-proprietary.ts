@@ -76,6 +76,20 @@
  *     invalidates the block on either arm; a fallback inside a timed verb
  *     (`fallbacks`: a fallback note at console.debug / console.warn, or a result
  *     marked `proprietary-fallback`) invalidates an ON block. Counts per verb.
+ *
+ * iOS-4 tickets 1 + 2 (run 37572773799, docs/open-server/2026-10-07-ios4-siminput-plan.md):
+ *   - Every arm's describe passes the bundleId the oracle reads (Settings); both
+ *     ON arms returned 3 elements vs 30 on ax-service without it. After each simctl
+ *     relaunch the oracle re-checks the runner's target (untimed, `ensureRoot`).
+ *     Each timed describe records its element count (`elementsSamples`); the merge
+ *     marks a block INVALID when > 10 % of them are < 10 while the other config's
+ *     median on the same screen is ≥ 20 (`treeSuspect`, both arms).
+ *   - Optical scroll: the region is clipped to the chrome-free band and shifts are
+ *     scored down to a 10 % overlap (bench-ios-optical.ts); the px→pt scale is the
+ *     device type's `mainScreenScale` (the runner reported a 480 pt screen).
+ *   - ON-siminput: every measured tap / swipe stores the sim-input ack timing split
+ *     (`inputTimings`: host write→ack, receive→first send, per-message send, last
+ *     send→ack) for the scoreboard's decomposition table.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -92,6 +106,7 @@ import {
   RunnerLease,
   RunnerOracle,
   SETTINGS_BUNDLE_ID,
+  decomposeSimInputAck,
   gesturePath,
   isConnectionError,
   isFallbackResult,
@@ -101,10 +116,15 @@ import {
   watchRunnerLifecycle,
   type NPoint,
   type RunnerStart,
+  type SimInputSample,
   type StageSample,
 } from "./bench-ios-harness";
-import { estimateScrollPx } from "./optical-scroll";
-import { framebufferPxToPoints, framebufferScale, pngDimensions } from "./bench-ios-optical";
+import {
+  deviceProfilePlist,
+  framebufferScale,
+  opticalScrollPx,
+  pngDimensions,
+} from "./bench-ios-optical";
 import { getEncoding, type Tiktoken } from "js-tiktoken";
 
 const execFileAsync = promisify(execFile);
@@ -344,14 +364,26 @@ interface OpticalPoints {
   confidence: number;
   /** Framebuffer px per screen point (the raster scale). */
   rasterScale: number;
+  /** The rows correlated (fractions of height): the scroll region clipped to the
+   * chrome-free band. */
+  opticalRegion: { y1: number; y2: number };
   refused: boolean;
 }
+
+/** Framebuffer px per point: the device type's `mainScreenScale` (set in main()),
+ * else the framebuffer height over the runner's screen height. */
+interface RasterScale {
+  scale: number | null;
+  source: "device-profile" | "runner-screen-height";
+}
+let DEVICE_SCALE: number | null = null;
+
 /**
- * OPTICAL scroll offset in screen POINTS (IOS2-H5). Reads the FULL-resolution
- * pre/post-swipe PNGs, runs the shared `optical-scroll.ts` NCC estimator over the
- * scroll region (no half-window clamp; maxShiftFrac 0.9 of the region ≥ the swipe
- * distance; refuse only on confidence < 0.6), then converts framebuffer px →
- * points against the runner's screen height.
+ * OPTICAL scroll offset in screen POINTS (IOS2-H5, iOS-4 ticket 2). Reads the
+ * FULL-resolution pre/post-swipe PNGs and runs `opticalScrollPx` (the shared
+ * `optical-scroll.ts` NCC over the scroll region clipped to the chrome-free band,
+ * shifts up to 0.9 of it down to a 10 % overlap, refuse below confidence 0.6),
+ * then converts framebuffer px → points with the raster scale.
  */
 function opticalScrollPoints(
   pngBefore: string,
@@ -361,23 +393,28 @@ function opticalScrollPoints(
 ): OpticalPoints {
   const beforeBuf = readFileSync(pngBefore);
   const afterBuf = readFileSync(pngAfter);
-  const est = estimateScrollPx(beforeBuf, afterBuf, {
-    y0: Math.max(0, Math.min(1, region.y1)),
-    y1: Math.max(0, Math.min(1, region.y2)),
-    minConfidence: 0.6,
-    maxShiftFrac: 0.9,
-  });
-  const dims = pngDimensions(beforeBuf);
-  const rasterScale = framebufferScale(dims.height, screenHeightPoints);
+  const est = opticalScrollPx(beforeBuf, afterBuf, region);
+  const raster = rasterScaleOf(pngDimensions(beforeBuf).height, screenHeightPoints);
   const dyPx = est.offsetPx ?? NaN;
-  const dyPoints = est.refused ? NaN : framebufferPxToPoints(dyPx, dims.height, screenHeightPoints);
+  const dyPoints = est.refused || !(raster.scale! > 0) ? NaN : dyPx / raster.scale!;
   return {
     dyPoints: Number.isFinite(dyPoints) ? Number(dyPoints.toFixed(2)) : NaN,
     dyPx: Number.isFinite(dyPx) ? Number(dyPx.toFixed(2)) : NaN,
     confidence: est.confidence,
-    rasterScale: Number.isFinite(rasterScale) ? Number(rasterScale.toFixed(3)) : NaN,
+    rasterScale:
+      raster.scale && Number.isFinite(raster.scale) ? Number(raster.scale.toFixed(3)) : NaN,
+    opticalRegion: {
+      y1: Number(est.region.y1.toFixed(4)),
+      y2: Number(est.region.y2.toFixed(4)),
+    },
     refused: est.refused,
   };
+}
+
+function rasterScaleOf(framebufferHeightPx: number, screenHeightPoints: number): RasterScale {
+  if (DEVICE_SCALE !== null) return { scale: DEVICE_SCALE, source: "device-profile" };
+  const s = framebufferScale(framebufferHeightPx, screenHeightPoints);
+  return { scale: Number.isFinite(s) ? s : null, source: "runner-screen-height" };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -469,6 +506,11 @@ interface Arm {
   runnerRecord(): RunnerRecord;
   /** simctl relaunches the oracle saw (each one followed by a bundleId-scoped read). */
   oracleRelaunches(): number;
+  /** Relaunches after which the runner had lost its target and was relaunched. */
+  oracleRetargets(): number;
+  /** The sim-input timing split of the last tap / swipe, cleared on read (null on
+   * the arms whose input is not sim-input, or when the ack carried no timing). */
+  takeInputTiming(): SimInputSample | null;
   dispose(): Promise<void>;
 }
 
@@ -477,7 +519,9 @@ interface Arm {
 async function invokeDescribe(
   reg: Reg
 ): Promise<{ text: string; source: string; backend?: string }> {
-  const r = (await reg.invokeTool("describe", { udid: UDID })) as {
+  // iOS-4 ticket 2: name the app the oracle reads on every arm (the ON arms read
+  // 3 elements in run 37572773799 without it, from the runner's stored target).
+  const r = (await reg.invokeTool("describe", { udid: UDID, bundleId: SETTINGS })) as {
     description?: string;
     source?: string;
     backend?: string;
@@ -614,8 +658,10 @@ abstract class ArmBase {
     }
     // 3. Root, then the product launch-app tool (as a user would; every block, so
     //    its native-devtools env setup is the same in all four), then the runner
-    //    target (B) before the first tree read.
-    await this.ensureRoot();
+    //    target (B) before the first tree read. The relaunch here skips
+    //    ensureRoot's re-target: the target is set right after launch-app.
+    await relaunchViaSimctl();
+    this.oracle.noteRelaunch();
     await this.viaTool("launch-app", () =>
       this.reg.invokeTool("launch-app", { udid: UDID, bundleId: SETTINGS })
     );
@@ -663,6 +709,10 @@ abstract class ArmBase {
   async ensureRoot(): Promise<void> {
     await relaunchViaSimctl();
     this.oracle.noteRelaunch();
+    // iOS-4 ticket 2: re-target the runner now, untimed, so the next measured tool
+    // call does not run against a target the relaunch left stale. A failure is
+    // recorded by the oracle (connection errors) and retried by its next read.
+    await this.oracle.ensureTarget().catch(() => undefined);
   }
   goBack(): Promise<void> {
     return this.ensureRoot();
@@ -678,6 +728,12 @@ abstract class ArmBase {
   }
   oracleRelaunches(): number {
     return this.oracle.relaunchesSeen();
+  }
+  oracleRetargets(): number {
+    return this.oracle.retargetsSeen();
+  }
+  takeInputTiming(): SimInputSample | null {
+    return null;
   }
   runnerRecord(): RunnerRecord {
     return {
@@ -780,6 +836,7 @@ class SimInputArm extends ArmBase implements Arm {
   readonly inputIsProductTool = false; // sim-input HID: bench-local, no product path.
   private sim = new IosSimInputService();
   private ackTimeoutCount = 0;
+  private lastTiming: SimInputSample | null = null;
   private cachedSize: { w: number; h: number } | null = null;
   constructor(name: string) {
     super(name, true);
@@ -806,14 +863,24 @@ class SimInputArm extends ArmBase implements Arm {
       clearTimeout(timer!);
     }
   }
+  override takeInputTiming(): SimInputSample | null {
+    const t = this.lastTiming;
+    this.lastTiming = null;
+    return t;
+  }
   async tap(p: NPoint): Promise<Served> {
     const { w, h } = await this.size(); // cached, untimed
-    await this.withAckTimeout(this.sim.tap(UDID, { x: p.x * w, y: p.y * h, width: w, height: h }));
+    this.lastTiming = null;
+    const ack = await this.withAckTimeout(
+      this.sim.tap(UDID, { x: p.x * w, y: p.y * h, width: w, height: h })
+    );
+    this.lastTiming = decomposeSimInputAck(ack);
     return { path: "sim-input", fallback: false };
   }
   async swipe(from: NPoint, to: NPoint): Promise<Served> {
     const { w, h } = await this.size();
-    await this.withAckTimeout(
+    this.lastTiming = null;
+    const ack = await this.withAckTimeout(
       this.sim.swipe(UDID, {
         fromX: from.x * w,
         fromY: from.y * h,
@@ -824,6 +891,7 @@ class SimInputArm extends ArmBase implements Arm {
         height: h,
       })
     );
+    this.lastTiming = decomposeSimInputAck(ack);
     return { path: "sim-input", fallback: false };
   }
   awaitScreenIdle(): Promise<void> {
@@ -891,6 +959,12 @@ interface VerbResult {
   /** Measured describes that returned 0 elements (describe verbs only;
    * invalidates the block on either arm). */
   emptyDescribes?: number;
+  /** Element count of each measured describe (describe verbs only; iOS-4 ticket 2,
+   * the merge's `treeSuspect` check). */
+  elementsSamples?: number[];
+  /** ON-siminput: the sim-input timing split of each measured tap / swipe
+   * (iOS-4 ticket 1). */
+  inputTimings?: SimInputSample[];
   extra?: Record<string, unknown>;
 }
 
@@ -900,6 +974,10 @@ interface Attempt {
   path: string;
   fallback?: boolean;
   empty?: boolean;
+  /** Elements the describe returned (describe verbs). */
+  elements?: number;
+  /** The sim-input timing split of the attempt's input (ON-siminput). */
+  input?: SimInputSample | null;
 }
 
 /** Generic timed verb loop with an optional untimed per-iteration setup. Counts a
@@ -925,6 +1003,8 @@ async function timeCalls(
   let fallbacks = 0;
   let emptyDescribes = 0;
   let emptyReported = false;
+  const elementsSamples: number[] = [];
+  const inputTimings: SimInputSample[] = [];
   for (let i = 0; i < N; i++) {
     if (setup) {
       const ok = await setup(i).catch(() => false);
@@ -945,6 +1025,8 @@ async function timeCalls(
           emptyReported = true;
           if (attempt.empty) emptyDescribes++;
         }
+        if (attempt.elements !== undefined) elementsSamples.push(attempt.elements);
+        if (attempt.input) inputTimings.push(attempt.input);
       }
     } catch (e) {
       errors++;
@@ -962,6 +1044,8 @@ async function timeCalls(
     errorSamples,
     ...(pathReported ? { servedBy, fallbacks } : {}),
     ...(emptyReported ? { emptyDescribes } : {}),
+    ...(elementsSamples.length ? { elementsSamples } : {}),
+    ...(inputTimings.length ? { inputTimings } : {}),
     extra: extra?.(),
   };
 }
@@ -992,6 +1076,7 @@ interface TapRecord {
   fallback: boolean; // the tool layer fell back from the open path during the tap
 }
 interface TapEffectResult extends VerbResult {
+  inputTimings: SimInputSample[];
   effectChecked: number;
   effectZero: number;
   firstTapNoEffect: number;
@@ -1028,6 +1113,7 @@ async function timeTapEffect(
   let locateFailed = 0;
   const records: TapRecord[] = [];
   const noEffectSamples: string[] = [];
+  const inputTimings: SimInputSample[] = [];
   let keptShots = 0;
 
   const runOne = async (record: boolean): Promise<void> => {
@@ -1039,6 +1125,7 @@ async function timeTapEffect(
     }
     await sleep(300); // untimed render settle
     const before = await simctlScreenshot("tap-before");
+    arm.takeInputTiming(); // clear; untimed
     const t0 = Date.now();
     let tapErr: unknown;
     let servedBy = "error";
@@ -1049,6 +1136,8 @@ async function timeTapEffect(
       tapErr = e;
     }
     const dt = Date.now() - t0;
+    const input = arm.takeInputTiming();
+    if (record && !tapErr && input) inputTimings.push(input);
     let maxRatio = 0;
     let maxPoll = -1;
     let pixelLanded = false;
@@ -1133,6 +1222,7 @@ async function timeTapEffect(
     medianTapCoord,
     records,
     noEffectSamples,
+    inputTimings,
   };
 }
 
@@ -1140,6 +1230,8 @@ interface SwipeRecord {
   from: NPoint;
   to: NPoint;
   region: { y1: number; y2: number };
+  /** The rows correlated: `region` clipped to the chrome-free band. */
+  opticalRegion: { y1: number; y2: number };
   dyPoints: number;
   dyPx: number;
   confidence: number;
@@ -1155,7 +1247,12 @@ interface ScrollResult {
   arm: string;
   unit: "screen-points";
   rasterScale: number | null;
+  /** Where the raster scale came from (iOS-4 ticket 2). */
+  rasterScaleSource: RasterScale["source"];
   offsetsPoints: number[];
+  /** The accepted offsets in framebuffer px (scale-free, comparable across arms). */
+  offsetsPx: number[];
+  medianPx: number;
   median: number;
   q1: number;
   q3: number;
@@ -1191,6 +1288,8 @@ async function timeSwipeOptical(
   let errors = 0;
   const errorSamples: string[] = [];
   const offsets: number[] = [];
+  const offsetsPx: number[] = [];
+  const inputTimings: SimInputSample[] = [];
   const records: SwipeRecord[] = [];
   const servedBy: string[] = [];
   let fallbacks = 0;
@@ -1224,6 +1323,7 @@ async function timeSwipeOptical(
     });
     const settleMs = Date.now() - s0;
     const before = settle.frame;
+    arm.takeInputTiming(); // clear; untimed
     const t0 = Date.now();
     let err: unknown;
     let path = "error";
@@ -1234,6 +1334,8 @@ async function timeSwipeOptical(
       err = e;
     }
     const dt = Date.now() - t0;
+    const input = arm.takeInputTiming();
+    if (record && !err && input) inputTimings.push(input);
     await sleep(500); // settle OUTSIDE the timed window before the optical read
     const after = await simctlScreenshot("swipe-after");
     let off: OpticalPoints = {
@@ -1241,6 +1343,7 @@ async function timeSwipeOptical(
       dyPx: NaN,
       confidence: 0,
       rasterScale: NaN,
+      opticalRegion: region,
       refused: true,
     };
     try {
@@ -1260,6 +1363,7 @@ async function timeSwipeOptical(
         from: { x: Number(from.x.toFixed(4)), y: Number(from.y.toFixed(4)) },
         to: { x: Number(to.x.toFixed(4)), y: Number(to.y.toFixed(4)) },
         region: { y1: Number(region.y1.toFixed(4)), y2: Number(region.y2.toFixed(4)) },
+        opticalRegion: off.opticalRegion,
         dyPoints: off.dyPoints,
         dyPx: off.dyPx,
         confidence: off.confidence,
@@ -1283,7 +1387,10 @@ async function timeSwipeOptical(
         lat.push(dt);
       }
       if (off.refused || !Number.isFinite(off.dyPoints)) refusals++;
-      else offsets.push(off.dyPoints);
+      else {
+        offsets.push(off.dyPoints);
+        offsetsPx.push(off.dyPx);
+      }
     }
   };
 
@@ -1300,12 +1407,16 @@ async function timeSwipeOptical(
       errorSamples,
       servedBy,
       fallbacks,
+      ...(inputTimings.length ? { inputTimings } : {}),
     },
     scroll: {
       arm: arm.name,
       unit: "screen-points",
       rasterScale,
+      rasterScaleSource: DEVICE_SCALE !== null ? "device-profile" : "runner-screen-height",
       offsetsPoints: offsets.slice(),
+      offsetsPx: offsetsPx.slice(),
+      medianPx: offsetsPx.length ? iqr(offsetsPx).median : NaN,
       median: offsets.length ? q.median : NaN,
       q1: offsets.length ? q.q1 : NaN,
       q3: offsets.length ? q.q3 : NaN,
@@ -1364,6 +1475,8 @@ interface BlockResult {
     note: string;
     targetApp: string;
     relaunches: number;
+    /** Relaunches after which the runner had lost its target (iOS-4 ticket 2). */
+    retargets: number;
   };
   effectCheckedTotal: number;
   firstTapNoEffectTotal: number;
@@ -1526,6 +1639,7 @@ async function runBlock(block: string): Promise<BlockResult> {
     ...selfTest,
     targetApp: SETTINGS,
     relaunches: 0, // filled at the end of the block
+    retargets: 0, // filled at the end of the block
   };
 
   const verbs: VerbResult[] = [];
@@ -1535,7 +1649,12 @@ async function runBlock(block: string): Promise<BlockResult> {
   verbs.push(
     await timeCalls("describe", async () => {
       const d = await arm.describe();
-      return { path: d.source, fallback: d.fallback, empty: d.elements === 0 };
+      return {
+        path: d.source,
+        fallback: d.fallback,
+        empty: d.elements === 0,
+        elements: d.elements,
+      };
     })
   );
 
@@ -1569,6 +1688,7 @@ async function runBlock(block: string): Promise<BlockResult> {
     effectZero: tapVerb.effectZero,
     servedBy: tapVerb.records.map((r) => r.servedBy),
     fallbacks: tapVerb.records.filter((r) => r.fallback).length,
+    ...(tapVerb.inputTimings.length ? { inputTimings: tapVerb.inputTimings } : {}),
     extra: {
       inputPath: arm.inputIsProductTool
         ? "gesture-tap tool (invokeTool)"
@@ -1587,9 +1707,11 @@ async function runBlock(block: string): Promise<BlockResult> {
       "tap+describe",
       async () => {
         const c = tapCoordForTd!;
+        arm.takeInputTiming(); // clear; outside the window's work
         const a0 = Date.now();
         const tap = await arm.tap(c);
         const a1 = Date.now();
+        const input = arm.takeInputTiming();
         const d = await arm.describe();
         const a2 = Date.now();
         tdSub.push({ tapMs: a1 - a0, describeMs: a2 - a1 });
@@ -1597,6 +1719,7 @@ async function runBlock(block: string): Promise<BlockResult> {
           path: `${tap.path}+${d.source}`,
           fallback: tap.fallback || d.fallback,
           empty: d.elements === 0,
+          input,
         };
       },
       async () => {
@@ -1702,6 +1825,7 @@ async function runBlock(block: string): Promise<BlockResult> {
   // Dispose first: a runner that terminated mid-block is counted on dispose.
   await arm.dispose().catch(() => undefined);
   oracle.relaunches = arm.oracleRelaunches();
+  oracle.retargets = arm.oracleRetargets();
   const conn = arm.connectionErrors();
 
   const result: BlockResult = {
@@ -1756,6 +1880,27 @@ async function xcodebuildVersion(): Promise<string> {
     return "unknown";
   }
 }
+/** The device type's framebuffer px per point (`mainScreenScale` in its
+ * CoreSimulator profile), or null when it cannot be read. */
+async function simctlDeviceScale(deviceTypeId: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync("xcrun", ["simctl", "list", "devicetypes", "-j"], {
+      timeout: 15_000,
+    });
+    const plist = deviceProfilePlist(JSON.parse(stdout), deviceTypeId);
+    if (!plist) return null;
+    const { stdout: raw } = await execFileAsync(
+      "plutil",
+      ["-extract", "mainScreenScale", "raw", "-o", "-", plist],
+      { timeout: 5_000 }
+    );
+    const v = Number(raw.trim());
+    return v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 async function simctlRuntime(): Promise<{ runtime: string; deviceType: string }> {
   try {
     const { stdout } = await execFileAsync("xcrun", ["simctl", "list", "devices", "-j"], {
@@ -1816,6 +1961,7 @@ async function main(): Promise<void> {
   NOTES.install(console);
 
   const { runtime, deviceType } = await simctlRuntime();
+  DEVICE_SCALE = await simctlDeviceScale(deviceType);
   const env = {
     startedAt: started,
     udid: UDID,
@@ -1830,6 +1976,7 @@ async function main(): Promise<void> {
     xcodebuild: await xcodebuildVersion(),
     runtime,
     deviceType,
+    deviceScreenScale: DEVICE_SCALE,
     macosVersion: os.release(),
   };
   console.log("[bench-ios] env:", JSON.stringify(env));
@@ -1858,7 +2005,8 @@ async function main(): Promise<void> {
         `simulatorServerReady=${r.proprietaryReady ? r.proprietaryReady.ready : "n/a"} ` +
         `describeTokens=${r.describe.tokens}@${r.describe.elements}el ` +
         `stageMaxDelta=${r.describeStages ? r.describeStages.maxDelta : "n/a"} ` +
-        `scrollMedianPts=${r.scroll ? r.scroll.median : "n/a"}(refusals=${r.scroll ? r.scroll.refusals : "n/a"}) ` +
+        `scrollMedianPts=${r.scroll ? r.scroll.median : "n/a"}(px=${r.scroll ? r.scroll.medianPx : "n/a"} scale=${r.scroll ? `${r.scroll.rasterScale}/${r.scroll.rasterScaleSource}` : "n/a"} refusals=${r.scroll ? r.scroll.refusals : "n/a"}) ` +
+        `oracleRetargets=${r.oracle.retargets} ` +
         `swipeSettle=${r.scroll ? `${r.scroll.settle.stable} stable/${r.scroll.settle.unstable} unstable p50=${r.scroll.settle.waitMsP50}ms` : "n/a"}`
     );
   }

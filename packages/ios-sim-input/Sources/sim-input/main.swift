@@ -9,15 +9,21 @@ import Foundation
 //
 // Command schemas (coords are POINTS in the simulator screen space,
 // not pixels — baguette's convention; no scaling applied here):
-//   {"id":<int>,"type":"tap","x":<f>,"y":<f>}
+//   {"id":<int>,"type":"tap","x":<f>,"y":<f>,"holdMs":<f>}   // holdMs optional, default 50
 //   {"id":<int>,"type":"swipe","fromX":<f>,"fromY":<f>,"toX":<f>,"toY":<f>,"durationMs":<int>}
 //   {"id":<int>,"type":"press","key":<int>}     // key = HID usage on page 7
 //   {"id":<int>,"type":"release","key":<int>}
 //   {"id":<int>,"type":"text","text":"..."}      // ASCII; decomposed via KeyboardKey
 //
 // Ack schemas:
-//   {"id":<int>,"ok":true}
-//   {"id":<int>,"ok":false,"error":"..."}
+//   {"id":<int>,"ok":true,"timing":{...}}
+//   {"id":<int>,"ok":false,"error":"...","timing":{...}}
+//
+// `timing` (iOS-4 ticket 1), monotonic ms on this process's clock:
+//   {"recvAt":<f>,"sends":[{"sendStart":<f>,"sendEnd":<f>},...],"ackAt":<f>}
+// recvAt = the line was read off stdin; one sends entry per HID message, in
+// order; ackAt = just before the ack is written. Only differences are
+// meaningful. The ack is still written after the last message (Up) is sent.
 //
 // Screen size is required for `tap`/`swipe`'s normalisation step
 // (IOHIDDigitizerDispatch expects 0..1 coords). The caller can supply
@@ -67,12 +73,21 @@ func writeAck(_ obj: [String: Any]) {
     }
 }
 
-func ackOk(_ id: Int) {
-    writeAck(["id": id, "ok": true])
+/// The ack's timing block: the line's receive time, the HID messages sent
+/// since (drained from `SendTimeline`), and the ack time.
+func timing(recvAt: Double) -> [String: Any] {
+    let sends: [[String: Double]] = SendTimeline.shared.drain().map {
+        ["sendStart": $0.start, "sendEnd": $0.end]
+    }
+    return ["recvAt": recvAt, "sends": sends, "ackAt": monotonicMs()]
 }
 
-func ackErr(_ id: Int, _ message: String) {
-    writeAck(["id": id, "ok": false, "error": message])
+func ackOk(_ id: Int, recvAt: Double) {
+    writeAck(["id": id, "ok": true, "timing": timing(recvAt: recvAt)])
+}
+
+func ackErr(_ id: Int, _ message: String, recvAt: Double) {
+    writeAck(["id": id, "ok": false, "error": message, "timing": timing(recvAt: recvAt)])
 }
 
 // MARK: - dispatch
@@ -94,23 +109,28 @@ func double(_ obj: [String: Any], _ key: String) -> Double? {
     return nil
 }
 
-func handle(_ obj: [String: Any]) {
+func handle(_ obj: [String: Any], recvAt: Double) {
+    SendTimeline.shared.reset()
     let id = (obj["id"] as? Int) ?? -1
     guard let type = obj["type"] as? String else {
-        ackErr(id, "missing type"); return
+        ackErr(id, "missing type", recvAt: recvAt); return
     }
     switch type {
     case "tap":
         guard let x = double(obj, "x"), let y = double(obj, "y") else {
-            ackErr(id, "tap: missing x/y"); return
+            ackErr(id, "tap: missing x/y", recvAt: recvAt); return
         }
-        let ok = input.tap(at: Point(x: x, y: y), size: sizeFrom(obj), duration: 0)
-        ok ? ackOk(id) : ackErr(id, "tap failed")
+        // `holdMs` (optional): Down→Up hold. Absent or ≤ 0 keeps the default
+        // 50 ms (`duration: 0`); IOHIDDigitizerDispatch floors it at 20 ms.
+        let holdMs = double(obj, "holdMs") ?? 0
+        let ok = input.tap(at: Point(x: x, y: y), size: sizeFrom(obj),
+                           duration: holdMs > 0 ? holdMs / 1000.0 : 0)
+        ok ? ackOk(id, recvAt: recvAt) : ackErr(id, "tap failed", recvAt: recvAt)
 
     case "swipe":
         guard let fx = double(obj, "fromX"), let fy = double(obj, "fromY"),
               let tx = double(obj, "toX"),   let ty = double(obj, "toY") else {
-            ackErr(id, "swipe: missing fromX/fromY/toX/toY"); return
+            ackErr(id, "swipe: missing fromX/fromY/toX/toY", recvAt: recvAt); return
         }
         let durationMs = (obj["durationMs"] as? Int) ?? Int(double(obj, "durationMs") ?? 250)
         let durationS = max(0.01, Double(durationMs) / 1000.0)
@@ -118,7 +138,7 @@ func handle(_ obj: [String: Any]) {
             from: Point(x: fx, y: fy), to: Point(x: tx, y: ty),
             size: sizeFrom(obj), duration: durationS
         )
-        ok ? ackOk(id) : ackErr(id, "swipe failed")
+        ok ? ackOk(id, recvAt: recvAt) : ackErr(id, "swipe failed", recvAt: recvAt)
 
     case "press", "release":
         // HID usage on page 7 (keyboard). Down/up are dispatched
@@ -127,7 +147,7 @@ func handle(_ obj: [String: Any]) {
         // here as discrete press/release so callers can stage
         // multi-key combos (e.g. shift held while typing).
         guard let usage = obj["key"] as? Int else {
-            ackErr(id, "\(type): missing key (HID usage)"); return
+            ackErr(id, "\(type): missing key (HID usage)", recvAt: recvAt); return
         }
         let key = KeyboardKey(hidUsage: HIDUsage(page: 7, usage: UInt32(usage)))
         // `IndigoHIDInput.key()` brackets down+up internally; for a
@@ -138,16 +158,16 @@ func handle(_ obj: [String: Any]) {
         // `press` re-bracket. This matches baguette's exposed surface.
         if type == "press" {
             let ok = input.key(key, modifiers: [], duration: 0)
-            ok ? ackOk(id) : ackErr(id, "press failed")
+            ok ? ackOk(id, recvAt: recvAt) : ackErr(id, "press failed", recvAt: recvAt)
         } else {
             // No-op: `key()` already releases. Ack so the wire
             // stays in lockstep with the caller.
-            ackOk(id)
+            ackOk(id, recvAt: recvAt)
         }
 
     case "text":
         guard let text = obj["text"] as? String else {
-            ackErr(id, "text: missing text"); return
+            ackErr(id, "text: missing text", recvAt: recvAt); return
         }
         var anyFail = false
         for c in text {
@@ -160,10 +180,10 @@ func handle(_ obj: [String: Any]) {
                 anyFail = true
             }
         }
-        anyFail ? ackErr(id, "text: one or more characters failed") : ackOk(id)
+        anyFail ? ackErr(id, "text: one or more characters failed", recvAt: recvAt) : ackOk(id, recvAt: recvAt)
 
     default:
-        ackErr(id, "unknown type: \(type)")
+        ackErr(id, "unknown type: \(type)", recvAt: recvAt)
     }
 }
 
@@ -182,13 +202,14 @@ while true {
         let lineData = buffer[..<nlIdx]
         buffer.removeSubrange(...nlIdx)
         if lineData.isEmpty { continue }
+        let recvAt = monotonicMs()
         do {
             let parsed = try JSONSerialization.jsonObject(with: lineData, options: [])
             guard let obj = parsed as? [String: Any] else {
                 logErr("ignoring non-object JSON line")
                 continue
             }
-            handle(obj)
+            handle(obj, recvAt: recvAt)
         } catch {
             logErr("JSON parse error: \(error)")
         }

@@ -55,6 +55,10 @@ interface StripOptions {
   minConfidence?: number;
   /** Columns sampled per row when collapsing to the 1-D strip (default 64). */
   colBins?: number;
+  /** Shortest overlap a shift is scored on, as a fraction of the ROI height
+   * (default 0.2, floor 8 rows). A scroll longer than (1 − this) of the ROI
+   * cannot be measured; the iOS bench lowers it (iOS-4 ticket 2). */
+  minOverlapFrac?: number;
 }
 
 const DEFAULTS: Required<StripOptions> = {
@@ -65,6 +69,7 @@ const DEFAULTS: Required<StripOptions> = {
   maxShiftFrac: 0.9,
   minConfidence: 0.6,
   colBins: 64,
+  minOverlapFrac: 0.2,
 };
 
 interface Decoded {
@@ -190,7 +195,7 @@ export function correlateStrips(
     };
   }
   const maxShift = Math.max(1, Math.floor(opt.maxShiftFrac * n));
-  const minOverlap = Math.max(8, Math.floor(0.2 * n));
+  const minOverlap = Math.max(8, Math.floor(opt.minOverlapFrac * n));
   let bestS = 0;
   let bestC = -Infinity;
   const cache = new Map<number, number>();

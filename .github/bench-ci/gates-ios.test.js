@@ -777,3 +777,161 @@ test("pre-repair blocks without the per-verb counters keep their verdict", () =>
   const m = mergedOf(r);
   assert.deepEqual(m.validity["ON-xcuitest"].perVerb, { emptyDescribes: {}, fallbacks: {} });
 });
+
+// ── iOS-4 ticket 2: tree-suspect describes (run 37572773799) ──────────────────
+// Both ON arms' describe read 3 elements / 551 bytes on the Settings root while
+// ax-service read 30. A timed describe with < 10 elements while the OTHER config's
+// median on the same screen is >= 20 is `treeSuspect`; more than 10 % suspect
+// samples make the block INVALID. Same rule both ways.
+function setElements(b, xs) {
+  b.block.verbs.find((v) => v.verb === "describe").elementsSamples = xs;
+}
+
+test("treeSuspect: ON describes of 3 elements vs OFF 30 make the ON blocks INVALID", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  setElements(blocks[0], samples(30));
+  setElements(blocks[3], samples(31));
+  setElements(blocks[1], samples(3));
+  setElements(blocks[2], samples(3));
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-xcuitest INVALID \(tree suspect: 20\/20 timed describe\(s\) < 10 elements while the OFF median on the same screen is 30\)/
+  );
+  assert.match(r.stderr, /VALIDITY: ON-siminput INVALID \(tree suspect: 20\/20/);
+  assert.doesNotMatch(r.stderr, /VALIDITY: OFF-/);
+  const m = mergedOf(r);
+  assert.deepEqual(m.validity["ON-xcuitest"].treeSuspect, {
+    suspect: 20,
+    n: 20,
+    samples: "timed",
+    other: "OFF",
+    reference: 30,
+    invalid: true,
+  });
+  assert.match(
+    rowOf(scoreboard(out), "### Block validity", "ON-siminput"),
+    /INVALID \(tree suspect: 20\/20/
+  );
+});
+
+test("treeSuspect: symmetric — an OFF describe of 3 while ON reads 54 makes the OFF block INVALID", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  setElements(blocks[1], samples(54));
+  setElements(blocks[2], samples(54));
+  setElements(blocks[3], samples(3));
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: OFF-2 INVALID \(tree suspect: 20\/20 timed describe\(s\) < 10 elements while the ON median on the same screen is 54\)/
+  );
+  assert.doesNotMatch(r.stderr, /VALIDITY: (OFF-1|ON-)/);
+});
+
+test("treeSuspect: 10 % suspect samples is tolerated, more is INVALID", () => {
+  const atTen = ALL();
+  setElements(atTen[2], [...samples(30).slice(0, 18), 3, 4]);
+  let out = freshOut();
+  writeBlocks(out, atTen);
+  let r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  assert.equal(mergedOf(r).validity["ON-siminput"].treeSuspect.suspect, 2);
+
+  const overTen = ALL();
+  setElements(overTen[2], [...samples(30).slice(0, 17), 3, 4, 5]);
+  out = freshOut();
+  writeBlocks(out, overTen);
+  r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /VALIDITY: ON-siminput INVALID \(tree suspect: 3\/20/);
+});
+
+test("treeSuspect: no flag when the other config's median is under 20 (a small screen on both)", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  for (const b of blocks) setElements(b, samples(b.block.config === "OFF" ? 12 : 5));
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+});
+
+test("treeSuspect: blocks without per-sample counts use the idle describe (run 37572773799 shape)", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  blocks[1].block.describe.elements = 3;
+  blocks[2].block.describe.elements = 3;
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.notEqual(r.code, 0);
+  assert.match(
+    r.stderr,
+    /VALIDITY: ON-xcuitest INVALID \(tree suspect: 1\/1 idle describe\(s\) < 10 elements while the OFF median on the same screen is 30\)/
+  );
+});
+
+// ── iOS-4 ticket 1: sim-input decomposition in the scoreboard ─────────────────
+function simSample(over = {}) {
+  return {
+    hostWriteToAck: 185,
+    recvToFirstSend: 0.4,
+    perMessageSendMs: [66, 68],
+    lastSendToAck: 0.3,
+    sidecarMs: 184.5,
+    gapsMs: 49.8,
+    hostPipeMs: 0.5,
+    ...over,
+  };
+}
+
+test("scoreboard: the ON-siminput decomposition table shows the p50 of each term per verb", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  const sim = blocks[2].block;
+  sim.verbs.find((v) => v.verb === "gesture-tap").inputTimings = [
+    simSample(),
+    simSample({ hostWriteToAck: 190, perMessageSendMs: [70, 72] }),
+    simSample({ hostWriteToAck: 180, perMessageSendMs: [60, 62] }),
+  ];
+  sim.verbs.find((v) => v.verb === "gesture-swipe").inputTimings = [
+    simSample({
+      hostWriteToAck: 1480,
+      perMessageSendMs: Array.from({ length: 12 }, () => 105),
+      gapsMs: 220,
+    }),
+  ];
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const sb = scoreboard(out);
+  assert.match(sb, /### sim-input decomposition \(ON-siminput, p50 ms\)/);
+  const heading = "### sim-input decomposition";
+  const section = sb.split(heading)[1];
+  const tapRow = section.split("\n").find((l) => l.startsWith("| ON-siminput | gesture-tap |"));
+  assert.ok(tapRow, section);
+  // n | host write→ack | recv→first send | per-message send | messages | Σ send | gaps | last send→ack | sidecar | host+pipe
+  assert.match(
+    tapRow,
+    /\| 3 \| 185\.0 \| 0\.4 \| 66\.0 \| 2 \| 134\.0 \| 49\.8 \| 0\.3 \| 184\.5 \| 0\.5 \|/
+  );
+  const swipeRow = section.split("\n").find((l) => l.startsWith("| ON-siminput | gesture-swipe |"));
+  assert.match(swipeRow, /\| 1 \| 1480\.0 \| 0\.4 \| 105\.0 \| 12 \| 1260\.0 \| 220\.0 \|/);
+  // No ON-siminput timings → no table rows for the other blocks.
+  assert.doesNotMatch(section.split("\n###")[0], /\| OFF-1 \|/);
+});
+
+test("scoreboard: no sim-input timings recorded → the decomposition section says so", () => {
+  const out = freshOut();
+  writeBlocks(out, ALL());
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  assert.match(
+    scoreboard(out),
+    /### sim-input decomposition[^\n]*\n\n_No sim-input timings recorded/
+  );
+});

@@ -15,7 +15,12 @@
 //     arm: the same standard for both (run 37223296646 OFF-1 read an empty
 //     ax-service tree);
 //   - the tool layer fell back from the open path inside a timed verb
-//     (`fallbacks` per verb), on an ON block.
+//     (`fallbacks` per verb), on an ON block;
+//   - its describe tree is suspect (iOS-4 ticket 2, run 37572773799: both ON arms
+//     read 3 elements on the Settings root while ax-service read 30): more than
+//     10 % of its timed describes returned < 10 elements while the OTHER config's
+//     median on the same screen is >= 20. Same rule both ways. Blocks written
+//     before `elementsSamples` existed are judged on their idle describe.
 // INVALID blocks' numbers are not rendered and do not enter G2/G4/fidelity.
 
 // Serving-path tokens a sample records (`servedBy`): the tree source for describe,
@@ -34,6 +39,11 @@ const INPUT_OF = {
 };
 // The verbs whose samples go through a describe or gesture path.
 const PATH_VERBS = ["describe", "gesture-tap", "tap+describe", "gesture-swipe"];
+
+// treeSuspect thresholds (iOS-4 ticket 2).
+const TREE_SUSPECT_BELOW = 10;
+const TREE_REFERENCE_MIN = 20;
+const TREE_SUSPECT_MAX_FRACTION = 0.1;
 
 const tokensOf = (entry) =>
   String(entry)
@@ -121,8 +131,57 @@ function observedPaths(b) {
   return { tree: labelOf(tree), input: labelOf(input) };
 }
 
-/** The validity verdict of one block (the `.block` object of a block file). */
-function blockValidity(b) {
+/** Element counts of a block's timed describes on the root screen (`timed`);
+ * the idle describe for blocks written before `elementsSamples` existed (`idle`). */
+function describeElements(b) {
+  const v = (b.verbs || []).find((x) => x.verb === "describe" && !(x.extra && x.extra.na));
+  if (v && Array.isArray(v.elementsSamples) && v.elementsSamples.length) {
+    return { kind: "timed", xs: v.elementsSamples.map(Number).filter(Number.isFinite) };
+  }
+  const idle = b.describe ? Number(b.describe.elements) : NaN;
+  return { kind: "idle", xs: Number.isFinite(idle) ? [idle] : [] };
+}
+
+/** Lower median (the merge's p50), null when empty. */
+function median(xs) {
+  if (xs.length === 0) return null;
+  const s = xs.slice().sort((a, b) => a - b);
+  return s[Math.max(0, Math.ceil(0.5 * s.length) - 1)];
+}
+
+/** Pooled median describe element count per config over `blocks` (the `.block`
+ * objects): the reference each block's describes are judged against. */
+function treeReferences(blocks) {
+  const pool = { OFF: [], ON: [] };
+  for (const b of blocks) {
+    if (b && pool[b.config]) pool[b.config].push(...describeElements(b).xs);
+  }
+  return { OFF: median(pool.OFF), ON: median(pool.ON) };
+}
+
+/** The treeSuspect record of one block against the other config's reference, or
+ * null when there is no reference to judge by. */
+function treeSuspectOf(b, refs) {
+  const other = b.config === "ON" ? "OFF" : b.config === "OFF" ? "ON" : null;
+  if (!refs || !other) return null;
+  const reference = refs[other];
+  const { kind, xs } = describeElements(b);
+  if (reference === null || reference === undefined || xs.length === 0) return null;
+  const suspect =
+    reference >= TREE_REFERENCE_MIN ? xs.filter((e) => e < TREE_SUSPECT_BELOW).length : 0;
+  return {
+    suspect,
+    n: xs.length,
+    samples: kind,
+    other,
+    reference,
+    invalid: suspect / xs.length > TREE_SUSPECT_MAX_FRACTION,
+  };
+}
+
+/** The validity verdict of one block (the `.block` object of a block file).
+ * `refs` ({@link treeReferences} over all the run's blocks) enables treeSuspect. */
+function blockValidity(b, refs) {
   const reasons = [];
   const entries = servedByEntries(b);
   const total = entries.length;
@@ -161,6 +220,13 @@ function blockValidity(b) {
   if (b.config === "ON" && Object.keys(perVerb.fallbacks).length > 0) {
     reasons.push(`fallback inside timed verbs: ${perVerbText(perVerb.fallbacks)}`);
   }
+  const treeSuspect = treeSuspectOf(b, refs);
+  if (treeSuspect && treeSuspect.invalid) {
+    reasons.push(
+      `tree suspect: ${treeSuspect.suspect}/${treeSuspect.n} ${treeSuspect.samples} describe(s) < ${TREE_SUSPECT_BELOW} elements ` +
+        `while the ${treeSuspect.other} median on the same screen is ${treeSuspect.reference}`
+    );
+  }
   const observed = observedPaths(b);
   return {
     valid: reasons.length === 0,
@@ -172,6 +238,7 @@ function blockValidity(b) {
     connectionErrors: ce.count,
     firstConnectionError: ce.first,
     perVerb,
+    treeSuspect,
   };
 }
 
@@ -180,4 +247,10 @@ function validityLabel(v) {
   return v.valid ? "valid" : `INVALID (${v.reasons.join("; ")})`;
 }
 
-module.exports = { blockValidity, connectionErrorsOf, perVerbText, validityLabel };
+module.exports = {
+  blockValidity,
+  connectionErrorsOf,
+  perVerbText,
+  treeReferences,
+  validityLabel,
+};
