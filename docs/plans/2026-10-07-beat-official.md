@@ -195,6 +195,14 @@ driver-attributable. Update memory.
 - 2026-10-07, `settle-on-action`: the key tool is `button`; the reply carries
   `settled` (`quiet`|`timeout`|`no-event`) instead of `timedOut`.
 
+- 2026-10-08, `bench-final-scoreboard`: two acceptance checks were not run
+  in this plan and are deferred to step `measure-deferred` of
+  `docs/plans/2026-10-08-close-gaps.md`: `tap(settle)+describe` correct at first
+  read ≥ 90 % (settle on the action merged after the final ABBA run 37694540212)
+  and the screen-graph churn targets of `swipe-scroll-accessibility` (template
+  search p50 ≤ 4 s, swipes with a gap ≤ 5 %). The scoreboard states both as not
+  measured.
+
 ## Rules that hold
 
 Fable plans, Opus implements (one implementor per step, ≤2 agents on the
