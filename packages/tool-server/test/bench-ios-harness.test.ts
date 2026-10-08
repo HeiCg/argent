@@ -26,6 +26,7 @@ import {
   navigationTitles,
   openToolTapPoint,
   proprietaryTapPoint,
+  resetRunnerHost,
   retryLocateOnce,
   screenOf,
   simInputTapPoint,
@@ -296,6 +297,37 @@ describe("one runner per simulator: the oracle reads the tool layer's runner", (
     watch.dispose();
   });
 
+  it("run 37840591012: a start that misses its budget is retried ONCE inside the lease; the retried start is not a restart", async () => {
+    vi.stubEnv("ARGENT_IOS_RUNNER_READY_TIMEOUT_MS", "300");
+    h.silentLaunches = 1;
+    const watch = watchRunnerLifecycle(reg, UDID, { trigger: () => "prepare" });
+    const resets: string[] = [];
+    const lease = new RunnerLease(() => toolLayerRunner(reg, UDID), {
+      attempts: 2,
+      beforeRetry: async (err) => {
+        resets.push(err.message);
+      },
+    });
+
+    await expect(lease.ensure()).resolves.toBeDefined();
+    expect(h.launches).toHaveLength(2);
+    expect(resets).toHaveLength(1);
+    expect(resets[0]).toMatch(/did not become ready within 300ms/);
+    expect(lease.startAttempts()).toBe(2);
+    expect(lease.retriedStarts()).toBe(1);
+    expect(lease.startFailure()).toBeNull();
+    // The block's one runner after an untimed retry: no restart.
+    expect(watch.starts()).toBe(2);
+    expect(watch.restartCause(lease.retriedStarts())).toBeNull();
+    // Without the lease's count the same history still reads as a restart.
+    expect(watch.restartCause()).toMatch(/2 starts in the block/);
+
+    // A further start mid-block is still a restart, retry or not.
+    await reg.dispose();
+    expect(watch.restartCause(lease.retriedStarts())).toMatch(/terminations=RUNNING→TERMINATING/);
+    watch.dispose();
+  });
+
   it("ARGENT_IOS_RUNNER_LOG_DIR sends the runner's xcodebuild output to a file", async () => {
     const logDir = path.join(tmp, "runner-logs");
     vi.stubEnv("ARGENT_IOS_RUNNER_LOG_DIR", logDir);
@@ -337,6 +369,168 @@ describe("single ensure path (RunnerLease)", () => {
     expect(await lease.ensure()).toBe(a);
     expect(starts).toBe(1);
     expect(lease.startFailure()).toBeNull();
+    expect(lease.startAttempts()).toBe(1);
+    expect(lease.retriedStarts()).toBe(0);
+  });
+
+  it("default (attempts 1): a failed start is not retried", async () => {
+    let starts = 0;
+    const lease = new RunnerLease(async () => {
+      starts++;
+      throw new Error("not ready");
+    });
+    await expect(lease.ensure()).rejects.toThrow("not ready");
+    expect(starts).toBe(1);
+    expect(lease.startAttempts()).toBe(1);
+    expect(lease.startMs()).toBeNull();
+  });
+
+  it("attempts 2: reset between attempts, startMs spans both attempts and the reset", async () => {
+    let now = 1_000;
+    const order: string[] = [];
+    let starts = 0;
+    const lease = new RunnerLease(
+      async () => {
+        starts++;
+        order.push(`start#${starts}`);
+        now += 300_000;
+        if (starts === 1) throw new Error("did not become ready within 600000ms");
+        return { id: starts };
+      },
+      {
+        attempts: 2,
+        clock: () => now,
+        beforeRetry: async (err, failed) => {
+          order.push(`reset after #${failed}: ${err.message}`);
+          now += 20_000;
+        },
+      }
+    );
+    expect(await lease.ensure()).toEqual({ id: 2 });
+    expect(order).toEqual([
+      "start#1",
+      "reset after #1: did not become ready within 600000ms",
+      "start#2",
+    ]);
+    expect(lease.startAttempts()).toBe(2);
+    expect(lease.retriedStarts()).toBe(1);
+    expect(lease.startMs()).toBe(620_000);
+    // Later callers share the running start.
+    expect(await lease.ensure()).toEqual({ id: 2 });
+    expect(starts).toBe(2);
+  });
+
+  it("attempts 2, both fail: sticky failure with the last error, no third start", async () => {
+    let starts = 0;
+    let resets = 0;
+    const lease = new RunnerLease(
+      async () => {
+        starts++;
+        throw new Error(`fail #${starts}`);
+      },
+      {
+        attempts: 2,
+        beforeRetry: async () => {
+          resets++;
+        },
+      }
+    );
+    await expect(lease.ensure()).rejects.toThrow("fail #2");
+    await expect(lease.ensure()).rejects.toThrow("fail #2");
+    expect(starts).toBe(2);
+    expect(resets).toBe(1);
+    expect(lease.startAttempts()).toBe(2);
+    expect(lease.startFailure()).toBe("fail #2");
+    expect(lease.startMs()).toBeNull();
+  });
+
+  it("a reset that throws does not cancel the retry", async () => {
+    let starts = 0;
+    const lease = new RunnerLease(
+      async () => {
+        starts++;
+        if (starts === 1) throw new Error("first");
+        return "ok";
+      },
+      {
+        attempts: 2,
+        beforeRetry: async () => {
+          throw new Error("bootstatus timed out");
+        },
+      }
+    );
+    expect(await lease.ensure()).toBe("ok");
+    expect(starts).toBe(2);
+  });
+});
+
+describe("resetRunnerHost (between a failed runner start and its retry)", () => {
+  type Call = { cmd: string; args: string[]; timeoutMs: number };
+
+  /** A fake host: `alive[pattern]` = how many `pgrep` polls still see it. */
+  function fakeHost(alive: Record<string, number>) {
+    const calls: Call[] = [];
+    let now = 0;
+    const exec = async (cmd: string, args: string[], timeoutMs: number) => {
+      calls.push({ cmd, args, timeoutMs });
+      if (cmd === "pgrep") {
+        const pattern = args[args.length - 1]!;
+        const left = alive[pattern] ?? 0;
+        if (left > 0) {
+          alive[pattern] = left - 1;
+          return { code: 0, stdout: `123 ${pattern}\n` };
+        }
+        return { code: 1, stdout: "" };
+      }
+      if (cmd === "pkill" && args[0] === "-9") {
+        alive[args[args.length - 1]!] = 0;
+      }
+      return { code: 0, stdout: "" };
+    };
+    const sleep = async (ms: number) => {
+      now += ms;
+    };
+    return { calls, exec, sleep, now: () => now };
+  }
+
+  it("TERM, poll until gone, bootstatus -b with a 120 s timeout; no -9 when the processes exit", async () => {
+    const xcb = `xcodebuild test-without-building.*${UDID}`;
+    const host = fakeHost({ [xcb]: 3 });
+    const steps = await resetRunnerHost(UDID, host);
+
+    const pkills = host.calls.filter((c) => c.cmd === "pkill");
+    expect(pkills.map((c) => c.args)).toEqual([
+      ["-f", xcb],
+      ["-f", "ArgentRunnerUITests-Runner"],
+      ["-f", "CoreSimulator.*testmanagerd"],
+    ]);
+    const boot = host.calls.find((c) => c.cmd === "xcrun")!;
+    expect(boot.args).toEqual(["simctl", "bootstatus", UDID, "-b"]);
+    expect(boot.timeoutMs).toBe(120_000);
+    // The bootstatus runs last.
+    expect(host.calls[host.calls.length - 1]).toBe(boot);
+    expect(steps.map((s) => s.step)).toEqual(["term", "gone", "bootstatus"]);
+    expect(steps.every((s) => /^\d{4}-\d\d-\d\dT/.test(s.at))).toBe(true);
+    expect(steps[1]!.detail).toMatch(/after 6000 ms/);
+  });
+
+  it("a process that outlives 60 s of 2 s polls gets pkill -9, then bootstatus", async () => {
+    const host = fakeHost({ "ArgentRunnerUITests-Runner": 1000 });
+    const steps = await resetRunnerHost(UDID, host);
+    const nines = host.calls.filter((c) => c.cmd === "pkill" && c.args[0] === "-9");
+    expect(nines.map((c) => c.args)).toEqual([["-9", "-f", "ArgentRunnerUITests-Runner"]]);
+    expect(host.now()).toBeGreaterThanOrEqual(60_000);
+    expect(host.now()).toBeLessThan(64_000);
+    expect(steps.map((s) => s.step)).toEqual(["term", "kill-9", "bootstatus"]);
+    expect(steps[1]!.detail).toMatch(/ArgentRunnerUITests-Runner/);
+  });
+
+  it("records a bootstatus failure instead of throwing", async () => {
+    const host = fakeHost({});
+    const exec = async (cmd: string, args: string[], timeoutMs: number) =>
+      cmd === "xcrun" ? { code: -1, stdout: "" } : host.exec(cmd, args, timeoutMs);
+    const steps = await resetRunnerHost(UDID, { ...host, exec });
+    expect(steps[steps.length - 1]).toMatchObject({ step: "bootstatus", detail: "exit -1" });
   });
 });
 

@@ -975,3 +975,38 @@ test("ticket 6: the scoreboard names the sim-input product path of ON-siminput",
   assert.match(sb, /\| ON-siminput \| gesture-tap tool \(sim-input\) \|/);
   assert.match(sb, /\| ON-xcuitest \| gesture-tap tool \|/);
 });
+
+// ── Runner start (run 37840591012) ─────────────────────────────────────────────
+// ON-siminput's first runner start missed the 300 s ready budget by ~2 s. The
+// bench now retries the start once, untimed, and records how many attempts it
+// took and how long until the runner answered; the validity table shows both.
+test("runner start: attempts and ms render in the validity table; a retried start stays valid", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  blocks[0].block.runnerStartAttempts = 1;
+  blocks[0].block.runnerStartMs = 117000;
+  blocks[2].block.runnerStartAttempts = 2;
+  blocks[2].block.runnerStartMs = 412345;
+  writeBlocks(out, blocks);
+  const r = run(out);
+  assert.equal(r.code, 0, r.stderr || r.stdout);
+  const sb = scoreboard(out);
+  assert.match(sb, /\| connection errors \| runner start \(attempts \/ s\) \|/);
+  assert.match(rowOf(sb, "### Block validity", "OFF-1"), /\| 0 \| 1 \/ 117\.0 s \| 0 \| 0 \| valid \|/);
+  assert.match(
+    rowOf(sb, "### Block validity", "ON-siminput"),
+    /\| 0 \| 2 \/ 412\.3 s \| 0 \| 0 \| valid \|/
+  );
+  // Blocks written before the field existed render a dash.
+  assert.match(rowOf(sb, "### Block validity", "OFF-2"), /\| 0 \| — \| 0 \| 0 \| valid \|/);
+});
+
+test("runner start: a start that never came up renders its attempts and no time", () => {
+  const out = freshOut();
+  const blocks = ALL();
+  blocks[1].block.runnerStartAttempts = 2;
+  blocks[1].block.runnerStartMs = null;
+  writeBlocks(out, blocks);
+  run(out);
+  assert.match(rowOf(scoreboard(out), "### Block validity", "ON-xcuitest"), /\| 2 \/ failed \|/);
+});
