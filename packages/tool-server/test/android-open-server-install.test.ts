@@ -87,6 +87,25 @@ describe("ensureOpenDeviceServerInstalled", () => {
     ]);
   });
 
+  it("resolves the probed versionCode when the device is already current", async () => {
+    adbShell.mockResolvedValue("package:com.argent.devicecontrol versionCode:5\n");
+    expect(await ensureOpenDeviceServerInstalled(SERIAL)).toBe(5);
+  });
+
+  it("resolves the bundled versionCode after an install", async () => {
+    adbShell.mockResolvedValue("package:com.argent.devicecontrol versionCode:1\n");
+    runAdb.mockResolvedValue({ stdout: "Success", stderr: "" });
+    expect(await ensureOpenDeviceServerInstalled(SERIAL)).toBe(3);
+  });
+
+  it("a memoized call resolves the same versionCode without probing again", async () => {
+    adbShell.mockResolvedValue("package:com.argent.devicecontrol versionCode:5\n");
+    await ensureOpenDeviceServerInstalled(SERIAL);
+    adbShell.mockClear();
+    expect(await ensureOpenDeviceServerInstalled(SERIAL)).toBe(5);
+    expect(adbShell).not.toHaveBeenCalled();
+  });
+
   it("caches a successful install so a second call is a no-op", async () => {
     adbShell.mockResolvedValue("");
     runAdb.mockResolvedValue({ stdout: "Success", stderr: "" });

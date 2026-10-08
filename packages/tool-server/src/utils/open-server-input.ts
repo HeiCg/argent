@@ -1219,9 +1219,11 @@ const SEQ_BASE_BUDGET_MS = 15_000;
  */
 export function buildSequenceActions(
   steps: SequenceStep[],
-  size: { width: number; height: number },
+  size: { width: number; height: number } | null,
   resolveTarget: (target: IndexTarget) => { x: number; y: number }
 ): { actions: OpenServerBatchAction[]; budgetMs: number } {
+  // Scaffold: `null` (server converts normalized points) not handled yet.
+  size = size ?? { width: 0, height: 0 };
   // A2-M5: every index target resolves against the ONE pre-burst snapshot, so a
   // second index target (after an earlier step navigated) would tap stale
   // coordinates. Allow at most ONE index target per burst; refuse the rest before

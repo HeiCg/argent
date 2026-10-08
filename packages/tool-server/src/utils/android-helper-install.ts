@@ -151,8 +151,12 @@ async function ensureHelperInstalled(spec: HelperInstallSpec): Promise<void> {
   installedHelpers.set(key, true);
 }
 
-/** Install the open-source android-device-server APK. */
-export async function ensureOpenDeviceServerInstalled(serial: string): Promise<void> {
+/**
+ * Install the open-source android-device-server APK. Resolves to the versionCode
+ * now on the device (the probed one when it was already current, the bundled one
+ * after an install), so the blueprint knows which RPC features the server has.
+ */
+export async function ensureOpenDeviceServerInstalled(serial: string): Promise<number | undefined> {
   const manifest = serverManifest();
   await ensureHelperInstalled({
     serial,
@@ -161,6 +165,7 @@ export async function ensureOpenDeviceServerInstalled(serial: string): Promise<v
     installFlags: manifest.installFlags,
     apkPath: bundledServerApkPath(),
   });
+  return undefined; // scaffold: the installed versionCode is not reported yet
 }
 
 /**

@@ -18,6 +18,24 @@ describe("serverManifest", () => {
     expect(m.installFlags).toContain("-t");
   });
 
+  it("matches the versionCode and versionName in build.gradle.kts", () => {
+    // The install gate compares the manifest's versionCode, the APK carries
+    // Gradle's: a drift installs an APK whose version the host misreads.
+    const gradle = fs.readFileSync(path.join(__dirname, "..", "build.gradle.kts"), "utf-8");
+    const code = /versionCode\s*=\s*(\d+)/.exec(gradle)?.[1];
+    const name = /versionName\s*=\s*"([^"]+)"/.exec(gradle)?.[1];
+    const m = serverManifest();
+    expect(Number(code)).toBe(m.versionCode);
+    expect(name).toBe(m.versionName);
+  });
+
+  it("is at least versionCode 31, the first with on-device normalized input", () => {
+    // tool-server's NORMALIZED_INPUT_MIN_VERSION_CODE (android-open-server blueprint)
+    // sends nx/ny only to a server at 31+; a bundled APK below it would keep every
+    // gesture on the getScreenSize + host-pixel path.
+    expect(serverManifest().versionCode).toBeGreaterThanOrEqual(31);
+  });
+
   it("caches the manifest across calls (same object)", () => {
     expect(serverManifest()).toBe(serverManifest());
   });

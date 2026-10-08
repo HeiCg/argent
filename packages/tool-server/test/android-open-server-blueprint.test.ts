@@ -14,7 +14,7 @@ vi.mock("../src/utils/android-binary", () => ({
   resolveAndroidBinary: async () => "/usr/bin/adb",
 }));
 
-const ensureOpenDeviceServerInstalled = vi.fn(async () => {});
+const ensureOpenDeviceServerInstalled = vi.fn(async (): Promise<number | undefined> => undefined);
 vi.mock("../src/utils/android-helper-install", () => ({
   ensureOpenDeviceServerInstalled: () => ensureOpenDeviceServerInstalled(),
 }));
@@ -630,6 +630,162 @@ describe("androidOpenServerBlueprint tap timing", () => {
     expect(res).toEqual({ success: true });
     const tapReq = seen.find((r) => r.method === "tap")!;
     expect("timing" in tapReq.params).toBe(false);
+
+    await instance.dispose!();
+  });
+});
+
+// APK versionCode 31: the host sends 0–1 points and the device converts them, so a
+// gesture no longer pays a `getScreenSize` RPC first. The wire keys differ from the
+// pixel ones on purpose: an older server reads `x`/`y` with `getInt` and rejects a
+// request without them instead of tapping at a wrong pixel.
+describe("androidOpenServerBlueprint normalized input", () => {
+  async function startRecordingServer(
+    seen: Array<{ method: string; params: Record<string, unknown> }>
+  ): Promise<void> {
+    await startFakeDeviceServer((line, s) => {
+      const req = JSON.parse(line) as {
+        id: number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      seen.push({ method: req.method, params: req.params ?? {} });
+      const result =
+        req.method === "getState"
+          ? { tree: [], info: {}, waitedMs: 0, captureMs: 0 }
+          : req.method === "ping"
+            ? { status: "ok" }
+            : { success: true };
+      s.write(JSON.stringify({ id: req.id, result }) + "\n");
+    });
+    wireSpawnAndForward();
+  }
+
+  const start = async () =>
+    (await androidOpenServerBlueprint.factory(
+      {} as never,
+      undefined as never,
+      { device: DEVICE } as never
+    )) as { api: OpenDeviceServerApi; dispose?: () => Promise<void> };
+
+  it("exposes the versionCode the install gate reports", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(seen);
+    ensureOpenDeviceServerInstalled.mockResolvedValueOnce(31);
+    const instance = await start();
+    expect(instance.api.installedVersionCode).toBe(31);
+    await instance.dispose!();
+  });
+
+  it("leaves the versionCode absent when the install gate reports none", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(seen);
+    const instance = await start();
+    expect(instance.api.installedVersionCode).toBeUndefined();
+    await instance.dispose!();
+  });
+
+  it("tap / tapWithOutcome with normalized:true send nx/ny and no x/y", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(seen);
+    const instance = await start();
+    seen.length = 0;
+
+    await instance.api.tap(0.25, 0.75, { normalized: true, holdMs: 50, timing: true });
+    await instance.api.tapWithOutcome(0.5, 0.125, { normalized: true, clickCount: 2 });
+    const taps = seen.filter((r) => r.method === "tap");
+    expect(taps).toHaveLength(2);
+    expect(taps[0]!.params).toMatchObject({ nx: 0.25, ny: 0.75, holdMs: 50, timing: true });
+    expect(taps[1]!.params).toMatchObject({ nx: 0.5, ny: 0.125, clickCount: 2 });
+    for (const t of taps) {
+      expect("x" in t.params || "y" in t.params || "normalized" in t.params).toBe(false);
+    }
+
+    await instance.dispose!();
+  });
+
+  it("swipe / swipeWithOutcome with normalized:true send nStartX..nEndY", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(seen);
+    const instance = await start();
+    seen.length = 0;
+
+    await instance.api.swipe(0.5, 0.7, 0.5, 0.2, 10, 120, { normalized: true });
+    await instance.api.swipeWithOutcome(0.1, 0.2, 0.3, 0.4, 5, undefined, { normalized: true });
+    const swipes = seen.filter((r) => r.method === "swipe");
+    expect(swipes[0]!.params).toEqual({
+      nStartX: 0.5,
+      nStartY: 0.7,
+      nEndX: 0.5,
+      nEndY: 0.2,
+      steps: 10,
+      holdEndMs: 120,
+    });
+    expect(swipes[1]!.params).toMatchObject({
+      nStartX: 0.1,
+      nStartY: 0.2,
+      nEndX: 0.3,
+      nEndY: 0.4,
+      steps: 5,
+    });
+    expect("startX" in swipes[1]!.params).toBe(false);
+
+    await instance.dispose!();
+  });
+
+  it("gesture with normalized:true sends nx/ny per point", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(seen);
+    const instance = await start();
+    seen.length = 0;
+
+    await instance.api.gesture(
+      [
+        {
+          id: 1,
+          points: [
+            { x: 0.4, y: 0.5, tMs: 0 },
+            { x: 0.2, y: 0.5, tMs: 300 },
+          ],
+        },
+      ],
+      { normalized: true }
+    );
+    const g = seen.find((r) => r.method === "gesture")!;
+    expect(g.params).toEqual({
+      pointers: [
+        {
+          id: 1,
+          points: [
+            { nx: 0.4, ny: 0.5, tMs: 0 },
+            { nx: 0.2, ny: 0.5, tMs: 300 },
+          ],
+        },
+      ],
+    });
+
+    await instance.dispose!();
+  });
+
+  it("without normalized the wire keeps the pixel keys", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await startRecordingServer(seen);
+    const instance = await start();
+    seen.length = 0;
+
+    await instance.api.tap(10, 20);
+    await instance.api.swipe(1, 2, 3, 4, 5);
+    await instance.api.gesture([{ points: [{ x: 7, y: 8, tMs: 0 }] }]);
+    expect(seen.find((r) => r.method === "tap")!.params).toMatchObject({ x: 10, y: 20 });
+    expect(seen.find((r) => r.method === "swipe")!.params).toMatchObject({
+      startX: 1,
+      startY: 2,
+      endX: 3,
+      endY: 4,
+    });
+    expect(seen.find((r) => r.method === "gesture")!.params).toEqual({
+      pointers: [{ points: [{ x: 7, y: 8, tMs: 0 }] }],
+    });
 
     await instance.dispose!();
   });

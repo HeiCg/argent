@@ -294,8 +294,26 @@ export interface OpenServerStateResult {
 export interface GesturePointerPath {
   /** Stable pointer id; defaults to the array index server-side. */
   id?: number;
-  /** Device-pixel samples; `tMs` is the offset from gesture start. */
+  /**
+   * Device-pixel samples, or 0–1 normalized ones when the call passes
+   * `normalized: true`; `tMs` is the offset from gesture start.
+   */
   points: Array<{ x: number; y: number; tMs: number }>;
+}
+
+/**
+ * First server versionCode that converts normalized gesture coordinates on the
+ * device (`nx/ny` on tap and long-press, `nStartX/nStartY/nEndX/nEndY` on swipe,
+ * `nx/ny` per gesture point), against its live display metrics and rotation. From
+ * here the host sends the 0–1 point as is and skips the `getScreenSize` RPC it
+ * made before every gesture. An older server rejects the `n*` keys (it reads
+ * `x`/`y` with `getInt`), so the host only sends them to a server at this version.
+ */
+export const NORMALIZED_INPUT_MIN_VERSION_CODE = 31;
+
+/** Whether `server` converts normalized gesture coordinates on the device. */
+export function supportsNormalizedInput(server: Pick<OpenDeviceServerApi, "installedVersionCode">) {
+  return (server.installedVersionCode ?? 0) >= NORMALIZED_INPUT_MIN_VERSION_CODE;
 }
 
 /**
@@ -416,10 +434,19 @@ export interface OpenServerBatchStepResult {
 
 /**
  * The method surface of the open-source on-device server. Coordinates for
- * tap/longPress/swipe are device PIXELS (the server drives UiAutomator directly);
- * callers holding normalized 0–1 points convert against [getInfo].
+ * tap/longPress/swipe/gesture are device PIXELS by default. From versionCode
+ * {@link NORMALIZED_INPUT_MIN_VERSION_CODE} the tap/swipe/gesture calls also take
+ * 0–1 normalized points (`normalized: true`), converted on the device; against an
+ * older server, callers holding normalized points convert against
+ * [getScreenSize].
  */
 export interface OpenDeviceServerApi {
+  /**
+   * versionCode of the server APK on the device, from the install gate (the probe
+   * when it was current, the bundled manifest after an install). Absent when not
+   * known; the host then treats the server as one without normalized input.
+   */
+  readonly installedVersionCode?: number;
   isReady(): boolean;
   ping(): Promise<{ status: string }>;
   getInfo(): Promise<OpenServerInfo>;
@@ -559,6 +586,11 @@ export interface OpenDeviceServerApi {
        * OpenTapStages}). Off by default, and the `timing` key is then not sent.
        */
       timing?: boolean;
+      /**
+       * The point is 0–1 normalized; the server converts it with its live display
+       * metrics and rotation (versionCode {@link NORMALIZED_INPUT_MIN_VERSION_CODE}+).
+       */
+      normalized?: boolean;
     }
     // `dropped:true` (phase 3g) when the on-device dispatcher rejected an injected
     // event (no injectable window mid-transition, secure surface, contended input
@@ -587,7 +619,13 @@ export interface OpenDeviceServerApi {
     // seam extended to swipe: it forces the input-manager pipe to report
     // `strategy:"unavailable"` and fall back to `uia-async`, so the fallback is
     // exercised on swipe (not tap only) on a device where the API resolves.
-    opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
+    // `normalized` (versionCode 31+): the four coordinates are 0–1 and the server
+    // converts them with its live display metrics and rotation.
+    opts?: {
+      inject?: OpenInjectStrategy;
+      _forceInjectUnavailable?: boolean;
+      normalized?: boolean;
+    }
   ): Promise<{ success: boolean } & OpenInjectReport & OpenSwipeTiming>;
   /**
    * Scroll a container by accessibility action instead of a touch swipe (APK
@@ -609,7 +647,12 @@ export interface OpenDeviceServerApi {
     pointers: GesturePointerPath[],
     // `_forceInjectUnavailable` (phase 3n.2, review 3N1-L1): the benchDebug-only P9
     // seam extended to gesture — forces `uia-async` fallback on a resolving device.
-    opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
+    // `normalized` (versionCode 31+): every point is 0–1 and the server converts it.
+    opts?: {
+      inject?: OpenInjectStrategy;
+      _forceInjectUnavailable?: boolean;
+      normalized?: boolean;
+    }
   ): Promise<{ success: boolean } & OpenInjectReport>;
   /**
    * Run a burst of actions back-to-back on the device in ONE round-trip (ticket
@@ -707,6 +750,8 @@ export interface OpenDeviceServerApi {
       holdMs?: number;
       gapMs?: number;
       inject?: OpenInjectStrategy;
+      /** 0–1 point converted on the device (versionCode 31+). */
+      normalized?: boolean;
     }
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   longPressWithOutcome(
@@ -722,7 +767,8 @@ export interface OpenDeviceServerApi {
     endY: number,
     steps?: number,
     holdEndMs?: number,
-    opts?: OutcomeOptions & { inject?: OpenInjectStrategy }
+    // `normalized`: 0–1 coordinates converted on the device (versionCode 31+).
+    opts?: OutcomeOptions & { inject?: OpenInjectStrategy; normalized?: boolean }
   ): Promise<{ success: boolean } & OpenServerActionOutcome & OpenSwipeTiming>;
   gestureWithOutcome(
     pointers: GesturePointerPath[],

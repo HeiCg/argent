@@ -55,8 +55,12 @@ const TAP_OUTCOME = {
   idleMs: 10,
 };
 
-function makeGestureApi() {
+// `installedVersionCode` 31+ (the default here) converts normalized points on the
+// device, so the plain path sends the 0–1 point and makes no `getScreenSize` RPC;
+// 30 is a server from before, which still gets host-side pixels.
+function makeGestureApi(installedVersionCode = 31) {
   return {
+    installedVersionCode,
     getScreenSize: vi.fn(async () => ({
       screenWidth: 1000,
       screenHeight: 2000,
@@ -103,11 +107,13 @@ describe("gesture-tap: outcome path gated on the screen graph", () => {
     expect(api.tap).toHaveBeenCalledTimes(1);
     // `inject: "input-manager"` is the shipped 3n.1 default (resolveInjectStrategy);
     // gating the graph off changes only the outcome path, not the injection strategy.
-    expect(api.tap).toHaveBeenCalledWith(500, 1000, {
+    expect(api.tap).toHaveBeenCalledWith(0.5, 0.5, {
       clickCount: 1,
       holdMs: 50,
       inject: "input-manager",
+      normalized: true,
     });
+    expect(api.getScreenSize).not.toHaveBeenCalled();
     expect(api.tapWithOutcome).not.toHaveBeenCalled();
     expect(result.tapped).toBe(true);
     // No `outcome` key on the result when the flag is off.
@@ -135,13 +141,29 @@ describe("gesture-tap: outcome path gated on the screen graph", () => {
     await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5, clickCount: 3 });
 
     expect(api.tap).toHaveBeenCalledTimes(1);
-    expect(api.tap).toHaveBeenCalledWith(500, 1000, {
+    expect(api.tap).toHaveBeenCalledWith(0.5, 0.5, {
       clickCount: 3,
       holdMs: 50,
       gapMs: 100,
       inject: "input-manager",
+      normalized: true,
     });
     expect(api.tapWithOutcome).not.toHaveBeenCalled();
+  });
+
+  it("graph OFF, server v30: getScreenSize then a pixel `tap` (compatibility)", async () => {
+    flagEnabledMock = GRAPH_OFF;
+    const api = makeGestureApi(30);
+    const tool = createGestureTapTool(makeRegistry(api));
+
+    await tool.execute({} as never, { udid: ANDROID_SERIAL, x: 0.5, y: 0.5 });
+
+    expect(api.getScreenSize).toHaveBeenCalledTimes(1);
+    expect(api.tap).toHaveBeenCalledWith(500, 1000, {
+      clickCount: 1,
+      holdMs: 50,
+      inject: "input-manager",
+    });
   });
 });
 
@@ -165,9 +187,11 @@ describe("gesture-swipe: outcome path gated on the screen graph", () => {
     // steps = round(160/16) = 10; plain swipe, no holdEndMs for a plain fling.
     expect(api.swipe).toHaveBeenCalledTimes(1);
     // 7th arg is the inject-options bag; `input-manager` is the shipped 3n.1 default.
-    expect(api.swipe).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined, {
+    expect(api.swipe).toHaveBeenCalledWith(0.5, 0.7, 0.5, 0.2, 10, undefined, {
       inject: "input-manager",
+      normalized: true,
     });
+    expect(api.getScreenSize).not.toHaveBeenCalled();
     expect(api.swipeWithOutcome).not.toHaveBeenCalled();
     expect(result.swiped).toBe(true);
     expect(Object.hasOwn(result, "outcome")).toBe(false);
@@ -183,10 +207,23 @@ describe("gesture-swipe: outcome path gated on the screen graph", () => {
 
     expect(api.swipe).toHaveBeenCalledTimes(1);
     const args = api.swipe.mock.calls[0] as unknown[];
-    expect(args.slice(0, 5)).toEqual([500, 1400, 500, 400, 10]);
+    expect(args.slice(0, 5)).toEqual([0.5, 0.7, 0.5, 0.2, 10]);
     // holdEndMs > 0 so the release velocity decays to ~0 (deterministic scroll).
     expect(args[5]).toBeGreaterThan(0);
     expect(api.swipeWithOutcome).not.toHaveBeenCalled();
+  });
+
+  it("graph OFF, server v30: getScreenSize then a pixel `swipe` (compatibility)", async () => {
+    flagEnabledMock = GRAPH_OFF;
+    const api = makeGestureApi(30);
+    const tool = createGestureSwipeTool(makeRegistry(api));
+
+    await tool.execute({} as never, base);
+
+    expect(api.getScreenSize).toHaveBeenCalledTimes(1);
+    expect(api.swipe).toHaveBeenCalledWith(500, 1400, 500, 400, 10, undefined, {
+      inject: "input-manager",
+    });
   });
 
   it("graph ON: the `swipeWithOutcome` RPC is used and the delta rides back", async () => {
