@@ -1,9 +1,18 @@
 package com.argent.devicecontrol.util
 
+import org.json.JSONException
 import org.json.JSONObject
 
 /** JSON-RPC 2.0 response helpers. */
 object JsonRpc {
+
+    /**
+     * The JSON-RPC error code of a handler exception: -32602 Invalid params for a
+     * bad request (an argument check, or a missing / mistyped JSON key), so the host
+     * can tell it from a device failure; -32603 Internal error otherwise.
+     */
+    fun errorCodeFor(e: Exception): Int =
+        if (e is IllegalArgumentException || e is JSONException) -32602 else -32603
 
     fun successResponse(id: Any?, result: Any): String {
         return JSONObject().apply {

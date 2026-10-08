@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isFlagEnabled } from "@argent/configuration-core";
-import type { DeviceInfo, Registry } from "@argent/registry";
+import { getFailureSignal, type DeviceInfo, type Registry } from "@argent/registry";
 import {
   openDeviceServerRef,
   supportsNormalizedInput,
@@ -242,6 +242,21 @@ interface OutcomeRequest {
  * RPC error). Callers catch and fall back to the existing simulator-server path,
  * so the open backend is strictly additive.
  */
+
+/**
+ * Log why a gesture left the open path for the simulator-server fallback. A request
+ * the server rejected as malformed (`validation`: a missing or out-of-range
+ * parameter, JSON-RPC -32602 / -32700) is a host/server contract bug that a working
+ * fallback would otherwise hide, so it is a warning; any other failure (transport,
+ * device, dropped injection) stays a debug line as before.
+ */
+export function logOpenServerFallback(tool: string, err: unknown): void {
+  const msg = `[${tool}] open-device-server failed, falling back to simulator-server: ${
+    err instanceof Error ? err.message : String(err)
+  }`;
+  if (getFailureSignal(err)?.error_kind === "validation") console.warn(msg);
+  else console.debug(msg);
+}
 
 /** Whether the open-device-server input backend applies to this device. */
 export function shouldUseOpenServer(device: DeviceInfo): boolean {

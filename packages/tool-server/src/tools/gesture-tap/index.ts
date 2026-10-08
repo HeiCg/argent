@@ -22,6 +22,7 @@ import {
   settleIgnoredAfterFallback,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
+  logOpenServerFallback,
 } from "../../utils/open-server-input";
 import { verifyParamSchema } from "../../utils/open-server-verify";
 import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
@@ -606,11 +607,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
             ...settleOf(outcome),
           };
         } catch (err) {
-          console.debug(
-            `[gesture-tap] open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          logOpenServerFallback("gesture-tap", err);
           if (settle) settleIgnored = settleIgnoredAfterFallback(err);
           const ref = simulatorServerRef(device);
           api = await registry.resolveService<SimulatorServerApi>(ref.urn, ref.options);

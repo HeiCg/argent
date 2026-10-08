@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as net from "node:net";
+import { getFailureSignal } from "@argent/registry";
 import { AndroidOpenServerClient } from "../src/utils/android-open-server-client";
 
 /**
@@ -84,6 +85,33 @@ describe("AndroidOpenServerClient", () => {
     servers.push(s);
     const c = makeClient(s.port);
     await expect(c.request("tap")).rejects.toThrow("boom");
+  });
+
+  it("classifies an invalid-params (-32602) reply as a validation failure", async () => {
+    const s = await startServer((line, socket) => {
+      const req = JSON.parse(line) as { id: number };
+      reply(socket, {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32602, message: "nx must be a normalized coordinate in [0, 1], got 2" },
+      });
+    });
+    servers.push(s);
+    const c = makeClient(s.port);
+    const err = await c.request("tap").catch((e: unknown) => e);
+    expect((err as Error).message).toContain("nx must be");
+    expect(getFailureSignal(err)?.error_kind).toBe("validation");
+  });
+
+  it("keeps a device failure (-32603) classified as a subprocess error", async () => {
+    const s = await startServer((line, socket) => {
+      const req = JSON.parse(line) as { id: number };
+      reply(socket, { jsonrpc: "2.0", id: req.id, error: { code: -32603, message: "boom" } });
+    });
+    servers.push(s);
+    const c = makeClient(s.port);
+    const err = await c.request("tap").catch((e: unknown) => e);
+    expect(getFailureSignal(err)?.error_kind).toBe("subprocess");
   });
 
   it("correlates each reply to its caller by id across sequential calls", async () => {

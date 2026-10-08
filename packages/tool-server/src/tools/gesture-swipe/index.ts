@@ -24,6 +24,7 @@ import {
   settleIgnoredAfterFallback,
   type OpenServerVerify,
   type OpenServerVerifiedResult,
+  logOpenServerFallback,
 } from "../../utils/open-server-input";
 import { verifyParamSchema } from "../../utils/open-server-verify";
 import type { VerifyBounds, VerifyCandidate } from "../../utils/open-server-verify";
@@ -740,11 +741,7 @@ Pass momentum:false for a momentum-free swipe that lands where the finger lifts 
             ...(settle ? actionSettleFields(outcome) : {}),
           };
         } catch (err) {
-          console.debug(
-            `[gesture-swipe] open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          logOpenServerFallback("gesture-swipe", err);
           if (settle) settleIgnored = settleIgnoredAfterFallback(err);
         }
       }

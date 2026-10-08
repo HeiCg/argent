@@ -40,7 +40,7 @@ class TapHandler(
     }
 
     fun execute(params: JSONObject): JSONObject {
-        val (px, py) = NormalizedCoords.pointParam(params, "x", "y", "nx", "ny", displayGeometry)
+        val (px, py) = TapPoint.read(params, displayGeometry)
         val x = px.toFloat()
         val y = py.toFloat()
         val clickCount = maxOf(1, params.optInt("clickCount", 1))
@@ -75,6 +75,16 @@ class TapHandler(
             }
         }
     }
+}
+
+/**
+ * The point of a `tap` or `longPress` RPC: pixel `x/y`, or (versionCode 31)
+ * normalized `nx/ny` converted against [geometry]. Separate from the handlers so the
+ * parsing is unit-tested on the JVM against real JSON.
+ */
+object TapPoint {
+    fun read(params: JSONObject, geometry: () -> DisplayReader.Geometry): Pair<Int, Int> =
+        NormalizedCoords.pointParam(params, "x", "y", "nx", "ny", geometry)
 }
 
 /**

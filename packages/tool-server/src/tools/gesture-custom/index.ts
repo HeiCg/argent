@@ -17,6 +17,7 @@ import {
   shouldUseOpenServer,
   openServerGesture,
   type NormalizedPointerPath,
+  logOpenServerFallback,
 } from "../../utils/open-server-input";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -298,11 +299,7 @@ Example pinch-to-zoom (with interpolate:10 for smoothness):
             await openServerGesture(registry, device, pointers);
             return { events: events.length };
           } catch (err) {
-            console.debug(
-              `[gesture-custom] open-device-server failed, falling back to simulator-server: ${
-                err instanceof Error ? err.message : String(err)
-              }`
-            );
+            logOpenServerFallback("gesture-custom", err);
           }
         }
       }

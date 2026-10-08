@@ -37,10 +37,10 @@ android {
     }
 
     testOptions {
-        // The one JVM unit test (NestedWindowSerializerTest) exercises a pure
-        // predicate that only reads inlined `AccessibilityWindowInfo.TYPE_*`
-        // constants — it never calls an android.jar method — so default-value
-        // stubbing is enough and no Robolectric runtime is needed.
+        // The JVM unit tests exercise pure code that only reads inlined android
+        // constants (e.g. `AccessibilityWindowInfo.TYPE_*`), so default-value
+        // stubbing is enough and no Robolectric runtime is needed. org.json is the
+        // exception: the real library is a test dependency (below), not a stub.
         unitTests.isReturnDefaultValues = true
     }
 }
@@ -53,4 +53,8 @@ dependencies {
 
     // Local JVM unit tests (window-selection predicate, R2). No device required.
     testImplementation("junit:junit:4.13.2")
+    // The real org.json on the JVM test classpath, ahead of android.jar's stubs
+    // (which `isReturnDefaultValues` turns into no-ops), so the RPC parameter parsing
+    // of the gesture handlers is tested against real JSONObjects.
+    testImplementation("org.json:json:20240303")
 }

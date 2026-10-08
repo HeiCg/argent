@@ -15,6 +15,24 @@ import org.json.JSONObject
  */
 object NormalizedCoords {
 
+    /** Wait before re-reading a 0x0 display (a display mid-reconfiguration). */
+    const val ZERO_GEOMETRY_RETRY_MS = 50L
+
+    /**
+     * The display geometry for a normalized gesture. A 0x0 read (the display is
+     * reconfiguring, e.g. mid-rotation) is read once more after
+     * [ZERO_GEOMETRY_RETRY_MS]; a geometry still 0x0 then fails in [toPixels].
+     */
+    fun readGeometry(
+        read: () -> DisplayReader.Geometry,
+        sleep: (Long) -> Unit = { Thread.sleep(it) }
+    ): DisplayReader.Geometry {
+        val first = read()
+        if (first.width > 0 && first.height > 0) return first
+        sleep(ZERO_GEOMETRY_RETRY_MS)
+        return read()
+    }
+
     /**
      * One normalized coordinate to a pixel along an extent of [extentPx]. [name] is
      * the wire key, quoted in the error. Out of [0, 1] (or NaN) is an error rather

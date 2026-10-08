@@ -48,12 +48,7 @@ class SwipeHandler(
     }
 
     fun execute(params: JSONObject): JSONObject {
-        // One display snapshot for both ends, read only when a normalized key is sent.
-        val geo by lazy { displayGeometry() }
-        val (startX, startY) =
-            NormalizedCoords.pointParam(params, "startX", "startY", "nStartX", "nStartY") { geo }
-        val (endX, endY) =
-            NormalizedCoords.pointParam(params, "endX", "endY", "nEndX", "nEndY") { geo }
+        val (startX, startY, endX, endY) = SwipeEnds.read(params, displayGeometry)
         val steps = params.optInt("steps", 10)
         // Hold the last pointer position this long before ACTION_UP. A
         // momentum-free swipe passes holdEndMs > 0 so the release velocity decays
@@ -186,6 +181,25 @@ class SwipeHandler(
             strategy,
             holdAnchorFrame = travelSteps
         ) to path
+    }
+}
+
+/**
+ * The two ends of a `swipe` RPC in pixels: `startX/startY/endX/endY`, or
+ * (versionCode 31) the normalized `nStartX/nStartY/nEndX/nEndY` converted against
+ * ONE read of [geometry] for both ends (read only when a normalized key is sent).
+ * Pure over its inputs, so it is unit-tested on the JVM against real JSON.
+ */
+data class SwipeEnds(val startX: Int, val startY: Int, val endX: Int, val endY: Int) {
+    companion object {
+        fun read(params: JSONObject, geometry: () -> DisplayReader.Geometry): SwipeEnds {
+            val geo by lazy { geometry() }
+            val (startX, startY) =
+                NormalizedCoords.pointParam(params, "startX", "startY", "nStartX", "nStartY") { geo }
+            val (endX, endY) =
+                NormalizedCoords.pointParam(params, "endX", "endY", "nEndX", "nEndY") { geo }
+            return SwipeEnds(startX, startY, endX, endY)
+        }
     }
 }
 

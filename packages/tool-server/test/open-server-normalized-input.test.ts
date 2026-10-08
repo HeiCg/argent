@@ -14,7 +14,8 @@ vi.mock("@argent/configuration-core", async () => {
   return { ...actual, isFlagEnabled: (name: string) => flagEnabledMock(name) };
 });
 
-import type { DeviceInfo, Registry } from "@argent/registry";
+import { FAILURE_CODES, FailureError, type DeviceInfo, type Registry } from "@argent/registry";
+import { createGestureTapTool } from "../src/tools/gesture-tap";
 import {
   openServerGesture,
   openServerSequence,
@@ -23,6 +24,7 @@ import {
   openServerTap,
   openServerTapWithOutcome,
   openServerVerifiedTap,
+  logOpenServerFallback,
   setOpenServerTapTiming,
   takeOpenServerTapStages,
   __resetOpenServerScreenSizeCache,
@@ -75,7 +77,10 @@ beforeEach(() => {
   setOpenServerTapTiming(false);
   takeOpenServerTapStages(device.id);
 });
-afterEach(() => setOpenServerTapTiming(false));
+afterEach(() => {
+  setOpenServerTapTiming(false);
+  vi.restoreAllMocks();
+});
 
 describe("tap: server v31 converts on the device", () => {
   it("sends the normalized point and makes no getScreenSize RPC", async () => {
@@ -342,5 +347,53 @@ describe("verified tap", () => {
     });
 
     expect(server.getScreenSize).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fallback logging", () => {
+  const invalidParams = () =>
+    new FailureError("nx must be a normalized coordinate in [0, 1], got 2", {
+      error_code: FAILURE_CODES.OPEN_DEVICE_SERVER_RPC_ERROR,
+      failure_stage: "open_device_server_rpc_invalid_params",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    });
+
+  it("a rejected request (parse / argument) is a warning, not a debug line", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    logOpenServerFallback("gesture-tap", invalidParams());
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain("[gesture-tap]");
+    expect(String(warn.mock.calls[0]![0])).toContain("nx must be");
+    expect(debug).not.toHaveBeenCalled();
+  });
+
+  it("any other failure stays a debug line", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    logOpenServerFallback("gesture-tap", new Error("socket closed"));
+    expect(debug).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("gesture-tap warns when the open tap is rejected as a bad request, then falls back", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    const server = makeServer(31);
+    server.tap.mockRejectedValueOnce(invalidParams());
+    const sim = { pressKey: vi.fn(), sendTouch: vi.fn() };
+    const registry = {
+      resolveService: vi.fn(async (urn: string) => {
+        if (urn.startsWith("OpenDeviceServer:")) return server;
+        return sim;
+      }),
+    } as never;
+    const tool = createGestureTapTool(registry);
+
+    await tool.execute({} as never, { udid: device.id, x: 0.5, y: 0.5 }).catch(() => undefined);
+
+    expect(server.tap).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("[gesture-tap]"))).toBe(true);
   });
 });

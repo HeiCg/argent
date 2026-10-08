@@ -8,6 +8,7 @@ import {
   shouldUseOpenServer,
   openServerGesture,
   type NormalizedPointerPath,
+  logOpenServerFallback,
 } from "../../utils/open-server-input";
 
 // Host frame budget ≈ 60fps; the open server injects the same per-frame timeline.
@@ -151,11 +152,7 @@ Use when you need to zoom in or out on a map, image, or zoomable view. Returns {
           await openServerGesture(registry, device, pointers);
           return { pinched: true, timestampMs };
         } catch (err) {
-          console.debug(
-            `[gesture-pinch] open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          logOpenServerFallback("gesture-pinch", err);
         }
       }
 
