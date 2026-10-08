@@ -594,15 +594,86 @@ if (provBlocks.length) {
 }
 
 // cold start
+// Step tap-latency (review round 1): an ON cold start excludes the open server's start
+// warm-up (discarded describe-shaped reads that warm its JIT), measured apart per sample
+// as `coldStartWarmupMs`. Older blocks carry no warm-up and keep the two-column table.
+const roundList = (xs) =>
+  JSON.stringify((xs || []).map((x) => (x != null && Number.isFinite(x) ? round1(x) : x)));
+const warmBlocks = blocks.filter((b) => Array.isArray(b.coldStartWarmupMs));
 L.push("### Cold-start describe (ms)");
 L.push("");
-L.push("| block | samples |");
-L.push("| --- | --- |");
-for (const b of blocks)
-  L.push(
-    `| ${b.block} | ${JSON.stringify((b.coldStartMs || []).map((x) => (Number.isFinite(x) ? round1(x) : x)))} |`
-  );
+if (warmBlocks.length) {
+  L.push("| block | samples | JIT warm-up excluded (ms) |");
+  L.push("| --- | --- | --- |");
+  for (const b of blocks)
+    L.push(
+      `| ${b.block} | ${roundList(b.coldStartMs)} | ${
+        Array.isArray(b.coldStartWarmupMs) ? roundList(b.coldStartWarmupMs) : "-"
+      } |`
+    );
+  const finite = (xs) => (xs || []).filter((x) => x != null && Number.isFinite(x));
+  const wMs = warmBlocks.flatMap((b) => finite(b.coldStartWarmupMs));
+  const wReads = warmBlocks.flatMap((b) => finite(b.coldStartWarmupReads));
+  if (wMs.length) {
+    L.push("");
+    L.push(
+      `> ON cold start excludes a JIT warm-up of ${fmt(median(wMs))} ms (reads${
+        wReads.length ? `, ${fmt(median(wReads))} per start` : ""
+      }), measured apart; OFF has no warm-up.`
+    );
+  }
+} else {
+  L.push("| block | samples |");
+  L.push("| --- | --- |");
+  for (const b of blocks) L.push(`| ${b.block} | ${roundList(b.coldStartMs)} |`);
+}
 L.push("");
+
+// Step tap-latency (review round 1): the ON gesture-tap sends `timing: true` on a seeded
+// half of its samples. The p50 of each half shows the instrumentation's own cost; the
+// stage medians (instrumented, counted samples) split where the tap time goes.
+const tapStageBlocks = blocks
+  .map((b) => ({ b, v: verbOf(b, "gesture-tap") }))
+  .filter(({ v }) => v && Array.isArray(v.tapStages) && v.tapStages.length);
+if (tapStageBlocks.length) {
+  const signed = (x) =>
+    x == null || !Number.isFinite(x) ? "-" : `${x >= 0 ? "+" : ""}${round1(x)}`;
+  const med = (xs) => {
+    const ys = xs.filter((x) => x != null && Number.isFinite(x));
+    return ys.length ? median(ys) : null;
+  };
+  L.push("### Tap stage timing (ON gesture-tap, report only)");
+  L.push("");
+  L.push(
+    "Counted samples only. Δ = p50 with timing − p50 without (the instrumentation's cost). " +
+      "Stage medians over the instrumented samples: the screen-size read before the tap, the " +
+      "tap RPC round trip on the host clock, the device inject time beyond the scheduled hold, " +
+      "the device request parse."
+  );
+  L.push("");
+  L.push(
+    "| block | p50 with timing | p50 without | Δ | screen size | RPC round trip | inject overhead | device parse |"
+  );
+  L.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const { b, v } of tapStageBlocks) {
+    const counted = v.tapStages.filter((r) => r.counted);
+    const on = counted.filter((r) => r.timed).map((r) => r.ms);
+    const off = counted.filter((r) => !r.timed).map((r) => r.ms);
+    const st = counted.filter((r) => r.timed && r.stages && !r.stages.dropped).map((r) => r.stages);
+    const pOn = med(on);
+    const pOff = med(off);
+    L.push(
+      `| ${b.block} | ${fmt(pOn)} (n=${on.length}) | ${fmt(pOff)} (n=${off.length}) | ${signed(
+        pOn != null && pOff != null ? pOn - pOff : null
+      )} | ${fmt(med(st.map((x) => x.screenSizeMs)))} | ${fmt(
+        med(st.map((x) => x.rpc && x.rpc.roundTripMs))
+      )} | ${fmt(med(st.map((x) => x.device && x.device.injectOverheadMs)))} | ${fmt(
+        med(st.map((x) => x.device && x.device.parseMs))
+      )} |`
+    );
+  }
+  L.push("");
+}
 
 // Fidelity
 if (merged.fidelity) {

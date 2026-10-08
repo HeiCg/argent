@@ -58,6 +58,7 @@ import { resolveDevice } from "../src/utils/device-info";
 import { isAndroidTv, isAndroidTvCached } from "../src/utils/adb";
 import {
   openDeviceServerRef,
+  takeOpenServerWarmup,
   type OpenDeviceServerApi,
   type OpenInjectStrategy,
 } from "../src/blueprints/android-open-server";
@@ -98,6 +99,11 @@ import {
 import { openServerEmptyTreeCount } from "../src/tools/describe/platforms/android/index";
 import { simulatorServerRef } from "../src/blueprints/simulator-server";
 import { describeAndroidViaOpenState } from "../src/utils/open-server-describe";
+import {
+  setOpenServerTapTiming,
+  takeOpenServerTapStages,
+  type OpenServerTapStages,
+} from "../src/utils/open-server-input";
 import {
   HOST_AWAIT,
   hostAwaitIdle,
@@ -1053,6 +1059,19 @@ interface TapEffectResult extends VerbResult {
   noEffectSamples: string[];
   // Loop iterations of this verb (timed or excluded), the range of its marker index.
   iterations?: number;
+  // Step tap-latency: per timed sample of the ON gesture-tap. `timed` = the tap sent
+  // `timing: true` (a seeded half of the samples, so the instrumentation's own cost
+  // shows as the p50 gap between the halves); `stages` = that tap's stages (pre-tap
+  // lock/resolve/screen-size read, the tap RPC on the host clock, the device stages,
+  // `seq`, `dropped`). `counted` = the sample is in `latencySamples` (it changed
+  // the screen and its window was not empty). Absent on OFF and on the other verbs.
+  tapStages?: Array<{
+    i: number;
+    ms: number;
+    counted: boolean;
+    timed: boolean;
+    stages?: OpenServerTapStages;
+  }>;
 }
 
 /**
@@ -1081,10 +1100,12 @@ async function timeTapEffect(
   // Run 37578606526 (review finding 12): tap+describe's destination check. After EVERY
   // timed window (never inside it), the timed read is classified and the untimed
   // time-to-correct loop runs (measureTimeToCorrect), before the effect poll.
-  afterTimed?: (timed: unknown, t0: number, timedEnd: number, i: number) => Promise<TtcSample>
+  afterTimed?: (timed: unknown, t0: number, timedEnd: number, i: number) => Promise<TtcSample>,
+  // Step tap-latency: whether sample i sends `timing: true` (ON gesture-tap only).
+  tapTiming?: (i: number) => boolean
 ): Promise<TapEffectResult> {
   const [r] = await timeTapEffectVariants(
-    [{ label, timedTapAt, afterTimed }],
+    [{ label, timedTapAt, afterTimed, tapTiming }],
     new Array<number>(N).fill(0),
     target,
     reg,
@@ -1101,6 +1122,9 @@ interface TapVariant {
   label: string;
   timedTapAt: (x: number, y: number, i: number) => Promise<unknown>;
   afterTimed?: (timed: unknown, t0: number, timedEnd: number, i: number) => Promise<TtcSample>;
+  // Step tap-latency: whether sample i sends `timing: true`; its stages are read right
+  // after the timed window (untimed). Set only on the ON gesture-tap.
+  tapTiming?: (i: number) => boolean;
 }
 
 /**
@@ -1154,6 +1178,7 @@ async function timeTapEffectVariants(
     ttne: [] as TtneSample[],
     ttc: [] as TtcSample[],
     fallbackLines: [] as string[],
+    tapStages: [] as NonNullable<TapEffectResult["tapStages"]>,
   }));
   let prev: { x: number; y: number } | undefined;
   for (const vIdx of schedule) {
@@ -1191,6 +1216,13 @@ async function timeTapEffectVariants(
       //    after the BENCH logcat marker (outside the window).
       const mark = windowMark();
       benchMarker(label, i);
+      // Step tap-latency: this sample's timing switch, and no stale stages (an oracle,
+      // reset or earlier tap) left to be read as this sample's.
+      const tapTimed = v.tapTiming ? v.tapTiming(i) : false;
+      if (v.tapTiming) {
+        setOpenServerTapTiming(tapTimed);
+        takeOpenServerTapStages(SERIAL);
+      }
       const t0 = performance.now();
       let dt: number;
       let timed: unknown;
@@ -1206,6 +1238,19 @@ async function timeTapEffectVariants(
         continue;
       }
       const timedEnd = t0 + dt;
+      // Step tap-latency: the timed tap's stages, read outside the window; `counted`
+      // is set below once the effect verdict is known.
+      const stageRow = v.tapTiming
+        ? {
+            i,
+            ms: dt,
+            counted: false,
+            timed: tapTimed,
+            ...(tapTimed ? { stages: takeOpenServerTapStages(SERIAL) } : {}),
+          }
+        : undefined;
+      if (v.tapTiming) setOpenServerTapTiming(false);
+      if (stageRow) a.tapStages.push(stageRow);
       const wasEmpty = noteTimedEmpty(a.empty, mark, label, i);
       if (v.afterTimed) {
         const s = await v.afterTimed(timed, t0, timedEnd, i);
@@ -1225,8 +1270,10 @@ async function timeTapEffectVariants(
       // Its count is firstTapNoEffect (printed); it is never retried away. Run
       // 37571460849: an empty window is left out too (emptyLatencySamples, P11).
       if (changed && wasEmpty) a.emptyLat.push(dt);
-      else if (changed) a.lat.push(dt);
-      else {
+      else if (changed) {
+        a.lat.push(dt);
+        if (stageRow) stageRow.counted = true;
+      } else {
         a.effectZero++;
         // F7: capture WHY this first attempt showed no effect — the fingerprint the
         // poll ended on, the origin it was compared against, the tapped coordinate and
@@ -1253,6 +1300,7 @@ async function timeTapEffectVariants(
         }
       }
     } finally {
+      if (v.tapTiming) setOpenServerTapTiming(false);
       // The open-server fallback lines this iteration logged, on its own variant.
       for (const l of debugLines.slice(iterMark))
         if (OPEN_SERVER_FALLBACK.test(l)) a.fallbackLines.push(l);
@@ -1284,6 +1332,7 @@ async function timeTapEffectVariants(
       locateVia: a.locateVia,
       noEffectSamples: a.noEffectSamples,
       iterations: a.iter,
+      ...(v.tapTiming ? { tapStages: a.tapStages } : {}),
     };
   });
 }
@@ -2683,7 +2732,13 @@ interface BlockResult {
   // Run 37578606526 (review finding 12): the tap+describe destination markers this block
   // derived from its own settled root and destination describes (null: no nav target).
   destinationMarkers: (DestinationMarkers & { target: string }) | null;
+  // Step tap-latency: on ON, each cold start minus the open server's start warm-up
+  // (discarded describe-shaped reads, JIT), which is kept apart per sample in
+  // `coldStartWarmupMs` / `coldStartWarmupReads` (null: no warm-up recorded). OFF
+  // carries no warm-up fields.
   coldStartMs: number[];
+  coldStartWarmupMs?: Array<number | null>;
+  coldStartWarmupReads?: Array<number | null>;
   verbs: VerbResult[];
   // Open-path describe idle-vs-capture split (p50), on an idle Settings root and
   // right after a tap into a content-heavy sub-screen. null on the proprietary
@@ -2774,27 +2829,45 @@ interface BlockResult {
   notes: string[];
 }
 
-async function coldStart(_config: "OFF" | "ON"): Promise<number[]> {
+// Step tap-latency (review round 1): the open server warms its JIT at start with
+// discarded reads (blueprint `warmUp`), which the OFF stack has no counterpart of. The
+// ON sample therefore excludes that warm-up, and what it took is returned apart.
+async function coldStart(config: "OFF" | "ON"): Promise<{
+  coldStartMs: number[];
+  warmupMs: Array<number | null>;
+  warmupReads: Array<number | null>;
+}> {
   const out: number[] = [];
+  const warmupMs: Array<number | null> = [];
+  const warmupReads: Array<number | null> = [];
   for (let k = 0; k < COLD; k++) {
     await teardownBackend();
     const reg = createRegistry();
+    takeOpenServerWarmup(SERIAL); // a stale record is not this start's
     const t0 = performance.now();
     let ok = false;
     for (let attempt = 0; attempt < 3 && !ok; attempt++) {
       try {
         const d = (await reg.invokeTool("describe", { udid: SERIAL })) as { source: string };
         ok = true;
-        out.push(elapsedMs(t0));
+        const w = config === "ON" ? takeOpenServerWarmup(SERIAL) : undefined;
+        const warmMs = w ? w.ms : 0;
+        out.push(elapsedMs(t0) - warmMs);
+        warmupMs.push(w ? Math.round(w.ms * 10) / 10 : null);
+        warmupReads.push(w ? w.reads : null);
         void d;
       } catch {
         await sleep(500);
       }
     }
-    if (!ok) out.push(NaN);
+    if (!ok) {
+      out.push(NaN);
+      warmupMs.push(null);
+      warmupReads.push(null);
+    }
     await reg.dispose().catch(() => undefined);
   }
-  return out;
+  return { coldStartMs: out, warmupMs, warmupReads };
 }
 
 async function runBlock(
@@ -2830,7 +2903,11 @@ async function runBlock(
   if (injectStrategy) process.env.ARGENT_OPEN_INJECT_STRATEGY = injectStrategy;
   else delete process.env.ARGENT_OPEN_INJECT_STRATEGY;
 
-  const coldStartMs = await coldStart(config);
+  const {
+    coldStartMs,
+    warmupMs: coldStartWarmupMs,
+    warmupReads: coldStartWarmupReads,
+  } = await coldStart(config);
 
   setPhase("setup");
   await teardownBackend();
@@ -3051,19 +3128,35 @@ async function runBlock(
   // locate + the effect poll + BACK restore are outside the timed window (phase 3h).
   // effectZero = firstTapNoEffect counts the FIRST tap missing; the block fails on
   // effectZero > 0 in the merge (ON) / is reported (OFF).
-  verbs.push(
-    canEffect
-      ? await timeTapEffect(
-          "gesture-tap",
-          target,
-          timedTapAt,
-          reg,
-          fingerprint,
-          ensureOrigin,
-          restoreBack
-        )
-      : await timeCalls("gesture-tap", gestureTapRpc, undefined, ensureOrigin)
-  );
+  //
+  // Step tap-latency: on ON the gesture-tap verb (only it) sends `timing: true` on a
+  // seeded half of its samples and keeps their stages (`tapStages`), to split the
+  // +1.5 ms vs OFF; the other half runs uninstrumented, so the scoreboard shows what
+  // the instrumentation itself costs (a few clock reads, ~200 reply bytes).
+  const tapTimingSchedule = variantSchedule(
+    [Math.ceil(N / 2), Math.floor(N / 2)],
+    `${block}/tap-timing`
+  ) as number[];
+  const tapTiming = config === "ON" ? (i: number) => tapTimingSchedule[i] === 0 : undefined;
+  try {
+    verbs.push(
+      canEffect
+        ? await timeTapEffect(
+            "gesture-tap",
+            target,
+            timedTapAt,
+            reg,
+            fingerprint,
+            ensureOrigin,
+            restoreBack,
+            undefined,
+            tapTiming
+          )
+        : await timeCalls("gesture-tap", gestureTapRpc, undefined, ensureOrigin)
+    );
+  } finally {
+    setOpenServerTapTiming(false);
+  }
 
   await ensureSettings(reg);
 
@@ -3775,6 +3868,7 @@ async function runBlock(
     describeEmpty,
     destinationMarkers: nav ? { target: nav.target, ...nav.destinationMarkers } : null,
     coldStartMs,
+    ...(config === "ON" ? { coldStartWarmupMs, coldStartWarmupReads } : {}),
     verbs,
     describeSample,
     fidelitySet,

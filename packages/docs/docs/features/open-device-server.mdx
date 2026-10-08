@@ -84,6 +84,10 @@ sessions — never contend for a fixed port. Requests are newline-delimited
 JSON-RPC, one in flight at a time per device, serialized by a per-device lock so a
 `describe` and a tap on the same device take turns rather than interleaving.
 
+After the server starts, Argent reads the screen a few times and discards the
+results, to warm up the server code. The first tool call that starts the server
+waits for this warm-up, for at most 1.5 seconds. The later calls do not wait.
+
 ## Building the server APK
 
 The APK is built from the committed Kotlin sources and is not checked in. Build it

@@ -3429,3 +3429,106 @@ test("bench: an ON-im-bg block that throws still kills its idle simulator-server
   assert.match(main, /const r = await runBlockReleasing\(block, config, injectStrategy\);/);
   assert.doesNotMatch(main, /await runBlock\(/);
 });
+
+/* ---------------- step tap-latency: warm-up apart, tap stage timing ---------------- */
+
+// Review round 1 of step tap-latency: the open server warms its JIT with discarded
+// reads at start; the bench measures that apart (`coldStartWarmupMs`) and the ON cold
+// start excludes it, so the scoreboard must say so.
+test("scoreboard: ON cold start states the JIT warm-up it excludes, per block and overall", () => {
+  const out = freshOut();
+  const bs = RUN2();
+  for (const b of bs)
+    if (b.block.config === "ON") {
+      b.block.coldStartWarmupMs = [400, 420, 410];
+      b.block.coldStartWarmupReads = [40, 40, 40];
+    }
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /\| block \| samples \| JIT warm-up excluded \(ms\) \|/);
+  assert.match(sb.stdout, /\| ON-input-manager \| \[500,450,440\] \| \[400,420,410\] \|/);
+  assert.match(sb.stdout, /\| OFF-1 \| \[500,450,440\] \| - \|/);
+  assert.match(sb.stdout, /ON cold start excludes a JIT warm-up of 410 ms \(reads, 40 per start\)/);
+});
+
+test("scoreboard: no warm-up field (older blocks) → no warm-up column or line", () => {
+  const out = freshOut();
+  writeBlocks(out, RUN2());
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /### Cold-start describe \(ms\)\n\n\| block \| samples \|\n/);
+  assert.doesNotMatch(sb.stdout, /JIT warm-up/);
+});
+
+// The ON gesture-tap sends `timing: true` on a seeded half of its samples only; the
+// scoreboard reports the tap p50 on each half (the instrumentation's own cost) and the
+// stage medians of the instrumented half.
+test("scoreboard: tap stage timing — p50 with and without timing, and stage medians", () => {
+  const out = freshOut();
+  const bs = RUN2();
+  const on = bs.find((b) => b.block.block === "ON-input-manager");
+  const tap = on.block.verbs.find((v) => v.verb === "gesture-tap");
+  const st = (screen, rtt, over) => ({
+    lockWaitMs: 0,
+    resolveMs: 0,
+    screenSizeMs: screen,
+    rpc: { roundTripMs: rtt },
+    device: { injectOverheadMs: over, parseMs: 0.2 },
+    totalMs: 0,
+    dropped: false,
+    seq: 1,
+  });
+  tap.tapStages = [
+    { i: 0, ms: 52, counted: true, timed: true, stages: st(1.0, 51.0, 0.3) },
+    { i: 1, ms: 51, counted: true, timed: false },
+    { i: 2, ms: 54, counted: true, timed: true, stages: st(1.2, 51.2, 0.5) },
+    { i: 3, ms: 53, counted: true, timed: false },
+    { i: 4, ms: 56, counted: true, timed: true, stages: st(1.4, 51.4, 0.7) },
+    { i: 5, ms: 55, counted: true, timed: false },
+    // Not counted (no effect / empty window): left out of both halves.
+    { i: 6, ms: 90, counted: false, timed: true, stages: st(9, 90, 9) },
+  ];
+  writeBlocks(out, bs);
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.match(sb.stdout, /### Tap stage timing \(ON gesture-tap, report only\)/);
+  assert.match(
+    sb.stdout,
+    /\| ON-input-manager \| 54 \(n=3\) \| 53 \(n=3\) \| \+1 \| 1\.2 \| 51\.2 \| 0\.5 \| 0\.2 \|/
+  );
+});
+
+test("scoreboard: no tapStages → no tap stage timing section", () => {
+  const out = freshOut();
+  writeBlocks(out, RUN2());
+  assert.strictEqual(run(MERGE_BLOCKS, out, RUN2ENV).code, 0);
+  const sb = run(SCOREBOARD, out);
+  assert.strictEqual(sb.code, 0, sb.stderr);
+  assert.doesNotMatch(sb.stdout, /Tap stage timing/);
+});
+
+test("bench: ON cold start excludes the open-server warm-up and records it apart", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const cs = src.slice(src.indexOf("async function coldStart("));
+  const body = cs.slice(0, cs.indexOf("\n}\n"));
+  // A stale record is dropped before the clock starts; the sample subtracts this
+  // start's warm-up, which is kept per sample.
+  assert.ok(body.indexOf("takeOpenServerWarmup(SERIAL)") < body.indexOf("const t0"));
+  assert.match(body, /out\.push\(elapsedMs\(t0\) - warmMs\)/);
+  assert.match(body, /warmupMs\.push\(/);
+  assert.match(src, /coldStartWarmupMs,/);
+});
+
+test("bench: timed ON tap stages are cleared before the window and read after it", () => {
+  const src = fs.readFileSync(BENCH_TS, "utf8");
+  const loop = src.slice(src.indexOf("async function timeTapEffectVariants("));
+  const t0 = loop.indexOf("const t0 = performance.now();");
+  const clear = loop.lastIndexOf("takeOpenServerTapStages(SERIAL)", t0);
+  assert.ok(clear > 0 && clear < t0, "cleared before the timed window");
+  assert.ok(loop.indexOf("takeOpenServerTapStages(SERIAL)", t0) > t0, "read after it");
+  assert.match(loop, /timed: tapTimed/);
+});

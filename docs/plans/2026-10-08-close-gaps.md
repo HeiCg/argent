@@ -41,7 +41,14 @@ graph navigation that an agent actually uses.
 5. **fling-d1-ci** (Android, product). The held-swipe release with device
    evidence: device test 3d green and `releaseVelocityLsqPxPerS` below the fling
    threshold in CI.
-6. **tap-latency** (Android, driver). Find the 1.5 ms on tap (ON 54.4 vs OFF
+6. **tap-latency** (Android, driver). Amendment 2026-10-08 (review rounds
+   1-2): `cmd package compile -m speed` is a no-op on the debuggable APK, so the
+   warm-up is by discarded reads (up to 40 `getState` or 1.5 s, inside the first
+   tool call). The step ships per-stage tap timing (on half of the ON samples)
+   instead of a cut; acceptance moves to the next ABBA run: the "Tap stage
+   timing" section must explain the 1.5 ms (candidate: the `getScreenSize`
+   round trip before each tap) and ON cold describe must drop. Original text:
+   Find the 1.5 ms on tap (ON 54.4 vs OFF
    52.8): profile the tap RPC path host and device side; warm the open server
    JIT at start (`cmd package compile -m speed`), which also removes the cold
    describe cost.
