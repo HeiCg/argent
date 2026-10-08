@@ -20,6 +20,7 @@ import com.argent.devicecontrol.handlers.ScrollHandler
 import com.argent.devicecontrol.handlers.StateHandler
 import com.argent.devicecontrol.handlers.SwipeHandler
 import com.argent.devicecontrol.handlers.TapHandler
+import com.argent.devicecontrol.handlers.TapTimeline
 import com.argent.devicecontrol.handlers.TypeHandler
 import com.argent.devicecontrol.handlers.WaitHandler
 import com.argent.devicecontrol.input.InputManagerInjector
@@ -69,8 +70,9 @@ class JsonRpcHandler(
     private val awaitChangeHandler = AwaitChangeHandler()
 
     /**
-     * The per-request result of [handle]: the response `line` to write, the parsed
-     * `method` (null if parsing failed) that [TCPServer] keys [reportServerTiming] by,
+     * The per-request result of [handle]: the response `line` to write, the key
+     * [TCPServer] records [reportServerTiming] under (the parsed `method`, or null when
+     * parsing failed or the request is a start warm-up read; see [ServerTimingKey]),
      * and `padTo` — the phase 3j transport diagnostic's padding target (0 if absent /
      * not benchDebug). All three are RETURNED per call rather than stashed on shared
      * fields, so concurrent connections on the cached thread pool cannot read each
@@ -98,6 +100,8 @@ class JsonRpcHandler(
     }
 
     fun handle(line: String): HandleResult {
+        // Step tap-latency: handler entry, for the `timing` stages of a tap.
+        val entryNs = System.nanoTime()
         val json: JSONObject
         val method: String
         try {
@@ -106,6 +110,7 @@ class JsonRpcHandler(
         } catch (e: Exception) {
             return HandleResult(JsonRpc.errorResponse(null, -32700, "Parse error"), null, 0)
         }
+        val parseNs = System.nanoTime() - entryNs
 
         val id = json.opt("id")
         val params = json.optJSONObject("params") ?: JSONObject()
@@ -142,7 +147,23 @@ class JsonRpcHandler(
 
         val bodyLine = try {
             val result: Any = when (method) {
-                "tap" -> runAction(params) { withForcedInjectUnavail { tapHandler.execute(params) } }
+                "tap" -> runAction(params) {
+                    val tapStart = System.nanoTime()
+                    val r = withForcedInjectUnavail { tapHandler.execute(params) }
+                    r.optJSONObject("stages")?.let { st ->
+                        st.put("tapMs", TapTimeline.ms(System.nanoTime() - tapStart))
+                        st.put("parseMs", TapTimeline.ms(parseNs))
+                        // A reply cannot time its own build and write: report the
+                        // previous tap's, as the read RPCs' `timings` do (phase 3i).
+                        prevServerTiming["tap"]?.let { prev ->
+                            st.put("prevHandleMs", prev.handleMs)
+                            st.put("prevWriteMs", prev.writeMs)
+                            st.put("prevTotalMs", prev.totalMs)
+                        }
+                        st.put("handleMs", TapTimeline.ms(System.nanoTime() - entryNs))
+                    }
+                    r
+                }
                 "longPress" -> runAction(params) { longPressHandler.execute(params) }
                 "swipe" -> runAction(params) { withForcedInjectUnavail { swipeHandler.execute(params) } }
                 "gesture" -> runAction(params) { withForcedInjectUnavail { gestureHandler.execute(params) } }
@@ -214,7 +235,7 @@ class JsonRpcHandler(
             Log.e(TAG, "Error executing $method", e)
             JsonRpc.errorResponse(id, -32603, e.message ?: "Internal error")
         }
-        return HandleResult(bodyLine, method, padTo)
+        return HandleResult(bodyLine, ServerTimingKey.of(method, params.optBoolean("warmup", false)), padTo)
     }
 
     /**
@@ -389,4 +410,13 @@ class JsonRpcHandler(
         }
         return JSONObject().apply { put("results", results) }
     }
+}
+
+/**
+ * The key a request's server-side timeline is recorded under (step tap-latency). A
+ * host start warm-up read carries `warmup:true` and is not recorded, so the first
+ * real request of that method does not report a warm-up read as its `prevServer*`.
+ */
+object ServerTimingKey {
+    fun of(method: String, warmup: Boolean): String? = if (warmup) null else method
 }

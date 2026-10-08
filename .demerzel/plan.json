@@ -31,15 +31,65 @@
         }
       ],
       "commitMessage": "perf(open-server): warm the device server at start and trim the tap RPC path",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:tap-latency:1",
-      "reviewRounds": 1,
+      "review": {
+        "at": "2026-10-08T18:22:21.282Z",
+        "verifyRuns": [
+          {
+            "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q",
+            "exitCode": 0,
+            "outputFile": "1-cd-packages-android-device-server-gradle.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/android-open-server-blueprint.test.ts test/open-server-tap-latency.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-vitest-run-t.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
+            "exitCode": 0,
+            "outputFile": "3-cd-packages-tool-server-npx-tsc-noemit-p.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/blueprints/android-open-server.ts",
+            "note": "L1486-1487: o comentario diz 'outside any tool call', mas a factory e resolvida sob demanda dentro do primeiro tool call (resolveService em withServer/describe, sob o mutex do device), entao em producao o primeiro describe/gesture de cada start do servidor (e de cada crash-restart) paga ate 1,5 s a mais; nada disso esta em packages/docs/docs/features/open-device-server.mdx. Correcao: corrigir o comentario e documentar o custo do primeiro call na pagina do open device server (ou declarar no PR que nao ha doc)"
+          },
+          {
+            "severity": "minor",
+            "file": "docs/plans/2026-10-08-close-gaps.md",
+            "note": "L44-47: o plano ainda prescreve `cmd package compile -m speed`, que o step rejeitou (APK debuggable), e pede achar o 1,5 ms do tap, que o step so instrumenta. Correcao: emendar o plano como em 3062fc8b (aquecimento por leituras getState, sem compile) e registrar que o aceite do gap depende da secao 'Tap stage timing' do proximo run ABBA"
+          },
+          {
+            "severity": "note",
+            "file": ".github/bench-ci/scoreboard.js",
+            "note": "L620: o cold start ON agora subtrai o aquecimento que o primeiro call de producao paga; a linha explica, mas o placar deveria mostrar tambem a soma (cold start + aquecimento) para que nenhuma vitoria de cold start ON seja lida sobre o numero subtraido"
+          },
+          {
+            "severity": "note",
+            "file": ".github/bench-ci/scoreboard.js",
+            "note": "L662: as medianas de estagio nao filtram linhas com stages.dropped=true; um tap aberto descartado que caiu no fallback e mudou a tela entra com estagios do tap descartado. Correcao: acrescentar `&& !r.stages.dropped` no filtro"
+          },
+          {
+            "severity": "note",
+            "file": "packages/tool-server/src/blueprints/android-open-server.ts",
+            "note": "L1005: uma leitura de aquecimento cortada no fim do orcamento destroi o socket, mas o servidor continua montando aquele getState; o primeiro request real, numa conexao nova, pode concorrer com ele. Nao verificavel pelo diff: conferir no device o handleMs do primeiro describe apos um aquecimento com stoppedBy=budget"
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:tap-latency:2"
+      },
+      "reviewRounds": 2,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-08T18:26:24.096Z"
     },
     {
       "id": "sg-launch-node",

@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from "node:child_process";
 import * as readline from "node:readline";
+import { performance } from "node:perf_hooks";
 import {
   TypedEventEmitter,
   FAILURE_CODES,
@@ -74,6 +75,50 @@ export interface OpenSwipeTiming {
    * VelocityTracker fits), px/s; negative = backward. Scheduled timeline.
    */
   releaseVelocityLsqPxPerS?: number;
+}
+
+/**
+ * Device-clock stages of one `tap` RPC, returned when the request carried
+ * `timing: true` (APK 0.1.26+; step tap-latency). `parseMs` is the request line's
+ * JSON parse, `injectMs` the whole tap timeline as injected (DOWN to the last UP,
+ * holds included) and `injectOverheadMs` what it took beyond the scheduled holds
+ * and gaps, `tapMs` the tap handler, `handleMs` handler entry to the stages being
+ * stamped (the reply is built and written after). A reply cannot time its own
+ * write, so the `prev*` fields are the PREVIOUS tap's handle / write / total on the
+ * server (absent on the first tap of a server).
+ */
+export interface OpenTapDeviceStages {
+  parseMs?: number;
+  tapMs?: number;
+  injectMs?: number;
+  injectOverheadMs?: number;
+  handleMs?: number;
+  prevHandleMs?: number;
+  prevWriteMs?: number;
+  prevTotalMs?: number;
+}
+
+/**
+ * Host-clock stages of one `tap` RPC (step tap-latency). `rpcMs` is the whole call
+ * as the caller sees it. `roundTripMs` runs from the request line flushed to the
+ * last reply byte (`sentToFirstByteMs` + `firstToLastByteMs`), `parseMs` is the
+ * reply's `JSON.parse`, and `sendMs` the rest: the client queue, the request
+ * serialization and socket write, and the promise hop back to the caller.
+ */
+export interface OpenTapRpcStages {
+  sendMs: number;
+  sentToFirstByteMs: number;
+  firstToLastByteMs: number;
+  roundTripMs: number;
+  parseMs: number;
+  rpcMs: number;
+  wireBytes: number;
+}
+
+/** Stages of a `tap` RPC sent with `timing: true`; `device` is absent on an older APK. */
+export interface OpenTapStages {
+  rpc: OpenTapRpcStages;
+  device?: OpenTapDeviceStages;
 }
 
 /**
@@ -509,11 +554,16 @@ export interface OpenDeviceServerApi {
       gapMs?: number;
       inject?: OpenInjectStrategy;
       _forceInjectUnavailable?: boolean;
+      /**
+       * Step tap-latency: ask for the per-stage timings of this RPC ({@link
+       * OpenTapStages}). Off by default, and the `timing` key is then not sent.
+       */
+      timing?: boolean;
     }
     // `dropped:true` (phase 3g) when the on-device dispatcher rejected an injected
     // event (no injectable window mid-transition, secure surface, contended input
     // pipe). The caller must treat it as a failed tap and fall back.
-  ): Promise<{ success: boolean; dropped?: boolean } & OpenInjectReport>;
+  ): Promise<{ success: boolean; dropped?: boolean; stages?: OpenTapStages } & OpenInjectReport>;
   /**
    * Put `text` on the DEVICE clipboard via ClipboardManager (F20). Returns
    * `success:false` (not an error) when the write did not round-trip on-device
@@ -888,6 +938,88 @@ async function spawnServer(serial: string): Promise<SpawnedServer> {
   });
 }
 
+/**
+ * Step tap-latency, start warm-up. The open server starts cold on every start: in
+ * run 37609765062 describe on ON-im-2 went from 82 to 35 ms over about 40 calls, all
+ * of it in the JSON encode (`StateHandler` `hierarchy.toString()`), so a 20-sample
+ * block measured mostly cold calls. The start therefore makes discarded
+ * describe-shaped reads until {@link WARMUP_MAX_READS} reads or a
+ * {@link WARMUP_BUDGET_MS} budget, whichever comes first, and stops at the first
+ * failed read. Reads only: they never change the screen.
+ *
+ * No AOT compile (`cmd package compile -m speed`): the shipped APK is an
+ * `assembleDebug` build, hence debuggable, and ART keeps a debuggable app at the
+ * `verify` filter whatever is asked, so the compile would cost a dex2oat and give no
+ * compiled code. The JIT is what warms.
+ *
+ * Each read carries `warmup: true` so the server leaves its per-method timeline
+ * (`prevServer*`) alone and the first real describe does not report a warm-up read.
+ * What the warm-up took is kept per serial for {@link takeOpenServerWarmup}: the
+ * latency bench subtracts it from the ON cold start and reports it apart.
+ */
+const WARMUP_MAX_READS = 40;
+const WARMUP_BUDGET_MS = 1_500;
+
+/** What the start warm-up of one open-server instance did. */
+export interface OpenServerWarmup {
+  /** Reads that completed. */
+  reads: number;
+  /** Wall time of the warm-up, host clock. */
+  ms: number;
+  /** Why it ended: the read cap, the time budget, or a failed read. */
+  stoppedBy: "count" | "budget" | "error";
+}
+
+const lastWarmup = new Map<string, OpenServerWarmup>();
+
+/** The warm-up of the last open-server start on `serial`, removed once read. */
+export function takeOpenServerWarmup(serial: string): OpenServerWarmup | undefined {
+  const w = lastWarmup.get(serial);
+  lastWarmup.delete(serial);
+  return w;
+}
+
+async function warmUp(client: AndroidOpenServerClient): Promise<OpenServerWarmup> {
+  const t0 = performance.now();
+  let reads = 0;
+  let stoppedBy: OpenServerWarmup["stoppedBy"] = "count";
+  while (reads < WARMUP_MAX_READS) {
+    const left = WARMUP_BUDGET_MS - (performance.now() - t0);
+    if (left <= 0) {
+      stoppedBy = "budget";
+      break;
+    }
+    try {
+      // getNestedState's describe defaults, with no idle wait so a busy screen does
+      // not hold the start. A read still running at the end of the budget times out.
+      await client.request(
+        "getState",
+        {
+          nested: true,
+          includeScreenshot: false,
+          compact: false,
+          maxElements: 3000,
+          waitTimeoutMs: 0,
+          warmup: true,
+        },
+        { timeoutMs: Math.max(1, Math.ceil(left)) }
+      );
+      reads++;
+    } catch (err) {
+      stoppedBy = performance.now() - t0 >= WARMUP_BUDGET_MS ? "budget" : "error";
+      if (stoppedBy === "error") {
+        console.debug(
+          `[open-device-server] warm-up read ${reads + 1} failed, skipping the rest: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+      break;
+    }
+  }
+  return { reads, ms: performance.now() - t0, stoppedBy };
+}
+
 async function removeAdbForward(serial: string, localPort: number): Promise<void> {
   try {
     await runAdb(["-s", serial, "forward", "--remove", `tcp:${localPort}`], { timeoutMs: 5_000 });
@@ -1151,8 +1283,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         devicePort: spawned.devicePort,
         ...(spawned.allPort !== undefined ? { allPort: spawned.allPort } : {}),
       }),
-      tap: (x, y, tapOpts = {}) =>
-        client.request<{ success: boolean; dropped?: boolean } & OpenInjectReport>("tap", {
+      tap: async (x, y, tapOpts = {}) => {
+        type TapReply = { success: boolean; dropped?: boolean } & OpenInjectReport;
+        const params = {
           x,
           y,
           ...(tapOpts.clickCount !== undefined ? { clickCount: tapOpts.clickCount } : {}),
@@ -1160,7 +1293,33 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
           ...(tapOpts.inject !== undefined ? { inject: tapOpts.inject } : {}),
           ...(tapOpts._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
-        }),
+        };
+        if (!tapOpts.timing) return client.request<TapReply>("tap", params);
+        // Step tap-latency: the same RPC with `timing: true`, through requestWithStats
+        // so the host-clock wire timeline of this reply rides along.
+        const t0 = performance.now();
+        const stats = await client.requestWithStats<TapReply & { stages?: OpenTapDeviceStages }>(
+          "tap",
+          { ...params, timing: true }
+        );
+        const rpcMs = performance.now() - t0;
+        const { stages: device, ...reply } = stats.result;
+        return {
+          ...reply,
+          stages: {
+            rpc: {
+              sendMs: Math.max(0, rpcMs - stats.hostRoundTripMs - stats.parseMs),
+              sentToFirstByteMs: stats.hostSentToFirstByteMs,
+              firstToLastByteMs: stats.hostFirstToLastByteMs,
+              roundTripMs: stats.hostRoundTripMs,
+              parseMs: stats.parseMs,
+              rpcMs,
+              wireBytes: stats.wireBytes,
+            },
+            ...(device ? { device } : {}),
+          },
+        };
+      },
       setClipboard: (text) =>
         client.request<{ success: boolean; text: string; error?: string }>("setClipboard", {
           text,
@@ -1322,6 +1481,12 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
           outcome: outcomeObject(outcomeOpts),
         }),
     };
+
+    // Step tap-latency: JIT-warm the describe path with discarded reads (see warmUp).
+    // It runs inside the first tool call that starts the server (and again after a
+    // crash-restart), so that call pays up to the warm-up budget (1.5 s) once.
+    // Best-effort: it never fails the start.
+    lastWarmup.set(serial, await warmUp(client));
 
     // Phase 3n.2: the scrcpy fast-inject seam was REMOVED. tap/swipe/gesture stay on
     // the Kotlin `android-device-server`, where the per-RPC `inject` strategy

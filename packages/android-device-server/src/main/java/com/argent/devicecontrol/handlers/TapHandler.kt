@@ -44,13 +44,43 @@ class TapHandler(private val uiAutomation: UiAutomation) {
         // injectable window mid-transition, secure surface, contended input pipe).
         // Surface it so the host fails the tap and falls back rather than reporting
         // a tap that never landed (R1, phase 3g).
+        // Step tap-latency: `timing:true` adds the device-side `stages` (JsonRpcHandler
+        // adds the parse / handle / previous-write stages to the same object).
+        val timing = params.optBoolean("timing", false)
+        val injectStart = System.nanoTime()
         val outcome = MotionInjector.injectTaps(uiAutomation, x, y, clickCount, holdMs, gapMs, strategy)
+        val injectNs = System.nanoTime() - injectStart
         return JSONObject().apply {
             put("success", !outcome.dropped)
             if (outcome.dropped) put("dropped", true)
             put("strategy", outcome.strategy)
             outcome.fellBackTo?.let { put("fellBackTo", it) }
             outcome.error?.let { put("injectError", it) }
+            if (timing) {
+                val injectMs = TapTimeline.ms(injectNs)
+                put("stages", JSONObject().apply {
+                    put("injectMs", injectMs)
+                    put("injectOverheadMs", TapTimeline.overheadMs(injectMs, clickCount, holdMs, gapMs))
+                })
+            }
         }
     }
+}
+
+/**
+ * Tap timeline arithmetic for the `timing` stages (step tap-latency). Pure, so it is
+ * unit-tested on the JVM.
+ */
+object TapTimeline {
+
+    /** Scheduled DOWN-to-last-UP span: a hold per press and a gap between presses. */
+    fun scheduledMs(clickCount: Int, holdMs: Long, gapMs: Long): Long =
+        clickCount * holdMs + (clickCount - 1) * gapMs
+
+    /** The injected span beyond the schedule: dispatch cost plus sleep overshoot. */
+    fun overheadMs(injectMs: Double, clickCount: Int, holdMs: Long, gapMs: Long): Double =
+        Math.round((injectMs - scheduledMs(clickCount, holdMs, gapMs)) * 100) / 100.0
+
+    /** Nanoseconds to milliseconds, rounded to hundredths. */
+    fun ms(ns: Long): Double = Math.round(ns / 10_000.0) / 100.0
 }

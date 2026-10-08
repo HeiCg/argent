@@ -170,3 +170,8 @@
 {"ts":"2026-10-08T18:14:22.761Z","event":"step.review","subject":"ios-momentum-free","detail":{"passed":true,"findings":3,"planDigest":"73b05ca38f95599de43f21a51b8a5d4cd3341a0caefd9ac7b51ff9092174cc11"},"prev":"sha256:9c6b708d8baf"}
 {"ts":"2026-10-08T18:14:47.729Z","event":"step.approve","subject":"ios-momentum-free","detail":{"status":"approved","planDigest":"e5421e25fdaa2c6671ffce6d8620fc8e38b37e5ea5e260dbf6e6c8260af4f8bf"},"prev":"sha256:6363628a3430"}
 {"ts":"2026-10-08T18:14:47.951Z","event":"step.commit","subject":"ios-momentum-free","detail":{"committedAt":"2026-10-08T18:14:47.949Z","planDigest":"85af0aa67779365cf1b911478623df9aed52b059659f2bfb5314f1f5a1aa2e06"},"prev":"sha256:45ab809c25e7"}
+{"ts":"2026-10-08T18:22:12.722Z","event":"step.round","subject":"tap-latency","detail":{"round":2,"planDigest":"ae2ebea3a2d4924e7aab1c8b6116cb4e92ed0ba73f085060d76e7bebfe40eca7"},"prev":"sha256:f47fc25bf7b5"}
+{"ts":"2026-10-08T18:22:21.282Z","event":"gate.review","subject":"tap-latency","detail":{"ok":true,"exitCodes":[0,0,0]},"prev":"sha256:187783cf0013"}
+{"ts":"2026-10-08T18:22:21.285Z","event":"step.review","subject":"tap-latency","detail":{"passed":true,"findings":5,"planDigest":"58b0366f2b6c007d09d712e6874dac6d10549ef1871a7fc3e87ee2dfca2b6316"},"prev":"sha256:55d9ed80c0f4"}
+{"ts":"2026-10-08T18:26:23.862Z","event":"step.approve","subject":"tap-latency","detail":{"status":"approved","planDigest":"6fbc770b69c96593dac45a662fa7f8198df5796d4d328fbced112bd54675f5dc"},"prev":"sha256:c57db9aa8344"}
+{"ts":"2026-10-08T18:26:24.098Z","event":"step.commit","subject":"tap-latency","detail":{"committedAt":"2026-10-08T18:26:24.096Z","planDigest":"9aa7e81c17e51df69ec586c566e8ddcfd6feff641f5df45fbf5f08883e2c9525"},"prev":"sha256:a960f9788a12"}

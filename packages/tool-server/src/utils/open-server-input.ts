@@ -16,6 +16,8 @@ import {
   type OpenServerBatchStepResult,
   type OpenServerSelector,
   type OpenSwipeTiming,
+  type OpenTapDeviceStages,
+  type OpenTapRpcStages,
   type OutcomeOptions,
 } from "../blueprints/android-open-server";
 import type { ActionInvocation } from "../screen-graph/canonical";
@@ -275,15 +277,33 @@ export function openServerAwaitChange(
   });
 }
 
+/** Host-clock cost of {@link withServer}'s work before `fn` (step tap-latency). */
+interface PreActionStages {
+  /** Waiting for the per-device mutex. */
+  lockWaitMs: number;
+  /** `registry.resolveService` of the open server (a map hit once started). */
+  resolveMs: number;
+  /** The `getScreenSize` RPC every gesture makes before converting coordinates. */
+  screenSizeMs: number;
+}
+
 async function withServer<T>(
   registry: Registry,
   device: DeviceInfo,
-  fn: (api: OpenDeviceServerApi, size: { width: number; height: number }) => Promise<T>
+  fn: (api: OpenDeviceServerApi, size: { width: number; height: number }) => Promise<T>,
+  pre?: PreActionStages
 ): Promise<T> {
   const ref = openDeviceServerRef(device);
+  const tLock = performance.now();
   // Serialize against describe / other input on the same device.
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
+    const tResolve = performance.now();
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
+    const tSize = performance.now();
+    if (pre) {
+      pre.lockWaitMs = tResolve - tLock;
+      pre.resolveMs = tSize - tResolve;
+    }
     // Peek the cheap, rotation-aware `getScreenSize` (display metrics only, ~1 ms
     // even mid-animation — unlike `getInfo`) on every gesture, and key the cache
     // by rotation (F21). A mid-session rotation reports a new `displayRotation`,
@@ -292,6 +312,7 @@ async function withServer<T>(
     // portrait pixels). When the rotation is unchanged the cached dimensions are
     // reused as-is.
     const s = await server.getScreenSize();
+    if (pre) pre.screenSizeMs = performance.now() - tSize;
     const rotation = s.displayRotation;
     const cached = getCachedScreenSize(device.id);
     let size: { width: number; height: number };
@@ -336,21 +357,81 @@ export function openServerTap(
   yNorm: number,
   clickCount: number
 ): Promise<void> {
-  return withServer(registry, device, async (server, size) => {
-    const { x, y } = toPixels(size, xNorm, yNorm);
-    const res = await server.tap(x, y, {
-      clickCount,
-      holdMs: TAP_HOLD_MS,
-      ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
-      ...injectOpt(),
-    });
-    // R1 (phase 3g): the on-device dispatcher rejected an injected event, so the
-    // tap never landed. Throw so the caller fails this action and falls back to the
-    // simulator-server path rather than reporting a tap that did nothing.
-    if (res.dropped || res.success === false) {
-      throw new Error("open-device-server tap was dropped by the input dispatcher");
-    }
-  });
+  const timing = tapTimingEnabled;
+  const t0 = timing ? performance.now() : 0;
+  const pre: PreActionStages | undefined = timing
+    ? { lockWaitMs: 0, resolveMs: 0, screenSizeMs: 0 }
+    : undefined;
+  return withServer(
+    registry,
+    device,
+    async (server, size) => {
+      const { x, y } = toPixels(size, xNorm, yNorm);
+      const res = await server.tap(x, y, {
+        clickCount,
+        holdMs: TAP_HOLD_MS,
+        ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
+        ...injectOpt(),
+        ...(timing ? { timing: true } : {}),
+      });
+      if (pre) {
+        lastTapStages.set(device.id, {
+          ...pre,
+          seq: ++tapStageSeq,
+          dropped: res.dropped === true || res.success === false,
+          ...(res.stages?.rpc ? { rpc: res.stages.rpc } : {}),
+          ...(res.stages?.device ? { device: res.stages.device } : {}),
+          totalMs: performance.now() - t0,
+        });
+      }
+      // R1 (phase 3g): the on-device dispatcher rejected an injected event, so the
+      // tap never landed. Throw so the caller fails this action and falls back to the
+      // simulator-server path rather than reporting a tap that did nothing.
+      if (res.dropped || res.success === false) {
+        throw new Error("open-device-server tap was dropped by the input dispatcher");
+      }
+    },
+    pre
+  );
+}
+
+/**
+ * Stages of one plain open tap ({@link openServerTap}) with tap timing on (step
+ * tap-latency). The tap is 1.5 ms slower than the official stack and this splits
+ * it: the work before the tap RPC (`lockWaitMs`, `resolveMs`, and `screenSizeMs`,
+ * the geometry read every gesture makes and the official tap does not), the tap RPC
+ * as the host sees it (`rpc`), the device's own stages (`device`, APK 0.1.26+), and
+ * `totalMs` for the whole call. `seq` numbers the timed taps of this process (a
+ * reader can tell its own tap from a stale one) and `dropped` says the device
+ * rejected the tap, which then threw.
+ */
+export interface OpenServerTapStages extends PreActionStages {
+  rpc?: OpenTapRpcStages;
+  device?: OpenTapDeviceStages;
+  totalMs: number;
+  seq: number;
+  dropped: boolean;
+}
+
+let tapTimingEnabled = false;
+let tapStageSeq = 0;
+const lastTapStages = new Map<string, OpenServerTapStages>();
+
+/**
+ * Turn tap stage timing on or off for this process (off by default). On, the plain
+ * open tap sends `timing: true` and keeps the stages of the last tap per device for
+ * {@link takeOpenServerTapStages}. The latency bench turns it on in its ON blocks.
+ */
+export function setOpenServerTapTiming(enabled: boolean): void {
+  tapTimingEnabled = enabled;
+  if (!enabled) lastTapStages.clear();
+}
+
+/** The stages of the last timed plain tap on `deviceId`, removed once read. */
+export function takeOpenServerTapStages(deviceId: string): OpenServerTapStages | undefined {
+  const s = lastTapStages.get(deviceId);
+  lastTapStages.delete(deviceId);
+  return s;
 }
 
 /**
