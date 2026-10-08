@@ -30,6 +30,7 @@ import {
   ScreenGraphStore,
   canonicalAction,
   deriveLabel,
+  ensureSourceNode,
   recordObservation,
   resolveTemplate,
   stripId,
@@ -42,6 +43,7 @@ import {
   type EdgeSelector,
   type FetchedScreen,
   type ScreenNode,
+  type SourceScreen,
   type TemplateElement,
 } from "../screen-graph";
 
@@ -331,6 +333,31 @@ export async function recordOpenServerObservation(
       settled.stateHash ?? "",
       settled.version
     );
+    // The SOURCE screen, for when the agent acted on it without describing it
+    // first (the launch screen): built like describe builds a node, from the tree
+    // the tap read before acting. Not its stateHash / version: the tree and the
+    // outcome fingerprint are two reads, so the first compact describe refreshes
+    // the node instead of trusting a pairing nothing checked. The activity is not
+    // known for the before screen (getInfo above is post-action), so the label is
+    // the title only. No tree (swipe, key, text) mints the source from its identity.
+    const sourceScreen = (): SourceScreen => {
+      const base: SourceScreen = outcome.before.hash ? { structuralHash: outcome.before.hash } : {};
+      if (!opts.beforeTree || opts.beforeTree.length === 0) return base;
+      const p = buildScreenPayload(
+        opts.beforeTree,
+        settled.info.screenWidth,
+        settled.info.screenHeight,
+        undefined,
+        ""
+      );
+      return {
+        ...base,
+        compact: p.compact,
+        index: p.index,
+        ...(p.resourceIds !== undefined ? { resourceIds: p.resourceIds } : {}),
+        ...(p.label !== undefined ? { label: p.label } : {}),
+      };
+    };
     // The edge carries the acted element's selector (phase D §2): fold the UNIQUE
     // key chosen at record time (`sel.via`, Fix A) into the canonical action's
     // target so planning/replay resolve by that key, and record the full selector
@@ -383,6 +410,7 @@ export async function recordOpenServerObservation(
           kind: action.kind,
           template: { containerKey: tpl.containerKey, itemTemplate: tpl.itemTemplate },
         };
+        ensureSourceNode(store, beforeId, sourceScreen());
         const edge = store.observe(beforeId, templateAction, tpl.templateNodeHash, {
           success: true,
           ...(sel ? { selector: sel } : {}),
@@ -417,6 +445,7 @@ export async function recordOpenServerObservation(
       // Reuse the settled read for the node body — no second getState, and the
       // node's identity, structural hash and content all come from one snapshot.
       fetchScreen: async () => settledPayload,
+      fetchBeforeScreen: async () => sourceScreen(),
     });
   } catch (err) {
     console.debug(

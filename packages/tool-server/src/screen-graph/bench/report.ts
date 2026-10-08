@@ -20,6 +20,14 @@ export function formatEnvValue(v: unknown): string {
 
 /** Non-inferiority margin for paired success, in percentage points. */
 export const MULTIHOP_SUCCESS_MARGIN_PP = 5;
+/**
+ * Paired success non-inferiority as pre-registered: the lower bound of the
+ * graph − nograph interval stays ABOVE −{@link MULTIHOP_SUCCESS_MARGIN_PP} pp,
+ * so a bound sitting exactly on the margin is not non-inferior.
+ */
+export function successNonInferior(lo: number): boolean {
+  return Number.isFinite(lo) && lo > -MULTIHOP_SUCCESS_MARGIN_PP;
+}
 /** Pre-registered token bar (graph mean ÷ nograph mean). */
 export const MULTIHOP_TOKENS_BAR = 0.7;
 
@@ -341,7 +349,7 @@ export function multihopSummary(
     diffPp: round(successDiffPp(pairs), 1),
     lo: round(diffCi.lo, 1),
     hi: round(diffCi.hi, 1),
-    nonInferior: Number.isFinite(diffCi.lo) && diffCi.lo >= -MULTIHOP_SUCCESS_MARGIN_PP,
+    nonInferior: successNonInferior(diffCi.lo),
   };
   const tasks = [...new Set(samples.map((s) => s.task))];
   const perTask = tasks.map((task): MultihopTaskRow => {

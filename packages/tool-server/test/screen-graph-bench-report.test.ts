@@ -4,6 +4,7 @@ import {
   MULTIHOP_PREREGISTRATION,
   multihopSummary,
   renderMultihopReport,
+  successNonInferior,
   welch,
   type MultihopReportSample,
 } from "../src/screen-graph/bench/report";
@@ -90,6 +91,18 @@ describe("MULTIHOP report", () => {
     expect(s.aggregate.obsTokens.met).toBe(true);
     expect(s.perTask.map((r) => r.task)).toEqual(["mh-a", "mh-b"]);
     expect(s.perTask[0]).toMatchObject({ task: "mh-a", graphOk: 3, nographOk: 2, n: 3 });
+  });
+
+  it("grades non-inferiority strictly above the margin, as pre-registered (lo = -5.0 is not)", () => {
+    // Pre-registration: the interval's lower bound "stays above -5 pp". A bound
+    // sitting exactly on the margin does not stay above it.
+    expect(MULTIHOP_PREREGISTRATION).toMatch(/stays above −5 pp/);
+    expect(successNonInferior(-5)).toBe(false);
+    expect(successNonInferior(-5.0)).toBe(false);
+    expect(successNonInferior(-4.9)).toBe(true);
+    expect(successNonInferior(-5.1)).toBe(false);
+    expect(successNonInferior(0)).toBe(true);
+    expect(successNonInferior(Number.NaN)).toBe(false);
   });
 
   it("does not meet a bar the data misses", () => {

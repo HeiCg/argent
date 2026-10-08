@@ -1,6 +1,7 @@
 /**
  * Screen-graph Phase B observation recorder (ticket B2, design §2.2): fold an
- * action outcome into the store. Records the edge, then either bumps the visit
+ * action outcome into the store. Mints the source screen when it is not a node
+ * yet (the launch screen, see `ensureSourceNode`), records the edge, then either bumps the visit
  * count of a known target screen or — when the target is unknown — inserts a new
  * node from a freshly fetched compact tree. Pure and injectable: the live open
  * path supplies `fetchScreen`; tests supply a stub.
@@ -25,6 +26,13 @@ export interface FetchedScreen {
   secret?: boolean;
 }
 
+/**
+ * What is known of the SOURCE screen of an action whose origin is not a node yet
+ * (the launch screen an agent acts on without a `describe` first). Every field is
+ * optional: a source with no tree is minted from its identity alone.
+ */
+export type SourceScreen = Partial<Omit<FetchedScreen, "secret">>;
+
 interface ObserveContext {
   store: ScreenGraphStore;
   action: CanonicalAction;
@@ -39,11 +47,42 @@ interface ObserveContext {
   secret?: boolean;
   /** Fetch the target screen; called only when `after.hash` is unknown. */
   fetchScreen?: () => Promise<FetchedScreen>;
+  /**
+   * Build the source screen; called only when `before.hash` is not a node yet.
+   * Without it (or when it fails) the source is minted from its identity alone.
+   */
+  fetchBeforeScreen?: () => Promise<SourceScreen>;
 }
 
 /**
- * Record one observed transition. Order: edge first (so the graph gains the
- * transition even if the node fetch fails), then the target node.
+ * Make `hash` a node before an edge leaves it. Only `describe` used to mint the
+ * current screen, so the first action from a screen never described (the launch
+ * screen) left an edge whose origin was no node, and the store's
+ * referential-integrity sweep dropped it on the next flush: the first hop was
+ * lost and navigate-to from that screen found no path. A node that already
+ * exists is left untouched (no duplicate, no extra visit).
+ */
+export function ensureSourceNode(
+  store: ScreenGraphStore,
+  hash: string,
+  screen: SourceScreen = {}
+): void {
+  if (store.hasNode(hash)) return;
+  store.upsertNode({
+    hash,
+    ...(screen.structuralHash !== undefined ? { structuralHash: screen.structuralHash } : {}),
+    ...(screen.compact !== undefined ? { compact: screen.compact } : {}),
+    ...(screen.stateHash !== undefined ? { stateHash: screen.stateHash } : {}),
+    ...(screen.version !== undefined ? { version: screen.version } : {}),
+    ...(screen.index !== undefined ? { index: screen.index } : {}),
+    ...(screen.resourceIds !== undefined ? { resourceIds: screen.resourceIds } : {}),
+    ...(screen.label !== undefined ? { label: screen.label } : {}),
+  });
+}
+
+/**
+ * Record one observed transition. Order: source node when unknown, edge (so the
+ * graph gains the transition even if the target fetch fails), then the target.
  */
 export async function recordObservation(ctx: ObserveContext): Promise<void> {
   const { store, action, before, after } = ctx;
@@ -57,6 +96,23 @@ export async function recordObservation(ctx: ObserveContext): Promise<void> {
   // any other caller and for replayed pre-26 artifacts.
   if (after.structuralHash === EMPTY_TREE_HASH || after.stateHash === EMPTY_TREE_HASH) {
     return;
+  }
+  // The source must be a node or the edge is dropped as dangling on flush. A
+  // self-edge whose target branch below mints the node (fetch or redaction)
+  // skips this, so the screen is inserted once with one visit. A secret
+  // observation never reads the before screen: the source is minted bare.
+  const targetMintsSource =
+    before.hash === after.hash && (ctx.secret || ctx.fetchScreen !== undefined);
+  if (!store.hasNode(before.hash) && !targetMintsSource) {
+    let screen: SourceScreen | undefined;
+    if (!ctx.secret && ctx.fetchBeforeScreen) {
+      try {
+        screen = await ctx.fetchBeforeScreen();
+      } catch {
+        /* no usable before screen — mint the source from its identity */
+      }
+    }
+    ensureSourceNode(store, before.hash, screen);
   }
   store.observe(before.hash, action, after.hash, {
     success: ctx.success ?? true,
