@@ -1,13 +1,17 @@
 package com.argent.devicecontrol.handlers
 
 import androidx.test.uiautomator.UiDevice
+import com.argent.devicecontrol.util.DisplayReader
 import org.json.JSONObject
 
-class LongPressHandler(private val uiDevice: UiDevice) {
+/** Long press at pixel `x/y`, or (versionCode 31) normalized `nx/ny` converted here. */
+class LongPressHandler(
+    private val uiDevice: UiDevice,
+    private val displayGeometry: () -> DisplayReader.Geometry
+) {
 
     fun execute(params: JSONObject): JSONObject {
-        val x = params.getInt("x")
-        val y = params.getInt("y")
+        val (x, y) = TapPoint.read(params, displayGeometry)
         val durationMs = params.optInt("durationMs", 1000)
         // swipe with same start/end + steps simulates long press (each step ~5ms)
         val steps = durationMs / 5

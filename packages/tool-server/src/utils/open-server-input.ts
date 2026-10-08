@@ -4,9 +4,10 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isFlagEnabled } from "@argent/configuration-core";
-import type { DeviceInfo, Registry } from "@argent/registry";
+import { getFailureSignal, type DeviceInfo, type Registry } from "@argent/registry";
 import {
   openDeviceServerRef,
+  supportsNormalizedInput,
   type GesturePointerPath,
   type OpenDeviceServerApi,
   type OpenInjectStrategy,
@@ -242,6 +243,21 @@ interface OutcomeRequest {
  * so the open backend is strictly additive.
  */
 
+/**
+ * Log why a gesture left the open path for the simulator-server fallback. A request
+ * the server rejected as malformed (`validation`: a missing or out-of-range
+ * parameter, JSON-RPC -32602 / -32700) is a host/server contract bug that a working
+ * fallback would otherwise hide, so it is a warning; any other failure (transport,
+ * device, dropped injection) stays a debug line as before.
+ */
+export function logOpenServerFallback(tool: string, err: unknown): void {
+  const msg = `[${tool}] open-device-server failed, falling back to simulator-server: ${
+    err instanceof Error ? err.message : String(err)
+  }`;
+  if (getFailureSignal(err)?.error_kind === "validation") console.warn(msg);
+  else console.debug(msg);
+}
+
 /** Whether the open-device-server input backend applies to this device. */
 export function shouldUseOpenServer(device: DeviceInfo): boolean {
   return device.platform === "android" && isFlagEnabled("open-device-server");
@@ -283,14 +299,23 @@ interface PreActionStages {
   lockWaitMs: number;
   /** `registry.resolveService` of the open server (a map hit once started). */
   resolveMs: number;
-  /** The `getScreenSize` RPC every gesture makes before converting coordinates. */
+  /**
+   * The `getScreenSize` RPC a gesture makes before converting coordinates on the
+   * host. 0 when the server converts normalized coordinates itself (versionCode 31+).
+   */
   screenSizeMs: number;
 }
 
-async function withServer<T>(
+type ScreenSize = { width: number; height: number };
+
+/**
+ * Run `fn` with the device's open server under the per-device mutex. With `pre`,
+ * records the lock wait and resolve stages (step tap-latency).
+ */
+async function withServerLocked<T>(
   registry: Registry,
   device: DeviceInfo,
-  fn: (api: OpenDeviceServerApi, size: { width: number; height: number }) => Promise<T>,
+  fn: (api: OpenDeviceServerApi) => Promise<T>,
   pre?: PreActionStages
 ): Promise<T> {
   const ref = openDeviceServerRef(device);
@@ -299,48 +324,115 @@ async function withServer<T>(
   return openDeviceServerMutex.withDeviceLock(device.id, async () => {
     const tResolve = performance.now();
     const server = await registry.resolveService<OpenDeviceServerApi>(ref.urn, ref.options);
-    const tSize = performance.now();
     if (pre) {
       pre.lockWaitMs = tResolve - tLock;
-      pre.resolveMs = tSize - tResolve;
+      pre.resolveMs = performance.now() - tResolve;
     }
-    // Peek the cheap, rotation-aware `getScreenSize` (display metrics only, ~1 ms
-    // even mid-animation — unlike `getInfo`) on every gesture, and key the cache
-    // by rotation (F21). A mid-session rotation reports a new `displayRotation`,
-    // so the stored width/height is refreshed instead of converting the gesture
-    // against the pre-rotation geometry (the bug: a landscape tap landing at
-    // portrait pixels). When the rotation is unchanged the cached dimensions are
-    // reused as-is.
-    const s = await server.getScreenSize();
-    if (pre) pre.screenSizeMs = performance.now() - tSize;
-    const rotation = s.displayRotation;
-    const cached = getCachedScreenSize(device.id);
-    let size: { width: number; height: number };
-    if (cached && cached.rotation === rotation && cached.width > 0 && cached.height > 0) {
-      size = { width: cached.width, height: cached.height };
-    } else {
-      size = { width: s.screenWidth, height: s.screenHeight };
-      if (size.width > 0 && size.height > 0) {
-        setCachedScreenSize(device.id, { ...size, rotation });
-      } else if (cached) {
-        // A transient 0×0 read while the display is reconfiguring: keep the last
-        // known-good geometry rather than converting against zero.
-        size = { width: cached.width, height: cached.height };
-      }
-    }
-    return fn(server, size);
+    return fn(server);
   });
 }
 
-function toPixels(
-  size: { width: number; height: number },
-  xNorm: number,
-  yNorm: number
-): { x: number; y: number } {
+/**
+ * The screen size a gesture converts normalized coordinates against on the host
+ * (servers below versionCode 31, and the paths that need pixels on the host).
+ *
+ * Peeks the cheap, rotation-aware `getScreenSize` (display metrics only, ~1 ms even
+ * mid-animation, unlike `getInfo`) and keys the cache by rotation (F21). A
+ * mid-session rotation reports a new `displayRotation`, so the stored width/height
+ * is refreshed instead of converting the gesture against the pre-rotation geometry
+ * (the bug: a landscape tap landing at portrait pixels). When the rotation is
+ * unchanged the cached dimensions are reused as-is.
+ */
+async function readScreenSize(
+  server: OpenDeviceServerApi,
+  device: DeviceInfo,
+  pre?: PreActionStages
+): Promise<ScreenSize> {
+  const tSize = performance.now();
+  const s = await server.getScreenSize();
+  if (pre) pre.screenSizeMs = performance.now() - tSize;
+  const rotation = s.displayRotation;
+  const cached = getCachedScreenSize(device.id);
+  if (cached && cached.rotation === rotation && cached.width > 0 && cached.height > 0) {
+    return { width: cached.width, height: cached.height };
+  }
+  const size = { width: s.screenWidth, height: s.screenHeight };
+  if (size.width > 0 && size.height > 0) {
+    setCachedScreenSize(device.id, { ...size, rotation });
+  } else if (cached) {
+    // A transient 0×0 read while the display is reconfiguring: keep the last
+    // known-good geometry rather than converting against zero.
+    return { width: cached.width, height: cached.height };
+  }
+  return size;
+}
+
+/** {@link withServerLocked} for a path that always needs the screen size on the host. */
+function withServer<T>(
+  registry: Registry,
+  device: DeviceInfo,
+  fn: (api: OpenDeviceServerApi, size: ScreenSize) => Promise<T>,
+  pre?: PreActionStages
+): Promise<T> {
+  return withServerLocked(
+    registry,
+    device,
+    async (server) => fn(server, await readScreenSize(server, device, pre)),
+    pre
+  );
+}
+
+/**
+ * {@link withServerLocked} for a gesture that can send normalized coordinates.
+ * `size` is `null` when the server converts them on the device (versionCode 31+)
+ * and `needsPixels` is false: no `getScreenSize` RPC is made, and the caller sends
+ * the 0–1 point with `normalized: true`. Otherwise `size` is the host-side screen
+ * size, as before. `needsPixels` is for a caller that must know the pixel on the
+ * host (the screen-graph recorder keys its edge by the acted pixel).
+ */
+function withServerForGesture<T>(
+  registry: Registry,
+  device: DeviceInfo,
+  needsPixels: boolean,
+  fn: (api: OpenDeviceServerApi, size: ScreenSize | null) => Promise<T>,
+  pre?: PreActionStages
+): Promise<T> {
+  return withServerLocked(
+    registry,
+    device,
+    async (server) =>
+      fn(
+        server,
+        !needsPixels && supportsNormalizedInput(server)
+          ? null
+          : await readScreenSize(server, device, pre)
+      ),
+    pre
+  );
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function toPixels(size: ScreenSize, xNorm: number, yNorm: number): { x: number; y: number } {
   return {
-    x: Math.round(Math.max(0, Math.min(1, xNorm)) * size.width),
-    y: Math.round(Math.max(0, Math.min(1, yNorm)) * size.height),
+    x: Math.round(clamp01(xNorm) * size.width),
+    y: Math.round(clamp01(yNorm) * size.height),
   };
+}
+
+/**
+ * The point a gesture sends: host-side pixels against `size`, or, when `size` is
+ * null (the server converts), the 0–1 point clamped as the pixel path clamps it.
+ */
+function wirePoint(size: ScreenSize | null, xNorm: number, yNorm: number) {
+  return size ? toPixels(size, xNorm, yNorm) : { x: clamp01(xNorm), y: clamp01(yNorm) };
+}
+
+/** `{ normalized: true }` when the gesture sends 0–1 points (see {@link wirePoint}). */
+function normalizedOpt(size: ScreenSize | null): { normalized?: true } {
+  return size ? {} : { normalized: true };
 }
 
 /**
@@ -362,17 +454,19 @@ export function openServerTap(
   const pre: PreActionStages | undefined = timing
     ? { lockWaitMs: 0, resolveMs: 0, screenSizeMs: 0 }
     : undefined;
-  return withServer(
+  return withServerForGesture(
     registry,
     device,
+    false,
     async (server, size) => {
-      const { x, y } = toPixels(size, xNorm, yNorm);
+      const { x, y } = wirePoint(size, xNorm, yNorm);
       const res = await server.tap(x, y, {
         clickCount,
         holdMs: TAP_HOLD_MS,
         ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
         ...injectOpt(),
         ...(timing ? { timing: true } : {}),
+        ...normalizedOpt(size),
       });
       if (pre) {
         lastTapStages.set(device.id, {
@@ -399,7 +493,8 @@ export function openServerTap(
  * Stages of one plain open tap ({@link openServerTap}) with tap timing on (step
  * tap-latency). The tap is 1.5 ms slower than the official stack and this splits
  * it: the work before the tap RPC (`lockWaitMs`, `resolveMs`, and `screenSizeMs`,
- * the geometry read every gesture makes and the official tap does not), the tap RPC
+ * the geometry read the official tap does not make, 0 since APK versionCode 31
+ * converts the normalized point on the device), the tap RPC
  * as the host sees it (`rpc`), the device's own stages (`device`, APK 0.1.26+), and
  * `totalMs` for the whole call. `seq` numbers the timed taps of this process (a
  * reader can tell its own tap from a stale one) and `dropped` says the device
@@ -478,8 +573,11 @@ export function openServerTapWithOutcome(
   clickCount: number,
   req: OutcomeRequest = {}
 ): Promise<OpenServerActionOutcome> {
-  return withServer(registry, device, async (server, size) => {
-    const { x, y } = toPixels(size, xNorm, yNorm);
+  // The recorder keys the edge by the tapped pixel and reads the acted element at
+  // it, so a recorded tap converts on the host; otherwise the server converts.
+  const recording = screenGraphRecordingEnabled();
+  return withServerForGesture(registry, device, recording, async (server, wireSize) => {
+    const { x, y } = wirePoint(wireSize, xNorm, yNorm);
     // Phase D §2: when the screen graph is recording, read the BEFORE tree once so
     // the edge can carry the acted element's selector (re-resolved on replay). The
     // extra read is an internal RPC (not a counted bench round-trip) and only runs
@@ -488,11 +586,11 @@ export function openServerTapWithOutcome(
     // Phase E: keep the before tree too, so the recorder can resolve the tap's
     // scrollable container / item template host-side (design D1 option B).
     let beforeTree: OpenServerElement[] | undefined;
-    if (screenGraphRecordingEnabled()) {
+    if (recording && wireSize) {
       try {
         const before = await server.getState({ includeScreenshot: false });
         beforeTree = before.tree;
-        actedSelector = tappedSelectorFromTree(before.tree, x, y, size);
+        actedSelector = tappedSelectorFromTree(before.tree, x, y, wireSize);
       } catch {
         /* best-effort — a coordinate edge without a selector still records */
       }
@@ -508,13 +606,17 @@ export function openServerTapWithOutcome(
       ...(clickCount > 1 ? { gapMs: MULTI_TAP_GAP_MS } : {}),
       ...req.bounds,
       ...injectOpt(),
+      ...normalizedOpt(wireSize),
     });
     if (req.failOnDrop) throwIfDropped(raw, "tap");
     const outcome = toOutcome(raw);
-    await recordOpenServerObservation(device, server, size, { kind: "tap", x, y }, outcome, {
-      ...(actedSelector ? { actedSelector } : {}),
-      ...(beforeTree ? { beforeTree, point: { x, y } } : {}),
-    });
+    // Recording implies `wireSize` (pixels on the host); unrecorded, this is a no-op.
+    if (wireSize) {
+      await recordOpenServerObservation(device, server, wireSize, { kind: "tap", x, y }, outcome, {
+        ...(actedSelector ? { actedSelector } : {}),
+        ...(beforeTree ? { beforeTree, point: { x, y } } : {}),
+      });
+    }
     return outcome;
   });
 }
@@ -591,14 +693,20 @@ export function openServerVerifiedTap(
   clickCount: number,
   verify: OpenServerVerify
 ): Promise<OpenServerVerifiedResult> {
-  return withServer(registry, device, async (server, size) => {
+  // The tap goes to the match's bounds center, already in pixels, so the screen size
+  // is read only for the coordinate guard or the recorder (never on a server that
+  // converts and no guard, graph off).
+  const recording = screenGraphRecordingEnabled();
+  const needsSize = recording || (xNorm !== undefined && yNorm !== undefined);
+  return withServerLocked(registry, device, async (server) => {
+    const size = needsSize ? await readScreenSize(server, device) : null;
     const t0 = performance.now();
     // `query` arms the version clock and returns the live matches (capped) — the
     // like-for-like read the screen-graph harness uses (`locateNorm`).
     const q = await server.query(verify.selector, { limit: VERIFY_QUERY_LIMIT });
     const verifyMs = Number((performance.now() - t0).toFixed(3));
     const version = q.version;
-    const g = verifyGuard(size, xNorm, yNorm, verify.tolerancePx);
+    const g = size ? verifyGuard(size, xNorm, yNorm, verify.tolerancePx) : undefined;
     const res: VerifyResolution = resolveVerify(
       q.nodes as QueryNodeLite[],
       verify.selector,
@@ -636,7 +744,7 @@ export function openServerVerifiedTap(
     // node is the verified match, but the compact `query` node lacks the child
     // path an `EdgeSelector` bucket needs, so the coordinate observation (target
     // = the tapped center) is recorded rather than a reconstructed selector.
-    if (screenGraphRecordingEnabled()) {
+    if (recording && size) {
       await recordOpenServerObservation(
         device,
         server,
@@ -734,10 +842,13 @@ export function openServerSwipe(
   steps: number,
   holdEndMs?: number
 ): Promise<OpenSwipeTiming> {
-  return withServer(registry, device, async (server, size) => {
-    const from = toPixels(size, fromXNorm, fromYNorm);
-    const to = toPixels(size, toXNorm, toYNorm);
-    const res = await server.swipe(from.x, from.y, to.x, to.y, steps, holdEndMs, injectOpt());
+  return withServerForGesture(registry, device, false, async (server, size) => {
+    const from = wirePoint(size, fromXNorm, fromYNorm);
+    const to = wirePoint(size, toXNorm, toYNorm);
+    const res = await server.swipe(from.x, from.y, to.x, to.y, steps, holdEndMs, {
+      ...injectOpt(),
+      ...normalizedOpt(size),
+    });
     if ((res as { dropped?: boolean }).dropped || res.success === false) {
       throw new Error("open-device-server swipe was dropped by the input dispatcher");
     }
@@ -800,24 +911,30 @@ export function openServerSwipeWithOutcomeTimed(
   holdEndMs?: number,
   req: OutcomeRequest = {}
 ): Promise<{ outcome: OpenServerActionOutcome; timing: OpenSwipeTiming }> {
-  const opts = {
-    ...req.bounds,
-    ...injectOpt(),
-  };
-  return withServer(registry, device, async (server, size) => {
-    const from = toPixels(size, fromXNorm, fromYNorm);
-    const to = toPixels(size, toXNorm, toYNorm);
-    const reply = await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, opts);
+  // The recorder keys the edge by the swipe's pixels, so a recorded swipe converts
+  // on the host; otherwise the server converts.
+  const recording = screenGraphRecordingEnabled();
+  return withServerForGesture(registry, device, recording, async (server, size) => {
+    const from = wirePoint(size, fromXNorm, fromYNorm);
+    const to = wirePoint(size, toXNorm, toYNorm);
+    const reply = await server.swipeWithOutcome(from.x, from.y, to.x, to.y, steps, holdEndMs, {
+      ...req.bounds,
+      ...injectOpt(),
+      ...normalizedOpt(size),
+    });
     if (req.failOnDrop) throwIfDropped(reply as { dropped?: unknown; success?: unknown }, "swipe");
     const outcome = toOutcome(reply);
     const timing = swipeTimingOf(reply);
-    await recordOpenServerObservation(
-      device,
-      server,
-      size,
-      { kind: "swipe", startX: from.x, startY: from.y, endX: to.x, endY: to.y },
-      outcome
-    );
+    // Recording implies `size` (pixels on the host); unrecorded, this is a no-op.
+    if (size) {
+      await recordOpenServerObservation(
+        device,
+        server,
+        size,
+        { kind: "swipe", startX: from.x, startY: from.y, endX: to.x, endY: to.y },
+        outcome
+      );
+    }
     return { outcome, timing };
   });
 }
@@ -967,8 +1084,9 @@ export interface NormalizedPointerPath {
 }
 
 /**
- * Multi-pointer gesture via the open server: converts each pointer's normalized
- * path to device pixels against the live screen size and injects it in one RPC.
+ * Multi-pointer gesture via the open server, injected in one RPC: each pointer's
+ * normalized path is sent as is for the server to convert (versionCode 31+), or
+ * converted to device pixels against the live screen size for an older server.
  * Backs the pinch / rotate / custom tools, which `swipe` (a single straight
  * line) cannot express.
  */
@@ -977,15 +1095,15 @@ export function openServerGesture(
   device: DeviceInfo,
   pointers: NormalizedPointerPath[]
 ): Promise<void> {
-  return withServer(registry, device, async (server, size) => {
-    const pixelPointers: GesturePointerPath[] = pointers.map((p) => ({
+  return withServerForGesture(registry, device, false, async (server, size) => {
+    const wirePointers: GesturePointerPath[] = pointers.map((p) => ({
       ...(p.id !== undefined ? { id: p.id } : {}),
       points: p.points.map((pt) => {
-        const { x, y } = toPixels(size, pt.x, pt.y);
+        const { x, y } = wirePoint(size, pt.x, pt.y);
         return { x, y, tMs: pt.tMs };
       }),
     }));
-    const res = await server.gesture(pixelPointers, injectOpt());
+    const res = await server.gesture(wirePointers, { ...injectOpt(), ...normalizedOpt(size) });
     if ((res as { dropped?: boolean }).dropped || res.success === false) {
       throw new Error("open-device-server gesture was dropped by the input dispatcher");
     }
@@ -1209,8 +1327,11 @@ export interface SequenceResult {
 const SEQ_BASE_BUDGET_MS = 15_000;
 
 /**
- * Build the device-pixel `batch` payload for a burst (ticket A2 §A) and the RPC
- * budget. Pure over `(steps, size, resolveTarget)` — the target resolver is
+ * Build the `batch` payload for a burst (ticket A2 §A) and the RPC budget. Taps and
+ * swipes carry device pixels against `size`, or, with `size` null (a server at
+ * versionCode 31+), the 0–1 points under the normalized keys (`nx/ny`,
+ * `nStartX`…) for the device to convert. An index target is always pixels (the
+ * element's bounds center). Pure over `(steps, size, resolveTarget)` — the target resolver is
  * injected so this is device-free and unit-testable; the live path passes a
  * closure over the pre-burst read (which refuses a stale index before any action
  * is built). `wait` steps become the `wait` pseudo-method whose `delayMs` is the
@@ -1219,7 +1340,7 @@ const SEQ_BASE_BUDGET_MS = 15_000;
  */
 export function buildSequenceActions(
   steps: SequenceStep[],
-  size: { width: number; height: number },
+  size: { width: number; height: number } | null,
   resolveTarget: (target: IndexTarget) => { x: number; y: number }
 ): { actions: OpenServerBatchAction[]; budgetMs: number } {
   // A2-M5: every index target resolves against the ONE pre-burst snapshot, so a
@@ -1238,16 +1359,19 @@ export function buildSequenceActions(
     const delayMs = step.delayMs;
     if (delayMs && delayMs > 0) budgetMs += delayMs;
     if (step.kind === "tap") {
-      const px =
-        step.target !== undefined
-          ? resolveTarget(step.target)
-          : toPixels(size, step.x ?? 0.5, step.y ?? 0.5);
+      let point: Record<string, number>;
+      if (step.target !== undefined) {
+        const px = resolveTarget(step.target);
+        point = { x: px.x, y: px.y };
+      } else {
+        const p = wirePoint(size, step.x ?? 0.5, step.y ?? 0.5);
+        point = size ? { x: p.x, y: p.y } : { nx: p.x, ny: p.y };
+      }
       const clickCount = step.clickCount ?? 1;
       actions.push({
         method: "tap",
         params: {
-          x: px.x,
-          y: px.y,
+          ...point,
           ...(clickCount > 1 ? { clickCount, gapMs: MULTI_TAP_GAP_MS } : {}),
           holdMs: TAP_HOLD_MS,
           ...injectOpt(),
@@ -1255,18 +1379,17 @@ export function buildSequenceActions(
         ...(delayMs !== undefined ? { delayMs } : {}),
       });
     } else if (step.kind === "swipe") {
-      const from = toPixels(size, step.fromX, step.fromY);
-      const to = toPixels(size, step.toX, step.toY);
+      const from = wirePoint(size, step.fromX, step.fromY);
+      const to = wirePoint(size, step.toX, step.toY);
       const duration = step.durationMs ?? SEQ_DEFAULT_SWIPE_DURATION_MS;
       const swipeSteps = Math.max(1, Math.round(duration / 16));
       const momentumFree = step.momentum === false;
       actions.push({
         method: "swipe",
         params: {
-          startX: from.x,
-          startY: from.y,
-          endX: to.x,
-          endY: to.y,
+          ...(size
+            ? { startX: from.x, startY: from.y, endX: to.x, endY: to.y }
+            : { nStartX: from.x, nStartY: from.y, nEndX: to.x, nEndY: to.y }),
           steps: swipeSteps,
           ...(momentumFree ? { holdEndMs: SEQ_MOMENTUM_FREE_HOLD_MS } : {}),
           ...injectOpt(),
@@ -1343,7 +1466,7 @@ export function openServerSequence(
   steps: SequenceStep[]
 ): Promise<SequenceResult> {
   const needsState = steps.some((s) => s.kind === "tap" && s.target !== undefined);
-  return withServer(registry, device, async (server, size) => {
+  return withServerForGesture(registry, device, false, async (server, size) => {
     // Resolve index targets against ONE pre-burst read (tree + live version): the
     // burst acts on the screen the index tier was read from, so a stale index is
     // refused here, before any injection.

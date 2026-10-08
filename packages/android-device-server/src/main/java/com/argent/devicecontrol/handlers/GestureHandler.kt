@@ -3,7 +3,56 @@ package com.argent.devicecontrol.handlers
 import android.app.UiAutomation
 import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
+import com.argent.devicecontrol.util.DisplayReader
+import com.argent.devicecontrol.util.NormalizedCoords
 import org.json.JSONObject
+
+/**
+ * The pointers of a `gesture` RPC: ids and the full (un-resampled) paths in pixels.
+ * A point carries pixel `x/y`, or (versionCode 31) normalized `nx/ny` converted
+ * against ONE read of [geometry] for the whole gesture. Pure over its inputs, so it
+ * is unit-tested on the JVM against real JSON.
+ */
+object GesturePointers {
+    fun read(
+        params: JSONObject,
+        geometry: () -> DisplayReader.Geometry
+    ): Pair<IntArray, List<List<MotionInjector.Point>>> {
+        val pointersJson = params.optJSONArray("pointers")
+            ?: throw IllegalArgumentException("Missing 'pointers' array")
+        val n = pointersJson.length()
+        if (n < 1) throw IllegalArgumentException("'pointers' must contain at least one pointer")
+
+        val geo by lazy { geometry() }
+        val ids = IntArray(n)
+        val paths = ArrayList<List<MotionInjector.Point>>(n)
+        for (i in 0 until n) {
+            val pointer = pointersJson.getJSONObject(i)
+            ids[i] = pointer.optInt("id", i)
+            val pts = pointer.optJSONArray("points")
+                ?: throw IllegalArgumentException("pointer $i is missing its 'points' array")
+            val full = ArrayList<MotionInjector.Point>(pts.length())
+            for (j in 0 until pts.length()) {
+                val pt = pts.getJSONObject(j)
+                val tMs = pt.optLong("tMs", 0)
+                if (pt.has("nx") || pt.has("ny")) {
+                    val (x, y) = NormalizedCoords.pointParam(pt, "x", "y", "nx", "ny") { geo }
+                    full.add(MotionInjector.Point(x.toFloat(), y.toFloat(), tMs))
+                } else {
+                    full.add(
+                        MotionInjector.Point(
+                            pt.getDouble("x").toFloat(),
+                            pt.getDouble("y").toFloat(),
+                            tMs
+                        )
+                    )
+                }
+            }
+            paths.add(full)
+        }
+        return ids to paths
+    }
+}
 
 /**
  * Multi-pointer gesture handler: injects an arbitrary synchronized touch
@@ -16,9 +65,14 @@ import org.json.JSONObject
  *
  * Every pointer's `points` array must be the same length (the host tools emit
  * one frame per pointer per tick), pixels for x/y, and `tMs` the frame's offset
- * from gesture start. Returns { success: true }.
+ * from gesture start. From versionCode 31 a point may carry normalized `nx/ny`
+ * instead, converted here against one display read for the whole gesture.
+ * Returns { success: true }.
  */
-class GestureHandler(private val uiAutomation: UiAutomation) {
+class GestureHandler(
+    private val uiAutomation: UiAutomation,
+    private val displayGeometry: () -> DisplayReader.Geometry
+) {
 
     private companion object {
         // Resample cadence for the injected timeline (F18). The host emits ~60 fps
@@ -34,31 +88,8 @@ class GestureHandler(private val uiAutomation: UiAutomation) {
     }
 
     fun execute(params: JSONObject): JSONObject {
-        val pointersJson = params.optJSONArray("pointers")
-            ?: throw IllegalArgumentException("Missing 'pointers' array")
-        val n = pointersJson.length()
-        if (n < 1) throw IllegalArgumentException("'pointers' must contain at least one pointer")
-
-        val ids = IntArray(n)
-        val paths = ArrayList<List<MotionInjector.Point>>(n)
-        for (i in 0 until n) {
-            val pointer = pointersJson.getJSONObject(i)
-            ids[i] = pointer.optInt("id", i)
-            val pts = pointer.optJSONArray("points")
-                ?: throw IllegalArgumentException("pointer $i is missing its 'points' array")
-            val full = ArrayList<MotionInjector.Point>(pts.length())
-            for (j in 0 until pts.length()) {
-                val pt = pts.getJSONObject(j)
-                full.add(
-                    MotionInjector.Point(
-                        pt.getDouble("x").toFloat(),
-                        pt.getDouble("y").toFloat(),
-                        pt.optLong("tMs", 0)
-                    )
-                )
-            }
-            paths.add(resample(full))
-        }
+        val (ids, fullPaths) = GesturePointers.read(params, displayGeometry)
+        val paths = fullPaths.map { resample(it) }
 
         // Phase 3n: per-RPC injection strategy (absent → DEFAULT = today's blocking
         // final UP for a multi-pointer gesture).

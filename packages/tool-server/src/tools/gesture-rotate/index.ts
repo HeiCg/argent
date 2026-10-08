@@ -14,6 +14,7 @@ import {
   shouldUseOpenServer,
   openServerGesture,
   type NormalizedPointerPath,
+  logOpenServerFallback,
 } from "../../utils/open-server-input";
 
 // Host frame budget ≈ 60fps; the open server injects the same per-frame timeline.
@@ -163,11 +164,7 @@ Size the orbit with radius, or with radiusX and radiusY together (the pair overr
           return { rotated: true, timestampMs };
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") throw err;
-          console.debug(
-            `[gesture-rotate] open-device-server failed, falling back to simulator-server: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
+          logOpenServerFallback("gesture-rotate", err);
         }
       }
 

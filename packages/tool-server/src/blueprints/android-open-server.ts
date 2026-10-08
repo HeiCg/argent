@@ -294,8 +294,26 @@ export interface OpenServerStateResult {
 export interface GesturePointerPath {
   /** Stable pointer id; defaults to the array index server-side. */
   id?: number;
-  /** Device-pixel samples; `tMs` is the offset from gesture start. */
+  /**
+   * Device-pixel samples, or 0–1 normalized ones when the call passes
+   * `normalized: true`; `tMs` is the offset from gesture start.
+   */
   points: Array<{ x: number; y: number; tMs: number }>;
+}
+
+/**
+ * First server versionCode that converts normalized gesture coordinates on the
+ * device (`nx/ny` on tap and long-press, `nStartX/nStartY/nEndX/nEndY` on swipe,
+ * `nx/ny` per gesture point), against its live display metrics and rotation. From
+ * here the host sends the 0–1 point as is and skips the `getScreenSize` RPC it
+ * made before every gesture. An older server rejects the `n*` keys (it reads
+ * `x`/`y` with `getInt`), so the host only sends them to a server at this version.
+ */
+export const NORMALIZED_INPUT_MIN_VERSION_CODE = 31;
+
+/** Whether `server` converts normalized gesture coordinates on the device. */
+export function supportsNormalizedInput(server: Pick<OpenDeviceServerApi, "installedVersionCode">) {
+  return (server.installedVersionCode ?? 0) >= NORMALIZED_INPUT_MIN_VERSION_CODE;
 }
 
 /**
@@ -416,10 +434,19 @@ export interface OpenServerBatchStepResult {
 
 /**
  * The method surface of the open-source on-device server. Coordinates for
- * tap/longPress/swipe are device PIXELS (the server drives UiAutomator directly);
- * callers holding normalized 0–1 points convert against [getInfo].
+ * tap/longPress/swipe/gesture are device PIXELS by default. From versionCode
+ * {@link NORMALIZED_INPUT_MIN_VERSION_CODE} the tap/swipe/gesture calls also take
+ * 0–1 normalized points (`normalized: true`), converted on the device; against an
+ * older server, callers holding normalized points convert against
+ * [getScreenSize].
  */
 export interface OpenDeviceServerApi {
+  /**
+   * versionCode of the server APK on the device, from the install gate (the probe
+   * when it was current, the bundled manifest after an install). Absent when not
+   * known; the host then treats the server as one without normalized input.
+   */
+  readonly installedVersionCode?: number;
   isReady(): boolean;
   ping(): Promise<{ status: string }>;
   getInfo(): Promise<OpenServerInfo>;
@@ -559,6 +586,11 @@ export interface OpenDeviceServerApi {
        * OpenTapStages}). Off by default, and the `timing` key is then not sent.
        */
       timing?: boolean;
+      /**
+       * The point is 0–1 normalized; the server converts it with its live display
+       * metrics and rotation (versionCode {@link NORMALIZED_INPUT_MIN_VERSION_CODE}+).
+       */
+      normalized?: boolean;
     }
     // `dropped:true` (phase 3g) when the on-device dispatcher rejected an injected
     // event (no injectable window mid-transition, secure surface, contended input
@@ -587,7 +619,13 @@ export interface OpenDeviceServerApi {
     // seam extended to swipe: it forces the input-manager pipe to report
     // `strategy:"unavailable"` and fall back to `uia-async`, so the fallback is
     // exercised on swipe (not tap only) on a device where the API resolves.
-    opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
+    // `normalized` (versionCode 31+): the four coordinates are 0–1 and the server
+    // converts them with its live display metrics and rotation.
+    opts?: {
+      inject?: OpenInjectStrategy;
+      _forceInjectUnavailable?: boolean;
+      normalized?: boolean;
+    }
   ): Promise<{ success: boolean } & OpenInjectReport & OpenSwipeTiming>;
   /**
    * Scroll a container by accessibility action instead of a touch swipe (APK
@@ -609,7 +647,12 @@ export interface OpenDeviceServerApi {
     pointers: GesturePointerPath[],
     // `_forceInjectUnavailable` (phase 3n.2, review 3N1-L1): the benchDebug-only P9
     // seam extended to gesture — forces `uia-async` fallback on a resolving device.
-    opts?: { inject?: OpenInjectStrategy; _forceInjectUnavailable?: boolean }
+    // `normalized` (versionCode 31+): every point is 0–1 and the server converts it.
+    opts?: {
+      inject?: OpenInjectStrategy;
+      _forceInjectUnavailable?: boolean;
+      normalized?: boolean;
+    }
   ): Promise<{ success: boolean } & OpenInjectReport>;
   /**
    * Run a burst of actions back-to-back on the device in ONE round-trip (ticket
@@ -707,6 +750,8 @@ export interface OpenDeviceServerApi {
       holdMs?: number;
       gapMs?: number;
       inject?: OpenInjectStrategy;
+      /** 0–1 point converted on the device (versionCode 31+). */
+      normalized?: boolean;
     }
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
   longPressWithOutcome(
@@ -722,7 +767,8 @@ export interface OpenDeviceServerApi {
     endY: number,
     steps?: number,
     holdEndMs?: number,
-    opts?: OutcomeOptions & { inject?: OpenInjectStrategy }
+    // `normalized`: 0–1 coordinates converted on the device (versionCode 31+).
+    opts?: OutcomeOptions & { inject?: OpenInjectStrategy; normalized?: boolean }
   ): Promise<{ success: boolean } & OpenServerActionOutcome & OpenSwipeTiming>;
   gestureWithOutcome(
     pointers: GesturePointerPath[],
@@ -736,6 +782,37 @@ export interface OpenDeviceServerApi {
     key: string,
     opts?: OutcomeOptions
   ): Promise<{ success: boolean } & OpenServerActionOutcome>;
+}
+
+/**
+ * Wire keys of one tap / long-press point: `nx/ny` when the point is 0–1 normalized
+ * (the server converts it, versionCode 31+), else pixel `x/y`. Distinct keys, not a
+ * flag: an older server reads `x`/`y` with `getInt` and rejects the request rather
+ * than reading a 0–1 value as a pixel.
+ */
+function pointParams(x: number, y: number, normalized?: boolean): Record<string, number> {
+  return normalized ? { nx: x, ny: y } : { x, y };
+}
+
+/** Wire keys of a swipe's two ends, normalized (`nStartX`…) or pixel (`startX`…). */
+function swipeParams(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  normalized?: boolean
+): Record<string, number> {
+  return normalized
+    ? { nStartX: startX, nStartY: startY, nEndX: endX, nEndY: endY }
+    : { startX, startY, endX, endY };
+}
+
+/** Gesture pointers with each point's 0–1 `x/y` sent as `nx/ny`. */
+function normalizedPointers(pointers: GesturePointerPath[]) {
+  return pointers.map((p) => ({
+    ...(p.id !== undefined ? { id: p.id } : {}),
+    points: p.points.map((pt) => ({ nx: pt.x, ny: pt.y, tMs: pt.tMs })),
+  }));
 }
 
 /**
@@ -1077,7 +1154,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
     const serial = device.id;
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    await ensureOpenDeviceServerInstalled(serial);
+    // The versionCode now on the device tells the input paths whether the server
+    // converts normalized coordinates itself (NORMALIZED_INPUT_MIN_VERSION_CODE).
+    const installedVersionCode = await ensureOpenDeviceServerInstalled(serial);
 
     const spawned = await spawnServer(serial);
     let ready = false;
@@ -1208,6 +1287,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
     });
 
     const api: OpenDeviceServerApi = {
+      ...(installedVersionCode !== undefined ? { installedVersionCode } : {}),
       isReady: () => ready && !disposed,
       ping: () => client.request<{ status: string }>("ping"),
       getInfo: () => client.request<OpenServerInfo>("getInfo"),
@@ -1286,8 +1366,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       tap: async (x, y, tapOpts = {}) => {
         type TapReply = { success: boolean; dropped?: boolean } & OpenInjectReport;
         const params = {
-          x,
-          y,
+          ...pointParams(x, y, tapOpts.normalized),
           ...(tapOpts.clickCount !== undefined ? { clickCount: tapOpts.clickCount } : {}),
           ...(tapOpts.holdMs !== undefined ? { holdMs: tapOpts.holdMs } : {}),
           ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
@@ -1328,10 +1407,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
       swipe: (startX, startY, endX, endY, steps, holdEndMs, swipeOpts) =>
         client.request<{ success: boolean } & OpenInjectReport & OpenSwipeTiming>("swipe", {
-          startX,
-          startY,
-          endX,
-          endY,
+          ...swipeParams(startX, startY, endX, endY, swipeOpts?.normalized),
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
           ...(swipeOpts?.inject !== undefined ? { inject: swipeOpts.inject } : {}),
@@ -1354,7 +1430,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       },
       gesture: (pointers, gestureOpts) =>
         client.request<{ success: boolean } & OpenInjectReport>("gesture", {
-          pointers,
+          pointers: gestureOpts?.normalized ? normalizedPointers(pointers) : pointers,
           ...(gestureOpts?.inject !== undefined ? { inject: gestureOpts.inject } : {}),
           ...(gestureOpts?._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
@@ -1435,8 +1511,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
 
       tapWithOutcome: (x, y, outcomeOpts) =>
         client.request<{ success: boolean } & OpenServerActionOutcome>("tap", {
-          x,
-          y,
+          ...pointParams(x, y, outcomeOpts?.normalized),
           ...(outcomeOpts?.clickCount !== undefined ? { clickCount: outcomeOpts.clickCount } : {}),
           ...(outcomeOpts?.holdMs !== undefined ? { holdMs: outcomeOpts.holdMs } : {}),
           ...(outcomeOpts?.gapMs !== undefined ? { gapMs: outcomeOpts.gapMs } : {}),
@@ -1452,10 +1527,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }),
       swipeWithOutcome: (startX, startY, endX, endY, steps, holdEndMs, outcomeOpts) =>
         client.request<{ success: boolean } & OpenServerActionOutcome & OpenSwipeTiming>("swipe", {
-          startX,
-          startY,
-          endX,
-          endY,
+          ...swipeParams(startX, startY, endX, endY, outcomeOpts?.normalized),
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
           ...(outcomeOpts?.inject !== undefined ? { inject: outcomeOpts.inject } : {}),

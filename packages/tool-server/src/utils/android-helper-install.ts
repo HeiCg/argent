@@ -15,7 +15,7 @@ import { bundledServerApkPath, serverManifest } from "@argent/android-device-ser
  * helper probes on every call (see `ensureAndroidDevtoolsInstalled`); the open
  * server keeps its per-process memo keyed by serial, package and versionCode.
  */
-const installedHelpers = new Map<string, true>();
+const installedHelpers = new Map<string, number>();
 
 function cacheKey(serial: string, packageName: string, versionCode: number): string {
   return `${serial}|${packageName}|${versionCode}`;
@@ -133,28 +133,38 @@ interface HelperInstallSpec {
   apkPath: string;
 }
 
-/** Install `apkPath` unless the device already has at least `versionCode`. */
-async function ensureHelperInstalled(spec: HelperInstallSpec): Promise<void> {
+/**
+ * Install `apkPath` unless the device already has at least `versionCode`. Resolves
+ * to the versionCode on the device afterwards: the probed one when it was current,
+ * `versionCode` after an install.
+ */
+async function ensureHelperInstalled(spec: HelperInstallSpec): Promise<number> {
   const { serial, packageName, versionCode, installFlags, apkPath } = spec;
   const key = cacheKey(serial, packageName, versionCode);
-  if (installedHelpers.has(key)) return;
+  const memo = installedHelpers.get(key);
+  if (memo !== undefined) return memo;
 
   const probe = await probeInstalledVersion(serial, packageName);
   if (probe.installed && probe.versionCode !== null && probe.versionCode >= versionCode) {
-    installedHelpers.set(key, true);
-    return;
+    installedHelpers.set(key, probe.versionCode);
+    return probe.versionCode;
   }
 
   const args = ["-s", serial, "install", ...installFlags, apkPath];
   await installApk(serial, packageName, args);
 
-  installedHelpers.set(key, true);
+  installedHelpers.set(key, versionCode);
+  return versionCode;
 }
 
-/** Install the open-source android-device-server APK. */
-export async function ensureOpenDeviceServerInstalled(serial: string): Promise<void> {
+/**
+ * Install the open-source android-device-server APK. Resolves to the versionCode
+ * now on the device (the probed one when it was already current, the bundled one
+ * after an install), so the blueprint knows which RPC features the server has.
+ */
+export async function ensureOpenDeviceServerInstalled(serial: string): Promise<number> {
   const manifest = serverManifest();
-  await ensureHelperInstalled({
+  return ensureHelperInstalled({
     serial,
     packageName: manifest.packageName,
     versionCode: manifest.versionCode,

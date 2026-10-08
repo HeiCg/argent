@@ -24,7 +24,9 @@ import com.argent.devicecontrol.handlers.TapTimeline
 import com.argent.devicecontrol.handlers.TypeHandler
 import com.argent.devicecontrol.handlers.WaitHandler
 import com.argent.devicecontrol.input.InputManagerInjector
+import com.argent.devicecontrol.util.DisplayReader
 import com.argent.devicecontrol.util.JsonRpc
+import com.argent.devicecontrol.util.NormalizedCoords
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -50,14 +52,21 @@ class JsonRpcHandler(
         const val TAG = "JsonRpcHandler"
     }
 
-    private val tapHandler = TapHandler(uiAutomation)
-    private val swipeHandler = SwipeHandler(uiDevice, uiAutomation)
+    // Live display geometry for the gesture handlers' normalized points (versionCode
+    // 31): the same idle-free snapshot `getScreenSize` returns, read per gesture so a
+    // rotation between gestures is picked up.
+    // A transient 0x0 read is retried once after 50 ms (NormalizedCoords.readGeometry).
+    private val displayGeometry = {
+        NormalizedCoords.readGeometry({ DisplayReader.read(instrumentation.context) })
+    }
+    private val tapHandler = TapHandler(uiAutomation, displayGeometry)
+    private val swipeHandler = SwipeHandler(uiDevice, uiAutomation, displayGeometry)
     private val scrollHandler = ScrollHandler(uiAutomation)
-    private val gestureHandler = GestureHandler(uiAutomation)
+    private val gestureHandler = GestureHandler(uiAutomation, displayGeometry)
     private val flushInputHandler = FlushInputHandler(uiAutomation)
     private val typeHandler = TypeHandler(instrumentation, uiDevice)
     private val clipboardHandler = ClipboardHandler(instrumentation)
-    private val longPressHandler = LongPressHandler(uiDevice)
+    private val longPressHandler = LongPressHandler(uiDevice, displayGeometry)
     private val keyHandler = KeyHandler(uiDevice)
     private val screenshotHandler = ScreenshotHandler(uiAutomation)
     private val hierarchyHandler = HierarchyHandler(uiDevice, uiAutomation)
@@ -233,7 +242,7 @@ class JsonRpcHandler(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing $method", e)
-            JsonRpc.errorResponse(id, -32603, e.message ?: "Internal error")
+            JsonRpc.errorResponse(id, JsonRpc.errorCodeFor(e), e.message ?: "Internal error")
         }
         return HandleResult(bodyLine, ServerTimingKey.of(method, params.optBoolean("warmup", false)), padTo)
     }

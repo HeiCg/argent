@@ -3,6 +3,8 @@ package com.argent.devicecontrol.handlers
 import android.app.UiAutomation
 import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
+import com.argent.devicecontrol.util.DisplayReader
+import com.argent.devicecontrol.util.NormalizedCoords
 import org.json.JSONObject
 
 /**
@@ -22,8 +24,15 @@ import org.json.JSONObject
  * `MULTI_TAP_GAP_MS`) so the whole run lands inside the OS double-tap window,
  * instead of the host firing N separate `tap` RPCs whose spacing it cannot
  * guarantee.
+ *
+ * Point: pixel `x/y`, or (versionCode 31) normalized `nx/ny` converted here with
+ * the live display geometry ([NormalizedCoords]), so the host makes no
+ * `getScreenSize` RPC before the tap.
  */
-class TapHandler(private val uiAutomation: UiAutomation) {
+class TapHandler(
+    private val uiAutomation: UiAutomation,
+    private val displayGeometry: () -> DisplayReader.Geometry
+) {
 
     private companion object {
         const val DEFAULT_HOLD_MS = 50L
@@ -31,8 +40,9 @@ class TapHandler(private val uiAutomation: UiAutomation) {
     }
 
     fun execute(params: JSONObject): JSONObject {
-        val x = params.getInt("x").toFloat()
-        val y = params.getInt("y").toFloat()
+        val (px, py) = TapPoint.read(params, displayGeometry)
+        val x = px.toFloat()
+        val y = py.toFloat()
         val clickCount = maxOf(1, params.optInt("clickCount", 1))
         val holdMs = maxOf(0L, params.optLong("holdMs", DEFAULT_HOLD_MS))
         val gapMs = maxOf(0L, params.optLong("gapMs", DEFAULT_GAP_MS))
@@ -65,6 +75,16 @@ class TapHandler(private val uiAutomation: UiAutomation) {
             }
         }
     }
+}
+
+/**
+ * The point of a `tap` or `longPress` RPC: pixel `x/y`, or (versionCode 31)
+ * normalized `nx/ny` converted against [geometry]. Separate from the handlers so the
+ * parsing is unit-tested on the JVM against real JSON.
+ */
+object TapPoint {
+    fun read(params: JSONObject, geometry: () -> DisplayReader.Geometry): Pair<Int, Int> =
+        NormalizedCoords.pointParam(params, "x", "y", "nx", "ny", geometry)
 }
 
 /**

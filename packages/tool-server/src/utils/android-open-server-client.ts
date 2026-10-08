@@ -267,14 +267,20 @@ export class AndroidOpenServerClient {
     this.pending.delete(id);
 
     if (res.error) {
+      // -32602 Invalid params / -32700 Parse error: the server rejected the request
+      // itself (a missing or out-of-range parameter), not a device failure. Classed
+      // as `validation` so the fallback logs it loudly (logOpenServerFallback).
+      const badRequest = res.error.code === -32602 || res.error.code === -32700;
       p.reject(
         new FailureError(
           res.error.message ?? `open-device-server error ${res.error.code ?? ""}`.trim(),
           {
             error_code: FAILURE_CODES.OPEN_DEVICE_SERVER_RPC_ERROR,
-            failure_stage: "open_device_server_rpc_response",
+            failure_stage: badRequest
+              ? "open_device_server_rpc_invalid_params"
+              : "open_device_server_rpc_response",
             failure_area: "tool_server",
-            error_kind: "subprocess",
+            error_kind: badRequest ? "validation" : "subprocess",
           }
         )
       );
