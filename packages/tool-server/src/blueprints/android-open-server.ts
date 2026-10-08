@@ -785,6 +785,37 @@ export interface OpenDeviceServerApi {
 }
 
 /**
+ * Wire keys of one tap / long-press point: `nx/ny` when the point is 0–1 normalized
+ * (the server converts it, versionCode 31+), else pixel `x/y`. Distinct keys, not a
+ * flag: an older server reads `x`/`y` with `getInt` and rejects the request rather
+ * than reading a 0–1 value as a pixel.
+ */
+function pointParams(x: number, y: number, normalized?: boolean): Record<string, number> {
+  return normalized ? { nx: x, ny: y } : { x, y };
+}
+
+/** Wire keys of a swipe's two ends, normalized (`nStartX`…) or pixel (`startX`…). */
+function swipeParams(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  normalized?: boolean
+): Record<string, number> {
+  return normalized
+    ? { nStartX: startX, nStartY: startY, nEndX: endX, nEndY: endY }
+    : { startX, startY, endX, endY };
+}
+
+/** Gesture pointers with each point's 0–1 `x/y` sent as `nx/ny`. */
+function normalizedPointers(pointers: GesturePointerPath[]) {
+  return pointers.map((p) => ({
+    ...(p.id !== undefined ? { id: p.id } : {}),
+    points: p.points.map((pt) => ({ nx: pt.x, ny: pt.y, tMs: pt.tMs })),
+  }));
+}
+
+/**
  * The `outcome` param an action carries to ask the server for a before/after
  * fingerprint delta. Always an object (so the server records the outcome); each
  * bound is omitted when unset so the server defaults apply (firstEventTimeoutMs
@@ -1123,7 +1154,9 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
     const serial = device.id;
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    await ensureOpenDeviceServerInstalled(serial);
+    // The versionCode now on the device tells the input paths whether the server
+    // converts normalized coordinates itself (NORMALIZED_INPUT_MIN_VERSION_CODE).
+    const installedVersionCode = await ensureOpenDeviceServerInstalled(serial);
 
     const spawned = await spawnServer(serial);
     let ready = false;
@@ -1254,6 +1287,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
     });
 
     const api: OpenDeviceServerApi = {
+      ...(installedVersionCode !== undefined ? { installedVersionCode } : {}),
       isReady: () => ready && !disposed,
       ping: () => client.request<{ status: string }>("ping"),
       getInfo: () => client.request<OpenServerInfo>("getInfo"),
@@ -1332,8 +1366,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       tap: async (x, y, tapOpts = {}) => {
         type TapReply = { success: boolean; dropped?: boolean } & OpenInjectReport;
         const params = {
-          x,
-          y,
+          ...pointParams(x, y, tapOpts.normalized),
           ...(tapOpts.clickCount !== undefined ? { clickCount: tapOpts.clickCount } : {}),
           ...(tapOpts.holdMs !== undefined ? { holdMs: tapOpts.holdMs } : {}),
           ...(tapOpts.gapMs !== undefined ? { gapMs: tapOpts.gapMs } : {}),
@@ -1374,10 +1407,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         client.request<{ success: boolean }>("longPress", { x, y, durationMs: durationMs ?? 1000 }),
       swipe: (startX, startY, endX, endY, steps, holdEndMs, swipeOpts) =>
         client.request<{ success: boolean } & OpenInjectReport & OpenSwipeTiming>("swipe", {
-          startX,
-          startY,
-          endX,
-          endY,
+          ...swipeParams(startX, startY, endX, endY, swipeOpts?.normalized),
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
           ...(swipeOpts?.inject !== undefined ? { inject: swipeOpts.inject } : {}),
@@ -1400,7 +1430,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
       },
       gesture: (pointers, gestureOpts) =>
         client.request<{ success: boolean } & OpenInjectReport>("gesture", {
-          pointers,
+          pointers: gestureOpts?.normalized ? normalizedPointers(pointers) : pointers,
           ...(gestureOpts?.inject !== undefined ? { inject: gestureOpts.inject } : {}),
           ...(gestureOpts?._forceInjectUnavailable ? { _forceInjectUnavailable: true } : {}),
         }),
@@ -1481,8 +1511,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
 
       tapWithOutcome: (x, y, outcomeOpts) =>
         client.request<{ success: boolean } & OpenServerActionOutcome>("tap", {
-          x,
-          y,
+          ...pointParams(x, y, outcomeOpts?.normalized),
           ...(outcomeOpts?.clickCount !== undefined ? { clickCount: outcomeOpts.clickCount } : {}),
           ...(outcomeOpts?.holdMs !== undefined ? { holdMs: outcomeOpts.holdMs } : {}),
           ...(outcomeOpts?.gapMs !== undefined ? { gapMs: outcomeOpts.gapMs } : {}),
@@ -1498,10 +1527,7 @@ export const androidOpenServerBlueprint: ServiceBlueprint<OpenDeviceServerApi, D
         }),
       swipeWithOutcome: (startX, startY, endX, endY, steps, holdEndMs, outcomeOpts) =>
         client.request<{ success: boolean } & OpenServerActionOutcome & OpenSwipeTiming>("swipe", {
-          startX,
-          startY,
-          endX,
-          endY,
+          ...swipeParams(startX, startY, endX, endY, outcomeOpts?.normalized),
           steps: steps ?? 10,
           ...(holdEndMs && holdEndMs > 0 ? { holdEndMs } : {}),
           ...(outcomeOpts?.inject !== undefined ? { inject: outcomeOpts.inject } : {}),

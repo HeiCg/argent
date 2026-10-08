@@ -6,12 +6,20 @@ import androidx.test.uiautomator.UiDevice
 import com.argent.devicecontrol.input.InjectOutcome
 import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
+import com.argent.devicecontrol.util.DisplayReader
+import com.argent.devicecontrol.util.NormalizedCoords
 import java.util.Locale
 import org.json.JSONObject
 
+/**
+ * Swipe from pixel `startX/startY` to `endX/endY`, or (versionCode 31) from the
+ * normalized `nStartX/nStartY` to `nEndX/nEndY`, converted here against one display
+ * read so the host makes no `getScreenSize` RPC before the swipe.
+ */
 class SwipeHandler(
     private val uiDevice: UiDevice,
-    private val uiAutomation: UiAutomation
+    private val uiAutomation: UiAutomation,
+    private val displayGeometry: () -> DisplayReader.Geometry
 ) {
 
     private companion object {
@@ -40,10 +48,12 @@ class SwipeHandler(
     }
 
     fun execute(params: JSONObject): JSONObject {
-        val startX = params.getInt("startX")
-        val startY = params.getInt("startY")
-        val endX = params.getInt("endX")
-        val endY = params.getInt("endY")
+        // One display snapshot for both ends, read only when a normalized key is sent.
+        val geo by lazy { displayGeometry() }
+        val (startX, startY) =
+            NormalizedCoords.pointParam(params, "startX", "startY", "nStartX", "nStartY") { geo }
+        val (endX, endY) =
+            NormalizedCoords.pointParam(params, "endX", "endY", "nEndX", "nEndY") { geo }
         val steps = params.optInt("steps", 10)
         // Hold the last pointer position this long before ACTION_UP. A
         // momentum-free swipe passes holdEndMs > 0 so the release velocity decays

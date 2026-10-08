@@ -24,6 +24,7 @@ import com.argent.devicecontrol.handlers.TapTimeline
 import com.argent.devicecontrol.handlers.TypeHandler
 import com.argent.devicecontrol.handlers.WaitHandler
 import com.argent.devicecontrol.input.InputManagerInjector
+import com.argent.devicecontrol.util.DisplayReader
 import com.argent.devicecontrol.util.JsonRpc
 import org.json.JSONArray
 import org.json.JSONObject
@@ -50,14 +51,18 @@ class JsonRpcHandler(
         const val TAG = "JsonRpcHandler"
     }
 
-    private val tapHandler = TapHandler(uiAutomation)
-    private val swipeHandler = SwipeHandler(uiDevice, uiAutomation)
+    // Live display geometry for the gesture handlers' normalized points (versionCode
+    // 31): the same idle-free snapshot `getScreenSize` returns, read per gesture so a
+    // rotation between gestures is picked up.
+    private val displayGeometry = { DisplayReader.read(instrumentation.context) }
+    private val tapHandler = TapHandler(uiAutomation, displayGeometry)
+    private val swipeHandler = SwipeHandler(uiDevice, uiAutomation, displayGeometry)
     private val scrollHandler = ScrollHandler(uiAutomation)
-    private val gestureHandler = GestureHandler(uiAutomation)
+    private val gestureHandler = GestureHandler(uiAutomation, displayGeometry)
     private val flushInputHandler = FlushInputHandler(uiAutomation)
     private val typeHandler = TypeHandler(instrumentation, uiDevice)
     private val clipboardHandler = ClipboardHandler(instrumentation)
-    private val longPressHandler = LongPressHandler(uiDevice)
+    private val longPressHandler = LongPressHandler(uiDevice, displayGeometry)
     private val keyHandler = KeyHandler(uiDevice)
     private val screenshotHandler = ScreenshotHandler(uiAutomation)
     private val hierarchyHandler = HierarchyHandler(uiDevice, uiAutomation)

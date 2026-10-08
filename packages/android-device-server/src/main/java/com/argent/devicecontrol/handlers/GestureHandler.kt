@@ -3,6 +3,8 @@ package com.argent.devicecontrol.handlers
 import android.app.UiAutomation
 import com.argent.devicecontrol.input.InjectStrategy
 import com.argent.devicecontrol.input.MotionInjector
+import com.argent.devicecontrol.util.DisplayReader
+import com.argent.devicecontrol.util.NormalizedCoords
 import org.json.JSONObject
 
 /**
@@ -16,9 +18,14 @@ import org.json.JSONObject
  *
  * Every pointer's `points` array must be the same length (the host tools emit
  * one frame per pointer per tick), pixels for x/y, and `tMs` the frame's offset
- * from gesture start. Returns { success: true }.
+ * from gesture start. From versionCode 31 a point may carry normalized `nx/ny`
+ * instead, converted here against one display read for the whole gesture.
+ * Returns { success: true }.
  */
-class GestureHandler(private val uiAutomation: UiAutomation) {
+class GestureHandler(
+    private val uiAutomation: UiAutomation,
+    private val displayGeometry: () -> DisplayReader.Geometry
+) {
 
     private companion object {
         // Resample cadence for the injected timeline (F18). The host emits ~60 fps
@@ -39,6 +46,8 @@ class GestureHandler(private val uiAutomation: UiAutomation) {
         val n = pointersJson.length()
         if (n < 1) throw IllegalArgumentException("'pointers' must contain at least one pointer")
 
+        // One display snapshot for every normalized point of this gesture.
+        val geo by lazy { displayGeometry() }
         val ids = IntArray(n)
         val paths = ArrayList<List<MotionInjector.Point>>(n)
         for (i in 0 until n) {
@@ -49,13 +58,19 @@ class GestureHandler(private val uiAutomation: UiAutomation) {
             val full = ArrayList<MotionInjector.Point>(pts.length())
             for (j in 0 until pts.length()) {
                 val pt = pts.getJSONObject(j)
-                full.add(
-                    MotionInjector.Point(
-                        pt.getDouble("x").toFloat(),
-                        pt.getDouble("y").toFloat(),
-                        pt.optLong("tMs", 0)
+                val tMs = pt.optLong("tMs", 0)
+                if (pt.has("nx") || pt.has("ny")) {
+                    val (x, y) = NormalizedCoords.pointParam(pt, "x", "y", "nx", "ny") { geo }
+                    full.add(MotionInjector.Point(x.toFloat(), y.toFloat(), tMs))
+                } else {
+                    full.add(
+                        MotionInjector.Point(
+                            pt.getDouble("x").toFloat(),
+                            pt.getDouble("y").toFloat(),
+                            tMs
+                        )
                     )
-                )
+                }
             }
             paths.add(resample(full))
         }
