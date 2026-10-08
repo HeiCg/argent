@@ -95,7 +95,17 @@ export async function describeAndroidTiered(
       };
 
       if (tier === "summary") {
-        if (!store.hasNode(idHash)) renderFresh();
+        // A bare node (no label, no index, no compact) is a source the recorder
+        // minted from its identity alone (an action with no before tree): render
+        // it now rather than summarize nothing.
+        const known = store.getNode(idHash);
+        const bare =
+          known !== undefined &&
+          !known.redacted &&
+          !known.label &&
+          known.compact === "" &&
+          Object.keys(known.index).length === 0;
+        if (!known || bare) renderFresh();
         const node = store.getNode(idHash)!;
         // Phase B leftover B1: when this screen was last rendered at a known
         // version but its state has since moved, report how many fields changed.
