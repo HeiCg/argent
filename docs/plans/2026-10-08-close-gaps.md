@@ -20,7 +20,14 @@ graph navigation that an agent actually uses.
    agent guideline teaches `navigate_to` by the hash8 shown in the summary and
    says the hops count is informative. Test: 6-route Settings graph, every
    depth-3 target listed from the root.
-3. **ios-momentum-free** (iOS, product). The sim-input momentum-free swipe must
+3. **ios-momentum-free** (iOS, product). Amendment 2026-10-08 (review round
+   1): the ease-out has a fixed length in ms (not a share of the duration) so
+   it holds from 150 ms to 300 ms swipes; the promotion gate is the bench
+   optical offset of ON-siminput within 10 % of OFF's median (344.7 pt in run
+   37699809946), IQR ≤ 15 % of the median; the official stack scrolls less than
+   the finger path (slop and deceleration), so "equal to the finger path" is not
+   the target. The simulator measurement happens in `measure-deferred`.
+   Original text: The sim-input momentum-free swipe must
    stop where the finger lifts. Measure first on a simulator (optical offset
    vs finger path) with a slower end (ease-out over the last 30 % plus the end
    hold), then route `momentum:false` to sim-input by default only when the
