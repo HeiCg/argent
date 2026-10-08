@@ -84,21 +84,45 @@ export function toolLayerRunner(
   return reg.resolveService<IosOpenDeviceServerApi>(ref.urn, ref.options);
 }
 
+export interface RunnerLeaseOptions {
+  /** Start attempts in the one ensure (1 = no retry; the default). */
+  attempts?: number;
+  /** Untimed host reset between a failed attempt and the next one. A throw here
+   * is swallowed: the retry still runs. */
+  beforeRetry?: (error: Error, failedAttempt: number) => Promise<void>;
+  clock?: () => number;
+}
+
 /**
  * ONE start of the tool layer's runner per block: the first `ensure()` runs
  * `start`, every later call (concurrent or not) shares that promise. A failed
  * start stays failed: later calls reject with the same error and never start a
  * second runner, so the oracle cannot restart the measured instrument mid-block.
+ *
+ * Run 37840591012: ON-siminput's runner listened ~2 s after the 300 s budget
+ * expired. With `attempts: 2` the one ensure retries a failed start once after
+ * `beforeRetry` (kill the stale xcodebuild, `simctl bootstatus`), all inside the
+ * same untimed promise, so the retry is never inside a measured window.
  */
 export class RunnerLease<T> {
   private pending: Promise<T> | null = null;
   private failure: Error | null = null;
+  private attemptsMade = 0;
+  private elapsedMs: number | null = null;
+  private readonly maxAttempts: number;
+  private readonly clock: () => number;
 
-  constructor(private readonly start: () => Promise<T>) {}
+  constructor(
+    private readonly start: () => Promise<T>,
+    private readonly opts: RunnerLeaseOptions = {}
+  ) {
+    this.maxAttempts = Math.max(1, Math.floor(opts.attempts ?? 1));
+    this.clock = opts.clock ?? Date.now;
+  }
 
   ensure(): Promise<T> {
     if (!this.pending) {
-      this.pending = this.start().catch((e: unknown) => {
+      this.pending = this.run().catch((e: unknown) => {
         this.failure = e instanceof Error ? e : new Error(String(e));
         throw this.failure;
       });
@@ -106,10 +130,118 @@ export class RunnerLease<T> {
     return this.pending;
   }
 
+  private async run(): Promise<T> {
+    const t0 = this.clock();
+    for (;;) {
+      this.attemptsMade++;
+      try {
+        const value = await this.start();
+        this.elapsedMs = this.clock() - t0;
+        return value;
+      } catch (e) {
+        if (this.attemptsMade >= this.maxAttempts) throw e;
+        const err = e instanceof Error ? e : new Error(String(e));
+        await this.opts.beforeRetry?.(err, this.attemptsMade).catch(() => undefined);
+      }
+    }
+  }
+
   /** The start's error message, or null when it has not failed. */
   startFailure(): string | null {
     return this.failure?.message ?? null;
   }
+
+  /** Start attempts made so far (0 before the first ensure). */
+  startAttempts(): number {
+    return this.attemptsMade;
+  }
+
+  /** Failed attempts that were retried (each one a registry start that ended in
+   * ERROR before the block's runner came up). */
+  retriedStarts(): number {
+    return Math.max(0, this.attemptsMade - 1);
+  }
+
+  /** Wall time from the first attempt until the runner answered, retries and
+   * resets included; null until it did (or when it never did). */
+  startMs(): number | null {
+    return this.elapsedMs;
+  }
+}
+
+/** One step of {@link resetRunnerHost}, stamped with the wall clock. */
+export interface RunnerResetStep {
+  at: string;
+  step: "term" | "gone" | "kill-9" | "bootstatus";
+  detail?: string;
+}
+
+export interface RunnerResetHost {
+  /** Run `cmd args` with a timeout; `code` is the exit status (-1: no status). */
+  exec(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string }>;
+  sleep(ms: number): Promise<void>;
+  now(): number;
+  log?(line: string): void;
+}
+
+/** `pgrep -f` patterns of what a runner start leaves behind on the host. */
+export function runnerProcessPatterns(udid: string): string[] {
+  return [
+    `xcodebuild test-without-building.*${udid}`,
+    "ArgentRunnerUITests-Runner",
+    // The simulator's testmanagerd (runtime path under CoreSimulator), not Xcode's.
+    "CoreSimulator.*testmanagerd",
+  ];
+}
+
+/**
+ * Between a failed runner start and its retry (run 37686041333: a block collided
+ * with the previous xcodebuild and timed out booting the simulator): SIGTERM the
+ * runner processes, poll every `pollMs` up to `waitMs` until none is left,
+ * SIGKILL the survivors, then `xcrun simctl bootstatus <udid> -b` (bounded).
+ * Never throws; returns each step with a timestamp.
+ */
+export async function resetRunnerHost(
+  udid: string,
+  host: RunnerResetHost,
+  opts: { waitMs?: number; pollMs?: number; bootTimeoutMs?: number } = {}
+): Promise<RunnerResetStep[]> {
+  const waitMs = opts.waitMs ?? 60_000;
+  const pollMs = opts.pollMs ?? 2_000;
+  const bootTimeoutMs = opts.bootTimeoutMs ?? 120_000;
+  const steps: RunnerResetStep[] = [];
+  const note = (step: RunnerResetStep["step"], detail?: string): void => {
+    const s: RunnerResetStep = { at: new Date(host.now()).toISOString(), step, detail };
+    steps.push(s);
+    host.log?.(`${s.at} runner reset: ${step}${detail ? ` (${detail})` : ""}`);
+  };
+  const run = (cmd: string, args: string[], timeoutMs: number) =>
+    host.exec(cmd, args, timeoutMs).catch(() => ({ code: -1, stdout: "" }));
+  const patterns = runnerProcessPatterns(udid);
+
+  for (const p of patterns) await run("pkill", ["-f", p], 10_000);
+  note("term", patterns.join(" | "));
+
+  const alive = async (): Promise<string[]> => {
+    const out: string[] = [];
+    for (const p of patterns) if ((await run("pgrep", ["-fl", p], 10_000)).code === 0) out.push(p);
+    return out;
+  };
+  const t0 = host.now();
+  let left = await alive();
+  while (left.length > 0 && host.now() - t0 < waitMs) {
+    await host.sleep(pollMs);
+    left = await alive();
+  }
+  if (left.length === 0) note("gone", `after ${host.now() - t0} ms`);
+  else {
+    for (const p of left) await run("pkill", ["-9", "-f", p], 10_000);
+    note("kill-9", `still alive after ${host.now() - t0} ms: ${left.join(" | ")}`);
+  }
+
+  const boot = await run("xcrun", ["simctl", "bootstatus", udid, "-b"], bootTimeoutMs);
+  note("bootstatus", boot.code === 0 ? "booted" : `exit ${boot.code}`);
+  return steps;
 }
 
 /** One start of the tool layer's runner: the call that triggered it and how it
@@ -148,8 +280,10 @@ export function watchRunnerLifecycle(
   starts(): number;
   terminations(): string[];
   startLog(): RunnerStart[];
-  /** Null for one start and no termination; otherwise what happened, by whom. */
-  restartCause(): string | null;
+  /** Null for one start and no termination; otherwise what happened, by whom.
+   * `retriedStarts`: leading starts that ended in ERROR and that the block's
+   * {@link RunnerLease} retried (untimed) — they are not restarts. */
+  restartCause(retriedStarts?: number): string | null;
   dispose(): void;
 } {
   const urn = iosOpenServerRef(resolveDevice(udid)).urn;
@@ -194,8 +328,10 @@ export function watchRunnerLifecycle(
     starts: () => starts.length,
     terminations: () => terminations.map((t) => t.edge),
     startLog: () => starts.map((s) => ({ ...s })),
-    restartCause: () => {
-      if (starts.length <= 1 && terminations.length === 0) return null;
+    restartCause: (retriedStarts = 0) => {
+      let exempt = 0;
+      while (exempt < retriedStarts && starts[exempt]?.outcome === "error") exempt++;
+      if (starts.length - exempt <= 1 && terminations.length === 0) return null;
       const startText = starts
         .map(
           (s) =>
