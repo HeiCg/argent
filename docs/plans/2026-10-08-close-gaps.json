@@ -2,7 +2,7 @@
   "schemaVersion": 5,
   "id": "close-gaps-2026-10",
   "title": "Close the gaps of the final runs: Android tap/describe warm-up, iOS momentum-free swipe, screen-graph launch node, deferred measurements (docs/plans/2026-10-08-close-gaps.md)",
-  "status": "approved",
+  "status": "draft",
   "steps": [
     {
       "id": "tap-latency",
@@ -17,28 +17,15 @@
       ],
       "dependsOn": [],
       "verify": [
-        {
-          "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q",
-          "expect": "exit0"
-        },
-        {
-          "cmd": "cd packages/tool-server && npx vitest run test/android-open-server-blueprint.test.ts test/open-server-tap-latency.test.ts --maxWorkers=2",
-          "expect": "exit0"
-        },
-        {
-          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
-          "expect": "exit0"
-        }
+        { "cmd": "cd packages/android-device-server && ./gradlew compileDebugKotlin --max-workers=2 -q", "expect": "exit0" },
+        { "cmd": "cd packages/tool-server && npx vitest run test/android-open-server-blueprint.test.ts test/open-server-tap-latency.test.ts --maxWorkers=2", "expect": "exit0" },
+        { "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json", "expect": "exit0" }
       ],
       "commitMessage": "perf(open-server): warm the device server at start and trim the tap RPC path",
       "status": "pending",
       "reviewRounds": 0,
       "waivers": [],
-      "skills": [
-        "demerzel-tdd",
-        "demerzel-causa-raiz",
-        "demerzel-evidencia"
-      ]
+      "skills": ["demerzel-tdd", "demerzel-causa-raiz", "demerzel-evidencia"]
     },
     {
       "id": "sg-launch-node",
@@ -52,24 +39,14 @@
       ],
       "dependsOn": [],
       "verify": [
-        {
-          "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --maxWorkers=2",
-          "expect": "exit0"
-        },
-        {
-          "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json",
-          "expect": "exit0"
-        }
+        { "cmd": "cd packages/tool-server && npx vitest run test/screen-graph-*.test.ts --maxWorkers=2", "expect": "exit0" },
+        { "cmd": "cd packages/tool-server && npx tsc --noEmit -p tsconfig.json", "expect": "exit0" }
       ],
       "commitMessage": "fix(screen-graph): record the launch screen as the source of the first action",
       "status": "pending",
       "reviewRounds": 0,
       "waivers": [],
-      "skills": [
-        "demerzel-tdd",
-        "demerzel-causa-raiz",
-        "demerzel-evidencia"
-      ]
+      "skills": ["demerzel-tdd", "demerzel-causa-raiz", "demerzel-evidencia"]
     },
     {
       "id": "ios-momentum-free",
@@ -83,24 +60,14 @@
       ],
       "dependsOn": [],
       "verify": [
-        {
-          "cmd": "swift build --package-path packages/ios-sim-input",
-          "expect": "exit0"
-        },
-        {
-          "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts --maxWorkers=2",
-          "expect": "exit0"
-        }
+        { "cmd": "swift build --package-path packages/ios-sim-input", "expect": "exit0" },
+        { "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts --maxWorkers=2", "expect": "exit0" }
       ],
       "commitMessage": "fix(ios-sim-input): ease-out release so a momentum-free swipe does not fling",
       "status": "pending",
       "reviewRounds": 0,
       "waivers": [],
-      "skills": [
-        "demerzel-tdd",
-        "demerzel-causa-raiz",
-        "demerzel-evidencia"
-      ]
+      "skills": ["demerzel-tdd", "demerzel-causa-raiz", "demerzel-evidencia"]
     },
     {
       "id": "measure-deferred",
@@ -109,28 +76,16 @@
         "docs/open-server/2026-10-scoreboard-vs-0.27.0.md",
         "docs/open-server/2026-10-review-close-gaps-runs.md"
       ],
-      "dependsOn": [
-        "tap-latency",
-        "sg-launch-node",
-        "ios-momentum-free"
-      ],
+      "dependsOn": ["tap-latency", "sg-launch-node", "ios-momentum-free"],
       "verify": [
-        {
-          "cmd": "test -s docs/open-server/2026-10-review-close-gaps-runs.md",
-          "expect": "exit0"
-        },
-        {
-          "cmd": "npx prettier --check docs/open-server/2026-10-scoreboard-vs-0.27.0.md docs/open-server/2026-10-review-close-gaps-runs.md",
-          "expect": "exit0"
-        }
+        { "cmd": "test -s docs/open-server/2026-10-review-close-gaps-runs.md", "expect": "exit0" },
+        { "cmd": "npx prettier --check docs/open-server/2026-10-scoreboard-vs-0.27.0.md docs/open-server/2026-10-review-close-gaps-runs.md", "expect": "exit0" }
       ],
       "commitMessage": "docs(open-server): scoreboard after closing the gaps",
       "status": "pending",
       "reviewRounds": 0,
       "waivers": [],
-      "skills": [
-        "demerzel-evidencia"
-      ]
+      "skills": ["demerzel-evidencia"]
     }
   ]
 }
