@@ -2,7 +2,7 @@
   "schemaVersion": 5,
   "id": "beat-official-2026-10",
   "title": "Beat argent 0.27.0 on our bench, multi-device from one session, screen-graph navigation (docs/plans/2026-10-07-beat-official.md)",
-  "status": "approved",
+  "status": "done",
   "steps": [
     {
       "id": "ios-siminput-send-queue",
@@ -1065,12 +1065,49 @@
         }
       ],
       "commitMessage": "docs(open-server): final scoreboard vs argent 0.27.0 and review of the final runs",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "fable:coordinator",
+      "review": {
+        "at": "2026-10-08T16:37:36.015Z",
+        "verifyRuns": [
+          {
+            "cmd": "test -s docs/open-server/2026-10-scoreboard-vs-0.27.0.md && test -s docs/open-server/2026-10-review-final-runs.md",
+            "exitCode": 0,
+            "outputFile": "1-test-s-docs-open-server-2026-10-scoreboa.log"
+          },
+          {
+            "cmd": "npx prettier --check docs/open-server/2026-10-scoreboard-vs-0.27.0.md docs/open-server/2026-10-review-final-runs.md",
+            "exitCode": 0,
+            "outputFile": "2-npx-prettier-check-docs-open-server-2026.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "docs/open-server/2026-10-scoreboard-vs-0.27.0.md",
+            "note": "L58 (and review doc L110): 'parity by the drift floor (Δ +250, CI [44, 410], floor 150)' calls it parity although the point estimate +250 is above the 150 OFF-1/OFF-2 drift floor and the CI upper bound 410 is far past it; only the lower bound 44 is inside. Fix: read it as 'inconclusive within drift (Δ +250 > floor 150, CI [44, 410] straddles it)', or state the rule that makes this parity."
+          },
+          {
+            "severity": "note",
+            "file": "docs/open-server/2026-10-scoreboard-vs-0.27.0.md",
+            "note": "Not verifiable from the diff, carried from r2: the plan step asks to 'Update memory'. `demerzel memory wake --reader` (entries #0-#29) has no scoreboard entry yet. Check it after the commit."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:bench-final-scoreboard:3"
+      },
+      "reviewRounds": 3,
+      "adjudication": {
+        "decision": "accept",
+        "reason": "Round 3 passed (1 minor fixed inline: tap+describe now 'inconclusive within drift'); rounds 1-2 majors fixed by rewording and by deferring two unmeasured checks to close-gaps step measure-deferred, recorded in the plan amendments.",
+        "by": "opus:coordinator",
+        "at": "2026-10-08T16:38:00.875Z"
+      },
       "waivers": [],
       "skills": [
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-08T16:38:01.141Z"
     }
   ]
 }
