@@ -93,6 +93,14 @@
  *   - ON-siminput: every measured tap / swipe stores the sim-input ack timing split
  *     (`inputTimings`: host write→ack, receive→first send, per-message send, last
  *     send→ack) for the scoreboard's decomposition table.
+ *
+ * Runner start retry (run 37840591012: ON-siminput's runner listened ~2 s after
+ * the 300 s budget; the workflow budget is now 600 s): prepare's one ensure
+ * retries a failed start once (`BENCH_RUNNER_START_ATTEMPTS`, default 2) after a
+ * host reset (SIGTERM the runner processes, wait ≤ 60 s, SIGKILL, `simctl
+ * bootstatus -b`). The start is in prepare, before every timed verb, so the retry
+ * is untimed; the retried start is not a restart. The block records
+ * `runnerStartAttempts` and `runnerStartMs`.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -114,6 +122,7 @@ import {
   isFallbackResult,
   openToolTapPoint,
   proprietaryTapPoint,
+  resetRunnerHost,
   retryLocateOnce,
   sameFileBytes,
   simInputSampleOfResult,
@@ -121,6 +130,8 @@ import {
   waitForStableFrame,
   watchRunnerLifecycle,
   type NPoint,
+  type RunnerResetHost,
+  type RunnerResetStep,
   type RunnerStart,
   type ScreenGeometry,
   type SimInputSample,
@@ -168,10 +179,33 @@ const SETTLE_TIMEOUT_MS = 5000;
 const LOCATE_STABLE_MS = Number(process.env.BENCH_LOCATE_STABLE_MS ?? 1000);
 const LOCATE_MAX_READS = Number(process.env.BENCH_LOCATE_MAX_READS ?? 5);
 
+// Runner start attempts per block (run 37840591012: the first start listened ~2 s
+// after a 300 s budget). 2 = one retry, in prepare, before any measured verb.
+const RUNNER_START_ATTEMPTS = Number(process.env.BENCH_RUNNER_START_ATTEMPTS ?? 2);
+
 if (!UDID)
   throw new Error("BENCH_UDID / IOS_OPEN_SERVER_UDID must be set (the booted simulator udid)");
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** The real host for {@link resetRunnerHost}: exit status (-1 when killed by the
+ * timeout or not started), stdout, and log lines prefixed with the block. */
+function hostExec(prefix: string): RunnerResetHost {
+  return {
+    exec: async (cmd, args, timeoutMs) => {
+      try {
+        const { stdout } = await execFileAsync(cmd, args, { timeout: timeoutMs });
+        return { code: 0, stdout };
+      } catch (e) {
+        const err = e as { code?: unknown; stdout?: string };
+        return { code: typeof err.code === "number" ? err.code : -1, stdout: err.stdout ?? "" };
+      }
+    },
+    sleep,
+    now: Date.now,
+    log: (line) => console.log(`${prefix} ${line}`),
+  };
+}
 
 type Reg = ReturnType<typeof createRegistry>;
 
@@ -573,6 +607,12 @@ interface RunnerRecord {
   startLog: RunnerStart[];
   /** The start error when the block's one start failed. */
   startFailure: string | null;
+  /** Start attempts in the block's one ensure (2 = one untimed retry). */
+  startAttempts: number;
+  /** First attempt until the runner answered (retry + reset included), or null. */
+  startMs: number | null;
+  /** The host reset before the retry (kill, wait, bootstatus), timestamped. */
+  retryReset: RunnerResetStep[];
   /** Oracle RPCs that hit a connection error and succeeded on a retry. */
   oracleRetries: number;
   /** The block's screen geometry the arms convert the oracle's points with. */
@@ -604,6 +644,7 @@ abstract class ArmBase {
   private ready: ProprietaryReady | null = null;
   private runnerReadyMs: number | null = null;
   private geom: RunnerRecord["geometry"] = null;
+  private resetSteps: RunnerResetStep[] = [];
   /** The last gesture tool result (its `inputBackend` / `simInput`). */
   protected lastToolResult: unknown = null;
 
@@ -615,7 +656,18 @@ abstract class ArmBase {
     else unsetFlag("open-ios-device-server", "project");
     this.reg = createRegistry();
     this.lifecycle = watchRunnerLifecycle(this.reg, UDID, { trigger: () => this.callLabel });
-    this.lease = new RunnerLease(() => toolLayerRunner(this.reg, UDID));
+    // Run 37840591012: a start that misses the ready budget is retried once, after
+    // a host reset, inside prepare's untimed ensure (RUNNER_START_ATTEMPTS).
+    this.lease = new RunnerLease(() => toolLayerRunner(this.reg, UDID), {
+      attempts: RUNNER_START_ATTEMPTS,
+      beforeRetry: async (err, failed) => {
+        console.log(
+          `[bench-ios][${name}] ${new Date().toISOString()} runner start #${failed} failed ` +
+            `(${err.message}); resetting the host before the one retry`
+        );
+        this.resetSteps = await resetRunnerHost(UDID, hostExec(`[bench-ios][${name}]`));
+      },
+    });
     this.oracle = new RunnerOracle({
       runner: () => this.lease.ensure(),
       onConnectionError: (m) => this.recordConnectionError(`oracle: ${m}`),
@@ -806,6 +858,9 @@ abstract class ArmBase {
       readyMs: this.runnerReadyMs,
       startLog: this.lifecycle.startLog(),
       startFailure: this.lease.startFailure(),
+      startAttempts: this.lease.startAttempts(),
+      startMs: this.lease.startMs(),
+      retryReset: this.resetSteps.slice(),
       oracleRetries: this.oracle.transientRetries(),
       geometry: this.geom,
       locateShifts: this.oracle.locateShiftsSeen(),
@@ -816,7 +871,8 @@ abstract class ArmBase {
     // A second runner start or a termination before the block's own dispose is a
     // connection failure of the measured instrument; the record names the call
     // that triggered each start / termination.
-    const cause = this.lifecycle.restartCause();
+    // The lease's retried start (prepare, untimed) is not a restart.
+    const cause = this.lifecycle.restartCause(this.lease.retriedStarts());
     if (cause) {
       this.recordConnectionError(cause);
       console.log(`[bench-ios][${this.name}] ${cause}`);
@@ -1576,6 +1632,11 @@ interface BlockResult {
   /** E: simulator-server readiness (OFF blocks). */
   proprietaryReady: ProprietaryReady | null;
   runner: RunnerRecord;
+  /** Runner start attempts in prepare (2 = one untimed retry; run 37840591012). */
+  runnerStartAttempts: number;
+  /** Prepare's runner start until the runner answered, retry and reset included;
+   * null when it never came up. Untimed: before every measured verb. */
+  runnerStartMs: number | null;
   degradedReasons: string[];
   fidelitySet: string[];
   gestureParams: BenchGestureParams;
@@ -1903,6 +1964,7 @@ async function runBlock(block: string): Promise<BlockResult> {
   oracle.relaunches = arm.oracleRelaunches();
   oracle.retargets = arm.oracleRetargets();
   const conn = arm.connectionErrors();
+  const runnerRec = arm.runnerRecord();
 
   const result: BlockResult = {
     block,
@@ -1930,7 +1992,9 @@ async function runBlock(block: string): Promise<BlockResult> {
     firstConnectionError: conn.first,
     fallbackNotes: arm.fallbackNotes(),
     proprietaryReady: arm.proprietaryReady(),
-    runner: arm.runnerRecord(),
+    runner: runnerRec,
+    runnerStartAttempts: runnerRec.startAttempts,
+    runnerStartMs: runnerRec.startMs,
     degradedReasons,
     fidelitySet,
     gestureParams: GESTURE_PARAMS,
@@ -2080,7 +2144,8 @@ async function main(): Promise<void> {
         `ackTimeouts=${r.simInputAckTimeouts} connectionErrors=${r.connectionErrors}` +
         `${r.firstConnectionError ? ` (first: ${JSON.stringify(r.firstConnectionError)})` : ""} ` +
         `fallbackNotes=${r.fallbackNotes.length} runnerStarts=${r.runner.starts} ` +
-        `runnerReadyMs=${r.runner.readyMs ?? "n/a"} oracleRetries=${r.runner.oracleRetries} ` +
+        `runnerReadyMs=${r.runner.readyMs ?? "n/a"} runnerStartAttempts=${r.runnerStartAttempts} ` +
+        `runnerStartMs=${r.runnerStartMs ?? "n/a"} oracleRetries=${r.runner.oracleRetries} ` +
         `timedFallbacks=${perVerb(r.verbs, "fallbacks")} timedEmptyDescribes=${perVerb(r.verbs, "emptyDescribes")} ` +
         `locateRetries=${perVerb(r.verbs, "retries")} locateFailed=${perVerb(r.verbs, "locateFailed")} ` +
         `simulatorServerReady=${r.proprietaryReady ? r.proprietaryReady.ready : "n/a"} ` +

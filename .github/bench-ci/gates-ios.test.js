@@ -992,7 +992,10 @@ test("runner start: attempts and ms render in the validity table; a retried star
   assert.equal(r.code, 0, r.stderr || r.stdout);
   const sb = scoreboard(out);
   assert.match(sb, /\| connection errors \| runner start \(attempts \/ s\) \|/);
-  assert.match(rowOf(sb, "### Block validity", "OFF-1"), /\| 0 \| 1 \/ 117\.0 s \| 0 \| 0 \| valid \|/);
+  assert.match(
+    rowOf(sb, "### Block validity", "OFF-1"),
+    /\| 0 \| 1 \/ 117\.0 s \| 0 \| 0 \| valid \|/
+  );
   assert.match(
     rowOf(sb, "### Block validity", "ON-siminput"),
     /\| 0 \| 2 \/ 412\.3 s \| 0 \| 0 \| valid \|/

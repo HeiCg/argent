@@ -17,6 +17,10 @@
 # block's dispose shuts it down. The step checks between blocks that no runner
 # process survived, so two instances of the same xctrunner never share the
 # simulator (they killed each other in run 37213144359).
+#
+# Build once: the warm step runs `build-for-testing` into ARGENT_IOS_RUNNER_DERIVED
+# (stamped with a key over Xcode version + sources + destination); every block's
+# start finds the stamp and only runs `test-without-building` on that .xctestrun.
 name: bench-ios-open-vs-proprietary
 
 on:
@@ -65,7 +69,10 @@ jobs:
       # Run 37223296646: the runner answered its first ping 91-98 s after launch and
       # missed the tool layer's 120 s budget on three of four block starts (each
       # block then started a second runner and was INVALID). 300 s on this host.
-      ARGENT_IOS_RUNNER_READY_TIMEOUT_MS: "300000"
+      # Runs 37686041333 / 37840591012: starts took 117-345 s; ON-siminput's runner
+      # listened ~2 s after the 300 s budget. 600 s, plus one untimed retry per
+      # block in the bench's prepare (BENCH_RUNNER_START_ATTEMPTS, default 2).
+      ARGENT_IOS_RUNNER_READY_TIMEOUT_MS: "600000"
       # Each runner launch's xcodebuild output (discarded by default), so a slow or
       # failed start has a log in the artifact.
       ARGENT_IOS_RUNNER_LOG_DIR: ${{ github.workspace }}/build/runner-logs
@@ -237,22 +244,61 @@ jobs:
           export BENCH_UDID=$SIM_UDID
 
           # One XCUITest runner per simulator: no runner process may survive the
-          # warm step or a block's dispose. Wait up to 30 s, then kill and warn.
+          # warm step or a block's dispose. Wait up to 30 s for the owner to stop
+          # it. Otherwise (run 37686041333: OFF-2 collided with the previous
+          # block's xcodebuild after a bare `sleep 2`, "Timed out trying to boot
+          # simulator"): SIGTERM, poll every 2 s up to 60 s until no xcodebuild /
+          # runner / simulator testmanagerd is left, SIGKILL the survivors. Then,
+          # before every block, `simctl bootstatus -b` (bounded at 120 s). Every
+          # step is timestamped in build/runner-processes.log.
+          RUNNER_PATTERNS=(
+            "xcodebuild test-without-building"
+            "ArgentRunnerUITests-Runner"
+            "CoreSimulator.*testmanagerd"
+          )
+          ts () { date -u +%Y-%m-%dT%H:%M:%SZ; }
+          rlog () { echo "$(ts) $*" | tee -a build/runner-processes.log; }
           runner_procs () {
             pgrep -fl "xcodebuild test-without-building" || true
             pgrep -fl "ArgentRunnerUITests-Runner" || true
           }
+          leftover_procs () {
+            local p
+            for p in "${RUNNER_PATTERNS[@]}"; do pgrep -fl "$p" || true; done
+          }
           assert_no_runner () {
-            local when="$1"
+            local when="$1" i p
             for _ in $(seq 1 30); do
-              if [ -z "$(runner_procs)" ]; then echo "$when: no runner process" >> build/runner-processes.log; return 0; fi
+              [ -z "$(runner_procs)" ] && break
               sleep 1
             done
-            { echo "$when: runner process still alive after 30 s:"; runner_procs; } | tee -a build/runner-processes.log
-            echo "::warning::$when: an XCUITest runner outlived its owner; killing it so the next block starts the only one"
-            pkill -f "xcodebuild test-without-building" || true
-            pkill -f "ArgentRunnerUITests-Runner" || true
-            sleep 2
+            if [ -z "$(runner_procs)" ]; then
+              rlog "$when: no runner process"
+            else
+              { echo "$(ts) $when: runner process still alive after 30 s:"; runner_procs; } | tee -a build/runner-processes.log
+              echo "::warning::$when: an XCUITest runner outlived its owner; killing it so the next block starts the only one"
+              for p in "${RUNNER_PATTERNS[@]}"; do pkill -f "$p" || true; done
+              rlog "$when: SIGTERM sent; waiting up to 60 s for xcodebuild / runner / testmanagerd to exit"
+              for i in $(seq 1 30); do
+                [ -z "$(leftover_procs)" ] && break
+                sleep 2
+              done
+              if [ -z "$(leftover_procs)" ]; then
+                rlog "$when: runner processes gone after ~$((i * 2)) s"
+              else
+                { echo "$(ts) $when: still alive after 60 s, SIGKILL:"; leftover_procs; } | tee -a build/runner-processes.log
+                for p in "${RUNNER_PATTERNS[@]}"; do pkill -9 -f "$p" || true; done
+                sleep 2
+                { echo "$(ts) $when: after SIGKILL:"; leftover_procs; } | tee -a build/runner-processes.log
+              fi
+            fi
+            rlog "$when: simctl bootstatus $SIM_UDID -b (timeout 120 s)"
+            if timeout 120 xcrun simctl bootstatus "$SIM_UDID" -b >> build/runner-processes.log 2>&1; then
+              rlog "$when: simulator booted"
+            else
+              rlog "$when: bootstatus failed or timed out (rc=$?)"
+              echo "::warning::$when: simctl bootstatus did not confirm the simulator within 120 s"
+            fi
           }
 
           run_block () {

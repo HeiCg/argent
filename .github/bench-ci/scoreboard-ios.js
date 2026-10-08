@@ -147,20 +147,27 @@ L.push(`| blocks ran | ${present.join(", ") || "—"} |\n`);
 // the backend label, not the arm.
 L.push("### Block validity\n");
 L.push(
-  "| block | intended backend | observed tree | observed input | samples on the other arm's path | connection errors | empty describes (timed) | fallbacks (timed) | verdict |"
+  "| block | intended backend | observed tree | observed input | samples on the other arm's path | connection errors | runner start (attempts / s) | empty describes (timed) | fallbacks (timed) | verdict |"
 );
-L.push("|---|---|---|---|---|---|---|---|---|");
+L.push("|---|---|---|---|---|---|---|---|---|---|");
+// Run 37840591012: the block's runner start (untimed, in prepare), attempts
+// including the one retry and seconds until it answered; `—` before the field.
+const runnerStart = (b) => {
+  const a = b && b.runnerStartAttempts;
+  if (!Number.isFinite(a)) return "—";
+  return `${a} / ${Number.isFinite(b.runnerStartMs) ? `${(b.runnerStartMs / 1000).toFixed(1)} s` : "failed"}`;
+};
 for (const n of present) {
   const v = validity[n];
   const sb = v.servedBy || {};
   const pv = v.perVerb || {};
   const count = (c) => (c ? perVerbText(c) : "—");
   L.push(
-    `| ${n} | ${v.intendedBackend} | ${v.observedTreeBackend} | ${v.observedInput} | ${sb.crossed ?? "—"} / ${sb.total ?? "—"} | ${v.connectionErrors} | ${count(pv.emptyDescribes)} | ${count(pv.fallbacks)} | ${validityLabel(v)} |`
+    `| ${n} | ${v.intendedBackend} | ${v.observedTreeBackend} | ${v.observedInput} | ${sb.crossed ?? "—"} / ${sb.total ?? "—"} | ${v.connectionErrors} | ${runnerStart(bl[n].block)} | ${count(pv.emptyDescribes)} | ${count(pv.fallbacks)} | ${validityLabel(v)} |`
   );
 }
 L.push(
-  "\n_INVALID blocks render no numbers below and are excluded from G2/G4/fidelity. ON blocks must be served only by the open runner (xcuitest-runner tree, open-device-server or sim-input input); OFF blocks only by ax-service + simulator-server. A timed describe with 0 elements invalidates either arm; a fallback inside a timed verb invalidates an ON block._\n"
+  "\n_INVALID blocks render no numbers below and are excluded from G2/G4/fidelity. ON blocks must be served only by the open runner (xcuitest-runner tree, open-device-server or sim-input input); OFF blocks only by ax-service + simulator-server. A timed describe with 0 elements invalidates either arm; a fallback inside a timed verb invalidates an ON block. Runner start: attempts (2 = one retry after a host reset) and seconds until the runner answered, both before every timed verb._\n"
 );
 
 // Verb table per block.
