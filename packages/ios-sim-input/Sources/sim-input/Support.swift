@@ -60,22 +60,86 @@ enum GestureFrames {
         return (steps, max(8, stepMs))
     }
 
+    /// Frame period of an ease-out swipe's moves (the proprietary
+    /// simulator-server's momentum-free swipe uses 16 ms frames too).
+    static let easeOutFrameMs = 16.0
+    /// Frames of the ease-out tail: a fixed 160 ms, whatever the duration. A
+    /// shorter swipe shortens its constant-velocity part (at least 1 frame) and
+    /// keeps the whole tail, so the release stays slow at any duration.
+    static let easeOutTailFrames = 10
+    /// Exponent of the ease-out (quintic). Over a 437 pt path the last 3
+    /// frames then run 4 / 6 / 15 pt/s at 300 / 250 / 150 ms; a quartic
+    /// 10-frame tail would leave ~53 pt/s at 150 ms.
+    static let easeOutPower = 5.0
+
+    /// Whether IOHIDDigitizerDispatch.swipe runs the ease-out plan: a non-edge
+    /// swipe with an end hold (the wire's momentum-free `holdEndMs` > 0). An
+    /// edge swipe with a dwell (App Switcher) keeps the recipe's linear plan.
+    static func isMomentumFree(dwellMs: UInt32, edge: IOHIDDigitizerDispatch.Edge) -> Bool {
+        dwellMs > 0 && edge == .none
+    }
+
+    /// Fraction of the path at each of `constantFrames + easeOutTailFrames`
+    /// 16 ms frames: constant velocity for `constantFrames`, then a quintic
+    /// ease-out whose start velocity equals the constant one and whose end
+    /// velocity is 0. The last value is exactly 1.
+    static func easeOutProgress(constantFrames: Int) -> [Double] {
+        let c = Double(max(0, constantFrames))
+        let e = Double(easeOutTailFrames)
+        let k = easeOutPower
+        let v = 1 / (c + e / k)  // the constant velocity, path per frame
+        return (1...(max(0, constantFrames) + easeOutTailFrames)).map { j in
+            let f = Double(j)
+            if f <= c { return v * f }
+            let s = (f - c) / e
+            return s >= 1 ? 1 : v * c + v * e / k * (1 - pow(1 - s, k))
+        }
+    }
+
     struct Swipe {
-        /// One per interpolated move, `i * stepMs` for i in 1...steps.
+        /// One per interpolated move: `i * stepMs` for i in 1...steps, or the
+        /// 16 ms frames of an ease-out swipe.
         let moves: [Double]
-        /// End-point holds, 50 ms apart after the last move (`dwellMs` > 0 only).
+        /// Fraction of the path at each move, the last one 1: `i / steps`, or
+        /// `easeOutProgress(constantFrames:)` of an ease-out swipe.
+        let progress: [Double]
+        /// End-point holds, 50 ms apart from the last move (`dwellMs` > 0 only).
         let dwell: [Double]
-        /// The Up, one step after the last move or dwell deadline.
+        /// The Up, one step (an ease-out swipe: one 16 ms frame) after the last
+        /// dwell deadline plus 50 ms, or after the last move without a dwell.
         let up: Double
 
         var all: [Double] { moves + dwell + [up] }
     }
 
     /// Swipe: the move, dwell and Up deadlines. `steps` must be ≥ 1.
-    static func swipe(steps: Int, stepMs: UInt32, dwellMs: UInt32) -> Swipe {
-        let step = Double(stepMs)
-        let moves = (1...steps).map { Double($0) * step }
-        var at = Double(steps) * step
+    ///
+    /// `easeOut` (momentum-free swipe, see `isMomentumFree`): the moves run on
+    /// 16 ms frames. The swipe's duration is rebuilt from the recipe's split as
+    /// `(steps + 2) * stepMs` (`swipeSteps` divides `durationMs` by 12: 300 for
+    /// 300, 240 for 250, 144 for 150) and rounded up to whole frames; the last
+    /// `easeOutTailFrames` of them ease out to rest and the others (at least 1)
+    /// run at constant velocity, so a swipe shorter than tail + 1 frames takes
+    /// tail + 1 frames. The finger is at rest before the hold and UIKit's release
+    /// velocity, estimated from the last touches, is ~0. Without `easeOut` the
+    /// plan is the recipe's linear one, unchanged.
+    static func swipe(steps: Int, stepMs: UInt32, dwellMs: UInt32,
+                      easeOut: Bool = false) -> Swipe {
+        let moves: [Double]
+        let progress: [Double]
+        let step: Double
+        if easeOut {
+            step = easeOutFrameMs
+            let durationMs = Double(steps + 2) * Double(stepMs)
+            let frames = Int((durationMs / step).rounded(.up))
+            progress = easeOutProgress(constantFrames: max(1, frames - easeOutTailFrames))
+            moves = (1...progress.count).map { Double($0) * step }
+        } else {
+            step = Double(stepMs)
+            moves = (1...steps).map { Double($0) * step }
+            progress = (1...steps).map { Double($0) / Double(steps) }
+        }
+        var at = moves[moves.count - 1]
         var dwell: [Double] = []
         if dwellMs > 0 {
             let pulses = max(1, Int(dwellMs / 50))
@@ -85,7 +149,7 @@ enum GestureFrames {
             }
         }
         at += step
-        return Swipe(moves: moves, dwell: dwell, up: at)
+        return Swipe(moves: moves, progress: progress, dwell: dwell, up: at)
     }
 }
 
@@ -238,8 +302,16 @@ final class SendTimeline: @unchecked Sendable {
 /// what it measured. Returns true when every case lands in its range.
 /// `swipe-250-stall60` stalls 60 ms inside frame 3: with deadlines the gesture
 /// still ends near 220 ms; with chained sleeps it would end near 280 ms.
-/// `swipe-250-dwell120` adds the 120 ms end hold: dwell pulses at 200 and 250 ms
-/// (120 / 50 = 2), the Up one step later at 320 ms.
+/// `swipe-250-dwell120` is the linear plan with a 120 ms dwell (an edge swipe's
+/// hold): dwell pulses at 200 and 250 ms (120 / 50 = 2), the Up one step later
+/// at 320 ms. `swipe-momentum-free-<D>` is what `{"durationMs":D,"holdEndMs":120}`
+/// runs (the ease-out plan) over the bench's 437 pt finger path, at D = 300
+/// (tool default), 250 (iOS bench) and 150 (momentum:false minimum): it prints
+/// the planned position and velocity of each move and passes only when the
+/// velocity over the last 3 move frames is under 50 pt/s and the timing lands.
+/// `momentumFreePredicate` checks the dispatch's choice of plan
+/// (`GestureFrames.isMomentumFree`) on a plain, an App Switcher and a no-dwell
+/// swipe.
 func runPacingSelftest(on queue: DispatchQueue) -> Bool {
     struct Case {
         let name: String
@@ -248,13 +320,60 @@ func runPacingSelftest(on queue: DispatchQueue) -> Bool {
         let minMs: Double
         let maxMs: Double
         let minLateMs: Double
+        /// Plan fields printed on the row, and whether the plan itself passes.
+        var extra: [String: Any] = [:]
+        var planPass = true
     }
     // The plans `{"type":"tap"}` (no holdMs) and `{"type":"swipe","durationMs":250}` run.
     let tapPlan = GestureFrames.tap(holdSeconds: GestureFrames.defaultTapHoldSeconds)
     let split = GestureFrames.swipeSteps(duration: 0.25)
     let swipePlan = GestureFrames.swipe(steps: split.steps, stepMs: split.stepMs, dwellMs: 0).all
-    // `{"type":"swipe","durationMs":250,"holdEndMs":120}`: the momentum-free end hold.
+    // The linear plan with a 120 ms end hold (an edge swipe with a dwell).
     let dwellPlan = GestureFrames.swipe(steps: split.steps, stepMs: split.stepMs, dwellMs: 120).all
+    // `{"type":"swipe","durationMs":D,"holdEndMs":120}`: gesture-swipe
+    // momentum:false (end hold 120 ms), the ease-out plan.
+    func momentumFreeCase(durationMs: Double) -> Case {
+        let holdEndMs: UInt32 = 120
+        let pathPt = 437.0
+        let split = GestureFrames.swipeSteps(duration: durationMs / 1000)
+        let plan = GestureFrames.swipe(steps: split.steps, stepMs: split.stepMs,
+                                       dwellMs: holdEndMs, easeOut: true)
+        let positions = plan.progress.map { $0 * pathPt }
+        var velocities: [Double] = []
+        for i in positions.indices {
+            let p0 = i == 0 ? 0 : positions[i - 1]
+            let t0 = i == 0 ? 0 : plan.moves[i - 1]
+            velocities.append((positions[i] - p0) / (plan.moves[i] - t0) * 1000)
+        }
+        // The release velocity UIKit can estimate from the last touches: the
+        // displacement over the last `frames` move frames before the hold.
+        let n = positions.count
+        func velocity(lastFrames: Int) -> Double {
+            let k = min(lastFrames, n - 1)
+            guard k > 0 else { return velocities[n - 1] }
+            return (positions[n - 1] - positions[n - 1 - k])
+                / (plan.moves[n - 1] - plan.moves[n - 1 - k]) * 1000
+        }
+        let last3 = velocity(lastFrames: 3)
+        return Case(
+            name: "swipe-momentum-free-\(Int(durationMs))", offsets: plan.all,
+            stallAtFrame: nil, minMs: plan.up, maxMs: plan.up + 50, minLateMs: 0,
+            extra: [
+                "durationMs": durationMs,
+                "holdEndMs": Double(holdEndMs),
+                "pathPt": pathPt,
+                "moveFrameMs": GestureFrames.easeOutFrameMs,
+                "moves": n,
+                "constantFrames": n - GestureFrames.easeOutTailFrames,
+                "easeOutFrames": GestureFrames.easeOutTailFrames,
+                "positionsPt": positions,
+                "velocitiesPtPerS": velocities,
+                "lastFramesVelocityPtPerS": last3,
+                "last6FramesVelocityPtPerS": velocity(lastFrames: 6),
+            ],
+            planPass: last3 < 50
+        )
+    }
     let cases = [
         Case(name: "tap-default", offsets: tapPlan, stallAtFrame: nil,
              minMs: 50, maxMs: 60, minLateMs: 0),
@@ -264,9 +383,28 @@ func runPacingSelftest(on queue: DispatchQueue) -> Bool {
              minMs: 220, maxMs: 270, minLateMs: 30),
         Case(name: "swipe-250-dwell120", offsets: dwellPlan, stallAtFrame: nil,
              minMs: 320, maxMs: 370, minLateMs: 0),
+        momentumFreeCase(durationMs: 300),
+        momentumFreeCase(durationMs: 250),
+        momentumFreeCase(durationMs: 150),
     ]
+    // The dispatch's choice of plan: (edge, dwellMs, expected ease-out).
+    let predicateChecks: [(IOHIDDigitizerDispatch.Edge, UInt32, Bool)] = [
+        (.none, 120, true),     // gesture-swipe momentum:false
+        (.bottom, 900, false),  // App Switcher: edge swipe with a dwell
+        (.none, 0, false),      // plain swipe
+    ]
+    var predicateRows: [[String: Any]] = []
+    var predicatePass = true
+    for (edge, dwellMs, expected) in predicateChecks {
+        let easeOut = GestureFrames.isMomentumFree(dwellMs: dwellMs, edge: edge)
+        predicatePass = predicatePass && easeOut == expected
+        predicateRows.append([
+            "edge": String(describing: edge), "dwellMs": Int(dwellMs),
+            "easeOut": easeOut, "pass": easeOut == expected,
+        ])
+    }
     var rows: [[String: Any]] = []
-    var allPass = true
+    var allPass = predicatePass
     for c in cases {
         let pacing: GesturePacing = queue.sync {
             let pacer = GesturePacer()
@@ -282,9 +420,10 @@ func runPacingSelftest(on queue: DispatchQueue) -> Bool {
             return pacer.finish()
         }
         let pass = pacing.actualMs >= c.minMs && pacing.actualMs <= c.maxMs
-            && pacing.maxFrameLateMs >= c.minLateMs
+            && pacing.maxFrameLateMs >= c.minLateMs && c.planPass
         allPass = allPass && pass
         var row: [String: Any] = pacing.ackFields
+        row.merge(c.extra) { current, _ in current }
         row["name"] = c.name
         row["frames"] = c.offsets.count
         row["offsetsMs"] = c.offsets
@@ -293,7 +432,9 @@ func runPacingSelftest(on queue: DispatchQueue) -> Bool {
         row["pass"] = pass
         rows.append(row)
     }
-    let out: [String: Any] = ["ok": allPass, "cases": rows]
+    let out: [String: Any] = [
+        "ok": allPass, "cases": rows, "momentumFreePredicate": predicateRows,
+    ]
     if let data = try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys]) {
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data([0x0A]))

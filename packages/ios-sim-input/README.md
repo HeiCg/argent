@@ -43,7 +43,7 @@ Each stdin line is a JSON command; each writes one ack line to stdout. Coords ar
 
 ```
 {"id":<int>,"type":"tap","x":<f>,"y":<f>,"screenWidth":<f>,"screenHeight":<f>,"holdMs":<f>}   // holdMs optional, default 50
-{"id":<int>,"type":"swipe","fromX":<f>,"fromY":<f>,"toX":<f>,"toY":<f>,"durationMs":<int>,"holdEndMs":<f>,"screenWidth":<f>,"screenHeight":<f>}   // holdEndMs optional
+{"id":<int>,"type":"swipe","fromX":<f>,"fromY":<f>,"toX":<f>,"toY":<f>,"durationMs":<int>,"holdEndMs":<f>,"screenWidth":<f>,"screenHeight":<f>}   // holdEndMs optional; > 0 = momentum-free (see Timing)
 {"id":<int>,"type":"press","key":<int>}     // key = HID usage on page 7
 {"id":<int>,"type":"release","key":<int>}
 {"id":<int>,"type":"text","text":"..."}      // ASCII; decomposed via KeyboardKey
@@ -90,12 +90,39 @@ after it, as chained `usleep` did. The offsets are the recipe's own, computed by
 the pure `GestureFrames` plans: tap hold 50 ms; swipe of `durationMs` D uses 10
 moves at `D / 12` ms and the Up one step later (220 ms for D = 250).
 
-A swipe with `holdEndMs` holds the finger at the end point before the Up: the
-dispatch's dwell pulses, 50 ms apart (`holdEndMs / 50` of them, at least one), then
-the Up one step later. The hold is meant to bring the release velocity to about
-zero (a momentum-free swipe); its effect on the fling is not measured on a
-simulator yet, and the tool-server sends it only with the experimental
-`ARGENT_SIM_INPUT_MOMENTUM_FREE=1`.
+A swipe with `holdEndMs` > 0 is a momentum-free swipe (there is no other wire
+field for it). Its moves run on 16 ms frames over the swipe's duration (12 × the
+recipe's step `floor(durationMs / 12)`: 300 ms for 300, 240 for 250, 144 for 150;
+rounded up to whole frames). The last 10 frames (160 ms, whatever the duration)
+are a quintic ease-out to zero velocity; the frames before them run at constant
+velocity. A short swipe shortens the constant part (at least 1 frame) and keeps
+the whole ease-out, so it takes at least 11 frames (176 ms). Then the finger
+holds at the end point: the dispatch's dwell pulses, 50 ms apart from the last
+move (`holdEndMs / 50` of them, at least one), and the Up one 16 ms frame after
+the last pulse plus 50 ms. Edge swipes with a dwell (App Switcher) keep the
+linear recipe (`GestureFrames.isMomentumFree`).
+
+UIKit estimates the release velocity from the last touches, and an end hold
+alone left a fast last move in that window: run 37699809946 measured the
+hold-only swipe scrolling a median 567.3 pt (IQR 210) over a 437 pt finger path.
+With `holdEndMs` 120 over 437 pt the ease-out plans are:
+
+| `durationMs` | moves (constant + ease-out) | peak      | last 3 frames (48 ms) | last 6 frames (96 ms) | Up     |
+| ------------ | --------------------------- | --------- | --------------------- | --------------------- | ------ |
+| 300          | 19 (9 + 10), 16-304 ms      | 2483 pt/s | 4.0 pt/s              | 64 pt/s               | 420 ms |
+| 250          | 15 (5 + 10), 16-240 ms      | 3902 pt/s | 6.3 pt/s              | 101 pt/s              | 356 ms |
+| 150          | 11 (1 + 10), 16-176 ms      | 9104 pt/s | 14.7 pt/s             | 236 pt/s              | 292 ms |
+
+The ease-out is not measured on a simulator yet. The tool-server sends
+`holdEndMs` only with the experimental `ARGENT_SIM_INPUT_MOMENTUM_FREE=1`. Making
+it the default for `gesture-swipe {momentum:false}` waits for the bench: the
+ON-siminput optical offset must be within 10 % of OFF's median (344.7 pt in run
+37699809946), with an IQR of at most 15 % of its median. The gate is OFF's
+offset, not the finger path: the proprietary momentum-free swipe scrolls less
+than the finger moves (344.7 pt over 437 pt, 21 % short). Likely causes, not
+measured apart: the scroll view starts tracking only after the touch slop, and
+the decelerating end frames move the content less than the finger. Matching the
+finger path would put sim-input farther from the proprietary swipe, not closer.
 
 sim-input logs no typed input: `key` writes no per-key line (the HID usage maps
 back to the character), and an unsupported character in `text` is logged without
@@ -117,6 +144,12 @@ Ack fields, in ms on sim-input's monotonic clock:
 swipe use, with no simulator and no HID sends, and prints one JSON line:
 `tap-default` (Up at 50 ms, 50-60 ms), `swipe-250` (10 moves at 20 ms, Up at
 220 ms, 220-270 ms), `swipe-250-stall60` (a 60 ms stall in frame 3, still
-220-270 ms; chained sleeps would end near 280 ms), and `swipe-250-dwell120` (the
-120 ms end hold: dwell pulses at 200 and 250 ms, Up at 320 ms, 320-370 ms). Exit 0 when every case is in
-range.
+220-270 ms; chained sleeps would end near 280 ms), `swipe-250-dwell120` (the
+120 ms dwell of an edge swipe on the linear plan: dwell pulses at 200 and 250 ms,
+Up at 320 ms, 320-370 ms), and `swipe-momentum-free-300`, `-250` and `-150`
+(`holdEndMs` 120 over a 437 pt path: the ease-out plans above, each within 50 ms
+of its Up; each prints its moves' planned positions and velocities and passes
+only when the velocity over the last 3 move frames is under 50 pt/s). It also
+prints `momentumFreePredicate`: the plan the dispatch picks for a plain swipe
+with a hold (ease-out), an App Switcher edge swipe with a 900 ms dwell (linear)
+and a swipe without a hold (linear). Exit 0 when every case is in range.

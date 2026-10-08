@@ -5,8 +5,12 @@
 // `SendTimeline` for the ack's timing block; (iOS-4 ticket 3) `tap` / `swipe`
 // wait on `GesturePacer` (absolute deadlines) instead of chained `usleep`, at
 // the same offsets (computed by the pure `GestureFrames`, which the pacing
-// selftest also runs), and record the gesture's pacing for the ack. Nothing
-// else differs from the port.
+// selftest also runs), and record the gesture's pacing for the ack;
+// (close-gaps ios-momentum-free) a non-edge `swipe` with `dwellMs` > 0 (the
+// wire's momentum-free `holdEndMs`) moves on `GestureFrames`' ease-out plan
+// (16 ms frames, decelerating to rest) before the hold, so UIKit reads a ~0
+// release velocity; edge swipes and swipes without a dwell keep the linear
+// recipe. Nothing else differs from the port.
 
 import Foundation
 
@@ -102,7 +106,8 @@ enum IOHIDDigitizerDispatch {
     /// Continuous swipe from `start` to `end` over `steps`
     /// interpolated moves. Optional `dwellMs` holds the finger at
     /// the endpoint before lift — iOS uses dwell to discriminate
-    /// Home from App Switcher when `edge == .bottom`.
+    /// Home from App Switcher when `edge == .bottom`. With `dwellMs` > 0
+    /// and no edge (momentum-free), the moves follow the ease-out plan.
     static func swipe(from start: CGPoint, to end: CGPoint,
                       steps: Int = 10, stepMs: UInt32 = 16,
                       dwellMs: UInt32 = 0,
@@ -111,11 +116,16 @@ enum IOHIDDigitizerDispatch {
         let pacer = GesturePacer()
         guard send(point: start, identifier: identifier, phase: .down,
                    edge: edge, on: client) else { return false }
-        let plan = GestureFrames.swipe(steps: steps, stepMs: stepMs, dwellMs: dwellMs)
+        // Local: a non-edge swipe with an end hold is a momentum-free swipe
+        // (wire `holdEndMs`): ease-out moves on 16 ms frames before the hold.
+        // Edge swipes (App Switcher's dwell) keep the recipe's linear plan.
+        let plan = GestureFrames.swipe(
+            steps: steps, stepMs: stepMs, dwellMs: dwellMs,
+            easeOut: GestureFrames.isMomentumFree(dwellMs: dwellMs, edge: edge))
         var ok = 0
         for (index, at) in plan.moves.enumerated() {
             pacer.wait(untilMs: at)
-            let t = Double(index + 1) / Double(steps)
+            let t = plan.progress[index]
             let p = CGPoint(x: start.x + (end.x - start.x) * t,
                             y: start.y + (end.y - start.y) * t)
             if send(point: p, identifier: identifier, phase: .move,
@@ -134,7 +144,7 @@ enum IOHIDDigitizerDispatch {
         let up = send(point: end, identifier: identifier, phase: .up,
                       edge: edge, on: client)
         PacingRecorder.shared.record(pacer.finish())
-        return up && ok >= steps / 2
+        return up && ok >= plan.moves.count / 2
     }
 
     // MARK: - core

@@ -33,7 +33,7 @@
       "commitMessage": "perf(open-server): warm the device server at start and trim the tap RPC path",
       "status": "implementing",
       "implementer": "agent:impl:tap-latency:1",
-      "reviewRounds": 0,
+      "reviewRounds": 1,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
@@ -149,15 +149,50 @@
         }
       ],
       "commitMessage": "fix(ios-sim-input): ease-out release so a momentum-free swipe does not fling",
-      "status": "implementing",
+      "status": "committed",
       "implementer": "agent:impl:ios-momentum-free:1",
-      "reviewRounds": 0,
+      "review": {
+        "at": "2026-10-08T18:14:22.759Z",
+        "verifyRuns": [
+          {
+            "cmd": "swift build --package-path packages/ios-sim-input",
+            "exitCode": 0,
+            "outputFile": "1-swift-build-package-path-packages-ios-si.log"
+          },
+          {
+            "cmd": "cd packages/tool-server && npx vitest run test/ios-sim-input-service.test.ts test/ios-sim-input-blueprint.test.ts --maxWorkers=2",
+            "exitCode": 0,
+            "outputFile": "2-cd-packages-tool-server-npx-vitest-run-t.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "packages/tool-server/src/blueprints/ios-sim-input.ts",
+            "note": "L405: the simInputMomentumFreeEnabled doc still gives the old gate ('offset equal to OFF's within the IQR'). The plan amendment (item 3) and the README L118-120 say 'within 10 % of OFF's median (344.7 pt), IQR <= 15 % of the median'. Reword the comment to the amended gate"
+          },
+          {
+            "severity": "note",
+            "file": "packages/ios-sim-input/Sources/sim-input/Support.swift",
+            "note": "L131-133/L88-97: at durationMs 150 the ease-out plan has 1 constant frame, so the first 16 ms move jumps 146 pt (9104 pt/s, 7456 pt/s on frame 2). The linear plan moved 43.7 pt per 12 ms (~3640 pt/s). A single jump far past the touch slop can change how UIScrollView's pan recognizer starts (translation baseline, lost slop), and so the scroll offset. Not checkable from the diff: check it in measure-deferred with one 150 ms ON-siminput bench arm, or cap the peak by letting short swipes shorten the tail"
+          },
+          {
+            "severity": "note",
+            "file": "packages/ios-sim-input/README.md",
+            "note": "L118-127: the release physics are not checkable from the diff. The selftest pins only planned positions (last 3 frames 4.0/6.3/14.7 pt/s). The last 6 frames still run 64/101/236 pt/s, and the hold is 116 ms, not 120 (first dwell pulse on the last move's deadline, Support.swift L147). Promotion stays behind ARGENT_SIM_INPUT_MOMENTUM_FREE until the measure-deferred bench gives the ON-siminput optical offset at 250 ms against OFF 344.7 pt +/- 10 %, IQR <= 15 %"
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:ios-momentum-free:2"
+      },
+      "reviewRounds": 2,
       "waivers": [],
       "skills": [
         "demerzel-tdd",
         "demerzel-causa-raiz",
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-08T18:14:47.949Z"
     },
     {
       "id": "measure-deferred",

@@ -63,8 +63,9 @@ export type IosInputBackend = "sim-input" | "runner" | "simulator-server";
 export interface IosSimInputApi {
   readonly udid: string;
   sendTap(args: { x: number; y: number; holdMs?: number }): Promise<SimInputAck>;
-  /** `holdEndMs` > 0 holds the finger at the end point before the lift, so the
-   * release velocity is ~0 (momentum-free swipe). */
+  /** `holdEndMs` > 0 is the momentum-free request on the wire: sim-input moves
+   * on 16 ms frames easing out to rest, then holds the finger at the end point
+   * that long before the lift, so the release velocity is ~0. */
   sendSwipe(args: {
     fromX: number;
     fromY: number;
@@ -191,17 +192,27 @@ export function createIosSimInputBlueprint(
             height: 1,
             ...(holdMs !== undefined ? { holdMs } : {}),
           }),
-        sendSwipe: ({ fromX, fromY, toX, toY, durationMs, holdEndMs }) =>
-          service.swipe(udid, {
-            fromX: clamp01(fromX),
-            fromY: clamp01(fromY),
-            toX: clamp01(toX),
-            toY: clamp01(toY),
-            durationMs,
-            ...(holdEndMs !== undefined && holdEndMs > 0 ? { holdEndMs } : {}),
-            width: 1,
-            height: 1,
-          }),
+        // `service.send` with `service.swipe`'s envelope: the call timeout
+        // covers the gesture itself (moves for ~durationMs, then the hold), so
+        // a long swipe is not cut at the base timeout.
+        sendSwipe: ({ fromX, fromY, toX, toY, durationMs, holdEndMs }) => {
+          const hold = holdEndMs !== undefined && holdEndMs > 0 ? holdEndMs : 0;
+          return service.send(
+            udid,
+            {
+              type: "swipe",
+              fromX: clamp01(fromX),
+              fromY: clamp01(fromY),
+              toX: clamp01(toX),
+              toY: clamp01(toY),
+              durationMs,
+              ...(hold > 0 ? { holdEndMs: hold } : {}),
+              screenWidth: 1,
+              screenHeight: 1,
+            },
+            { timeoutMs: timeoutMs + durationMs + hold }
+          );
+        },
         sendText: (text) =>
           service.typeText(udid, text, {
             timeoutMs: timeoutMs + text.length * TEXT_TIMEOUT_PER_CHAR_MS,
@@ -385,10 +396,14 @@ function simInputDisabledByEnv(): boolean {
 }
 
 /**
- * Whether a momentum-free swipe (`momentum: false`) may go to sim-input, with
- * its `holdEndMs` end hold: only with `ARGENT_SIM_INPUT_MOMENTUM_FREE=1`
- * (experimental, default off). The end hold has not been measured on a
- * simulator yet, so by default the swipe stays on the runner.
+ * Whether a momentum-free swipe (`momentum: false`) may go to sim-input, sent
+ * with `holdEndMs` (sim-input's ease-out moves plus the end hold): only with
+ * `ARGENT_SIM_INPUT_MOMENTUM_FREE=1` (experimental, default off). Run
+ * 37699809946 measured the end hold alone still flinging (567 pt median over a
+ * 437 pt finger path, OFF 344.7 pt); the ease-out is not measured on a
+ * simulator yet, so by default the swipe stays on the runner until the bench
+ * shows ON-siminput's optical offset within 10 % of OFF's median (344.7 pt
+ * in run 37699809946) with an IQR of at most 15 % of that median.
  */
 export function simInputMomentumFreeEnabled(): boolean {
   return process.env.ARGENT_SIM_INPUT_MOMENTUM_FREE?.trim() === "1";
@@ -527,7 +542,8 @@ export function iosSimInputTap(
 
 /**
  * Swipe between two normalized points over `durationMs` via sim-input;
- * `holdEndMs` > 0 holds at the end point before the lift (momentum-free).
+ * `holdEndMs` > 0 asks for a momentum-free swipe: ease-out moves, then a hold
+ * at the end point before the lift.
  */
 export function iosSimInputSwipe(
   registry: Registry,

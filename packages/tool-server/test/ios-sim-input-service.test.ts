@@ -3,6 +3,12 @@ import { EventEmitter } from "node:events";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { Registry, type DeviceInfo } from "@argent/registry";
+import {
+  createIosSimInputBlueprint,
+  iosSimInputRef,
+  type IosSimInputApi,
+} from "../src/blueprints/ios-sim-input";
 import { IosSimInputService, isForwardableLogLine } from "../src/utils/ios-sim-input-service";
 
 /**
@@ -115,6 +121,33 @@ describe("IosSimInputService — pacing fields on the ack", () => {
     await expect(p).resolves.toMatchObject({ id: 1, scheduledMs: 220, actualMs: 230 });
   });
 
+  it("a momentum-free swipe (holdEndMs > 0) puts holdEndMs on the wire; 0 or absent sends none", () => {
+    // `holdEndMs` > 0 is the momentum-free request: sim-input then runs the
+    // ease-out plan (16 ms frames, ease-out to ~0 velocity) plus the end hold.
+    const { svc, written } = serviceWithChild();
+    void svc.swipe("UDID-A", {
+      fromX: 0.5,
+      fromY: 0.8,
+      toX: 0.5,
+      toY: 0.3,
+      durationMs: 300,
+      holdEndMs: 120,
+      width: 1,
+      height: 1,
+    });
+    void svc.swipe("UDID-A", { fromX: 0.5, fromY: 0.8, toX: 0.5, toY: 0.3, holdEndMs: 0 });
+    void svc.swipe("UDID-A", { fromX: 0.5, fromY: 0.8, toX: 0.5, toY: 0.3 });
+    const cmds = written
+      .join("")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(cmds).toHaveLength(3);
+    expect(cmds[0]).toMatchObject({ type: "swipe", durationMs: 300, holdEndMs: 120 });
+    expect(cmds[1]).not.toHaveProperty("holdEndMs");
+    expect(cmds[2]).not.toHaveProperty("holdEndMs");
+  });
+
   it("tap / swipe resolve the same combined ack as the *WithAck aliases (pacing + timing)", async () => {
     const { svc, children } = serviceWithChild();
     const t = svc.tap("UDID-A", { x: 1, y: 1, width: 10, height: 10 });
@@ -127,6 +160,71 @@ describe("IosSimInputService — pacing fields on the ack", () => {
     expect(swipe.id).toBe(2);
     expect(swipe.timing).toBeNull();
     expect(swipe.scheduledMs).toBeUndefined();
+  });
+});
+
+describe("IosSimInput blueprint — a swipe's call timeout covers the gesture", () => {
+  const SIM: DeviceInfo = {
+    id: "11111111-2222-3333-4444-555555555555",
+    platform: "ios",
+    kind: "simulator",
+  };
+
+  async function apiWithTimeout(
+    timeoutMs: number
+  ): Promise<{ api: IosSimInputApi; written: string[] }> {
+    const written: string[] = [];
+    const spawn = vi.fn(() => {
+      const child = new EventEmitter() as FakeChild;
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn(() => {
+        setImmediate(() => child.emit("exit", null, "SIGTERM"));
+        return true;
+      });
+      child.stdin.on("data", (buf: Buffer) => written.push(buf.toString("utf-8")));
+      return child;
+    });
+    const registry = new Registry();
+    registry.registerBlueprint(
+      createIosSimInputBlueprint({
+        spawn: spawn as never,
+        resolveBinary: async () => "/fake/sim-input",
+        timeoutMs,
+      })
+    );
+    const ref = iosSimInputRef(SIM);
+    const api = await registry.resolveService<IosSimInputApi>(ref.urn, ref.options);
+    return { api, written };
+  }
+
+  it("base + durationMs + holdEndMs for a momentum-free swipe, base + durationMs without a hold", async () => {
+    const { api, written } = await apiWithTimeout(30);
+    const mf = api.sendSwipe({
+      fromX: 0.5,
+      fromY: 0.8,
+      toX: 0.5,
+      toY: 0.3,
+      durationMs: 200,
+      holdEndMs: 100,
+    });
+    await expect(mf).rejects.toThrow(/timed out after 330 ms/);
+    const plain = api.sendSwipe({ fromX: 0.5, fromY: 0.8, toX: 0.5, toY: 0.3, durationMs: 200 });
+    await expect(plain).rejects.toThrow(/timed out after 230 ms/);
+    // The envelope is the service's swipe envelope.
+    const first = JSON.parse(written.join("").trim().split("\n")[0]!) as Record<string, unknown>;
+    expect(first).toMatchObject({
+      type: "swipe",
+      fromX: 0.5,
+      fromY: 0.8,
+      toX: 0.5,
+      toY: 0.3,
+      durationMs: 200,
+      holdEndMs: 100,
+      screenWidth: 1,
+      screenHeight: 1,
+    });
   });
 });
 
@@ -181,6 +279,30 @@ interface PacingCase {
   minMs: number;
   maxMs: number;
   pass: boolean;
+  offsetsMs: number[];
+}
+
+/** The extra fields of a `swipe-momentum-free-<durationMs>` case. */
+interface MomentumFreeCase extends PacingCase {
+  durationMs: number;
+  holdEndMs: number;
+  pathPt: number;
+  moveFrameMs: number;
+  moves: number;
+  constantFrames: number;
+  easeOutFrames: number;
+  positionsPt: number[];
+  velocitiesPtPerS: number[];
+  lastFramesVelocityPtPerS: number;
+  last6FramesVelocityPtPerS: number;
+}
+
+/** One row of the selftest's check of the dispatch's ease-out predicate. */
+interface PredicateRow {
+  edge: string;
+  dwellMs: number;
+  easeOut: boolean;
+  pass: boolean;
 }
 
 describe.skipIf(!hasSwift)("sim-input selftest-pacing (macOS, swift build)", () => {
@@ -194,13 +316,20 @@ describe.skipIf(!hasSwift)("sim-input selftest-pacing (macOS, swift build)", () 
       timeout: 30_000,
     });
     expect(run.status, run.stderr).toBe(0);
-    const out = JSON.parse(run.stdout.trim()) as { ok: boolean; cases: PacingCase[] };
+    const out = JSON.parse(run.stdout.trim()) as {
+      ok: boolean;
+      cases: PacingCase[];
+      momentumFreePredicate: PredicateRow[];
+    };
     expect(out.ok).toBe(true);
     const byName = new Map(out.cases.map((c) => [c.name, c]));
     expect([...byName.keys()].sort()).toEqual([
       "swipe-250",
       "swipe-250-dwell120",
       "swipe-250-stall60",
+      "swipe-momentum-free-150",
+      "swipe-momentum-free-250",
+      "swipe-momentum-free-300",
       "tap-default",
     ]);
 
@@ -221,8 +350,9 @@ describe.skipIf(!hasSwift)("sim-input selftest-pacing (macOS, swift build)", () 
 
     // A 60 ms stall inside frame 3 makes frame 4 late, but the deadlines after
     // it are absolute: the gesture still ends near 220 ms (chained sleeps: 280).
-    // holdEndMs 120 (the momentum-free end hold): 10 moves at 20 ms, dwell
-    // pulses at 200 and 250 ms (120 / 50 = 2), the Up one step after 300 ms.
+    // A linear swipe with a 120 ms dwell (the plan of an edge swipe with a
+    // dwell): 10 moves at 20 ms, dwell pulses at 200 and 250 ms (120 / 50 = 2),
+    // the Up one step after 300 ms.
     const dwell = byName.get("swipe-250-dwell120")!;
     expect(dwell.frames).toBe(13);
     expect(dwell.scheduledMs).toBe(320);
@@ -233,5 +363,63 @@ describe.skipIf(!hasSwift)("sim-input selftest-pacing (macOS, swift build)", () 
     expect(stall.maxFrameLateMs).toBeGreaterThanOrEqual(30);
     expect(stall.actualMs).toBeGreaterThanOrEqual(220);
     expect(stall.actualMs).toBeLessThanOrEqual(270);
+
+    // `{"type":"swipe","durationMs":D,"holdEndMs":120}` (gesture-swipe
+    // momentum:false) over the bench's 437 pt finger path, at the tool default
+    // (300), the iOS bench's duration (250) and the momentum:false minimum
+    // (150). Moves on 16 ms frames: ceil(12 * floor(D / 12) / 16) frames, of
+    // which the last 10 (160 ms) ease out to rest and the rest (at least 1) run
+    // at constant velocity; then the hold (2 pulses, 50 ms apart from the last
+    // move) and the Up one frame after the last pulse plus 50 ms.
+    const expected = [
+      { durationMs: 300, moves: 19, constantFrames: 9, up: 420 },
+      { durationMs: 250, moves: 15, constantFrames: 5, up: 356 },
+      { durationMs: 150, moves: 11, constantFrames: 1, up: 292 },
+    ];
+    for (const e of expected) {
+      const mf = byName.get(`swipe-momentum-free-${e.durationMs}`) as MomentumFreeCase;
+      expect(mf.pass, mf.name).toBe(true);
+      expect(mf).toMatchObject({
+        durationMs: e.durationMs,
+        holdEndMs: 120,
+        pathPt: 437,
+        moveFrameMs: 16,
+        moves: e.moves,
+        constantFrames: e.constantFrames,
+        easeOutFrames: 10,
+      });
+      expect(mf.offsetsMs).toEqual([
+        ...Array.from({ length: e.moves }, (_, i) => (i + 1) * 16),
+        e.moves * 16,
+        e.moves * 16 + 50,
+        e.up,
+      ]);
+      expect(mf.frames).toBe(e.moves + 3);
+      expect(mf.scheduledMs).toBe(e.up);
+      expect(mf.actualMs).toBeGreaterThanOrEqual(e.up);
+      expect(mf.actualMs).toBeLessThanOrEqual(e.up + 50);
+      expect(mf.positionsPt).toHaveLength(e.moves);
+      expect(mf.positionsPt[e.moves - 1]).toBeCloseTo(437, 6);
+      for (let i = 1; i < mf.positionsPt.length; i++) {
+        expect(mf.positionsPt[i]!).toBeGreaterThanOrEqual(mf.positionsPt[i - 1]!);
+      }
+      // Constant velocity over the constant frames, then strictly slower.
+      const v = mf.velocitiesPtPerS;
+      for (let i = 0; i < e.constantFrames; i++) expect(v[i]).toBeCloseTo(v[0]!, 6);
+      for (let i = e.constantFrames; i < e.moves; i++) expect(v[i]!).toBeLessThan(v[i - 1]!);
+      // The release: the velocity over the last 3 frames (48 ms) before the hold.
+      // (last6FramesVelocityPtPerS, the last 96 ms, is printed, not gated.)
+      expect(mf.lastFramesVelocityPtPerS, mf.name).toBeLessThan(50);
+      expect(v[e.moves - 1]!).toBeLessThan(5);
+    }
+
+    // IOHIDDigitizerDispatch.swipe's choice (GestureFrames.isMomentumFree): a
+    // non-edge swipe with a dwell eases out; an edge swipe with a dwell (App
+    // Switcher: bottom, 900 ms) and a swipe without a dwell stay linear.
+    expect(out.momentumFreePredicate).toEqual([
+      { edge: "none", dwellMs: 120, easeOut: true, pass: true },
+      { edge: "bottom", dwellMs: 900, easeOut: false, pass: true },
+      { edge: "none", dwellMs: 0, easeOut: false, pass: true },
+    ]);
   }, 330_000);
 });
