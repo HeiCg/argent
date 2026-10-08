@@ -2,7 +2,7 @@
 # ON-xcuitest (open XCUITest runner, input via XCUITest) vs ON-siminput (same
 # XCUITest tree, input via the sim-input HID digitizer), on a hosted macOS runner.
 #
-# COST: macOS runners bill at 10x Linux minutes. `timeout-minutes: 120`. Manual
+# COST: macOS runners bill at 10x Linux minutes. `timeout-minutes: 180` (4 blocks with the open runner and sim-input take ~2 h). Manual
 # trigger only. The closed binaries (simulator-server + ax-service) are fetched at
 # RUN TIME (their LICENSE forbids redistribution) and never committed — the same
 # recipe e2e-device-smoke.yml already uses on macos-latest.
@@ -53,7 +53,7 @@ jobs:
     # 90 → 120: run 37213144359 took 79 min with every block failing fast; each
     # block now also starts the tool-layer runner and waits for a stable frame
     # before every swipe.
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       BENCH_N: ${{ github.event.inputs.n || '20' }}
       BENCH_BLOCKS: ${{ github.event.inputs.blocks || 'OFF-1,ON-xcuitest,ON-siminput,OFF-2' }}
