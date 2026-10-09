@@ -2,7 +2,7 @@
   "schemaVersion": 5,
   "id": "close-gaps-2026-10",
   "title": "Close the gaps of the final runs: Android tap/describe warm-up, iOS momentum-free swipe, screen-graph launch node, deferred measurements (docs/plans/2026-10-08-close-gaps.md)",
-  "status": "approved",
+  "status": "done",
   "steps": [
     {
       "id": "tap-latency",
@@ -267,12 +267,54 @@
         }
       ],
       "commitMessage": "docs(open-server): scoreboard after closing the gaps",
-      "status": "pending",
-      "reviewRounds": 0,
+      "status": "committed",
+      "implementer": "opus:coordinator",
+      "review": {
+        "at": "2026-10-09T01:26:12.156Z",
+        "verifyRuns": [
+          {
+            "cmd": "test -s docs/open-server/2026-10-review-close-gaps-runs.md",
+            "exitCode": 0,
+            "outputFile": "1-test-s-docs-open-server-2026-10-review-c.log"
+          },
+          {
+            "cmd": "npx prettier --check docs/open-server/2026-10-scoreboard-vs-0.27.0.md docs/open-server/2026-10-review-close-gaps-runs.md",
+            "exitCode": 0,
+            "outputFile": "2-npx-prettier-check-docs-open-server-2026.log"
+          }
+        ],
+        "findings": [
+          {
+            "severity": "minor",
+            "file": "docs/open-server/2026-10-review-close-gaps-runs.md",
+            "note": "L12-13: the commit column still says 'see follow-up' (the stated fix was not applied to the staged file). gh run view -R HeiCg/argent gives headSha a37482c29c46 for 37855208770 and 8db728f935e6 for 37856050947. Put a37482c2 and 8db728f9 in the table."
+          },
+          {
+            "severity": "minor",
+            "file": "docs/open-server/2026-10-review-close-gaps-runs.md",
+            "note": "L101-102: the iOS table still reads 'parity' for describe 242/246 and tap 68/70. L118 and scoreboard L28 now say 'within a few ms (1 block per arm, no CI)'. Use the same wording in the table's reading column."
+          },
+          {
+            "severity": "note",
+            "file": "docs/open-server/2026-10-review-close-gaps-runs.md",
+            "note": "L125: 'The plan's 37/37 came from the E-1 run's present count' cannot be verified from the diff (plan L67 only says 'success 37/37 kept'). Check it against the E-1 churn-results present count before keeping the attribution."
+          }
+        ],
+        "passed": true,
+        "reviewer": "agent:review:measure-deferred:3"
+      },
+      "reviewRounds": 3,
+      "adjudication": {
+        "decision": "accept",
+        "reason": "Round 3 passed; its 2 minors (commit column, iOS table wording) and 1 note (37/37 provenance) fixed inline. Rounds 1-2 majors were overreaching claims, all rewritten to the evidence with hypotheses labelled.",
+        "by": "opus:coordinator",
+        "at": "2026-10-09T01:26:39.230Z"
+      },
       "waivers": [],
       "skills": [
         "demerzel-evidencia"
-      ]
+      ],
+      "committedAt": "2026-10-09T01:26:39.483Z"
     }
   ]
 }

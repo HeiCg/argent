@@ -1,5 +1,42 @@
 # Scoreboard: open stack vs @swmansion/argent 0.27.0 (2026-10-08)
 
+## Update after plan close-gaps-2026-10
+
+Runs 37824312091, 37855208770 (Android ABBA), 37824322706 (screen graph
+MULTIHOP + CHURN), 37824355475 (AndroidWorld), 37856050947 (iOS). Review:
+`2026-10-review-close-gaps-runs.md`.
+
+- **Android: faster on describe, pinch, paste and on reaching the correct
+  screen; swipe inconclusive; tap slower.**
+  - Describe is now a win in both runs (ON 41-46 ms vs OFF 52-63). The server
+    warms its code with 40 discarded reads at start.
+  - With `settle:true` on the tap, the agent reaches the correct screen in
+    884 ms with 30/30 correct first reads, against 2585 ms for the official
+    tap → await → describe in run 37824312091 (2.6-2.9× faster across the two
+    runs).
+  - Pinch+describe −566 to −588 ms (P4 PASS). Paste about 2× faster (no gate).
+  - Swipe+describe P3 INCONCLUSIVE in both runs; swipe alone −32.8 ms in
+    37824312091 and −3.6 ms, CI crossing 0, in 37855208770.
+  - Tap is 2-5 ms slower (P2 NOT PASSED, then FAIL). In 37824312091 the
+    screen-size read before each tap (1.3-1.6 ms) was most of the gap; the fix
+    that removed it did not close the gap in 37855208770, a slower runner on a
+    new APK. Hypothesis for the rest: the official tap may return on a local
+    ack plus a 50 ms host sleep without waiting for the emulator (OFF tap stayed
+    at 53 ms while OFF describe moved 52 → 62 ms); not established.
+  - In one valid diagnostic block, the idle proprietary `simulator-server`
+    raises the median screen transition by 717 ms (CI [602, 782]).
+- **iOS: tap and describe within a few ms of the official stack; swipe no longer flings.** One block per
+  arm (OFF-2 invalid). Tap 70 vs 68 ms, describe 246 vs 242 ms. Swipe 408 vs
+  605 ms, but the gestures still differ (ON scrolls 301.7 pt, OFF 344.7 pt; the
+  offset gate is missed), so the swipe times are not a like-for-like win.
+  Before the fix ON scrolled 567 pt.
+- **Screen graph: 100/100 success**, observation tokens 0.37×, RPCs 0.49×,
+  wall 0.78× per 3-hop navigation when the target is known. Template search in
+  long lists 4.4 s (was 8.7 s), 0 swipes with a gap (was 38-42 %).
+  AndroidWorld still inconclusive (shallow tasks).
+
+The sections below are the 2026-10-08 morning scoreboard, kept for reference.
+
 Every number below was read by an independent reviewer with the raw artifacts.
 Review: `2026-10-review-final-runs.md`. Plan: `docs/plans/2026-10-07-beat-official.md`.
 Scope: GitHub-hosted runners only. Android latency and MULTIHOP = x86_64 KVM,

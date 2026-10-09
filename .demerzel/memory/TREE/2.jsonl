@@ -16,3 +16,5 @@
 {"digest":"sha256:53fe10e47bc0","text":"Placar final 2026-10-08 publicado; plano close-gaps-2026-10 em curso: sg-launch-node 41992aeb commitado (minors: nó launcher entre apps, label só título); tap-latency em review; ios-momentum-free implementando"}
 {"digest":"sha256:ec2ce622b6de","text":"sg-launch-node 41992aeb commitado (launch vira nó sem describe; lo>-5); minors: nó launcher entre apps, label só título, template sem lazy"}
 {"digest":"sha256:3845c37cf5cd","text":"sg-launch-node 41992aeb commitado; minors: nó launcher entre apps, label só título, template sem lazy"}
+{"digest":"sha256:be5ae55740e0","text":"close-gaps onda 1 commitada (launch-node 41992aeb, ios-momentum-free 17b23d15, tap-latency 7cf75fba, APK v30); runs measure-deferred: ABBA 37824312091, iOS 37824317476, MULTIHOP+CHURN 37824322706"}
+{"digest":"sha256:dcc633b83e59","text":"ABBA 37824312091: describe vitória, settle na ação 30/30 884 ms, stream proprietário +717 ms (válido); tap fix v31 mergeado; aguardando ABBA v31 37845087517 e iOS 37840591012"}
